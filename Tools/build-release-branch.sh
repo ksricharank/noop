@@ -23,6 +23,7 @@ UPSTREAM="origin/main"
 
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
+  "feature/release-branch-tooling"
   "feature/conditional-daytime-hrv"
   "feature/dynamic-island-minimal-hr"
 )
