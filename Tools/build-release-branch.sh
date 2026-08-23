@@ -26,6 +26,7 @@ FEATURES=(
   "feature/release-branch-tooling"
   "feature/conditional-daytime-hrv"
   "feature/dynamic-island-minimal-hr"
+  "feature/synthesis-horizons"
 )
 
 cd "$(git rev-parse --show-toplevel)"
