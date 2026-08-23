@@ -1694,11 +1694,16 @@ public final class BLEManager: NSObject, ObservableObject {
     private func applyLockStateToCapture() {
         guard keepRealtimeForData, !screenWantsRealtime else { return }
         let want = continuousCaptureWantsNow()
-        guard want != heavyStreamArmed else { return }   // no edge — the lock didn't change the answer
-        // ONLY the expensive burst moves here. The cheap TOGGLE stays armed across the lock edge, which
-        // is what keeps a live number in the Dynamic Island while the phone is in a pocket.
-        log("Continuous HRV: \(captureScheduleReason()) — \(want ? "arming" : "disarming") the dense R-R stream (live HR unaffected)")
-        reconcileHeavyStream()
+        // On a family WITH the heavy lane, only that lane moves and live HR is untouched. Without it,
+        // the schedule drives the single TOGGLE, so the edge is a full arm/disarm — hence the honest
+        // suffix rather than a blanket "live HR unaffected" that would be false on a 5/MG.
+        let splitAvailable = heavyStreamReachesStrap
+        guard want != (splitAvailable ? heavyStreamArmed : wantsRealtime) else { return }
+        log("Continuous HRV: \(captureScheduleReason()) — \(want ? "arming" : "disarming") capture"
+            + (splitAvailable ? " (dense R-R only; live HR unaffected)" : " (live HR pauses with it on this strap)"))
+        // reconcileRealtime re-derives BOTH wants and delegates to reconcileHeavyStream, so this one call
+        // covers the split family and the single-lever family alike.
+        reconcileRealtime()
     }
 
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
@@ -2822,16 +2827,23 @@ public final class BLEManager: NSObject, ObservableObject {
 
     /// Does the continuous-capture preference want the CHEAP TOGGLE stream held open right now?
     ///
-    /// Deliberately unconditional on time and lock state: the whole point of the cheap stream is that
-    /// the Dynamic Island / Lock Screen Live Activity always has a live number, at 3am and at noon,
-    /// locked or not. Only the strap's own low-battery lever can release it — that lever exists to save
-    /// a strap that wasn't charged in time, and honouring it here costs the user a live number rather
-    /// than their remaining battery.
+    /// WHERE THE HEAVY LANE EXISTS (WHOOP 4.0), this is unconditional on time and lock state: the point
+    /// of splitting the two commands is that the Dynamic Island keeps a live number at 3am and at noon,
+    /// locked or not, while the expensive burst obeys the schedule. Only the strap's own low-battery
+    /// lever releases it.
     ///
-    /// This is the twin of `continuousCaptureWantsNow()`, which answers the same question for the
-    /// EXPENSIVE R10/R11 burst and is where all the scheduling lives.
+    /// WHERE IT DOES NOT (the 5/MG — see `heavyStreamReachesStrap`), this follows the full schedule
+    /// instead. On that family SEND_R10R11_REALTIME never leaves the phone, so gating only the heavy
+    /// lane would pause nothing at all: the user asks for capture to stop while their phone is locked
+    /// and the strap keeps streaming regardless. Given one lever, the schedule has to drive it, and the
+    /// cost is honest and visible — live HR blanks while locked and returns within seconds of unlocking.
+    ///
+    /// This asymmetry is deliberate and is the whole reason `heavyStreamReachesStrap` exists. A previous
+    /// revision gated only the heavy lane on both families, which silently disabled the feature on the
+    /// 5/MG while the code read as though it worked. `ContinuousHrvCheapStreamGateTests` pins it.
     private func continuousCheapStreamWantsNow() -> Bool {
-        heavyStreamAllowedByPower()
+        guard heavyStreamAllowedByPower() else { return false }
+        return heavyStreamReachesStrap ? true : continuousCaptureWantsNow()
     }
 
     /// The shared power gate both wants sit behind. #477: while the STRAP's battery is low (≤ threshold,
@@ -2870,6 +2882,45 @@ public final class BLEManager: NSObject, ObservableObject {
             // "unlocked" could re-arm the daytime flood at a locked phone.
             daytimeWhileUnlocked: PuffinExperiment.continuousHrvDaytimeUnlockedEnabled,
             deviceUnlocked: deviceUnlockedNow())
+    }
+
+    /// Can the dense R10/R11 burst actually reach THIS strap?
+    ///
+    /// False on the 5/MG: `send()`'s puffin allow-list has no framing for SEND_R10R11_REALTIME, so every
+    /// such write is dropped before it leaves the phone (the strap log says so on each attempt). On that
+    /// family the whole of live capture rides TOGGLE_REALTIME_HR alone.
+    ///
+    /// This exists because the #927 schedule is meant to pause background capture, and a gate placed on
+    /// a command the strap never receives pauses nothing. Rather than assume the split is available
+    /// everywhere, the scheduler asks — and where the heavy lane is absent it gates the only lane there
+    /// is. See `continuousCheapStreamWantsNow()`.
+    private var heavyStreamReachesStrap: Bool {
+        Self.heavyStreamReaches(family: selectedModel.deviceFamily)
+    }
+
+    /// The family half of `heavyStreamReachesStrap`, lifted out so a unit test can assert the contract
+    /// without standing up CoreBluetooth. Mirrors the `send()` allow-list: the 5/MG branch enumerates the
+    /// commands it can frame and SEND_R10R11_REALTIME is not among them, while WHOOP 4.0 has no
+    /// allow-list at all and takes both. Kept beside the flag it backs so the two cannot drift.
+    nonisolated static func heavyStreamReaches(family: DeviceFamily) -> Bool {
+        family != .whoop5
+    }
+
+    /// Test seam: does the 5/MG puffin allow-list admit this command? The gate above depends on the
+    /// answer for SEND_R10R11_REALTIME, and a future change adding that framing should break the test
+    /// that asserts it rather than silently leaving the cheap lane gated for no reason.
+    nonisolated static func whoop5AcceptsForTesting(_ command: WhoopCommand) -> Bool {
+        switch command {
+        case .toggleRealtimeHR, .runHapticsPattern,
+             .setAlarmTime, .getAlarmTime, .runAlarm, .disableAlarm,
+             .rebootStrap, .getExtendedBatteryInfo, .getBodyLocationAndStatus,
+             .sendHistoricalData, .historicalDataResult, .setClock, .getClock:
+            return true
+        default:
+            // Everything else is either refused outright or admitted only while a specific opt-in or
+            // in-flight probe holds — never on a default install, which is the case this answers for.
+            return false
+        }
     }
 
     /// Which schedule gate explains the CURRENT continuous-capture want — for the strap log only, never
@@ -4160,15 +4211,20 @@ public final class BLEManager: NSObject, ObservableObject {
         // the WHOOP4-only guard below so a 5/MG stream also disarms/re-arms on the window edges (send()
         // routes the 5/MG toggle and drops the WHOOP4-framed R10/R11 stop for it).
         let captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
-        if heavyStreamArmed != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
+        // Compare against whichever lane the schedule actually drives on this family: the heavy burst
+        // where it exists, the single TOGGLE where it does not (see `heavyStreamReachesStrap`). Keying
+        // this on `heavyStreamArmed` alone meant a 5/MG never logged a window edge, because that flag
+        // never moves there — the command behind it is dropped before it reaches the strap.
+        let armedNow = heavyStreamReachesStrap ? heavyStreamArmed : wantsRealtime
+        if armedNow != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
             // The edge can now come from EITHER schedule gate — the nightly window, or the iOS
             // "daytime while unlocked" lane — so name whichever one actually opened/closed it rather
             // than always blaming the window (a lock-driven edge logged as "window closed" would send
             // anyone reading a strap log after the wrong bug).
             let reason = captureScheduleReason()
-            // Heavy stream only — the cheap TOGGLE is untouched by these edges, so live HR (and the
-            // Dynamic Island) survives a window close. `reconcileHeavyStream` below sends the command.
-            log("Continuous HRV: \(reason) — \(captureWantNow ? "arming" : "disarming") the dense R-R stream (#927; live HR unaffected)")
+            log("Continuous HRV: \(reason) — \(captureWantNow ? "arming" : "disarming") capture (#927)"
+                + (heavyStreamReachesStrap ? " — dense R-R only; live HR unaffected"
+                                           : " — live HR pauses with it on this strap"))
         }
         reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
         // The command pings below are WHOOP4-framed; a 5/MG link drops them at the send() guard, so
