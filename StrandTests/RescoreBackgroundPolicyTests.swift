@@ -11,10 +11,12 @@ import XCTest
 final class RescoreBackgroundPolicyTests: XCTestCase {
 
     private func decide(background: Bool = true,
+                        locked: Bool = false,
                         unfinished: Bool = false,
                         lastSeconds: Double? = nil,
                         budget: Double = 20) -> RescoreBackgroundPolicy.Decision {
         RescoreBackgroundPolicy.decide(isBackground: background,
+                                       deviceLocked: locked,
                                        rescoreAlreadyOwed: unfinished,
                                        lastCompletedPassSeconds: lastSeconds,
                                        budgetSeconds: budget)
@@ -109,6 +111,45 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     func testTheDefaultBudgetIsTheShippedOne() {
         XCTAssertEqual(RescoreBackgroundPolicy.backgroundBudgetSeconds, 20)
         XCTAssertTrue(isDeferred(RescoreBackgroundPolicy.decide(
-            isBackground: true, rescoreAlreadyOwed: false, lastCompletedPassSeconds: 21)))
+            isBackground: true, deviceLocked: false,
+            rescoreAlreadyOwed: false, lastCompletedPassSeconds: 21)))
+    }
+
+    // MARK: - The locked phone (the overnight storm)
+
+    private func isDeferredToUnlock(_ d: RescoreBackgroundPolicy.Decision) -> Bool {
+        if case .deferToUnlock = d { return true }
+        return false
+    }
+
+    /// The motivating case: a pass measured comfortably inside the budget — which the measured rule
+    /// would wave through, and DID, 22 times in the motivating overnight log — still defers while the
+    /// phone is locked. Nobody can see the score, and the pass contends with the very offloads that
+    /// keep triggering it.
+    func testAFastPassStillDefersWhileLocked() {
+        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, lastSeconds: 5)))
+    }
+
+    /// Locked outranks the owed rule, in that exact order: an owed pass on a locked phone must resolve
+    /// to the unlock settle, never to a background task — a processing task favours idle, and idle on a
+    /// phone worn to bed is 3 a.m.
+    func testLockedResolvesToUnlockNotToABackgroundTask() {
+        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, unfinished: true)))
+        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, lastSeconds: 475)))
+        XCTAssertTrue(isDeferredToUnlock(decide(locked: true)))
+    }
+
+    /// Foreground still outranks locked — the transient locked-while-active states on the way in and out
+    /// of the lock screen must not defer a pass the user is effectively watching. Same invariant as
+    /// `testAForegroundPassAlwaysRuns`, extended to the new input.
+    func testForegroundOutranksLocked() {
+        XCTAssertEqual(decide(background: false, locked: true), .run)
+    }
+
+    /// An unlocked background pass is byte-identical to the pre-locked-rule behaviour: the fast pass
+    /// runs, the slow one defers to a background task. The new input at its false value changes nothing.
+    func testUnlockedBackgroundBehaviourIsUnchanged() {
+        XCTAssertEqual(decide(locked: false, lastSeconds: 5), .run)
+        XCTAssertTrue(isDeferred(decide(locked: false, lastSeconds: 475)))
     }
 }
