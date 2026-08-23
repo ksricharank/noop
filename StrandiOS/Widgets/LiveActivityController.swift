@@ -27,6 +27,10 @@ final class LiveActivityController {
     /// yet), so without this guard two close-together HR samples could both fire `Activity.request`
     /// and create duplicate Live Activities.
     private var isStarting = false
+    /// Rolling last-minute of display-HR ticks, feeding the locked-mode average
+    /// (`LiveActivityHrPolicy.windowAverage`). Fed on every tick regardless of lock state, so the
+    /// first locked push already has a full window behind it.
+    private var hrSamples: [LiveActivityHrPolicy.Sample] = []
     /// When the banner being fed was started, for iOS's eight-hour limit (`LiveHRBannerLifecycle.renewAfter`). Kept in
     /// the defaults with the banner's id, because a banner outlives the run that started it. Nil when unknown.
     private var startedAt: Date?
@@ -147,10 +151,24 @@ final class LiveActivityController {
         case .start, .push, .renew: break
         }
 
+        // Lock-aware cadence (fork): while the phone is locked nobody can watch beat-level movement, and
+        // on an Always-On display every push repaints the Lock Screen, so locked pushes slow to one a
+        // minute carrying a one-minute average (`LiveActivityHrPolicy`). The buffer is fed on every tick
+        // regardless of lock state, so the first locked push already has a full window behind it. Locked
+        // = protected data (keychain/file keybag) unavailable: the keybag tracks the passcode lock, not
+        // the screen, but on current hardware/iOS it follows the physical lock near-instantly in both
+        // directions. Re-read per tick rather than observed — a tick is the only moment a push happens.
+        if let bpm { hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now) }
+        let locked = !UIApplication.shared.isProtectedDataAvailable
+        // Locked: show the last minute's average — steadier, and honest about its cadence. The
+        // instantaneous fallback only fires if the window is somehow empty.
+        let shownBpm = (locked && bpm != nil)
+            ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now) ?? bpm) : bpm
+
         // Link down: the dash, never the last number (`bonded` stays true across a disconnect, and keying off it once
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
         // which is typically the strap coming back — exactly when the banner should stay.
-        let state = NOOPActivityAttributes.ContentState(bpm: connected ? bpm : nil, recovery: recovery,
+        let state = NOOPActivityAttributes.ContentState(bpm: connected ? shownBpm : nil, recovery: recovery,
                                                         bonded: connected, effort: effort)
 
         if step == .renew, activity != nil {
@@ -167,10 +185,18 @@ final class LiveActivityController {
             guard LiveHRBannerPushPolicy.due(shown: shownState, next: state, reading: \.bpm,
                                              sinceLastPush: now.timeIntervalSince(lastPush),
                                              staleAfter: Self.staleAfter) else { return }
+            // Locked cadence (fork): a minute between pushes — except the dash transition, which is
+            // often the last tick a quiet strap sends, so it goes out whatever the spacing.
+            let dashFlip = shownState.map { ($0.bpm == nil) != (state.bpm == nil) } ?? true
+            if locked, !dashFlip,
+               !LiveActivityHrPolicy.shouldPush(locked: true, now: now, lastPush: lastPush) { return }
             if let shown = shownState, (shown.bpm == nil) != (state.bpm == nil) { logReading(state) }
             lastPush = now
             shownState = state
-            let staleDate = now.addingTimeInterval(Self.staleAfter)
+            // Locked pushes are a minute apart, so their staleDate adds that spacing on top — the
+            // freshness window must sit on the cadence, not race it.
+            let staleDate = now.addingTimeInterval(
+                Self.staleAfter + (locked ? LiveActivityHrPolicy.lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else if start(state, at: now) {
             log(state.bpm == nil ? "started, showing – until a heart rate arrives" : "started")
