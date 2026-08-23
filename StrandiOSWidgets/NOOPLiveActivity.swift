@@ -24,15 +24,11 @@ struct NOOPLiveActivity: Widget {
                     .font(.title2)
                     .foregroundStyle(StrandPalette.statusCritical)
                 Spacer()
-<<<<<<< HEAD
-                bannerStat(label: "HR", value: Self.shownBpm(context).map(String.init) ?? "–")
-=======
                 // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
                 // is the plain settled number. Deliberately this way round: when the phone locks and
                 // pushes stop reaching the card, whatever is on it is by definition not live — the
                 // plain form it is left holding stays honest without needing a repaint.
-                bannerStat(label: "HR", value: hrText(context.state))
->>>>>>> 6687427ec (Live Activity: tilde marks LIVE beats; +N lock-edge average; 8 h lease renewal)
+                bannerStat(label: "HR", value: hrText(context))
                 Spacer()
                 bannerStat(label: "Charge",
                            value: context.state.recovery.map(String.init) ?? "–")
@@ -49,11 +45,7 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-<<<<<<< HEAD
-                    Label("\(Self.shownBpm(context).map(String.init) ?? "–")", systemImage: "heart.fill")
-=======
-                    Label(hrText(context.state), systemImage: "heart.fill")
->>>>>>> 6687427ec (Live Activity: tilde marks LIVE beats; +N lock-edge average; 8 h lease renewal)
+                    Label(hrText(context), systemImage: "heart.fill")
                         .foregroundStyle(StrandPalette.statusCritical)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -76,11 +68,7 @@ struct NOOPLiveActivity: Widget {
             } compactLeading: {
                 Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
             } compactTrailing: {
-<<<<<<< HEAD
-                Text("\(Self.shownBpm(context).map(String.init) ?? "–")")
-=======
-                Text(hrText(context.state))
->>>>>>> 6687427ec (Live Activity: tilde marks LIVE beats; +N lock-edge average; 8 h lease renewal)
+                Text(hrText(context))
             } minimal: {
                 Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
             }
@@ -96,6 +84,17 @@ struct NOOPLiveActivity: Widget {
 private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
     guard let bpm = state.bpm else { return "–" }
     return state.live == true ? "~\(bpm)" : "\(bpm)"
+}
+
+/// The HR column’s text: stale-aware through `NOOPLiveActivity.shownBpm` (iOS’s stale date is what
+/// clears a number nothing can repaint), with the fork’s liveness mark on top. The tilde marks a LIVE
+/// beat ("~72", still moving); a window average / frozen value is the plain settled number — and a
+/// state without the flag (an inherited card) is treated as not-live, so it never claims liveness it
+/// can’t back. File-scope for the same reason as `bannerStat`. The `minimal` slot deliberately does
+/// NOT use this: it clips rather than shrinks, and the tilde would cost the third digit of a workout HR.
+private func hrText(_ context: ActivityViewContext<NOOPActivityAttributes>) -> String {
+    guard let bpm = NOOPLiveActivity.shownBpm(context) else { return "–" }
+    return context.state.live == true ? "~\(bpm)" : "\(bpm)"
 }
 
 /// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`
