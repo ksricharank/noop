@@ -2237,6 +2237,14 @@ struct TodayView: View {
             // both states, so a glance still reads today's verdict; the detail body reveals on tap.
             synthesisCollapsible(d: d, score: score)
 
+            // Horizons + Coach link, in step with the liquid Today (the codebase treats classic/liquid
+            // divergence as a bug). Gated on the same `synthesisExpanded` state the card above uses, so
+            // both screens keep a single glanceable line when collapsed.
+            if synthesisExpanded {
+                horizonRows
+                coachLink
+            }
+
             if let note = effortZeroNote {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "info.circle")
@@ -2252,6 +2260,61 @@ struct TodayView: View {
             }
 
         }
+    }
+
+    // MARK: Horizons (1h / 3h / 6h)
+
+    /// What to do next on three timescales, under the "how am I today" read. Rule-based via the pure
+    /// `HorizonPlanner`; see that type for why it is not LLM-backed and what it declines to claim.
+    /// Liquid twin: `LiquidTodayView.horizonRows` — keep the two in step.
+    @ViewBuilder private var horizonRows: some View {
+        let plans = HorizonPlanner.plan(HorizonPlanner.Input(
+            level: readiness.level,
+            strainSoFar: displayDay?.strain,
+            sleepMinutes: displayDay?.totalSleepMin.map { Int($0.rounded()) },
+            hour: Calendar.current.component(.hour, from: Date()),
+            bedtimeHour: LiquidTodayView.targetBedtimeHour()))
+        if !plans.isEmpty {
+            NoopCard(tint: StrandPalette.chargeColor) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("What's next").strandOverline()
+                    ForEach(plans) { plan in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(plan.horizon.rawValue)
+                                .font(StrandFont.caption.weight(.bold))
+                                .foregroundStyle(StrandPalette.chargeColor)
+                                // Fixed width so the labels form a column and the sentences align — the
+                                // three lines should read as one timeline, not three separate notes.
+                                .frame(width: 26, alignment: .leading)
+                            Text(LocalizedStringKey(plan.text))
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(LiquidTodayView.horizonAccessibilityLabel(plan))
+                    }
+                }
+            }
+        }
+    }
+
+    /// A way into the Coach for the follow-ups this card raises. A LINK, not an embedded chat — see
+    /// `NavRouter.openCoach()` for why the engine is not reused inline.
+    @ViewBuilder private var coachLink: some View {
+        HStack {
+            Spacer()
+            Button { router.openCoach() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                }
+                .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Opens the AI Coach chat"))
+        }
+        .padding(.horizontal, 2)
     }
 
     /// S4: the Synthesis card, collapsed to a one-liner that expands on tap. Collapsed: the category +
