@@ -426,17 +426,30 @@ struct BackfillContinuation {
 ///   continuous ON, overnight ON   → OVERNIGHT: armed only inside the window
 ///   …plus overnight ON + daytime-while-unlocked ON → OVERNIGHT + a conditional daytime lane (below)
 ///
-/// DAYTIME WHILE UNLOCKED (iOS only). Overnight-only leaves the whole day dark, which also blanks the
-/// live HR the Dynamic Island / Lock Screen Live Activity shows. This sub-option re-opens the stream
-/// OUTSIDE the nightly window, but ONLY while the phone is unlocked — i.e. only while the user is
-/// actually able to look at that readout. A pocketed, locked phone streams nothing, so the drain the
-/// 24/7 ALWAYS mode caused does not come back.
+/// WHAT THIS SCHEDULE GATES. Only the EXPENSIVE half of live capture — the R10/R11 burst. Live HR
+/// splits across two independently-armed commands, and conflating them was the bug this note exists to
+/// prevent:
+///
+///   TOGGLE_REALTIME_HR  — cheap. Makes the strap emit HR + R-R over the standard 0x2A37 profile at
+///                         ~1 Hz. Held on CONTINUOUSLY while continuous capture is enabled, at every
+///                         hour and whatever the phone's lock state, so the Dynamic Island / Lock
+///                         Screen Live Activity always has a number. Not gated by this schedule.
+///   SEND_R10R11_REALTIME — the battery-hungry one (the dense burst behind good overnight HRV). THIS
+///                         is what the schedule below arms and disarms.
+///
+/// DAYTIME WHILE UNLOCKED (iOS only). Overnight-only leaves the whole day without the dense stream.
+/// This sub-option re-opens the HEAVY stream OUTSIDE the nightly window, but ONLY while the phone is
+/// unlocked — i.e. only while the user is plausibly using it. A pocketed, locked phone runs the cheap
+/// stream alone, so the Dynamic Island keeps updating while the expensive drain stays off.
 ///
 /// The unlock signal is iOS Data Protection (`UIApplication.isProtectedDataAvailable` + its
 /// did-become-available / will-become-unavailable notifications), NOT app foreground: the Live Activity's
 /// entire purpose is to be visible while NOOP is backgrounded, so gating on foreground would defeat the
-/// feature it exists to serve. macOS has no such lock notion and no Dynamic Island, so `deviceUnlocked`
-/// is passed `false` there and this lane is inert — see `BLEManager.deviceUnlockedNow`.
+/// feature it exists to serve. CAVEAT, measured on-device: Data Protection tracks the KEYBAG, not the
+/// screen — it can stay "available" long after a screen lock, sometimes until reboot. So this lane is
+/// best-effort and errs toward leaving the heavy stream ON; it is not a guarantee that locking the
+/// phone stops it. macOS has no such lock notion, so `deviceUnlocked` is false there and the lane is
+/// inert — see `BLEManager.deviceUnlockedNow`.
 ///
 /// Pure + value-typed so the predicate is unit-testable (ContinuousHrvScheduleTests). BLEManager
 /// RE-DERIVES it at every arm site (reconcile / keep-alive tick / post-bond arm) instead of caching it,
@@ -457,9 +470,12 @@ struct ContinuousHrvSchedule {
         return minuteOfDay >= startMin || minuteOfDay < endMin
     }
 
-    /// The composed want: should the continuous-capture stream be held open at local wall-clock minute
-    /// `minuteOfDay`? False when the feature is off; true 24/7 in ALWAYS mode (overnightOnly false, the
-    /// pre-#927 behaviour every existing user reads with no migration); window-gated in OVERNIGHT mode.
+    /// The composed want for the HEAVY (R10/R11) stream at local wall-clock minute `minuteOfDay`. False
+    /// when the feature is off; true 24/7 in ALWAYS mode (overnightOnly false, the pre-#927 behaviour
+    /// every existing user reads with no migration); window-gated in OVERNIGHT mode.
+    ///
+    /// The cheap TOGGLE stream is NOT gated by this — see the type doc. `continuousHrv` on is enough to
+    /// hold that one open, which is what keeps the Dynamic Island alive at every hour.
     ///
     /// `daytimeWhileUnlocked` adds the conditional daytime lane on top of OVERNIGHT mode: outside the
     /// nightly window the stream is wanted only while `deviceUnlocked`. Deliberately layered so the two
@@ -698,6 +714,10 @@ public final class BLEManager: NSObject, ObservableObject {
     /// continuous-capture preference wants it. Keep-alive re-arms it; the post-bond branch arms it on
     /// connect. Recomputed only inside `reconcileRealtime()`.
     private var wantsRealtime = false
+    /// What we last told the strap about the EXPENSIVE R10/R11 burst, tracked separately from
+    /// `realtimeArmed` (the cheap TOGGLE) so `reconcileHeavyStream()` can edge-trigger on its own want.
+    /// The two deliberately diverge — a locked afternoon holds the toggle armed and this disarmed.
+    private var heavyStreamArmed = false
     /// What we last told the strap (armed = TOGGLE_REALTIME_HR 1). Lets `reconcileRealtime()` send the
     /// toggle only on the false↔true edge instead of on every input change. Cleared on disconnect — the
     /// strap forgets the toggle across a connection, and the post-bond branch re-arms from `wantsRealtime`.
@@ -1674,12 +1694,11 @@ public final class BLEManager: NSObject, ObservableObject {
     private func applyLockStateToCapture() {
         guard keepRealtimeForData, !screenWantsRealtime else { return }
         let want = continuousCaptureWantsNow()
-        guard want != wantsRealtime else { return }   // no edge — the lock didn't change the answer
-        if !want {
-            send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
-        }
-        log("Continuous HRV: \(captureScheduleReason()) — \(want ? "arming" : "disarming") the realtime stream")
-        reconcileRealtime()   // sends the TOGGLE on the edge
+        guard want != heavyStreamArmed else { return }   // no edge — the lock didn't change the answer
+        // ONLY the expensive burst moves here. The cheap TOGGLE stays armed across the lock edge, which
+        // is what keeps a live number in the Dynamic Island while the phone is in a pocket.
+        log("Continuous HRV: \(captureScheduleReason()) — \(want ? "arming" : "disarming") the dense R-R stream (live HR unaffected)")
+        reconcileHeavyStream()
     }
 
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
@@ -2712,8 +2731,11 @@ public final class BLEManager: NSObject, ObservableObject {
         standardHRFallback = false
         state.standardHRMode = nil
         enableLiveNotifications(reason: "start realtime")
-        send(.sendR10R11Realtime, payload: [0x01])   // the heavy burst rides alongside the toggle on Live
-        reconcileRealtime()                          // arms TOGGLE_REALTIME_HR(1) on the off→on edge
+        // Both streams now go through the reconciler: it arms TOGGLE_REALTIME_HR(1) on the cheap want's
+        // off→on edge and SEND_R10R11_REALTIME(1) on the heavy want's, keeping `heavyStreamArmed` in
+        // sync. (Previously the burst was sent straight from here, which the split would have left
+        // untracked — the next reconcile would think it was still off and re-send.)
+        reconcileRealtime()
         realtimeArmedAt = Date()       // start the arm→drop stopwatch for the marginal-radio detector
     }
     /// Stop the Live-tab realtime streams. The lightweight 0x2A37 HR keeps recording if firmware emits it.
@@ -2723,10 +2745,9 @@ public final class BLEManager: NSObject, ObservableObject {
     public func stopRealtime() {
         screenWantsRealtime = false
         state.liveFeedActive = false   // flip the menu-bar toggle back to "Start live feed"
-        // Always stop the heavy R10/R11 burst when the Live screen leaves — it's the battery-hungry part
-        // and is only ever wanted while a live screen is up. The lightweight TOGGLE/0x2A37 R-R stream is
-        // what continuous capture keeps; the reconciler decides whether to disarm that.
-        send(.sendR10R11Realtime, payload: [0x00])
+        // The reconciler stops the heavy burst if nothing else wants it — a Live screen leaving during
+        // the overnight window, or an unlocked daytime with the lane on, legitimately keeps it armed.
+        // The cheap TOGGLE is decided separately and stays on while continuous capture is enabled.
         reconcileRealtime()
     }
 
@@ -2799,6 +2820,32 @@ public final class BLEManager: NSObject, ObservableObject {
             batteryPct: pct, charging: charging, thresholdPct: lowBatteryOffloadPct)
     }
 
+    /// Does the continuous-capture preference want the CHEAP TOGGLE stream held open right now?
+    ///
+    /// Deliberately unconditional on time and lock state: the whole point of the cheap stream is that
+    /// the Dynamic Island / Lock Screen Live Activity always has a live number, at 3am and at noon,
+    /// locked or not. Only the strap's own low-battery lever can release it — that lever exists to save
+    /// a strap that wasn't charged in time, and honouring it here costs the user a live number rather
+    /// than their remaining battery.
+    ///
+    /// This is the twin of `continuousCaptureWantsNow()`, which answers the same question for the
+    /// EXPENSIVE R10/R11 burst and is where all the scheduling lives.
+    private func continuousCheapStreamWantsNow() -> Bool {
+        heavyStreamAllowedByPower()
+    }
+
+    /// The shared power gate both wants sit behind. #477: while the STRAP's battery is low (≤ threshold,
+    /// discharging), release the held-open background stream. A Live screen still arms it via
+    /// `screenWantsRealtime` (checked separately in the reconciler). Re-derived at every arm site, so it
+    /// re-arms automatically once the strap is charged.
+    private func heavyStreamAllowedByPower() -> Bool {
+        guard keepRealtimeForData else { return false }
+        guard pauseCaptureBatteryPct > 0 else { return true }
+        let (pct, charging) = batteryPctAndCharging()
+        return !BLEManager.lowPowerThrottleActive(batteryPct: pct, charging: charging,
+                                                  thresholdPct: pauseCaptureBatteryPct)
+    }
+
     /// #927: the continuous-capture side of the realtime want, window-gated. True while the "Continuous
     /// HRV capture" preference wants the stream held open AND, when "overnight only" is on, the local
     /// wall clock sits inside the nightly window (the reused quiet-hours window, 22:00 → 07:00 by
@@ -2808,18 +2855,7 @@ public final class BLEManager: NSObject, ObservableObject {
     /// never arm the flood from a stale value. Mirrors the Android `continuousCaptureWantsNow` (which has
     /// no daytime lane — see `PuffinExperiment.continuousHrvDaytimeUnlockedKey` for why).
     private func continuousCaptureWantsNow(now: Date = Date()) -> Bool {
-        guard keepRealtimeForData else { return false }
-        // #477: while the STRAP's battery is low (≤ threshold, discharging), release the held-open
-        // background stream — via the shared lowPowerThrottleActive gate. A Live screen still arms it via
-        // screenWantsRealtime (checked separately in reconcileRealtime). The keep-alive re-derives this,
-        // so it re-arms automatically once the strap is charged.
-        if pauseCaptureBatteryPct > 0 {
-            let (pct, charging) = batteryPctAndCharging()
-            if BLEManager.lowPowerThrottleActive(batteryPct: pct, charging: charging,
-                                                 thresholdPct: pauseCaptureBatteryPct) {
-                return false
-            }
-        }
+        guard heavyStreamAllowedByPower() else { return false }
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         let d = UserDefaults.standard
@@ -2864,12 +2900,36 @@ public final class BLEManager: NSObject, ObservableObject {
     /// framing); otherwise the want is remembered and the post-bond branch arms it. Mirrors the Android
     /// `reconcileRealtime`.
     private func reconcileRealtime() {
-        let want = screenWantsRealtime || continuousCaptureWantsNow()
+        // The CHEAP TOGGLE: wanted by a Live screen, or simply by continuous capture being on. No time
+        // window, no lock gate — this is the stream that keeps the Dynamic Island's number alive around
+        // the clock, and it is not the one that costs battery.
+        let want = screenWantsRealtime || continuousCheapStreamWantsNow()
         wantsRealtime = want   // keep-alive + post-bond arm-on-connect read this derived value
-        guard want != realtimeArmed else { return }                      // no edge — nothing to send
-        guard selectedModel.deviceFamily == .whoop4 || state.bonded else { return }   // can't reach the strap yet
-        realtimeArmed = want
-        send(.toggleRealtimeHR, payload: [want ? 0x01 : 0x00])
+        if want != realtimeArmed,
+           selectedModel.deviceFamily == .whoop4 || state.bonded {   // can't reach the strap yet
+            realtimeArmed = want
+            send(.toggleRealtimeHR, payload: [want ? 0x01 : 0x00])
+        }
+        reconcileHeavyStream()
+    }
+
+    /// Reconcile the EXPENSIVE R10/R11 burst, independently of the cheap TOGGLE above. Armed while a Live
+    /// screen is up (the user is watching, and `startRealtime` arms it directly for that case) or while
+    /// the continuous-capture SCHEDULE wants it — the nightly window, plus the iOS daytime-while-unlocked
+    /// lane. Edge-triggered like the toggle, so a no-change reconcile sends nothing.
+    ///
+    /// Split out from `reconcileRealtime` so the two commands can disagree, which is the entire point:
+    /// during a locked afternoon the toggle stays ARMED (Dynamic Island keeps its number) while this one
+    /// is DISARMED (the drain stops). Before the split a single want drove both, so turning off the
+    /// expensive stream also blanked the live HR.
+    private func reconcileHeavyStream() {
+        // #80: once the marginal-radio detector has tripped, never re-arm the burst — that is exactly
+        // what was killing the link. Live HR rides the cheap 0x2A37 profile instead.
+        let want = !standardHRFallback && (screenWantsRealtime || continuousCaptureWantsNow())
+        guard want != heavyStreamArmed else { return }
+        guard selectedModel.deviceFamily == .whoop4 || state.bonded else { return }
+        heavyStreamArmed = want
+        send(.sendR10R11Realtime, payload: [want ? 0x01 : 0x00])
     }
 
     /// EXPERIMENTAL R22 telemetry (#174): give the user (and us) live proof of what the strap is doing.
@@ -4100,18 +4160,15 @@ public final class BLEManager: NSObject, ObservableObject {
         // the WHOOP4-only guard below so a 5/MG stream also disarms/re-arms on the window edges (send()
         // routes the 5/MG toggle and drops the WHOOP4-framed R10/R11 stop for it).
         let captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
-        if wantsRealtime != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
+        if heavyStreamArmed != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
             // The edge can now come from EITHER schedule gate — the nightly window, or the iOS
             // "daytime while unlocked" lane — so name whichever one actually opened/closed it rather
             // than always blaming the window (a lock-driven edge logged as "window closed" would send
             // anyone reading a strap log after the wrong bug).
             let reason = captureScheduleReason()
-            if captureWantNow {
-                log("Continuous HRV: \(reason) — arming the realtime stream (#927)")
-            } else {
-                send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
-                log("Continuous HRV: \(reason) — realtime stream disarmed (#927)")
-            }
+            // Heavy stream only — the cheap TOGGLE is untouched by these edges, so live HR (and the
+            // Dynamic Island) survives a window close. `reconcileHeavyStream` below sends the command.
+            log("Continuous HRV: \(reason) — \(captureWantNow ? "arming" : "disarming") the dense R-R stream (#927; live HR unaffected)")
         }
         reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
         // The command pings below are WHOOP4-framed; a 5/MG link drops them at the send() guard, so
@@ -4120,11 +4177,17 @@ public final class BLEManager: NSObject, ObservableObject {
         guard selectedModel.deviceFamily == .whoop4 else { return }
         // Never re-arm the heavy R10/R11 burst once the marginal-radio fallback has tripped (#80) — that
         // would just re-trigger the drop the keep-alive is meant to prevent. 0x2A37 keeps the HR flowing.
-        if wantsRealtime && !standardHRFallback {
+        // Re-arm so the streams can't lapse. The two are re-sent independently now: the cheap toggle
+        // whenever it's wanted, the heavy burst only when the SCHEDULE also wants it — so a locked
+        // afternoon re-arms live HR every tick without ever re-arming the drain.
+        if wantsRealtime {
             realtimeArmed = true   // keep reconcileRealtime()'s edge tracking in sync with the re-arm
-            send(.sendR10R11Realtime, payload: [0x01])
             send(.toggleRealtimeHR, payload: [0x01])
-        }   // re-arm so it can't lapse
+        }
+        if !standardHRFallback, screenWantsRealtime || continuousCaptureWantsNow() {
+            heavyStreamArmed = true
+            send(.sendR10R11Realtime, payload: [0x01])
+        }
         keepAliveTick += 1
         // #battery: ~60 s normally, ~30 s while charging (see `batteryPollDue`).
         if BLEManager.batteryPollDue(tick: keepAliveTick, charging: state.charging == true) {
@@ -5075,6 +5138,9 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // `keepRealtimeForData` (and thus `wantsRealtime`) are intent and must survive a reconnect so the
         // stream comes back automatically.
         realtimeArmed = false
+        // Same reasoning for the heavy burst's tracker: the strap forgets it across a disconnect, so a
+        // stale `true` here would make `reconcileHeavyStream()` see no edge and never re-send the arm.
+        heavyStreamArmed = false
         whoop5SessionStarted = false
         clockRequested = false
         clockRetries = 0
@@ -5538,14 +5604,18 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             // #927: RE-DERIVE the want at arm time, never the precomputed `wantsRealtime`: that value can
             // be up to a keep-alive tick (30 s) stale, and a reconnect just OUTSIDE the overnight window
             // would re-arm the flood from it and stay armed until the next tick.
-            let realtimeWantNow = screenWantsRealtime || continuousCaptureWantsNow()
-            wantsRealtime = realtimeWantNow
-            if realtimeWantNow && !whoop5RealtimeArmed {
+            // The CHEAP toggle follows the unconditional want (continuous capture on, or a Live screen)
+            // so a 5/MG that reconnects at noon with the phone locked still streams live HR.
+            let cheapWantNow = screenWantsRealtime || continuousCheapStreamWantsNow()
+            wantsRealtime = cheapWantNow
+            if cheapWantNow && !whoop5RealtimeArmed {
                 whoop5RealtimeArmed = true
                 realtimeArmed = true   // keep reconcileRealtime()'s edge tracking in sync with the arm
                 log("WHOOP 5/MG: arming realtime HR (puffin TOGGLE_REALTIME_HR)")
                 send(.toggleRealtimeHR, payload: [0x01])
             }
+            // The HEAVY burst is separately schedule-gated, re-derived here for the same #927 reason.
+            reconcileHeavyStream()
             startKeepAlive()                                    // re-subscribe + liveness watchdog
             // Kick the historical offload ONCE per connection — this is the 5/MG edition of the WHOOP4
             // connect-handshake (lines below). didWriteValueFor re-enters this `.whoop5` branch on EVERY
@@ -5649,7 +5719,7 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         // #927: RE-DERIVE the want at arm time (same reasoning as the 5/MG branch above): a reconnect
         // outside the overnight window must not arm the flood from a stale precomputed `wantsRealtime`
         // (up to a keep-alive tick stale); the keep-alive would then hold it armed for another 30 s.
-        let realtimeWantNow = screenWantsRealtime || continuousCaptureWantsNow()
+        let realtimeWantNow = screenWantsRealtime || continuousCheapStreamWantsNow()
         wantsRealtime = realtimeWantNow
         if realtimeWantNow {
             if standardHRFallback {
@@ -5663,11 +5733,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
             } else {
                 log("Realtime HR: arming after bond")
                 realtimeArmed = true   // keep reconcileRealtime()'s edge tracking in sync with the arm
-                send(.sendR10R11Realtime, payload: [0x01])
                 send(.toggleRealtimeHR, payload: [0x01])
                 realtimeArmedAt = Date()   // start the arm→drop stopwatch for the marginal-radio detector
             }
         }
+        // The heavy burst is armed only if the SCHEDULE wants it too (the [0x00] stop above already left
+        // it off), so a connect during a locked afternoon brings up live HR without the drain.
+        reconcileHeavyStream()
         // #34: the handshake body above (hello, SET_CLOCK, notify-resubscribe requests) has now been
         // fully ISSUED — check whether the cmd-notify characteristic has also CONFIRMED (the other half
         // may already have landed, e.g. from the discovery-phase subscribe, or may still be in flight and

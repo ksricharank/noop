@@ -1680,7 +1680,7 @@ struct SettingsView: View {
                     .onChangeCompat(of: continuousHrvOvernightOnly) { _ in
                         model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
                     }
-                    Text("Runs the continuous HRV stream only during your quiet hours window (22:00–07:00 by default), roughly halving the battery cost. Daytime Stress readings will be sparser. Note: continuous background HRV capture (including daytime naps) is paused outside this window. For on-demand daytime HRV readings (including naps), use the \"Take an HRV reading\" button on the Live screen.")
+                    Text("Runs the detailed beat-to-beat stream only during your quiet hours window (22:00–07:00 by default), roughly halving the battery cost. Live heart rate keeps streaming around the clock; it is the denser HRV capture that pauses, so daytime Stress readings will be sparser. For on-demand daytime HRV readings (including naps), use the \"Take an HRV reading\" button on the Live screen.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1700,7 +1700,7 @@ struct SettingsView: View {
                         .onChangeCompat(of: continuousHrvDaytimeUnlocked) { _ in
                             model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
                         }
-                        Text("Outside your overnight window, capture heart rate only while your iPhone is unlocked — so the Dynamic Island and Lock Screen show a live heart rate whenever you pick your phone up, and nothing streams while it is locked in your pocket. Costs much less battery than all-day capture. Your overnight window is unaffected: it keeps recording whether the phone is locked or not.")
+                        Text("Outside your overnight window, run the detailed beat-to-beat stream only while your iPhone is unlocked, instead of all day. Your live heart rate keeps updating either way — the Dynamic Island and Lock Screen stay live even with the phone locked in your pocket; it is the denser HRV capture that pauses. Your overnight window is unaffected: it records in full whether the phone is locked or not.")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)

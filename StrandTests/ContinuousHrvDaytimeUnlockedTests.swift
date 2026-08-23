@@ -2,12 +2,17 @@ import XCTest
 @testable import Strand
 
 /// Pins the conditional daytime lane of Continuous HRV capture: outside the nightly #927 window, hold
-/// the dense realtime stream open ONLY while the phone is unlocked.
+/// the EXPENSIVE R10/R11 stream open only while the phone is unlocked.
 ///
-/// The point of the feature is a live heart rate in the Dynamic Island whenever the user picks the phone
-/// up, WITHOUT the all-day drain of the pre-#927 ALWAYS mode. So the two properties worth pinning are
-/// symmetric and both are here: outside the window the lock state decides, and inside the window it
-/// decides nothing (a phone locked on the nightstand must still bank the night).
+/// SCOPE — this predicate governs the heavy stream ONLY. Live capture splits across two independently
+/// armed commands, and the split is the whole design: the cheap TOGGLE_REALTIME_HR (HR + R-R at ~1 Hz
+/// over 0x2A37) stays armed continuously so the Dynamic Island always has a number, while
+/// SEND_R10R11_REALTIME — the battery-hungry one — is what this schedule gates. An earlier version drove
+/// both from this one want, so disarming the drain also blanked the live HR; these tests exist partly to
+/// stop that coupling coming back.
+///
+/// So the two properties worth pinning are symmetric: outside the window the lock state decides, and
+/// inside the window it decides nothing (a phone locked on the nightstand must still bank the night).
 ///
 /// Pure predicate, no seams — `deviceUnlocked` is passed in exactly as `BLEManager.deviceUnlockedNow()`
 /// resolves it at each arm site (iOS Data Protection; always false on macOS, where the lane is inert).
@@ -31,8 +36,9 @@ final class ContinuousHrvDaytimeUnlockedTests: XCTestCase {
 
     // MARK: The lane itself
 
-    /// The headline behaviour: daytime + lane on ⇒ armed while unlocked, silent while locked. This is
-    /// the whole battery argument — a pocketed, locked phone streams nothing.
+    /// The headline behaviour: daytime + lane on ⇒ the heavy stream is armed while unlocked and silent
+    /// while locked. This is the whole battery argument. (The cheap toggle keeps running throughout —
+    /// it is not governed by this predicate at all, so a locked phone still shows live HR.)
     func testDaytimeLaneFollowsLockState() {
         XCTAssertTrue(wanted(minute: noon, daytimeLane: true, unlocked: true))
         XCTAssertFalse(wanted(minute: noon, daytimeLane: true, unlocked: false))
