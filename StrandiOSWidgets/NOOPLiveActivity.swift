@@ -62,7 +62,33 @@ struct NOOPLiveActivity: Widget {
             } compactTrailing: {
                 Text(hrText(context.state))
             } minimal: {
-                Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
+                // — it is the only presentation the user sees then, so it has to carry the number. A bare
+                // heart icon here (the pre-fix content) told the user nothing they didn't already know:
+                // that NOOP was running. The heart rate IS the point of this activity.
+                //
+                // Only ONE of icon-or-number fits: the slot is a ~24pt circle. Stacking both drops the
+                // digits to roughly 7pt, which is unreadable at a glance and so defeats the fix. So the
+                // number wins outright and the red tint (the same statusCritical the rest of the widget
+                // uses) is what keeps it identifiable as ours next to another app's activity.
+                //
+                // With no reading, fall back to the heart rather than rendering a dash: an en-dash alone
+                // in the slot reads as a broken widget, while the heart honestly says "NOOP is here, no
+                // number yet". DEFENSIVE — `LiveActivityController.update` guards `bpm != nil` before it
+                // ever starts or pushes a state, so a nil should not reach here; it stays because the
+                // ContentState field is optional and a stale activity re-adopted across an app relaunch
+                // decodes whatever a previous build wrote.
+                if let bpm = context.state.bpm {
+                    Text("\(bpm)")
+                        .foregroundStyle(StrandPalette.statusCritical)
+                        // The slot clips rather than shrinks, so a 3-digit HR (a hard workout) would lose
+                        // a digit at the default size. Allow one step of shrink and pin to one line so
+                        // "142" stays "142" instead of silently becoming "14".
+                        .minimumScaleFactor(0.8)
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                }
             }
         }
     }
