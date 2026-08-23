@@ -219,6 +219,13 @@ struct RootTabView: View {
                 // (InsightsView), matching the FAB's "Log journal" action. Calm sheet easing.
                 withAnimation(Self.sheetEase) { quickAction = .journal }
                 router.requestedDestination = nil
+            case .coach:
+                // Coach has no tab of its own — it is a More row. Switch to More and PUSH the coach
+                // destination onto that tab's stack, so the user lands in the chat itself rather than on
+                // the More menu, and the system back button returns them the way they came.
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
+                tabPaths[3] = NavigationPath([MoreDestination.coach])
+                router.requestedDestination = nil
             case nil:
                 break
             }
