@@ -35,6 +35,13 @@ enum RescoreBackgroundPolicy {
         /// next foreground) run it. The reason is logged verbatim to the strap log — #1538 was three
         /// nights of chasing BLE precisely because the log did not say why scoring had not happened.
         case deferToBackgroundTask(reason: String)
+        /// Do not start it and do NOT hand it to a background task either; leave the work marked pending
+        /// for the unlock/foreground settle. Locked-phone deferrals get their own case because escalating
+        /// them to a `BGProcessingTask` would undo the point: iOS favours idle for processing tasks, and
+        /// "idle" on a phone worn to bed is 3 a.m. — the pass would run mid-night after all, just under a
+        /// different trigger (13 of the 22 passes in the overnight log that motivated this arrived exactly
+        /// that way). The reason is logged verbatim, same as the case above.
+        case deferToUnlock(reason: String)
     }
 
     /// How long a backgrounded pass rests per second of work it just did.
@@ -65,6 +72,16 @@ enum RescoreBackgroundPolicy {
     ///   - isRealUpdate: the trigger carries new data that must be scored (an offload), as opposed to the
     ///     steady-state backstop tick. A backgrounded backstop does not run: a paced pass costs minutes,
     ///     the tick cannot tell live HR from a real change, and every real update already runs its own.
+    ///   - deviceLocked: whether the phone is locked (protected data unavailable — the keybag tracks the
+    ///     passcode lock, near-instantly on current hardware). A locked phone is where the overnight
+    ///     re-score storm lives: the strap banks all night, every ~10-minute offload lands new data, and
+    ///     each landing triggers a full pass that nobody can see the result of — 22 passes and ~15 minutes
+    ///     of heavy CPU in the motivating night's log, most of it prep reads contending with the very
+    ///     offloads that triggered them. Locked ⇒ defer to the unlock settle, whatever the measured cost:
+    ///     the first unlock (or foreground) runs ONE coalesced pass over everything the night banked,
+    ///     which is also when the user can first see the score. Checked before the owed/measured rules so
+    ///     a locked deferral never schedules a background task (see `Decision.deferToUnlock`). Always
+    ///     false on macOS, which preserves that platform's behaviour exactly.
     ///   - rescoreAlreadyOwed: a re-score is outstanding — either a pass marked itself started and never
     ///     marked itself finished (it was killed; the mark survives process death, which is the point,
     ///     because the killed process gets no chance to record anything) or an earlier trigger already
@@ -74,10 +91,18 @@ enum RescoreBackgroundPolicy {
     ///     lands mid-run. Deferring instead recorded a newer debt, the running pass then finished without
     ///     settling it (#1681), and every offload after that deferred on it.
     static func decide(isBackground: Bool,
+                       deviceLocked: Bool,
                        isRealUpdate: Bool = true,
                        rescoreAlreadyOwed: Bool,
                        passInProgress: Bool = false) -> Decision {
         guard isBackground else { return .run }
+
+        // Before the owed/measured rules on purpose: a locked-phone deferral must resolve to the unlock
+        // settle, never to a background task — falling through to the owed rule would schedule one.
+        if deviceLocked {
+            return .deferToUnlock(
+                reason: "the phone is locked — the pass settles once at unlock (or next foreground)")
+        }
 
         guard isRealUpdate else {
             return .deferToBackgroundTask(
