@@ -240,6 +240,40 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
         let latest = RescoreBackgroundScheduler.markRescoreOwed()
         XCTAssertTrue(RescoreBackgroundScheduler.markRescoreCompleted(seconds: 1, owedToken: latest))
+
+    // MARK: - The locked phone
+
+    /// The overnight storm: a pass the measured rule would wave through (fast last pass) must not start
+    /// while the phone is locked — the debt is recorded for the unlock settle instead. The log line names
+    /// unlock, not a background task, because none is scheduled for a locked deferral.
+    func testALockedDeferralMarksTheDebtForUnlock() async {
+        RescoreBackgroundScheduler.markRescoreCompleted(seconds: 3)   // fast: would run if unlocked
+        XCTAssertFalse(RescoreBackgroundScheduler.isRescoreOwed)
+
+        var ran = false
+        var logged: [String] = []
+        await RescoreBackgroundScheduler.run(isBackground: true, deviceLocked: true,
+                                             log: { logged.append($0) }) { ran = true }
+
+        XCTAssertFalse(ran, "a locked phone must not pay for a pass nobody can see")
+        XCTAssertTrue(RescoreBackgroundScheduler.isRescoreOwed,
+                      "the deferred work must be recorded, or the unlock settle finds nothing")
+        XCTAssertEqual(logged.count, 1)
+        XCTAssertTrue(logged[0].contains("unlock"), logged[0])
+    }
+
+    /// The locked backstop owes nothing, same contract as the backgrounded backstop: every real update
+    /// records its own debt, so the tick skipping quietly must not conjure a forced pass for the morning.
+    func testALockedBackstopSkipsWithoutOwing() async {
+        var ran = false
+        var logged: [String] = []
+        await RescoreBackgroundScheduler.run(isBackground: true, deviceLocked: true, owesOnDefer: false,
+                                             log: { logged.append($0) }) { ran = true }
+
+        XCTAssertFalse(ran)
+        XCTAssertFalse(RescoreBackgroundScheduler.isRescoreOwed)
+        XCTAssertEqual(logged.count, 1)
+        XCTAssertTrue(logged[0].contains("skipped"), logged[0])
     }
 }
 

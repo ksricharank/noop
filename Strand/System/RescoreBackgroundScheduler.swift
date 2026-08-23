@@ -121,6 +121,17 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
+    /// Whether the phone is locked, read as protected-data (keybag) availability — the same signal the
+    /// Live Activity's lock-aware cadence reads, near-instant in both directions on current hardware.
+    /// Always false on macOS: no keybag lock, and the policy's locked rule must never fire there.
+    static var isDeviceLocked: Bool {
+        #if os(iOS)
+        return !UIApplication.shared.isProtectedDataAvailable
+        #else
+        return false
+        #endif
+    }
+
     /// Decide, then either run `work` under an execution assertion or leave it for `BGProcessingTask`.
     ///
     /// `log` goes to the strap log, always — both the decision and its reason. #1538 cost three nights
@@ -137,11 +148,13 @@ enum RescoreBackgroundScheduler {
     ///   which is the churn #1146 exists to avoid. A debt an earlier real pass already recorded is
     ///   untouched either way.
     static func run(isBackground: Bool? = nil,
+                    deviceLocked: Bool? = nil,
                     owesOnDefer: Bool = true,
                     log: @escaping (String) -> Void,
                     work: () async -> Void) async {
         let decision = RescoreBackgroundPolicy.decide(
             isBackground: isBackground ?? isBackgrounded,
+            deviceLocked: deviceLocked ?? isDeviceLocked,
             rescoreAlreadyOwed: isRescoreOwed,
             lastCompletedPassSeconds: lastCompletedPassSeconds)
 
@@ -160,6 +173,19 @@ enum RescoreBackgroundScheduler {
             markRescoreOwed()
             log("re-score: deferred to a background task — \(reason)")
             schedule()
+        case .deferToUnlock(let reason):
+            guard owesOnDefer else {
+                log("re-score: backstop tick skipped while the phone is locked — \(reason)")
+                return
+            }
+            // Same debt bookkeeping as the case above, but deliberately NO `schedule()`: a processing
+            // task favours idle, and idle on a phone worn to bed is mid-night — it would run the pass at
+            // 3 a.m. after all. The debt is settled by the protected-data-became-available observer
+            // (StrandiOSApp), the next foreground entry, or — if a task request from an earlier
+            // background deferral is already pending — that task; all three call the same
+            // `runDeferredRescoreIfOwed`, and repeated deferrals only re-set the same mark.
+            markRescoreOwed()
+            log("re-score: deferred to unlock — \(reason)")
         case .run:
             await withAssertion(log: log, work: work)
         }
