@@ -149,6 +149,14 @@ struct SettingsView: View {
     /// false and get the 24/7 behaviour they were trying to avoid.
     @AppStorage(PuffinExperiment.continuousHrvOvernightOnlyKey) private var continuousHrvOvernightOnly = true
 
+    /// iOS-only "Daytime while unlocked" sub-option of Overnight only (off by default): outside the
+    /// nightly window, hold the stream open ONLY while the phone is unlocked, so the Dynamic Island /
+    /// Lock Screen live HR works whenever the user is actually looking at the phone without paying for
+    /// the 24/7 stream. Default false matches `PuffinExperiment.continuousHrvDaytimeUnlockedEnabled`
+    /// (plain `bool(forKey:)`, false-for-missing) — the #1008 mismatch trap noted above does not arise
+    /// here because unset and off genuinely mean the same thing for this key.
+    @AppStorage(PuffinExperiment.continuousHrvDaytimeUnlockedKey) private var continuousHrvDaytimeUnlocked = false
+
     // #477 Power saving moved OUT of this screen into `PowerSavingView` — a first-class More row on
     // iPhone (between Test Centre and Settings) and its own sidebar item on macOS. Its `@AppStorage`
     // keys live there now; nothing here reads them.
@@ -1676,6 +1684,28 @@ struct SettingsView: View {
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    // Conditional daytime capture: re-open the stream outside the nightly window, but
+                    // only while the phone is unlocked. iOS-only — the gate is iOS Data Protection and
+                    // the surface it feeds is the Dynamic Island; macOS has neither.
+                    #if os(iOS)
+                    if continuousHrvOvernightOnly {
+                        Toggle(isOn: $continuousHrvDaytimeUnlocked) {
+                            Text("Daytime while unlocked")
+                                .font(StrandFont.subhead)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                        }
+                        .toggleStyle(.switch)
+                        .tint(StrandPalette.accent)
+                        .onChangeCompat(of: continuousHrvDaytimeUnlocked) { _ in
+                            model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
+                        }
+                        Text("Outside your overnight window, capture heart rate only while your iPhone is unlocked — so the Dynamic Island and Lock Screen show a live heart rate whenever you pick your phone up, and nothing streams while it is locked in your pocket. Costs much less battery than all-day capture. Your overnight window is unaffected: it keeps recording whether the phone is locked or not.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    #endif
                 }
 
                 // HRV window (#141) — Whole night (NOOP's long-standing value) or DEEP sleep only

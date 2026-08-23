@@ -182,6 +182,27 @@ enum PuffinExperiment {
         !hasOvernightChoice && hasUsedContinuousHrv
     }
 
+    /// Opt-in "Daytime while unlocked" — a sub-option of Overnight only, iOS ONLY (see below). Outside
+    /// the nightly window, re-open the dense realtime stream *only while the phone is unlocked*, so the
+    /// Dynamic Island / Lock Screen Live Activity has a live heart rate whenever the user is actually
+    /// looking at the phone, without paying for the 24/7 stream that drains the strap.
+    ///
+    /// Default OFF: it is strictly additive capture on top of Overnight only, and the #1008 rationale
+    /// (the cheap, WHOOP-comparable behaviour is the default; the expensive one is a deliberate choice)
+    /// applies to this lane too. `bool(forKey:)`'s false-for-missing is therefore exactly right here —
+    /// unlike the overnight key, unset and off mean the same thing, so no migration is needed.
+    ///
+    /// iOS-only, deliberately: the unlock signal is iOS Data Protection, and macOS has neither that
+    /// notion nor a Dynamic Island to feed. The key is read on both platforms (the schedule predicate is
+    /// shared), but `BLEManager.deviceUnlockedNow` returns false on macOS, so the lane is inert there and
+    /// the Settings toggle is not offered. No Android twin for the same reason — Android has no Live
+    /// Activity surface; if one is ever added, mirror this as `NoopPrefs.KEY_CONTINUOUS_HRV_DAYTIME_UNLOCKED`.
+    static let continuousHrvDaytimeUnlockedKey = "noopContinuousHrvDaytimeUnlocked"
+
+    static var continuousHrvDaytimeUnlockedEnabled: Bool {
+        UserDefaults.standard.bool(forKey: continuousHrvDaytimeUnlockedKey)
+    }
+
     // MARK: - Power saving (#477), parity with Android NoopPrefs
 
     /// "Power saving" master: battery-adaptive strap-sync cadence. Default off. */

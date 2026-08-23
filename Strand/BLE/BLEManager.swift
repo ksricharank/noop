@@ -420,10 +420,23 @@ struct BackfillContinuation {
 /// the window may cross midnight (22:00 → 07:00 by default). Local wall time keeps it DST-agnostic the
 /// same way quiet hours are: a DST jump moves the wall clock, the window definition never changes.
 ///
-/// The MODE is composed from the two persisted booleans so existing users need no migration:
+/// The MODE is composed from the persisted booleans so existing users need no migration:
 ///   continuous OFF                → stream never held open (unchanged)
 ///   continuous ON, overnight OFF  → ALWAYS: armed 24/7 (the pre-#927 behaviour; overnight defaults off)
 ///   continuous ON, overnight ON   → OVERNIGHT: armed only inside the window
+///   …plus overnight ON + daytime-while-unlocked ON → OVERNIGHT + a conditional daytime lane (below)
+///
+/// DAYTIME WHILE UNLOCKED (iOS only). Overnight-only leaves the whole day dark, which also blanks the
+/// live HR the Dynamic Island / Lock Screen Live Activity shows. This sub-option re-opens the stream
+/// OUTSIDE the nightly window, but ONLY while the phone is unlocked — i.e. only while the user is
+/// actually able to look at that readout. A pocketed, locked phone streams nothing, so the drain the
+/// 24/7 ALWAYS mode caused does not come back.
+///
+/// The unlock signal is iOS Data Protection (`UIApplication.isProtectedDataAvailable` + its
+/// did-become-available / will-become-unavailable notifications), NOT app foreground: the Live Activity's
+/// entire purpose is to be visible while NOOP is backgrounded, so gating on foreground would defeat the
+/// feature it exists to serve. macOS has no such lock notion and no Dynamic Island, so `deviceUnlocked`
+/// is passed `false` there and this lane is inert — see `BLEManager.deviceUnlockedNow`.
 ///
 /// Pure + value-typed so the predicate is unit-testable (ContinuousHrvScheduleTests). BLEManager
 /// RE-DERIVES it at every arm site (reconcile / keep-alive tick / post-bond arm) instead of caching it,
@@ -447,11 +460,22 @@ struct ContinuousHrvSchedule {
     /// The composed want: should the continuous-capture stream be held open at local wall-clock minute
     /// `minuteOfDay`? False when the feature is off; true 24/7 in ALWAYS mode (overnightOnly false, the
     /// pre-#927 behaviour every existing user reads with no migration); window-gated in OVERNIGHT mode.
+    ///
+    /// `daytimeWhileUnlocked` adds the conditional daytime lane on top of OVERNIGHT mode: outside the
+    /// nightly window the stream is wanted only while `deviceUnlocked`. Deliberately layered so the two
+    /// gates cannot fight — INSIDE the window the overnight answer stands whatever the lock state is, so
+    /// a locked phone on the nightstand still banks the night this feature exists to capture. The flag is
+    /// meaningless without `overnightOnly` (ALWAYS mode already streams all day) and is ignored there
+    /// rather than narrowing what an ALWAYS user opted into.
     static func streamWanted(continuousHrv: Bool, overnightOnly: Bool,
-                             minuteOfDay: Int, startMin: Int, endMin: Int) -> Bool {
+                             minuteOfDay: Int, startMin: Int, endMin: Int,
+                             daytimeWhileUnlocked: Bool = false,
+                             deviceUnlocked: Bool = false) -> Bool {
         guard continuousHrv else { return false }
         guard overnightOnly else { return true }
-        return windowContains(minuteOfDay, startMin: startMin, endMin: endMin)
+        if windowContains(minuteOfDay, startMin: startMin, endMin: endMin) { return true }
+        // Outside the window: the conditional daytime lane, unlocked-gated.
+        return daytimeWhileUnlocked && deviceUnlocked
     }
 }
 
@@ -1056,6 +1080,9 @@ public final class BLEManager: NSObject, ObservableObject {
     private var bondLoopPausedAt: Date?
     /// NotificationCenter token for the app-foreground salvage probe (installForegroundSalvageProbe).
     private var foregroundSalvageObserver: NSObjectProtocol?
+    /// NotificationCenter tokens for the iOS Data-Protection lock/unlock edges that drive the "daytime
+    /// while unlocked" continuous-capture lane (installDeviceUnlockObserver). Empty on macOS.
+    private var deviceUnlockObservers: [NSObjectProtocol] = []
     /// Multi-WHOOP stale-pin recovery (#52). Consecutive "Encryption/Authentication is insufficient" bond
     /// refusals on the CURRENTLY PINNED peripheral. A stale registry pin (pointing at a strap that bonds to
     /// the official app / isn't really here) makes `connect()` drop the strap that DOES bond and loop
@@ -1142,6 +1169,8 @@ public final class BLEManager: NSObject, ObservableObject {
         router.onSyncTrigger = { [weak self] in self?.requestSync(.strap) }
         // #78 hole-4: a paused-for-bond-loop strap gets one bounded salvage attempt per app-foreground.
         installForegroundSalvageProbe()
+        // Conditional daytime HRV capture: reconcile the realtime want on every lock/unlock edge.
+        installDeviceUnlockObserver()
     }
 
     /// Build the WhoopStore + Collector + Backfiller asynchronously. Safe to call multiple
@@ -1583,6 +1612,74 @@ public final class BLEManager: NSObject, ObservableObject {
             Task { @MainActor in self?.salvageProbeIfBondLoopPaused() }
         }
         #endif
+    }
+
+    /// Is the phone unlocked right now? iOS Data Protection is the signal — `isProtectedDataAvailable`
+    /// is true exactly while the user has unlocked the device since boot AND it is not currently locked,
+    /// which is the "the user could be looking at the Dynamic Island" condition the daytime lane wants.
+    ///
+    /// Deliberately NOT app-foreground: the Live Activity exists to be visible while NOOP is in the
+    /// background, so a foreground gate would only stream while the user was staring at NOOP itself —
+    /// the one moment they do not need the Dynamic Island. macOS has no equivalent lock notion and no
+    /// Dynamic Island, so it answers false and the lane is inert there.
+    ///
+    /// One caveat this cannot paper over: Data Protection reports the LOCK, not the screen. A phone
+    /// unlocked and set face-down keeps the lane armed until it auto-locks. That is a deliberate
+    /// over-approximation — the alternative (screen-on/off) is not observable to a third-party app —
+    /// and the auto-lock timeout bounds it.
+    private func deviceUnlockedNow() -> Bool {
+        #if os(iOS)
+        return UIApplication.shared.isProtectedDataAvailable
+        #else
+        return false
+        #endif
+    }
+
+    /// Observe the Data-Protection lock/unlock edges so the daytime lane arms the moment the user picks
+    /// the phone up and disarms the moment it locks. Without this the lane would only be re-derived at
+    /// the next keep-alive tick (up to 30 s late in both directions) — a Dynamic Island that takes half a
+    /// minute to show a heart rate, and half a minute of streaming into a pocketed phone.
+    ///
+    /// `reconcileRealtime` is edge-triggered on the derived want, so a notification that does not change
+    /// the answer (locking while INSIDE the overnight window, or with the lane off) sends nothing to the
+    /// strap. Installed unconditionally on iOS rather than being wired up and torn down with the
+    /// preference: the reconciler re-reads the preference itself, so an inert lane costs two no-op
+    /// callbacks per lock cycle and there is no toggle-time subscription state to get wrong.
+    private func installDeviceUnlockObserver() {
+        #if os(iOS)
+        for name in [UIApplication.protectedDataDidBecomeAvailableNotification,
+                     UIApplication.protectedDataWillBecomeUnavailableNotification] {
+            let token = NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.applyLockStateToCapture() }
+            }
+            deviceUnlockObservers.append(token)
+        }
+        #endif
+    }
+
+    /// Re-derive the continuous-capture want after a lock/unlock edge and apply it with the SAME shape
+    /// the keep-alive's window-edge branch uses — not a bare `reconcileRealtime()`.
+    ///
+    /// The distinction matters and is easy to get wrong: `reconcileRealtime` only ever sends the
+    /// TOGGLE. The heavy R10/R11 burst is stopped separately, and on the background-capture path the
+    /// only site that stops it is the keep-alive's window-edge branch. So a lock edge routed straight to
+    /// the reconciler would disarm the TOGGLE but leave the burst streaming for up to a keep-alive tick
+    /// (30 s) into a locked, pocketed phone — a battery leak in precisely the feature added to stop one.
+    ///
+    /// Guarded to the BACKGROUND capture lane (`keepRealtimeForData && !screenWantsRealtime`): a Live
+    /// screen holds the stream on its own terms and must not be disturbed by the lock state, and with
+    /// continuous capture off there is nothing here to reconcile.
+    private func applyLockStateToCapture() {
+        guard keepRealtimeForData, !screenWantsRealtime else { return }
+        let want = continuousCaptureWantsNow()
+        guard want != wantsRealtime else { return }   // no edge — the lock didn't change the answer
+        if !want {
+            send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
+        }
+        log("Continuous HRV: \(captureScheduleReason()) — \(want ? "arming" : "disarming") the realtime stream")
+        reconcileRealtime()   // sends the TOGGLE on the edge
     }
 
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
@@ -2705,9 +2802,11 @@ public final class BLEManager: NSObject, ObservableObject {
     /// #927: the continuous-capture side of the realtime want, window-gated. True while the "Continuous
     /// HRV capture" preference wants the stream held open AND, when "overnight only" is on, the local
     /// wall clock sits inside the nightly window (the reused quiet-hours window, 22:00 → 07:00 by
-    /// default). RE-DERIVED at every arm site (reconcile / keep-alive tick / post-bond arm) instead of
-    /// precomputed, so a reconnect outside the window can never arm the flood from a stale value.
-    /// Mirrors the Android `continuousCaptureWantsNow`.
+    /// default) — or, when the iOS-only "daytime while unlocked" sub-option is on, the clock is outside
+    /// that window but the phone is UNLOCKED. RE-DERIVED at every arm site (reconcile / keep-alive tick /
+    /// post-bond arm / lock-state change) instead of precomputed, so a reconnect outside the window can
+    /// never arm the flood from a stale value. Mirrors the Android `continuousCaptureWantsNow` (which has
+    /// no daytime lane — see `PuffinExperiment.continuousHrvDaytimeUnlockedKey` for why).
     private func continuousCaptureWantsNow(now: Date = Date()) -> Bool {
         guard keepRealtimeForData else { return false }
         // #477: while the STRAP's battery is low (≤ threshold, discharging), release the held-open
@@ -2729,7 +2828,30 @@ public final class BLEManager: NSObject, ObservableObject {
             overnightOnly: PuffinExperiment.continuousHrvOvernightOnlyEnabled,
             minuteOfDay: minuteOfDay,
             startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
+            endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes,
+            // The conditional daytime lane. Both inputs are read HERE, at the arm site, for the same
+            // reason the window is: lock state changes far more often than a reconnect, so a cached
+            // "unlocked" could re-arm the daytime flood at a locked phone.
+            daytimeWhileUnlocked: PuffinExperiment.continuousHrvDaytimeUnlockedEnabled,
+            deviceUnlocked: deviceUnlockedNow())
+    }
+
+    /// Which schedule gate explains the CURRENT continuous-capture want — for the strap log only, never
+    /// for a decision. Re-derives the same two inputs `continuousCaptureWantsNow()` uses so the sentence
+    /// and the action can't disagree.
+    private func captureScheduleReason() -> String {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let d = UserDefaults.standard
+        let inWindow = ContinuousHrvSchedule.windowContains(
+            minuteOfDay,
+            startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
             endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes)
+        if inWindow { return "overnight window open" }
+        guard PuffinExperiment.continuousHrvDaytimeUnlockedEnabled else {
+            return "overnight window closed"
+        }
+        return deviceUnlockedNow() ? "daytime, phone unlocked" : "daytime, phone locked"
     }
 
     /// Single reconciler for the realtime-HR TOGGLE. The stream should be armed while EITHER a screen
@@ -3979,11 +4101,16 @@ public final class BLEManager: NSObject, ObservableObject {
         // routes the 5/MG toggle and drops the WHOOP4-framed R10/R11 stop for it).
         let captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
         if wantsRealtime != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
+            // The edge can now come from EITHER schedule gate — the nightly window, or the iOS
+            // "daytime while unlocked" lane — so name whichever one actually opened/closed it rather
+            // than always blaming the window (a lock-driven edge logged as "window closed" would send
+            // anyone reading a strap log after the wrong bug).
+            let reason = captureScheduleReason()
             if captureWantNow {
-                log("Continuous HRV: overnight window opened; arming the realtime stream (#927)")
+                log("Continuous HRV: \(reason) — arming the realtime stream (#927)")
             } else {
                 send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
-                log("Continuous HRV: overnight window closed; realtime stream disarmed until tonight (#927)")
+                log("Continuous HRV: \(reason) — realtime stream disarmed (#927)")
             }
         }
         reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
