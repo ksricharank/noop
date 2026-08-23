@@ -1018,12 +1018,101 @@ struct LiquidTodayView: View {
                             Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                            horizonRows
+                            coachLink
                         }
                     }
                 }
             }
             .buttonStyle(LiquidPressStyle())
         }
+    }
+
+    // MARK: Horizons (1h / 3h / 6h)
+
+    /// What to do next, on three timescales, under the "how am I today" read above. Rule-based via the
+    /// pure `HorizonPlanner`; see that type for why it is not LLM-backed and what it deliberately does
+    /// not claim to know.
+    ///
+    /// Shown only while the card is EXPANDED, so the collapsed Today stays a single glanceable line —
+    /// the reason the collapse exists. `plan` returns only the horizons it can justify, so this renders
+    /// nothing at all rather than a placeholder when there is no honest read.
+    @ViewBuilder private var horizonRows: some View {
+        let plans = horizonPlans
+        if !plans.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Divider().overlay(StrandPalette.textTertiary.opacity(0.2))
+                ForEach(plans) { plan in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(plan.horizon.rawValue)
+                            .font(StrandFont.caption.weight(.bold))
+                            .foregroundStyle(StrandPalette.chargeColor)
+                            // Fixed width so the three labels form a column and the sentences align,
+                            // reading as a timeline rather than three unrelated lines.
+                            .frame(width: 26, alignment: .leading)
+                        Text(LocalizedStringKey(plan.text))
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(Self.horizonAccessibilityLabel(plan))
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    /// VoiceOver reads "1h" as the literal characters, which is meaningless spoken. Spell the horizon out.
+    static func horizonAccessibilityLabel(_ plan: HorizonPlanner.Plan) -> String {
+        let window: String
+        switch plan.horizon {
+        case .hour: window = String(localized: "Next hour")
+        case .threeHours: window = String(localized: "Next three hours")
+        case .sixHours: window = String(localized: "Next six hours")
+        }
+        return "\(window): \(plan.text)"
+    }
+
+    private var horizonPlans: [HorizonPlanner.Plan] {
+        HorizonPlanner.plan(HorizonPlanner.Input(
+            level: readiness.level,
+            strainSoFar: displayDay?.strain,
+            sleepMinutes: displayDay?.totalSleepMin.map { Int($0.rounded()) },
+            hour: Calendar.current.component(.hour, from: Date()),
+            bedtimeHour: Self.targetBedtimeHour()))
+    }
+
+    /// The user's target bedtime as an hour, derived the same way the wind-down nudge derives its own
+    /// schedule: earliest wake minus sleep need. Deliberately WITHOUT the nudge's notification lead —
+    /// that lead exists to fire a reminder early, whereas the planner applies its own
+    /// `windDownLeadHours`, and stacking both would start winding the user down an hour too soon.
+    static func targetBedtimeHour() -> Int {
+        let day = 24 * 60
+        let raw = WindDownNudge.wakeMinutes - WindDownNudge.sleepNeedMinutes
+        return ((((raw % day) + day) % day) / 60)
+    }
+
+    /// A way into the Coach from the synthesis, for the follow-up questions this card inevitably raises.
+    /// Deliberately a LINK, not an embedded chat: `AICoachEngine` is a single app-lifetime instance with
+    /// one `messages` transcript, so a second inline chat surface would either share that transcript or
+    /// need the engine reworked to be conversation-keyed. Neither is worth it to save one tap.
+    @ViewBuilder private var coachLink: some View {
+        HStack {
+            Spacer()
+            Button {
+                router.openCoach()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                }
+                .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Opens the AI Coach chat"))
+        }
+        .padding(.top, 2)
     }
 
     // MARK: - Recovery vitals
