@@ -78,7 +78,6 @@ struct LiquidTodayView: View {
     @State private var guideSection: ScoreSection?
     @State private var customizationDestination: TodayCustomizationDestination?
     @State private var showSettings = false
-    @State private var synthesisExpanded = false
     @State private var showLiveSession = false
 
     /// Live Sessions (silent guardian) beta gate — the SAME key the Settings toggle writes. Default ON
@@ -1032,18 +1031,15 @@ struct LiquidTodayView: View {
             .padding(.horizontal, 2)
             .padding(.top, 4)
 
-            Button { withAnimation(.easeInOut(duration: 0.2)) { synthesisExpanded.toggle() } } label: {
+            // A plain card, no expand/collapse: the synthesis is the day's read, always fully shown.
+            // (It collapsed to a one-liner until the coach-written paragraph became the main content —
+            // hiding the thing the card exists for behind a "show" tap outlived its purpose.)
                 card {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("SYNTHESIS").font(StrandFont.overline).tracking(1.6)
                                 .foregroundStyle(StrandPalette.textSecondary)
                             Spacer()
-                            Text(synthesisExpanded
-                                 ? String(localized: "hide")
-                                 : String(localized: "show"))
-                                .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textTertiary)
                         }
                         // While the baseline calibrates, the honest "N of 4 nights" progress replaces the
                         // readiness one-liner here — the same swap classic makes (`calibrationDetail ??
@@ -1066,35 +1062,29 @@ struct LiquidTodayView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        if synthesisExpanded {
-                            // The coach-written synthesis, when the provider has answered TODAY,
-                            // replaces the rule-based summary + horizons (its prose covers the same
-                            // horizons). Unconfigured / no consent / not-yet-answered / stale-day all
-                            // fall back to the rule-based read below, unchanged.
-                            if let ai = coach.synthesisText,
-                               AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
-                                Text(ai).font(StrandFont.caption)
-                                    .foregroundStyle(StrandPalette.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                HStack(spacing: 4) {
-                                    Image(systemName: "sparkles").font(StrandFont.caption)
-                                    Text("Written by your Coach").font(StrandFont.caption)
-                                }
-                                .foregroundStyle(StrandPalette.textTertiary)
-                            } else {
-                                Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
-                                    .foregroundStyle(StrandPalette.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                horizonRows
+                        // The coach-written synthesis, when the provider has answered TODAY, replaces
+                        // the rule-based summary + horizons (its prose covers the same horizons).
+                        // Unconfigured / no consent / not-yet-answered / stale-day all fall back to
+                        // the rule-based read below, unchanged.
+                        if let ai = coach.synthesisText,
+                           AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                            Text(ai).font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles").font(StrandFont.caption)
+                                Text("Written by your Coach").font(StrandFont.caption)
                             }
+                            .foregroundStyle(StrandPalette.textTertiary)
+                        } else {
+                            Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            horizonRows
                         }
-                        // Outside the expanded gate on purpose: the way into the Coach is always one
-                        // tap from the synthesis, collapsed or not.
                         coachLink
                     }
                 }
-            }
-            .buttonStyle(LiquidPressStyle())
         }
     }
 
