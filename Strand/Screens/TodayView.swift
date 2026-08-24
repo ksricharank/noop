@@ -191,6 +191,10 @@ struct TodayView: View {
     /// classification and tint selection stable when the app language changes.
     private static let whoopBrandName = "WHOOP"
     @EnvironmentObject var repo: Repository
+    /// The coach engine, for the LLM-written Today synthesis (`synthesisText`). Publishes on
+    /// generation/config/chat changes only — never on the ~1 Hz HR tick — so observing it here does not
+    /// reintroduce the per-tick re-render the LiveState isolation above exists to prevent.
+    @EnvironmentObject var coach: AICoachEngine
     // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
     // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
     // here would invalidate the ENTIRE Today `body` on every tick, re-evaluating the scene backdrop, the
@@ -2237,13 +2241,22 @@ struct TodayView: View {
             // both states, so a glance still reads today's verdict; the detail body reveals on tap.
             synthesisCollapsible(d: d, score: score)
 
-            // Horizons + Coach link, in step with the liquid Today (the codebase treats classic/liquid
-            // divergence as a bug). Gated on the same `synthesisExpanded` state the card above uses, so
-            // both screens keep a single glanceable line when collapsed.
+            // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
+            // classic/liquid divergence as a bug). Gated on the same `synthesisExpanded` state the card
+            // above uses, so both screens keep a single glanceable line when collapsed. When the coach
+            // has written TODAY's synthesis, its prose replaces the rule-based horizons (it covers the
+            // same timescales); every fallback case renders exactly what shipped before.
             if synthesisExpanded {
-                horizonRows
-                coachLink
+                if let ai = coach.synthesisText,
+                   AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                    aiSynthesisCard(ai)
+                } else {
+                    horizonRows
+                }
             }
+            // Outside the expanded gate on purpose, twin of the liquid card: the way into the Coach is
+            // always one tap from the synthesis, collapsed or not.
+            coachLink
 
             if let note = effortZeroNote {
                 HStack(alignment: .top, spacing: 6) {
@@ -2295,6 +2308,25 @@ struct TodayView: View {
                         .accessibilityLabel(LiquidTodayView.horizonAccessibilityLabel(plan))
                     }
                 }
+            }
+        }
+    }
+
+    /// The coach-written Today synthesis, shown in place of the rule-based horizons when the provider
+    /// has answered today (`AICoachEngine.refreshSynthesis`, regenerated on every app open). Liquid
+    /// twin: the AI branch of `LiquidTodayView`'s expanded synthesis card — keep the two in step.
+    @ViewBuilder private func aiSynthesisCard(_ text: String) -> some View {
+        NoopCard(tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    Text("Written by your Coach").strandOverline()
+                }
+                Text(text)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
