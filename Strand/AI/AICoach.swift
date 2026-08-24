@@ -565,6 +565,71 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
+    // MARK: - Today's synthesis (coach-written)
+
+    /// The coach-generated Today synthesis — one short paragraph reading the day, regenerated on every
+    /// app open (both platforms' scenePhase-active handlers call `refreshSynthesis`). Nil until the
+    /// first generation lands, and whenever the provider is unconfigured or data consent is off — the
+    /// Today card falls back to the rule-based read in every such case, so this only ever adds.
+    /// Deliberately NEVER appended to `messages`: the chat transcript is the user's own conversation,
+    /// and a per-open generation would bury it.
+    @Published var synthesisText: String?
+    /// When `synthesisText` was generated. The Today card treats a text from a previous local day as
+    /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
+    /// read by the next morning rather than pinning yesterday's narrative to today's numbers.
+    @Published var synthesisGeneratedAt: Date?
+    private var synthesisInFlight = false
+
+    /// Whether a generation stamped `generatedAt` may still be shown at `now`: same LOCAL calendar day.
+    /// Pure and static so the day-rollover fallback is pinnable without a provider or a store;
+    /// `nonisolated` because the engine's @MainActor isolation would otherwise ride along and there is
+    /// no state here to isolate.
+    nonisolated static func synthesisIsCurrent(generatedAt: Date?, now: Date = Date()) -> Bool {
+        guard let generatedAt else { return false }
+        return Calendar.current.isDate(generatedAt, inSameDayAs: now)
+    }
+
+    /// Regenerate the Today synthesis from the configured provider. Same gates as `startBriefIfNeeded`
+    /// (configured + consent + key) minus the empty-transcript one. Silent on failure — Today is a
+    /// glanceable surface, so provider errors stay on the Coach screen (`errorText` is untouched here)
+    /// and the rule-based synthesis simply remains. Re-entry: one generation at a time, and a text
+    /// under a minute old is kept — a foreground flap (notification shade, app switcher) re-fires
+    /// `.active` within seconds, and burning a provider call per flap buys nothing.
+    func refreshSynthesis() async {
+        guard isConfigured, dataConsent, !synthesisInFlight else { return }
+        guard let key = resolvedKey else { return }
+        // Drop a previous day's text BEFORE generating, so a failed call falls back to the rule-based
+        // read rather than yesterday's narrative.
+        if !Self.synthesisIsCurrent(generatedAt: synthesisGeneratedAt) {
+            synthesisText = nil
+            synthesisGeneratedAt = nil
+        }
+        if let at = synthesisGeneratedAt, synthesisText != nil, Date().timeIntervalSince(at) < 60 { return }
+        synthesisInFlight = true
+        defer { synthesisInFlight = false }
+
+        let context = await buildFullContext()
+        let instruction = """
+        Based on the data above, write TODAY'S SYNTHESIS: one flowing paragraph of 3-5 sentences that \
+        reads my day — how recovered I am and why (charge, HRV, resting heart rate, last night's \
+        rest), what today's load so far means, and what to do with the next hour, the next three \
+        hours, and the rest of the day. Plain prose only: no headings, no bullet points, no greeting, \
+        no sign-off. Do not give medical advice.
+        """
+        let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
+        do {
+            let reply = try await callProvider(key: key, messages: wire)
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !clean.isEmpty {
+                synthesisText = clean
+                synthesisGeneratedAt = Date()
+            }
+        } catch {
+            // Silent by design — see the doc comment. The stale-day drop above already ran, so a
+            // failure here shows the rule-based read, never a previous day's paragraph.
+        }
+    }
+
     /// Full data context = the metrics summary + recent workouts (+ an OPT-IN on-device-signals summary
     /// when the second consent is on). Used when the user has granted data access.
     func buildFullContext() async -> String {
