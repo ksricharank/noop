@@ -675,10 +675,20 @@ final class AppModel: ObservableObject {
     /// Forced rather than `skipIfUnchanged`: an interrupted pass never advanced the watermark — by design,
     /// so that it cannot mark unscored data as scored — so gating on the fingerprint here would be asking
     /// a question whose answer is already known to be "yes, there is work".
+    /// True while a `runDeferredRescoreIfOwed` settle is already running — see the guard below.
+    private var settleInFlight = false
+
     func runDeferredRescoreIfOwed() async {
         // A pass already running here holds the owed mark itself and settles it when it finishes; forcing
         // another would only queue a second full pass behind it.
-        guard RescoreBackgroundScheduler.isRescoreOwed, !intelligence.computing else { return }
+        guard RescoreBackgroundScheduler.isRescoreOwed, !intelligence.computing, !settleInFlight else { return }
+        // Collapse concurrent settles into one: the settle entry points (BGProcessingTask, foreground
+        // entry) can fire within the same instant — the dogfooding log showed two simultaneous
+        // "resuming" passes (70 s and 85 s) inflating each other by contending. `analyzeRecent`'s own
+        // `computing` lock cannot dedupe this: the second forced call re-arms via pendingForcedRescore
+        // and runs a SECOND full pass the moment the first finishes. @MainActor, so the flag is race-free.
+        settleInFlight = true
+        defer { settleInFlight = false }
         // #2238: force only when the debt is UNPROVEN — an interrupted pass, whose watermark was
         // deliberately never advanced. A pass that COMPLETED and was merely outvoted by a token recorded
         // mid-pass did advance it, so asking the fingerprint is a real question with a real answer, and a

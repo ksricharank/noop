@@ -12,6 +12,7 @@ import XCTest
 final class RescoreBackgroundSchedulerTests: XCTestCase {
 
     private var savedOwed: Any?
+    private var savedDeferralOnly: Any?
     private var savedSeconds: Any?
     private var savedToken: Any?
     private var savedAfterCompleted: Any?
@@ -21,11 +22,14 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
         // These live in UserDefaults.standard, shared with every other test in the target. Save and
         // restore rather than assume this suite owns them.
         savedOwed = UserDefaults.standard.object(forKey: RescoreBackgroundScheduler.owedKey)
+        savedDeferralOnly = UserDefaults.standard.object(
+            forKey: RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         savedSeconds = UserDefaults.standard.object(forKey: RescoreBackgroundScheduler.lastPassSecondsKey)
         savedToken = UserDefaults.standard.object(forKey: RescoreBackgroundScheduler.owedTokenKey)
         savedAfterCompleted = UserDefaults.standard.object(
             forKey: RescoreBackgroundScheduler.owedAfterCompletedPassKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedKey)
+        UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.lastPassSecondsKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedTokenKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedAfterCompletedPassKey)
@@ -33,6 +37,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
     override func tearDown() {
         restore(savedOwed, RescoreBackgroundScheduler.owedKey)
+        restore(savedDeferralOnly, RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         restore(savedSeconds, RescoreBackgroundScheduler.lastPassSecondsKey)
         restore(savedToken, RescoreBackgroundScheduler.owedTokenKey)
         restore(savedAfterCompleted, RescoreBackgroundScheduler.owedAfterCompletedPassKey)
@@ -81,7 +86,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
         var ran = false
         var logged: [String] = []
-        await RescoreBackgroundScheduler.run(isBackground: true, log: { logged.append($0) }) {
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, log: { logged.append($0) }) {
             ran = true
         }
 
@@ -114,7 +119,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
     func testAnUnmeasuredBackgroundPassRuns() async {
         RescoreBackgroundScheduler.markRescoreCompleted(seconds: 474.778, owedToken: nil)   // fixture: bank a duration, settle nothing
         var ran = false
-        await RescoreBackgroundScheduler.run(isBackground: true, log: { _ in }) { ran = true }
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, log: { _ in }) { ran = true }
         XCTAssertTrue(ran)
     }
 
@@ -125,7 +130,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
         RescoreBackgroundScheduler.markRescoreOwed()
 
         var ran = false
-        await RescoreBackgroundScheduler.run(isBackground: true, log: { _ in }) { ran = true }
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, log: { _ in }) { ran = true }
         XCTAssertFalse(ran)
     }
 
@@ -150,7 +155,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
         var ran = false
         var logged: [String] = []
-        await RescoreBackgroundScheduler.run(isBackground: true, owesOnDefer: false,
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, owesOnDefer: false,
                                              log: { logged.append($0) }) { ran = true }
 
         XCTAssertFalse(ran, "a backstop that cannot finish here must not start")
@@ -167,7 +172,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
     func testASkippedBackstopLeavesAnExistingDebtAlone() async {
         RescoreBackgroundScheduler.markRescoreOwed()
 
-        await RescoreBackgroundScheduler.run(isBackground: true, owesOnDefer: false, log: { _ in }) {}
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, owesOnDefer: false, log: { _ in }) {}
 
         XCTAssertTrue(RescoreBackgroundScheduler.isRescoreOwed)
     }
@@ -182,7 +187,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
         var background = false
         RescoreBackgroundScheduler.markRescoreCompleted(seconds: 3, owedToken: nil)   // fixture: bank a duration, settle nothing
-        await RescoreBackgroundScheduler.run(isBackground: true, owesOnDefer: false,
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, owesOnDefer: false,
                                              log: { _ in }) { background = true }
         XCTAssertFalse(background)
     }
@@ -313,34 +318,66 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
 
         let latest = RescoreBackgroundScheduler.markRescoreOwed()
         XCTAssertTrue(RescoreBackgroundScheduler.markRescoreCompleted(seconds: 1, owedToken: latest))
+    }
 
-    // MARK: - The locked phone
+    // MARK: - The sleep window
 
     /// The overnight storm: a pass the measured rule would wave through (fast last pass) must not start
-    /// while the phone is locked — the debt is recorded for the unlock settle instead. The log line names
-    /// unlock, not a background task, because none is scheduled for a locked deferral.
-    func testALockedDeferralMarksTheDebtForUnlock() async {
-        RescoreBackgroundScheduler.markRescoreCompleted(seconds: 3)   // fast: would run if unlocked
+    /// inside the sleep window — the debt is recorded as DEFERRAL-ONLY, so the first post-window trigger
+    /// simply runs it. No background task is scheduled for an in-window deferral.
+    func testAnInWindowDeferralMarksADeferralOnlyDebt() async {
+        RescoreBackgroundScheduler.markRescoreCompleted(seconds: 3, owedToken: nil)   // fast: would run outside the window
         XCTAssertFalse(RescoreBackgroundScheduler.isRescoreOwed)
 
         var ran = false
         var logged: [String] = []
-        await RescoreBackgroundScheduler.run(isBackground: true, deviceLocked: true,
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: true,
                                              log: { logged.append($0) }) { ran = true }
 
-        XCTAssertFalse(ran, "a locked phone must not pay for a pass nobody can see")
+        XCTAssertFalse(ran, "the sleep window must not pay for a pass nobody can see")
         XCTAssertTrue(RescoreBackgroundScheduler.isRescoreOwed,
-                      "the deferred work must be recorded, or the unlock settle finds nothing")
+                      "the deferred work must be recorded, or the morning settle finds nothing")
+        XCTAssertTrue(RescoreBackgroundScheduler.isOwedByWindowDeferralOnly,
+                      "an in-window deferral is never-attempted work — the post-window trigger may run it")
         XCTAssertEqual(logged.count, 1)
-        XCTAssertTrue(logged[0].contains("unlock"), logged[0])
+        XCTAssertTrue(logged[0].contains("sleep window"), logged[0])
     }
 
-    /// The locked backstop owes nothing, same contract as the backgrounded backstop: every real update
-    /// records its own debt, so the tick skipping quietly must not conjure a forced pass for the morning.
-    func testALockedBackstopSkipsWithoutOwing() async {
+    /// The full night → morning arc: in-window triggers coalesce into one deferral-only debt, and the
+    /// first post-window background trigger RUNS the pass (the morning settle) instead of bouncing it
+    /// to a background task.
+    func testTheMorningSettleRunsAtTheFirstPostWindowTrigger() async {
+        RescoreBackgroundScheduler.markRescoreCompleted(seconds: 3, owedToken: nil)
+        // Three overnight offloads, one debt.
+        for _ in 0..<3 {
+            await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: true, log: { _ in }) {}
+        }
+        XCTAssertTrue(RescoreBackgroundScheduler.isOwedByWindowDeferralOnly)
+
+        var ran = false
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: false, log: { _ in }) {
+            ran = true
+        }
+        XCTAssertTrue(ran, "the first post-window trigger IS the morning settle")
+    }
+
+    /// A killed-pass debt keeps its meaning through the night: overnight deferrals piling on top must
+    /// not downgrade it to deferral-only, or the morning trigger would re-attempt in the background a
+    /// pass the phone has already proved it cannot finish there (#1538's exact livelock).
+    func testOvernightDeferralsNeverDowngradeAKilledPassDebt() async {
+        RescoreBackgroundScheduler.markRescoreOwed()   // attempt evidence (a pass started and was killed)
+        RescoreBackgroundScheduler.markRescoreDeferredForSleepWindow()
+        XCTAssertTrue(RescoreBackgroundScheduler.isRescoreOwed)
+        XCTAssertFalse(RescoreBackgroundScheduler.isOwedByWindowDeferralOnly,
+                       "the stronger killed-pass meaning must survive any number of deferrals")
+    }
+
+    /// The in-window backstop owes nothing, same contract as the backgrounded backstop: every real
+    /// update records its own debt, so the tick skipping quietly must not conjure a forced morning pass.
+    func testAnInWindowBackstopSkipsWithoutOwing() async {
         var ran = false
         var logged: [String] = []
-        await RescoreBackgroundScheduler.run(isBackground: true, deviceLocked: true, owesOnDefer: false,
+        await RescoreBackgroundScheduler.run(isBackground: true, inSleepWindow: true, owesOnDefer: false,
                                              log: { logged.append($0) }) { ran = true }
 
         XCTAssertFalse(ran)
