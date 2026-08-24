@@ -10,6 +10,16 @@ import StrandDesign
 /// look, sized for a chat bubble: headings are capped near body size (a `#` must
 /// not shout inside a 560pt bubble), and tables get hairline borders.
 extension Theme {
+    /// The Today synthesis-card variant of `.strand`: identical styling with the base text sized down
+    /// to caption scale in the secondary tone, so the coach-written paragraph sits at the same visual
+    /// weight as the rule-based read it replaces. Everything else (bold, lists, the rare heading)
+    /// inherits the chat theme below.
+    static let strandSynthesis = Theme.strand
+        .text {
+            ForegroundColor(StrandPalette.textSecondary)
+            FontSize(13)
+        }
+
     static let strand = Theme()
         // Base body text — mirrors StrandFont.body (15 / regular).
         .text {
