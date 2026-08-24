@@ -25,6 +25,7 @@ UPSTREAM="origin/main"
 FEATURES=(
   "feature/release-branch-tooling"
   "feature/lock-screen-hr-average"
+  "feature/locked-rescore-deferral"
   "feature/dynamic-island-minimal-hr"
   "feature/synthesis-horizons"
 )
