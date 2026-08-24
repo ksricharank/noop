@@ -578,13 +578,25 @@ final class AICoachEngine: ObservableObject {
         synthesisInFlight = true
         defer { synthesisInFlight = false }
 
+        // The scenePhase-active trigger fires at LAUNCH too, before the repository's merged cache has
+        // loaded — and an empty `repo.days` makes `buildContext` emit its honest "no wearable data yet"
+        // note, which the model dutifully turns into a generic no-access paragraph that then sits on
+        // Today all day. Wait (bounded) for the cache to land; if there is genuinely no data after the
+        // wait — a fresh install — generate nothing and leave the rule-based read, which handles the
+        // cold start honestly.
+        for _ in 0..<20 where repo.days.isEmpty {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        guard !repo.days.isEmpty else { return }
+
         let context = await buildFullContext()
+        // Deliberately thin: the coach's own instructions (`systemPrompt`, the user-editable "coach
+        // instructions" — sent on every `callProvider`) own the voice and priorities; this turn only
+        // names the surface and its shape.
         let instruction = """
-        Based on the data above, write TODAY'S SYNTHESIS: one flowing paragraph of 3-5 sentences that \
-        reads my day — how recovered I am and why (charge, HRV, resting heart rate, last night's \
-        rest), what today's load so far means, and what to do with the next hour, the next three \
-        hours, and the rest of the day. Plain prose only: no headings, no bullet points, no greeting, \
-        no sign-off. Do not give medical advice.
+        Following your coaching instructions and using my data above, write today's synthesis for my \
+        Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
+        No headings, no lists, no greeting.
         """
         let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
         do {

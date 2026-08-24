@@ -455,10 +455,6 @@ struct TodayView: View {
     // with the ring. A calibrating night (empty drivers) taps through to the EXISTING calibration countdown.
     @State private var showChargeBreakdown = false
 
-    // S4: the Synthesis card collapses to a single one-liner that expands on tap. Default collapsed so the
-    // home screen stays tight; the live content (#506) is unchanged, only the chrome folds. @State (not
-    // persisted) so a relaunch starts collapsed again.
-    @State private var synthesisExpanded = false
 
     // S5: the Key Metrics grid caps at the first `metricsCollapsedCap` tiles behind a "Show all metrics"
     // expander, collapsing OVERFLOW only (never dropping or reordering a user-selected tile, #251). @State
@@ -2202,20 +2198,15 @@ struct TodayView: View {
             synthesisCollapsible(d: d, score: score)
 
             // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
-            // classic/liquid divergence as a bug). Gated on the same `synthesisExpanded` state the card
-            // above uses, so both screens keep a single glanceable line when collapsed. When the coach
-            // has written TODAY's synthesis, its prose replaces the rule-based horizons (it covers the
-            // same timescales); every fallback case renders exactly what shipped before.
-            if synthesisExpanded {
-                if let ai = coach.synthesisText,
-                   AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
-                    aiSynthesisCard(ai)
-                } else {
-                    horizonRows
-                }
+            // classic/liquid divergence as a bug). Always shown — the S4 collapse is gone. When the
+            // coach has written TODAY's synthesis, its prose replaces the rule-based horizons (it
+            // covers the same timescales); every fallback case renders the rule-based read.
+            if let ai = coach.synthesisText,
+               AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                aiSynthesisCard(ai)
+            } else {
+                horizonRows
             }
-            // Outside the expanded gate on purpose, twin of the liquid card: the way into the Coach is
-            // always one tap from the synthesis, collapsed or not.
             coachLink
 
             if let note = effortZeroNote {
@@ -2309,13 +2300,12 @@ struct TodayView: View {
         .padding(.horizontal, 2)
     }
 
-    /// S4: the Synthesis card, collapsed to a one-liner that expands on tap. Collapsed: the category +
-    /// status headline + a chevron. Expanded: the FULL `InsightCard` (status + detail), the existing locked
-    /// component, unchanged. The headline is the SAME `synthesisCardStatus` / calibration / DEBUG-frame copy
-    /// in both states (#506 content untouched), so only the chrome folds, never the read.
+    /// The Synthesis card, always the full `InsightCard` (status + detail). The S4 collapse-to-one-liner
+    /// chrome is gone: the card is the day's read — and now hosts the coach-written paragraph — so
+    /// hiding its content behind a "show" tap outlived its purpose. #506 content untouched.
     /// Plain (non-ViewBuilder) resolver for the Synthesis headline + detail. Kept OUT of the @ViewBuilder
     /// body below because an if/else of assignments inside a ViewBuilder is read as a Void "view" and fails
-    /// to compile. The copy is identical in the collapsed and expanded states (#506 content untouched).
+    /// to compile.
     private func synthesisCopy(d: DailyMetric?, score: Double?) -> (status: LocalizedStringKey, detail: LocalizedStringKey) {
         #if DEBUG
         if let f = DemoDayHarness.active {
@@ -2328,56 +2318,15 @@ struct TodayView: View {
 
     @ViewBuilder
     private func synthesisCollapsible(d: DailyMetric?, score: Double?) -> some View {
-        // Resolve the headline + detail once so the collapsed line and the expanded card never disagree.
         let copy = synthesisCopy(d: d, score: score)
-        let status = copy.status
-        let detail = copy.detail
-
-        if synthesisExpanded {
-            // Expanded: the full locked InsightCard, then a tap target to collapse it again.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = false }
-            } label: {
-                InsightCard(
-                    category: "Synthesis",
-                    status: status,
-                    detail: detail,
-                    statusColor: StrandPalette.textPrimary,
-                    tint: StrandPalette.chargeColor
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Collapse")
-        } else {
-            // Collapsed: a one-liner with the category overline, the status headline and a down-chevron.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = true }
-            } label: {
-                NoopCard(tint: StrandPalette.chargeColor) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Synthesis").strandOverline()
-                            Text(status)
-                                .font(StrandFont.headline)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Expand for the full read")
-        }
+        InsightCard(
+            category: "Synthesis",
+            status: copy.status,
+            detail: copy.detail,
+            statusColor: StrandPalette.textPrimary,
+            tint: StrandPalette.chargeColor
+        )
+        .accessibilityLabel("Synthesis. \(copy.status)")
     }
 
     /// S4 (#205): the one-word readiness pill on the hero (Push / Maintain / Rest). A small tinted capsule
