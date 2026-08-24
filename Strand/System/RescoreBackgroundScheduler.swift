@@ -33,6 +33,13 @@ enum RescoreBackgroundScheduler {
     /// entire point — the process being killed is the event we are trying to observe, and it is not an
     /// event the killed process gets any chance to write down.
     static let owedKey = "noop.rescoreOwed"
+    /// The debt's KIND: true when the owed re-score exists ONLY because sleep-window deferrals recorded
+    /// it — no pass was ever attempted, so there is no evidence it cannot finish in the background, and
+    /// the first post-window trigger may simply run it. False (or absent) for a debt with attempt
+    /// evidence behind it — a pass that started and was killed, or one the measured rule escalated —
+    /// which keeps the #1538 behaviour: background triggers defer it to the processing task / foreground
+    /// rather than re-attempting a pass the phone has already proved it cannot finish there.
+    static let owedByWindowDeferralOnlyKey = "noop.rescoreOwedByWindowDeferralOnly"
     /// Seconds the last COMPLETED pass took. Only ever written by a pass that reached the end.
     static let lastPassSecondsKey = "noop.rescoreLastPassSeconds"
 
@@ -48,23 +55,47 @@ enum RescoreBackgroundScheduler {
 
     static var currentOwedToken: String? { UserDefaults.standard.string(forKey: owedTokenKey) }
 
+    /// See `owedByWindowDeferralOnlyKey`. Reads false whenever nothing is owed at all.
+    static var isOwedByWindowDeferralOnly: Bool {
+        isRescoreOwed && UserDefaults.standard.bool(forKey: owedByWindowDeferralOnlyKey)
+    }
+
     static var lastCompletedPassSeconds: Double? {
         guard UserDefaults.standard.object(forKey: lastPassSecondsKey) != nil else { return nil }
         let value = UserDefaults.standard.double(forKey: lastPassSecondsKey)
         return value.isFinite && value > 0 ? value : nil
     }
 
-    /// Mark a re-score as owed. Called by `IntelligenceEngine` once a pass is past every gate and is
-    /// definitely about to work — so that a kill leaves the debt behind — and by the deferral path, where
-    /// no pass is attempted at all but the work is just as outstanding.
-    /// Returns the token stamped on this debt. A pass keeps it and hands it back at completion; every
-    /// other caller (the deferral path) can ignore it, since it is not the one that will settle up.
+    /// Mark a re-score as owed with attempt evidence behind it. Called by `IntelligenceEngine` once a
+    /// pass is past every gate and is definitely about to work — so that a kill leaves the debt behind —
+    /// and by the background-task deferral path (the measured rule already decided this pass cannot
+    /// finish in a plain background wake). Either way the debt is NOT window-deferral-only, so a later
+    /// background trigger defers it rather than re-attempting it.
+    /// Returns the token stamped on this debt (#1681). A pass keeps it and hands it back at completion;
+    /// every other caller (the deferral paths) can ignore it, since it is not the one that will settle up.
     @discardableResult
     static func markRescoreOwed() -> String {
         let token = UUID().uuidString
         UserDefaults.standard.set(true, forKey: owedKey)
+        UserDefaults.standard.set(false, forKey: owedByWindowDeferralOnlyKey)
         UserDefaults.standard.set(token, forKey: owedTokenKey)
         return token
+    }
+
+    /// Mark a re-score as owed by a SLEEP-WINDOW deferral: never attempted, safe for the first
+    /// post-window trigger to simply run. Never downgrades an existing attempt-evidence debt — if a
+    /// killed pass already left its mark, that stronger meaning survives any number of overnight
+    /// deferrals piling on top.
+    static func markRescoreDeferredForSleepWindow() {
+        if !isRescoreOwed {
+            UserDefaults.standard.set(true, forKey: owedByWindowDeferralOnlyKey)
+        }
+        UserDefaults.standard.set(true, forKey: owedKey)
+        // A deferral records NEW outstanding data, so it stamps a fresh token too (#1681): a pass that
+        // was already in flight when the window opened read its inputs before this data existed, and
+        // must not settle a debt recorded for data it never saw — the same mid-pass hole the token
+        // exists to close, arriving through the deferral door instead of a trigger.
+        UserDefaults.standard.set(UUID().uuidString, forKey: owedTokenKey)
     }
 
     /// May a pass holding [capturedToken] settle the debt?
@@ -99,6 +130,7 @@ enum RescoreBackgroundScheduler {
         let settled = maySettleDebt(capturedToken: owedToken, currentToken: currentOwedToken)
         if settled {
             UserDefaults.standard.set(false, forKey: owedKey)
+            UserDefaults.standard.set(false, forKey: owedByWindowDeferralOnlyKey)
         }
         if seconds.isFinite, seconds > 0 {
             UserDefaults.standard.set(seconds, forKey: lastPassSecondsKey)
@@ -121,15 +153,22 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
-    /// Whether the phone is locked, read as protected-data (keybag) availability — the same signal the
-    /// Live Activity's lock-aware cadence reads, near-instant in both directions on current hardware.
-    /// Always false on macOS: no keybag lock, and the policy's locked rule must never fire there.
-    static var isDeviceLocked: Bool {
-        #if os(iOS)
-        return !UIApplication.shared.isProtectedDataAvailable
-        #else
-        return false
-        #endif
+    /// Whether the local wall clock is inside the user's sleep window — the reused quiet-hours window
+    /// (`ContinuousHrvSchedule.quietStartKey`/`quietEndKey`, 22:00–07:00 by default, editable in
+    /// Settings on iOS and in Notification settings on macOS). Re-derived on every call, same as the
+    /// continuous-capture gate, so a Settings edit or the window rolling over applies to the very next
+    /// decision. Platform-agnostic on purpose — but macOS never reaches the policy's window rule anyway,
+    /// because `isBackgrounded` is hard-false there and foreground is never deferred.
+    static var isInSleepWindow: Bool {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let d = UserDefaults.standard
+        return ContinuousHrvSchedule.windowContains(
+            minuteOfDay,
+            startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int
+                ?? ContinuousHrvSchedule.defaultStartMinutes,
+            endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+                ?? ContinuousHrvSchedule.defaultEndMinutes)
     }
 
     /// Decide, then either run `work` under an execution assertion or leave it for `BGProcessingTask`.
@@ -148,14 +187,15 @@ enum RescoreBackgroundScheduler {
     ///   which is the churn #1146 exists to avoid. A debt an earlier real pass already recorded is
     ///   untouched either way.
     static func run(isBackground: Bool? = nil,
-                    deviceLocked: Bool? = nil,
+                    inSleepWindow: Bool? = nil,
                     owesOnDefer: Bool = true,
                     log: @escaping (String) -> Void,
                     work: () async -> Void) async {
         let decision = RescoreBackgroundPolicy.decide(
             isBackground: isBackground ?? isBackgrounded,
-            deviceLocked: deviceLocked ?? isDeviceLocked,
+            inSleepWindow: inSleepWindow ?? isInSleepWindow,
             rescoreAlreadyOwed: isRescoreOwed,
+            owedByWindowDeferralOnly: isOwedByWindowDeferralOnly,
             lastCompletedPassSeconds: lastCompletedPassSeconds)
 
         switch decision {
@@ -173,19 +213,20 @@ enum RescoreBackgroundScheduler {
             markRescoreOwed()
             log("re-score: deferred to a background task — \(reason)")
             schedule()
-        case .deferToUnlock(let reason):
+        case .deferUntilSleepWindowEnds(let reason):
             guard owesOnDefer else {
-                log("re-score: backstop tick skipped while the phone is locked — \(reason)")
+                log("re-score: backstop tick skipped during the sleep window — \(reason)")
                 return
             }
-            // Same debt bookkeeping as the case above, but deliberately NO `schedule()`: a processing
-            // task favours idle, and idle on a phone worn to bed is mid-night — it would run the pass at
-            // 3 a.m. after all. The debt is settled by the protected-data-became-available observer
-            // (StrandiOSApp), the next foreground entry, or — if a task request from an earlier
-            // background deferral is already pending — that task; all three call the same
-            // `runDeferredRescoreIfOwed`, and repeated deferrals only re-set the same mark.
-            markRescoreOwed()
-            log("re-score: deferred to unlock — \(reason)")
+            // Same debt bookkeeping shape as the case above, but the DEFERRAL-ONLY mark and deliberately
+            // NO `schedule()`: a processing task favours idle, and idle on a phone worn to bed is
+            // mid-night — it would run the pass at 3 a.m. after all. The debt is settled by the first
+            // data-driven trigger after the window ends (the offload cadence keeps firing; post-window
+            // the policy lets a never-attempted debt simply run, locked or not) or the next foreground
+            // entry. Repeated in-window deferrals only re-set the same mark, so a whole night coalesces
+            // into one pass.
+            markRescoreDeferredForSleepWindow()
+            log("re-score: deferred to the end of the sleep window — \(reason)")
         case .run:
             await withAssertion(log: log, work: work)
         }
