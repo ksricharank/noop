@@ -34,12 +34,13 @@ enum RescoreBackgroundPolicy {
         /// nights of chasing BLE precisely because the log did not say why scoring had not happened.
         case deferToBackgroundTask(reason: String)
         /// Do not start it and do NOT hand it to a background task either; leave the work marked pending
-        /// for the unlock/foreground settle. Locked-phone deferrals get their own case because escalating
-        /// them to a `BGProcessingTask` would undo the point: iOS favours idle for processing tasks, and
-        /// "idle" on a phone worn to bed is 3 a.m. — the pass would run mid-night after all, just under a
-        /// different trigger (13 of the 22 passes in the overnight log that motivated this arrived exactly
-        /// that way). The reason is logged verbatim, same as the case above.
-        case deferToUnlock(reason: String)
+        /// for the first trigger after the sleep window ends (the offload cadence resumes scoring on its
+        /// own) or the next foreground, whichever comes first. Sleep-window deferrals get their own case
+        /// because escalating them to a `BGProcessingTask` would undo the point: iOS favours idle for
+        /// processing tasks, and "idle" on a phone worn to bed is 3 a.m. — the pass would run mid-night
+        /// after all, just under a different trigger (13 of the 22 passes in the overnight log that
+        /// motivated this arrived exactly that way). The reason is logged verbatim, same as the case above.
+        case deferUntilSleepWindowEnds(reason: String)
     }
 
     /// What a background execution assertion is worth relying on, in seconds.
@@ -54,24 +55,30 @@ enum RescoreBackgroundPolicy {
     ///   - isBackground: whether the app is currently backgrounded. A foregrounded app is never deferred:
     ///     the user is looking at the screen, there is no suspension deadline, and the existing behaviour
     ///     is correct.
-    ///   - deviceLocked: whether the phone is locked (protected data unavailable — the keybag tracks the
-    ///     passcode lock, near-instantly on current hardware). A locked phone is where the overnight
-    ///     re-score storm lives: the strap banks all night, every ~10-minute offload lands new data, and
-    ///     each landing triggers a full pass that nobody can see the result of — 22 passes and ~15 minutes
-    ///     of heavy CPU in the motivating night's log, most of it prep reads contending with the very
-    ///     offloads that triggered them. Locked ⇒ defer to the unlock settle, whatever the measured cost:
-    ///     the first unlock (or foreground) runs ONE coalesced pass over everything the night banked,
-    ///     which is also when the user can first see the score. Checked before the owed/measured rules so
-    ///     a locked deferral never schedules a background task (see `Decision.deferToUnlock`). Always
-    ///     false on macOS, which preserves that platform's behaviour exactly.
+    ///   - inSleepWindow: whether the local wall clock sits inside the user's sleep window (the reused
+    ///     quiet-hours window, editable in Settings). The sleep window is where the overnight re-score
+    ///     storm lives: the strap banks all night, every ~10-minute offload lands new data, and each
+    ///     landing triggers a full pass that nobody can see the result of — 22 passes and ~15 minutes of
+    ///     heavy CPU in the motivating night's log, most of it prep reads contending with the very
+    ///     offloads that triggered them. In-window ⇒ defer, whatever the measured cost: the first trigger
+    ///     AFTER the window (the offload cadence resumes scoring on its own, locked or not) runs ONE
+    ///     coalesced pass over everything the night banked. Deliberately a clock window and NOT the
+    ///     phone's lock state: daytime pocket-time was deferring passes too and then settling on every
+    ///     unlock, which both staled the day and ran a pass per unlock. A wall-clock window means daytime
+    ///     scoring follows the offload cadence exactly as it always did, whatever the lock state. Checked
+    ///     before the owed/measured rules so an in-window deferral never schedules a background task
+    ///     (see `Decision.deferUntilSleepWindowEnds`).
     ///   - rescoreAlreadyOwed: a re-score is outstanding — either a pass marked itself started and never
     ///     marked itself finished (it was killed; the mark survives process death, which is the point,
     ///     because the killed process gets no chance to record anything) or an earlier trigger already
-    ///     deferred one. Both mean the same operationally: the work is spoken for, and starting it here
-    ///     would duplicate a pass that something better placed is going to run. This is the
-    ///     self-correcting part — the FIRST background attempt on an install we know nothing about is
-    ///     allowed to run, and from then on the work escalates instead of being re-killed on every
-    ///     offload.
+    ///     deferred one. This is the self-correcting part — the FIRST background attempt on an install we
+    ///     know nothing about is allowed to run, and from then on the work escalates instead of being
+    ///     re-killed on every offload.
+    ///   - owedByWindowDeferralOnly: the outstanding debt exists ONLY because sleep-window deferrals
+    ///     recorded it — no pass was ever attempted, so there is no can't-finish evidence and the owed
+    ///     rule steps aside: the first post-window trigger runs the pass (still subject to the measured
+    ///     rule), and that run is the morning settle. False for any debt with attempt evidence behind
+    ///     it, which keeps the full #1538 escalation.
     ///   - lastCompletedPassSeconds: how long the last pass that ran to completion took, or nil if none
     ///     has. Measured rather than assumed — the cost varies by more than an order of magnitude with
     ///     history size, and a fixed guess would either defer installs that finish comfortably or wave
@@ -79,20 +86,27 @@ enum RescoreBackgroundPolicy {
     ///   - budgetSeconds: see `backgroundBudgetSeconds`; a parameter so the tests can state the boundary
     ///     rather than inherit it.
     static func decide(isBackground: Bool,
-                       deviceLocked: Bool,
+                       inSleepWindow: Bool,
                        rescoreAlreadyOwed: Bool,
+                       owedByWindowDeferralOnly: Bool,
                        lastCompletedPassSeconds: Double?,
                        budgetSeconds: Double = backgroundBudgetSeconds) -> Decision {
         guard isBackground else { return .run }
 
-        // Before the owed/measured rules on purpose: a locked-phone deferral must resolve to the unlock
-        // settle, never to a background task — falling through to the owed rule would schedule one.
-        if deviceLocked {
-            return .deferToUnlock(
-                reason: "the phone is locked — the pass settles once at unlock (or next foreground)")
+        // Before the owed/measured rules on purpose: an in-window deferral must resolve to the first
+        // post-window trigger, never to a background task — falling through to the owed rule would
+        // schedule one.
+        if inSleepWindow {
+            return .deferUntilSleepWindowEnds(
+                reason: "inside the sleep window — scoring pauses for the night and settles once after it ends (or on next foreground)")
         }
 
-        if rescoreAlreadyOwed {
+        // A debt with ATTEMPT EVIDENCE behind it (a killed pass, or one the measured rule escalated)
+        // keeps the #1538 rule: don't re-attempt in the background what the phone has already proved it
+        // cannot finish there. A debt that exists ONLY because the sleep window deferred it was never
+        // attempted at all, so it falls through — the first post-window trigger runs it, subject to the
+        // measured rule below, and that pass IS the morning settle.
+        if rescoreAlreadyOwed, !owedByWindowDeferralOnly {
             return .deferToBackgroundTask(
                 reason: "a re-score is already outstanding from an earlier trigger")
         }

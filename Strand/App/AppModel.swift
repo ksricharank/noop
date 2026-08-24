@@ -629,8 +629,18 @@ final class AppModel: ObservableObject {
     /// Forced rather than `skipIfUnchanged`: an interrupted pass never advanced the watermark — by design,
     /// so that it cannot mark unscored data as scored — so gating on the fingerprint here would be asking
     /// a question whose answer is already known to be "yes, there is work".
+    /// True while a `runDeferredRescoreIfOwed` settle is already running — see the guard below.
+    private var settleInFlight = false
+
     func runDeferredRescoreIfOwed() async {
-        guard RescoreBackgroundScheduler.isRescoreOwed else { return }
+        guard RescoreBackgroundScheduler.isRescoreOwed, !settleInFlight else { return }
+        // Collapse concurrent settles into one: the settle entry points (BGProcessingTask, foreground
+        // entry) can fire within the same instant — the dogfooding log showed two simultaneous
+        // "resuming" passes (70 s and 85 s) inflating each other by contending. `analyzeRecent`'s own
+        // `computing` lock cannot dedupe this: the second forced call re-arms via pendingForcedRescore
+        // and runs a SECOND full pass the moment the first finishes. @MainActor, so the flag is race-free.
+        settleInFlight = true
+        defer { settleInFlight = false }
         live.append(log: "re-score: resuming a pass an earlier attempt could not finish (#1538)")
         await intelligence.analyzeRecent()
         #if os(iOS)

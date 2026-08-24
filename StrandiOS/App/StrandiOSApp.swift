@@ -82,20 +82,13 @@ struct StrandiOSApp: App {
         RescoreBackgroundScheduler.register { [weak model] in
             await model?.runDeferredRescoreIfOwed()
         }
-        // The third settle path, beside the processing task above and the foreground entry below: a
-        // re-score deferred while the phone was LOCKED (RescoreBackgroundPolicy's locked rule) is owed to
-        // the first unlock, which is both when the user can first see a score and when the pass stops
-        // contending with the overnight offload bursts that kept triggering it. Protected-data
-        // notifications reach a running background app — the process stays alive as a bluetooth-central —
-        // so the morning glance at the Lock Screen is enough; no app open needed. A no-op unless a pass
-        // is genuinely outstanding, so firing on every unlock costs nothing. Process-lifetime observer by
-        // design (never removed), like the task registration above.
-        NotificationCenter.default.addObserver(
-            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
-            object: nil, queue: .main
-        ) { [weak model] _ in
-            Task { @MainActor in await model?.runDeferredRescoreIfOwed() }
-        }
+        // Deliberately NO unlock-triggered settle here. An earlier revision observed
+        // protectedDataDidBecomeAvailable and settled the deferred re-score on every unlock — which both
+        // ran a pass per unlock (dogfooding: "this happens too many times") and raced the foreground
+        // settle into duplicate simultaneous passes when unlocking straight into the app. The sleep
+        // window's debt now settles through the first post-window data-driven trigger (the policy lets a
+        // never-attempted debt run once the window ends) or the foreground entry below — no lock-state
+        // trigger at all.
         let bridge = HealthKitBridge(
             repo: model.repo,
             appleDeviceId: model.appleDeviceId,
