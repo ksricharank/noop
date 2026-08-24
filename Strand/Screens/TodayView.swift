@@ -178,6 +178,12 @@ struct TodayView: View {
     /// generation/config/chat changes only — never on the ~1 Hz HR tick — so observing it here does not
     /// reintroduce the per-tick re-render the LiveState isolation above exists to prevent.
     @EnvironmentObject var coach: AICoachEngine
+    /// For the unified Refresh control (manual sync kick + forced re-score). Neither publishes on the
+    /// HR tick: BLEManager publishes connect/discovery state, IntelligenceEngine pass start/end.
+    @EnvironmentObject var ble: BLEManager
+    @EnvironmentObject var intelligence: IntelligenceEngine
+    /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
+    @State private var refreshingAll = false
     // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
     // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
     // here would invalidate the ENTIRE Today `body` on every tick, re-evaluating the scene backdrop, the
@@ -2287,24 +2293,36 @@ struct TodayView: View {
     /// A way into the Coach for the follow-ups this card raises. A LINK, not an embedded chat — see
     /// `NavRouter.openCoach()` for why the engine is not reused inline. Leads with the on-demand
     /// synthesis refresh, twin of the liquid `coachLink` — keep the two in step.
+    /// The unified on-demand refresh — sync kick, forced re-score, coach regeneration. Liquid twin:
+    /// `LiquidTodayView.refreshEverything` (see its doc for the sequencing rationale) — keep in step.
+    private func refreshEverything() async {
+        ble.syncNow()
+        await intelligence.analyzeRecent()
+        await coach.refreshSynthesis(force: true)
+    }
+
     @ViewBuilder private var coachLink: some View {
         HStack {
-            if coach.isConfigured && coach.dataConsent {
-                if coach.synthesisRefreshing {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button {
-                        Task { await coach.refreshSynthesis(force: true) }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.clockwise").font(StrandFont.caption)
-                            Text("Refresh").font(StrandFont.caption.weight(.semibold))
-                        }
-                        .foregroundStyle(StrandPalette.textTertiary)
+            // One Refresh for everything — data fetch, re-score, coach paragraph — always visible
+            // (the coach step simply no-ops when unconfigured).
+            if refreshingAll || coach.synthesisRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Button {
+                    Task {
+                        refreshingAll = true
+                        await refreshEverything()
+                        refreshingAll = false
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Refresh the synthesis")
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                        Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(StrandPalette.textTertiary)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Refresh data, scores, and synthesis")
             }
             Spacer()
             Button { router.openCoach() } label: {
