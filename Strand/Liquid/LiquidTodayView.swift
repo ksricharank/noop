@@ -25,6 +25,10 @@ struct LiquidTodayView: View {
     // would re-render all of Today every second (the exact churn the LiveState leaves isolate). BLEManager
     // only publishes connect/discovery state, never HR. Injected at the app roots beside .environmentObject(model).
     @EnvironmentObject var ble: BLEManager
+    /// The coach engine, for the LLM-written Today synthesis (`synthesisText`). Observing it re-renders
+    /// on generation only (a couple of times per app open at most), never on the HR tick — the engine
+    /// publishes chat/config state, not live samples. Injected at both app roots.
+    @EnvironmentObject var coach: AICoachEngine
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
     /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
@@ -1015,12 +1019,30 @@ struct LiquidTodayView: View {
                             }
                         }
                         if synthesisExpanded {
-                            Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            horizonRows
-                            coachLink
+                            // The coach-written synthesis, when the provider has answered TODAY,
+                            // replaces the rule-based summary + horizons (its prose covers the same
+                            // horizons). Unconfigured / no consent / not-yet-answered / stale-day all
+                            // fall back to the rule-based read below, unchanged.
+                            if let ai = coach.synthesisText,
+                               AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                                Text(ai).font(StrandFont.caption)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                HStack(spacing: 4) {
+                                    Image(systemName: "sparkles").font(StrandFont.caption)
+                                    Text("Written by your Coach").font(StrandFont.caption)
+                                }
+                                .foregroundStyle(StrandPalette.textTertiary)
+                            } else {
+                                Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                horizonRows
+                            }
                         }
+                        // Outside the expanded gate on purpose: the way into the Coach is always one
+                        // tap from the synthesis, collapsed or not.
+                        coachLink
                     }
                 }
             }
