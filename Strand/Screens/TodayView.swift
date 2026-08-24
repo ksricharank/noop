@@ -3,6 +3,7 @@ import StrandDesign
 import StrandAnalytics
 import WhoopStore
 import Foundation
+import MarkdownUI
 
 // MARK: - Control Center (the home dashboard), HomeDensity rewrite
 //
@@ -2314,18 +2315,37 @@ struct TodayView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                     Text("Written by your Coach").strandOverline()
                 }
-                Text(text)
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // LLM replies arrive as Markdown; plain Text showed literal asterisks. Rendered
+                // through the same MarkdownUI pipeline as the Coach chat, sized for this card
+                // (see Theme.strandSynthesis). Liquid twin: the AI branch of the synthesis card.
+                Markdown(text)
+                    .markdownTheme(.strandSynthesis)
             }
         }
     }
 
     /// A way into the Coach for the follow-ups this card raises. A LINK, not an embedded chat — see
-    /// `NavRouter.openCoach()` for why the engine is not reused inline.
+    /// `NavRouter.openCoach()` for why the engine is not reused inline. Leads with the on-demand
+    /// synthesis refresh, twin of the liquid `coachLink` — keep the two in step.
     @ViewBuilder private var coachLink: some View {
         HStack {
+            if coach.isConfigured && coach.dataConsent {
+                if coach.synthesisRefreshing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button {
+                        Task { await coach.refreshSynthesis(force: true) }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                            Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh the synthesis")
+                }
+            }
             Spacer()
             Button { router.openCoach() } label: {
                 HStack(spacing: 4) {
