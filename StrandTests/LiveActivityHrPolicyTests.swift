@@ -58,7 +58,29 @@ final class LiveActivityHrPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.windowAverage(unpruned, now: t0.addingTimeInterval(70)), 60)
     }
 
-    // 6. An empty window yields nil (caller falls back to the instantaneous reading), and the
+    // 6. The locked spacing and averaging window are user-configurable (Settings → Live Activity,
+    // minutes; the controller passes the resolved value). A 5-minute spacing holds pushes for 300 s,
+    // and the matching 300 s window keeps samples a 60 s default would have aged out — the shown
+    // number is always "the mean since you last saw it", whatever the cadence.
+    func testConfigurableSpacingAndWindow() {
+        XCTAssertFalse(Policy.shouldPush(locked: true, now: t0.addingTimeInterval(299), lastPush: t0,
+                                         lockedSpacing: 300))
+        XCTAssertTrue(Policy.shouldPush(locked: true, now: t0.addingTimeInterval(301), lastPush: t0,
+                                        lockedSpacing: 300))
+        // Unlocked ignores the locked spacing entirely — still the 2 s live cadence.
+        XCTAssertTrue(Policy.shouldPush(locked: false, now: t0.addingTimeInterval(3), lastPush: t0,
+                                        lockedSpacing: 300))
+
+        var s: [Policy.Sample] = []
+        s = Policy.appending(s, bpm: 100, at: t0, window: 300)
+        s = Policy.appending(s, bpm: 50, at: t0.addingTimeInterval(200), window: 300)
+        XCTAssertEqual(s.count, 2, "a 300 s window must keep a 200 s-old sample")
+        XCTAssertEqual(Policy.windowAverage(s, now: t0.addingTimeInterval(200), window: 300), 75)
+        XCTAssertEqual(Policy.windowAverage(s, now: t0.addingTimeInterval(200)), 50,
+                       "the default 60 s window ages the same sample out")
+    }
+
+    // 7. An empty window yields nil (caller falls back to the instantaneous reading), and the
     // ~1 Hz stream keeps the buffer bounded to roughly one window of entries.
     func testEmptyWindowIsNilAndBufferStaysBounded() {
         XCTAssertNil(Policy.windowAverage([], now: t0))

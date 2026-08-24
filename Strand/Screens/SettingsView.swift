@@ -123,6 +123,9 @@ struct SettingsView: View {
     @AppStorage(UnitPrefs.syncLiveActivityKey) private var syncLiveActivityEnabled = true
     @AppStorage(UnitPrefs.liftLiveActivityKey) private var liftLiveActivityEnabled = true
     @AppStorage(DayCycleMode.storageKey) private var dayCycleModeRaw = DayCycleMode.sleepOnset.rawValue
+    /// Minutes between Lock-Screen refreshes while the phone is locked (0 = fully live). See
+    /// `UnitPrefs.liveActivityLockedMinutes` for the clamped read the controller uses.
+    @AppStorage(UnitPrefs.liveActivityLockedMinutesKey) private var liveActivityLockedMinutes = 1
     // Alternate app icon (iOS only) — false = Titanium (primary AppIcon), true = Blue Titanium
     // ("AppIcon-Navy"). Display-only preference; the live switch goes through setAlternateIconName.
     @AppStorage("appIcon.alt") private var useNavyIcon = false
@@ -1572,6 +1575,29 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
                 liveNotificationSwitch("Live heart rate", isOn: $liveActivityEnabled,
                                        detail: "While the strap is connected.")
+                if liveActivityEnabled {
+                    HStack {
+                        Text("Lock Screen refresh (minutes)")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Spacer()
+                        TextField("1", value: $liveActivityLockedMinutes, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 64)
+                            // Clamp to the range the controller reads (0...60); the guard stops the
+                            // re-assignment from re-firing this onChange forever.
+                            .onChange(of: liveActivityLockedMinutes) { _, v in
+                                let clamped = min(max(v, 0), 60)
+                                if clamped != v { liveActivityLockedMinutes = clamped }
+                            }
+                    }
+                    Text("While the phone is locked, the Lock Screen number updates once per this many minutes, showing the average heart rate over that window. 0 keeps it fully live (~2 s) at the highest battery cost. Unlocked, the Dynamic Island is always live.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 rowDivider
                 liveNotificationSwitch("Lift Log session", isOn: $liftLiveActivityEnabled,
                                        detail: "Your set, rest and heart rate, and the Lock Screen light-up on a double-tap.")

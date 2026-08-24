@@ -152,18 +152,21 @@ final class LiveActivityController {
         }
 
         // Lock-aware cadence (fork): while the phone is locked nobody can watch beat-level movement, and
-        // on an Always-On display every push repaints the Lock Screen, so locked pushes slow to one a
-        // minute carrying a one-minute average (`LiveActivityHrPolicy`). The buffer is fed on every tick
-        // regardless of lock state, so the first locked push already has a full window behind it. Locked
-        // = protected data (keychain/file keybag) unavailable: the keybag tracks the passcode lock, not
-        // the screen, but on current hardware/iOS it follows the physical lock near-instantly in both
-        // directions. Re-read per tick rather than observed — a tick is the only moment a push happens.
-        if let bpm { hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now) }
-        let locked = !UIApplication.shared.isProtectedDataAvailable
-        // Locked: show the last minute's average — steadier, and honest about its cadence. The
+        // on an Always-On display every push repaints the Lock Screen, so locked pushes slow down,
+        // carrying a window average (`LiveActivityHrPolicy`). The cadence is user-tunable (Settings →
+        // Live notifications): N minutes between locked pushes, each showing the mean HR over that same
+        // window; 0 disables the locked slowdown entirely (fully live, the pre-cadence behaviour). Read
+        // per tick so a Settings edit applies at once. Locked = protected data (keychain/file keybag)
+        // unavailable: the keybag tracks the passcode lock, not the screen, but on current hardware/iOS
+        // it follows the physical lock near-instantly in both directions.
+        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+        let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
+        if let bpm { hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing) }
+        let locked = lockedMinutes > 0 && !UIApplication.shared.isProtectedDataAvailable
+        // Locked: show the window's average — steadier, and honest about its cadence. The
         // instantaneous fallback only fires if the window is somehow empty.
         let shownBpm = (locked && bpm != nil)
-            ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now) ?? bpm) : bpm
+            ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm) : bpm
 
         // Link down: the dash, never the last number (`bonded` stays true across a disconnect, and keying off it once
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
@@ -185,18 +188,18 @@ final class LiveActivityController {
             guard LiveHRBannerPushPolicy.due(shown: shownState, next: state, reading: \.bpm,
                                              sinceLastPush: now.timeIntervalSince(lastPush),
                                              staleAfter: Self.staleAfter) else { return }
-            // Locked cadence (fork): a minute between pushes — except the dash transition, which is
-            // often the last tick a quiet strap sends, so it goes out whatever the spacing.
+            // Locked cadence (fork): the configured window between pushes — except the dash transition,
+            // which is often the last tick a quiet strap sends, so it goes out whatever the spacing.
             let dashFlip = shownState.map { ($0.bpm == nil) != (state.bpm == nil) } ?? true
             if locked, !dashFlip,
-               !LiveActivityHrPolicy.shouldPush(locked: true, now: now, lastPush: lastPush) { return }
+               !LiveActivityHrPolicy.shouldPush(locked: true, now: now, lastPush: lastPush,
+                                                lockedSpacing: lockedSpacing) { return }
             if let shown = shownState, (shown.bpm == nil) != (state.bpm == nil) { logReading(state) }
             lastPush = now
             shownState = state
-            // Locked pushes are a minute apart, so their staleDate adds that spacing on top — the
+            // Locked pushes are a window apart, so their staleDate adds that spacing on top — the
             // freshness window must sit on the cadence, not race it.
-            let staleDate = now.addingTimeInterval(
-                Self.staleAfter + (locked ? LiveActivityHrPolicy.lockedSpacing : 0))
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else if start(state, at: now) {
             log(state.bpm == nil ? "started, showing – until a heart rate arrives" : "started")
