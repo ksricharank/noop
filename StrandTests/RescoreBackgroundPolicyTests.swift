@@ -11,13 +11,15 @@ import XCTest
 final class RescoreBackgroundPolicyTests: XCTestCase {
 
     private func decide(background: Bool = true,
-                        locked: Bool = false,
+                        inWindow: Bool = false,
                         unfinished: Bool = false,
+                        deferralOnly: Bool = false,
                         lastSeconds: Double? = nil,
                         budget: Double = 20) -> RescoreBackgroundPolicy.Decision {
         RescoreBackgroundPolicy.decide(isBackground: background,
-                                       deviceLocked: locked,
+                                       inSleepWindow: inWindow,
                                        rescoreAlreadyOwed: unfinished,
+                                       owedByWindowDeferralOnly: deferralOnly,
                                        lastCompletedPassSeconds: lastSeconds,
                                        budgetSeconds: budget)
     }
@@ -111,45 +113,70 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     func testTheDefaultBudgetIsTheShippedOne() {
         XCTAssertEqual(RescoreBackgroundPolicy.backgroundBudgetSeconds, 20)
         XCTAssertTrue(isDeferred(RescoreBackgroundPolicy.decide(
-            isBackground: true, deviceLocked: false,
-            rescoreAlreadyOwed: false, lastCompletedPassSeconds: 21)))
+            isBackground: true, inSleepWindow: false,
+            rescoreAlreadyOwed: false, owedByWindowDeferralOnly: false,
+            lastCompletedPassSeconds: 21)))
     }
 
-    // MARK: - The locked phone (the overnight storm)
+    // MARK: - The sleep window (the overnight storm)
 
-    private func isDeferredToUnlock(_ d: RescoreBackgroundPolicy.Decision) -> Bool {
-        if case .deferToUnlock = d { return true }
+    private func isDeferredToWindowEnd(_ d: RescoreBackgroundPolicy.Decision) -> Bool {
+        if case .deferUntilSleepWindowEnds = d { return true }
         return false
     }
 
     /// The motivating case: a pass measured comfortably inside the budget — which the measured rule
-    /// would wave through, and DID, 22 times in the motivating overnight log — still defers while the
-    /// phone is locked. Nobody can see the score, and the pass contends with the very offloads that
-    /// keep triggering it.
-    func testAFastPassStillDefersWhileLocked() {
-        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, lastSeconds: 5)))
+    /// would wave through, and DID, 22 times in the motivating overnight log — still defers inside the
+    /// sleep window. Nobody can see the score, and the pass contends with the very offloads that keep
+    /// triggering it all night.
+    func testAFastPassStillDefersInsideTheSleepWindow() {
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true, lastSeconds: 5)))
     }
 
-    /// Locked outranks the owed rule, in that exact order: an owed pass on a locked phone must resolve
-    /// to the unlock settle, never to a background task — a processing task favours idle, and idle on a
-    /// phone worn to bed is 3 a.m.
-    func testLockedResolvesToUnlockNotToABackgroundTask() {
-        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, unfinished: true)))
-        XCTAssertTrue(isDeferredToUnlock(decide(locked: true, lastSeconds: 475)))
-        XCTAssertTrue(isDeferredToUnlock(decide(locked: true)))
+    /// The window outranks the owed and measured rules, in that exact order: an in-window pass must
+    /// resolve to the post-window settle, never to a background task — a processing task favours idle,
+    /// and idle on a phone worn to bed is 3 a.m.
+    func testTheWindowResolvesToItsEndNotToABackgroundTask() {
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true, unfinished: true)))
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true, lastSeconds: 475)))
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true)))
     }
 
-    /// Foreground still outranks locked — the transient locked-while-active states on the way in and out
-    /// of the lock screen must not defer a pass the user is effectively watching. Same invariant as
-    /// `testAForegroundPassAlwaysRuns`, extended to the new input.
-    func testForegroundOutranksLocked() {
-        XCTAssertEqual(decide(background: false, locked: true), .run)
+    /// Foreground still outranks the window — opening the app at 3 a.m. is an explicit ask for fresh
+    /// scores, and there is no suspension deadline. Same invariant as `testAForegroundPassAlwaysRuns`,
+    /// extended to the new input.
+    func testForegroundOutranksTheWindow() {
+        XCTAssertEqual(decide(background: false, inWindow: true), .run)
     }
 
-    /// An unlocked background pass is byte-identical to the pre-locked-rule behaviour: the fast pass
-    /// runs, the slow one defers to a background task. The new input at its false value changes nothing.
-    func testUnlockedBackgroundBehaviourIsUnchanged() {
-        XCTAssertEqual(decide(locked: false, lastSeconds: 5), .run)
-        XCTAssertTrue(isDeferred(decide(locked: false, lastSeconds: 475)))
+    /// Daytime (out-of-window) background behaviour is byte-identical to the pre-window rules: the fast
+    /// pass runs on its trigger whatever the lock state, the slow one defers to a background task. This
+    /// is the dogfooding ask — scoring follows the offload cadence during the day, never the lock.
+    func testDaytimeBehaviourFollowsTheCadenceRules() {
+        XCTAssertEqual(decide(inWindow: false, lastSeconds: 5), .run)
+        XCTAssertTrue(isDeferred(decide(inWindow: false, lastSeconds: 475)))
+    }
+
+    // MARK: - The morning settle (debt kinds)
+
+    /// The night's coalesced debt — owed ONLY by window deferrals, never attempted — runs at the first
+    /// post-window trigger. This IS the "one update once sleep is done": without this rule the owed
+    /// check would bounce the morning pass to a background task that may not arrive for hours.
+    func testAWindowDeferralDebtRunsAtTheFirstPostWindowTrigger() {
+        XCTAssertEqual(decide(unfinished: true, deferralOnly: true, lastSeconds: 5), .run)
+        XCTAssertEqual(decide(unfinished: true, deferralOnly: true), .run)
+    }
+
+    /// ...but the measured rule still applies to it: a deferral-only debt on an install whose passes
+    /// can't finish in a background wake escalates honestly instead of being killed mid-run.
+    func testAWindowDeferralDebtStillHonoursTheMeasuredRule() {
+        XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: true, lastSeconds: 475)))
+    }
+
+    /// A debt WITH attempt evidence (a killed pass) keeps the full #1538 escalation even when fast —
+    /// "unfinished" is evidence about this install right now. The deferral-only flag must never leak
+    /// onto it.
+    func testAKilledPassDebtStillEscalates() {
+        XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: false, lastSeconds: 2)))
     }
 }
