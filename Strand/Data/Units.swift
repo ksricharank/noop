@@ -115,6 +115,16 @@ enum UnitPrefs {
             ? true : UserDefaults.standard.bool(forKey: liveActivityKey)
     }
 
+    /// How often the Live Activity refreshes while the phone is LOCKED, in minutes. The number shown
+    /// is a moving average of HR over that window; 0 means fully live (~2 s, no locked slowdown at
+    /// all) at the highest battery cost. Clamped to 0...60, default 1. Unlocked is always live.
+    /// Read by `LiveActivityController` on every tick, so a Settings edit applies immediately.
+    static let liveActivityLockedMinutesKey = "liveActivity.lockedRefreshMinutes"
+    static func liveActivityLockedMinutes() -> Int {
+        let stored = UserDefaults.standard.object(forKey: liveActivityLockedMinutesKey) as? Int ?? 1
+        return min(max(stored, 0), 60)
+    }
+
     /// Resolve the stored raw values into a concrete temperature unit, applying the
     /// "match the system" default when no explicit override is set.
     static func resolveTemperature(system: UnitSystem, override raw: String) -> TemperatureUnit {
