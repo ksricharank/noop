@@ -30,6 +30,11 @@ struct LiquidTodayView: View {
     /// on generation only (a couple of times per app open at most), never on the HR tick — the engine
     /// publishes chat/config state, not live samples. Injected at both app roots.
     @EnvironmentObject var coach: AICoachEngine
+    /// For the unified Refresh control on the synthesis card (forced re-score). Publishes on pass
+    /// start/end only — no per-tick churn. Injected at both app roots.
+    @EnvironmentObject var intelligence: IntelligenceEngine
+    /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
+    @State private var refreshingAll = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
     /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
@@ -1160,28 +1165,40 @@ struct LiquidTodayView: View {
     /// Deliberately a LINK, not an embedded chat: `AICoachEngine` is a single app-lifetime instance with
     /// one `messages` transcript, so a second inline chat surface would either share that transcript or
     /// need the engine reworked to be conversation-keyed. Neither is worth it to save one tap.
+    /// The unified on-demand refresh: kick a manual strap offload (same gated path as pull-to-sync and
+    /// the Health screen's "Sync now" — bypasses the periodic floor, safely no-ops when disconnected or
+    /// already syncing; its completion re-scores whatever new data banks via the existing post-offload
+    /// pipeline), force a scoring pass over what is already on the device, then regenerate the
+    /// coach-written paragraph from the fresh scores (a no-op when the Coach is unconfigured).
+    /// Classic twin: `TodayView.refreshEverything` — keep the two in step.
+    private func refreshEverything() async {
+        ble.syncNow()
+        await intelligence.analyzeRecent()
+        await coach.refreshSynthesis(force: true)
+    }
+
     @ViewBuilder private var coachLink: some View {
         HStack {
-            // Force a fresh coach-written synthesis on demand — the automatic regeneration only runs
-            // on app open, which meant close-and-reopen was the only way to a new paragraph. Shown
-            // only when the Coach can actually generate (configured + data consent); `force: true`
-            // bypasses the one-minute flap guard because a deliberate tap is a real request.
-            if coach.isConfigured && coach.dataConsent {
-                if coach.synthesisRefreshing {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button {
-                        Task { await coach.refreshSynthesis(force: true) }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.clockwise").font(StrandFont.caption)
-                            Text("Refresh").font(StrandFont.caption.weight(.semibold))
-                        }
-                        .foregroundStyle(StrandPalette.textTertiary)
+            // One Refresh for everything — data fetch, re-score, coach paragraph — always visible
+            // (the coach step simply no-ops when unconfigured).
+            if refreshingAll || coach.synthesisRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Button {
+                    Task {
+                        refreshingAll = true
+                        await refreshEverything()
+                        refreshingAll = false
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Refresh the synthesis")
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                        Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(StrandPalette.textTertiary)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Refresh data, scores, and synthesis")
             }
             Spacer()
             Button {
