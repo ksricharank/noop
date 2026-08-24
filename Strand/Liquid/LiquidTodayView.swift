@@ -15,6 +15,7 @@ import SwiftUI
 import StrandDesign
 import WhoopStore
 import StrandAnalytics
+import MarkdownUI
 
 struct LiquidTodayView: View {
     @EnvironmentObject var repo: Repository
@@ -1020,9 +1021,11 @@ struct LiquidTodayView: View {
                         // the rule-based read below, unchanged.
                         if let ai = coach.synthesisText,
                            AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
-                            Text(ai).font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            // LLM replies arrive as Markdown; plain Text showed literal asterisks.
+                            // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
+                            // for this card (see Theme.strandSynthesis).
+                            Markdown(ai)
+                                .markdownTheme(.strandSynthesis)
                             HStack(spacing: 4) {
                                 Image(systemName: "sparkles").font(StrandFont.caption)
                                 Text("Written by your Coach").font(StrandFont.caption)
@@ -1111,6 +1114,27 @@ struct LiquidTodayView: View {
     /// need the engine reworked to be conversation-keyed. Neither is worth it to save one tap.
     @ViewBuilder private var coachLink: some View {
         HStack {
+            // Force a fresh coach-written synthesis on demand — the automatic regeneration only runs
+            // on app open, which meant close-and-reopen was the only way to a new paragraph. Shown
+            // only when the Coach can actually generate (configured + data consent); `force: true`
+            // bypasses the one-minute flap guard because a deliberate tap is a real request.
+            if coach.isConfigured && coach.dataConsent {
+                if coach.synthesisRefreshing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button {
+                        Task { await coach.refreshSynthesis(force: true) }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                            Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                        }
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Refresh the synthesis")
+                }
+            }
             Spacer()
             Button {
                 router.openCoach()

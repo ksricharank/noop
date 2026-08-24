@@ -548,6 +548,8 @@ final class AICoachEngine: ObservableObject {
     /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
     /// read by the next morning rather than pinning yesterday's narrative to today's numbers.
     @Published var synthesisGeneratedAt: Date?
+    /// True while a generation is running — drives the refresh button's spinner on the Today cards.
+    @Published var synthesisRefreshing = false
     private var synthesisInFlight = false
 
     /// Whether a generation stamped `generatedAt` may still be shown at `now`: same LOCAL calendar day.
@@ -565,7 +567,9 @@ final class AICoachEngine: ObservableObject {
     /// and the rule-based synthesis simply remains. Re-entry: one generation at a time, and a text
     /// under a minute old is kept — a foreground flap (notification shade, app switcher) re-fires
     /// `.active` within seconds, and burning a provider call per flap buys nothing.
-    func refreshSynthesis() async {
+    /// - Parameter force: skip the one-minute freshness keep. The Today cards' refresh button passes
+    ///   true — a deliberate tap is a request for a NEW paragraph, not a flap to be absorbed.
+    func refreshSynthesis(force: Bool = false) async {
         guard isConfigured, dataConsent, !synthesisInFlight else { return }
         guard let key = resolvedKey else { return }
         // Drop a previous day's text BEFORE generating, so a failed call falls back to the rule-based
@@ -574,9 +578,14 @@ final class AICoachEngine: ObservableObject {
             synthesisText = nil
             synthesisGeneratedAt = nil
         }
-        if let at = synthesisGeneratedAt, synthesisText != nil, Date().timeIntervalSince(at) < 60 { return }
+        if !force, let at = synthesisGeneratedAt, synthesisText != nil,
+           Date().timeIntervalSince(at) < 60 { return }
         synthesisInFlight = true
-        defer { synthesisInFlight = false }
+        synthesisRefreshing = true
+        defer {
+            synthesisInFlight = false
+            synthesisRefreshing = false
+        }
 
         // The scenePhase-active trigger fires at LAUNCH too, before the repository's merged cache has
         // loaded — and an empty `repo.days` makes `buildContext` emit its honest "no wearable data yet"
