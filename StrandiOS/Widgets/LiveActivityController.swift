@@ -63,24 +63,32 @@ final class LiveActivityController {
         guard let bpm else { return }
 
         let now = Date()
-        hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now)
+        // The locked cadence is user-tunable (Settings → Live Activity): N minutes between locked
+        // pushes, each showing the mean HR over that window; 0 disables the locked slowdown entirely
+        // (fully live, the pre-cadence behaviour). Read per tick so a Settings edit applies at once.
+        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+        let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
+        hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing)
         // Locked = protected data (keychain/file keybag) unavailable. The keybag tracks the passcode
         // lock, not the screen — but on current hardware/iOS it follows the physical lock near-instantly
         // in both directions, so the cadence switches with the lock itself. Re-read per tick rather than
-        // observed: a tick is already the only moment a push can happen.
-        let locked = !UIApplication.shared.isProtectedDataAvailable
+        // observed: a tick is already the only moment a push can happen. `lockedMinutes == 0` opts out
+        // of lock-awareness altogether.
+        let locked = lockedMinutes > 0 && !UIApplication.shared.isProtectedDataAvailable
 
         if let activity {
-            guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush) else { return }
+            guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
+                                                  lockedSpacing: lockedSpacing) else { return }
             lastPush = now
-            // Locked: show the last minute's average — steadier, and honest about its cadence. The
+            // Locked: show the window's average — steadier, and honest about its cadence. The
             // instantaneous fallback only fires if the window is somehow empty (it can't be: the
             // current tick was just appended above).
-            let shownBpm = locked ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now) ?? bpm) : bpm
+            let shownBpm = locked
+                ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm)
+                : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
                                                             bonded: connected, effort: effort)
-            let staleDate = now.addingTimeInterval(
-                Self.staleAfter + (locked ? LiveActivityHrPolicy.lockedSpacing : 0))
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
