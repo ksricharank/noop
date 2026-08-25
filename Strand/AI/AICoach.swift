@@ -229,6 +229,33 @@ enum AICoachError: LocalizedError {
         }
     }
 
+    /// Whether this failure is worth one automatic retry on the provider's lightest model.
+    ///
+    /// Two failures qualify, and they are the two a smaller model plausibly survives:
+    ///
+    /// - `.timedOut` — the reply did not finish inside the budget. A faster model may.
+    /// - `.emptyReply` — a 200 with no usable text. On Gemini 2.5 this is the *common* heavy-model
+    ///   failure and the reason a retry was invisible until now: thinking tokens count against
+    ///   `maxOutputTokens`, so a reasoning model can spend the whole budget thinking and return
+    ///   `finishReason: MAX_TOKENS` with no text parts. That arrives FAST and with HTTP 200 — it is
+    ///   not a timeout, so a timeout-only retry never fired. It is also why the same model works on
+    ///   one request and not the next: how much it thinks varies per prompt, so the failure is
+    ///   intermittent rather than a fixed ceiling that would fail every time.
+    ///
+    /// Everything else is excluded deliberately: a rejected key, a rate limit, a bad URL or a 4xx all
+    /// fail identically on a smaller model, so retrying only doubles the wait before the same error.
+    ///
+    /// A caveat worth stating: `.emptyReply` also covers a genuinely wrong model id typed by hand, and
+    /// for that case the retry produces an answer from a DIFFERENT model than the one named in the
+    /// picker. `lastTimeoutFallbackModel` records when that happened so the UI can say so rather than
+    /// quietly attributing the light model's answer to the heavy one.
+    var deservesLighterModelRetry: Bool {
+        switch self {
+        case .timedOut, .emptyReply: return true
+        default: return false
+        }
+    }
+
     /// Which `URLError` codes count as "ran out of time" for retry purposes.
     ///
     /// `.timedOut` is the plain case. `.cannotConnectToHost` / `.cannotFindHost` are deliberately NOT
@@ -835,12 +862,24 @@ final class AICoachEngine: ObservableObject {
             if !clean.isEmpty {
                 synthesisText = clean
                 synthesisGeneratedAt = Date()
+                lastSynthesisError = nil   // a good generation clears the previous failure
             }
         } catch {
-            // Silent by design — see the doc comment. The stale-day drop above already ran, so a
-            // failure here shows the rule-based read, never a previous day's paragraph.
+            // Today's card stays clean — the stale-day drop above already ran, so a failure here shows
+            // the rule-based read, never a previous day's paragraph. But it is no longer silent
+            // EVERYWHERE: swallowing the reason is why "the heavy model produces no synthesis" could
+            // not be diagnosed from inside the app at all, by the user or by anyone reading the code.
+            // The reason is recorded for the Coach screen to surface, where an error banner already
+            // exists and belongs.
+            lastSynthesisError = (error as? AICoachError)?.errorDescription ?? error.localizedDescription
         }
     }
+
+    /// Why the last Today-synthesis generation failed, or nil if the last one succeeded (or none has
+    /// run). Surfaced in the Coach screen rather than on Today: the Today card's contract is to always
+    /// show something useful, and a provider error is not that — but "synthesis is blank and I cannot
+    /// tell why" is exactly the question the Coach screen should answer.
+    @Published private(set) var lastSynthesisError: String?
 
     /// Full data context = the metrics summary + recent workouts (+ an OPT-IN on-device-signals summary
     /// when the second consent is on). Used when the user has granted data access.
@@ -963,12 +1002,12 @@ final class AICoachEngine: ObservableObject {
                 messages: messages,
                 session: session
             )
-        } catch AICoachError.timedOut {
-            // Only worth a second request if it is a genuinely DIFFERENT, faster one. Same model ⇒
-            // rethrow immediately instead of making the user wait out another full budget.
+        } catch let failure as AICoachError where failure.deservesLighterModelRetry {
+            // Only worth a second request if it is a genuinely DIFFERENT, lighter one. Same model ⇒
+            // rethrow immediately rather than repeat a request that already failed exactly this way.
             guard let fallback = provider.cheapestModel, fallback != model else {
                 lastTimeoutFallbackModel = nil
-                throw AICoachError.timedOut
+                throw failure
             }
             lastTimeoutFallbackModel = fallback
             return try await provider.client.send(
