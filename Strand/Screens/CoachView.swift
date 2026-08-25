@@ -36,6 +36,13 @@ struct CoachView: View {
     @State private var customModelDraft: String = ""
     /// Whether the connected header's free-text model-id prompt is showing.
     @State private var showConnectedCustomModel: Bool = false
+    /// Whether the provider-configuration sheet is showing (the gear). Presenting the same setup card
+    /// as a sheet rather than routing through `isConfigured` means reaching it never requires being
+    /// disconnected, and dismissing it never requires saving anything.
+    @State private var showProviderConfig: Bool = false
+    /// Whether the "Forget key" confirmation is showing. Deleting a credential asks first — the old
+    /// gear did it on a single tap with no way to undo.
+    @State private var showForgetKeyConfirm: Bool = false
     @FocusState private var composerFocused: Bool
 
     /// K2: confirmation gate for the destructive "Clear conversation" toolbar action.
@@ -84,6 +91,13 @@ struct CoachView: View {
                 } else {
                     suggestionChips
                 }
+                // Why Today's synthesis is blank. It fails silently by design there — the card falls
+                // back to the rule-based read rather than showing a provider error — which left no way
+                // to tell a broken provider from a quiet one. This is where that question gets answered.
+                if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
+                    errorBanner("Today's synthesis: \(synthesisError)")
+                }
+                suggestionChips
                 composer
                 // K12: show a rough token estimate when the draft is non-empty.
                 if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -116,14 +130,23 @@ struct CoachView: View {
                     .disabled(coach.messages.isEmpty)
                 }
                 ToolbarItem {
-                    Button(role: .destructive) {
-                        coach.disconnect()
+                    // OPENS the provider configuration; it does not destroy anything.
+                    //
+                    // This was a `.destructive` button that called `disconnect()` on a single tap, with
+                    // no confirmation — labelled "Disconnect" but wearing a gear, which reads as
+                    // settings. Tapping it deleted the saved key and dropped the user into the setup
+                    // card, and under the old single-slot store that was the ONLY stored key. A gear
+                    // that silently destroys a credential is a trap regardless of its label, so the
+                    // gear now means what it looks like it means. Forgetting a key is still available,
+                    // as a named and confirmed action inside the card.
+                    Button {
+                        showProviderConfig = true
                         keyDraft = ""
                     } label: {
-                        Label("Disconnect", systemImage: "gearshape")
+                        Label("Configure providers", systemImage: "gearshape")
                     }
-                    .help("Forget the saved key and disconnect")
-                    .accessibilityLabel("Disconnect provider")
+                    .help("Add or replace API keys and switch provider")
+                    .accessibilityLabel("Configure providers")
                 }
             }
         }
@@ -287,8 +310,18 @@ struct CoachView: View {
                         NoopButton("Connect", systemImage: "link", kind: .primary, action: connectCustom)
                             .disabled(coach.customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     } else {
-                        NoopButton("Save key", systemImage: "key.fill", kind: .primary, action: saveKey)
+                        NoopButton(coach.hasKey ? "Replace key" : "Save key",
+                                   systemImage: "key.fill", kind: .primary, action: saveKey)
                             .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    // Forgetting a key is now a NAMED, confirmed action rather than the side effect of
+                    // tapping a gear. Shown only for a provider that has something to forget.
+                    if coach.hasKey {
+                        NoopButton("Forget key", systemImage: "trash", kind: .secondary) {
+                            showForgetKeyConfirm = true
+                        }
+                        .accessibilityLabel("Forget the saved \(coach.provider.displayName) key")
                     }
 
                     // The way OUT of this card, and it has to live HERE.
@@ -326,6 +359,16 @@ struct CoachView: View {
                 Divider().overlay(StrandPalette.hairline)
                 privacyFootnote
             }
+        }
+        .confirmationDialog("Forget the saved \(coach.provider.displayName) key?",
+                            isPresented: $showForgetKeyConfirm, titleVisibility: .visible) {
+            Button("Forget key", role: .destructive) {
+                coach.clearKey()
+                keyDraft = ""
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The key is deleted from the Keychain and has to be pasted again to use \(coach.provider.displayName). Your other providers' keys are not affected.")
         }
     }
 
