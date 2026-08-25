@@ -375,7 +375,7 @@ struct CoachView: View {
                         .accessibilityLabel("API key")
                 }
 
-                HStack {
+                HStack(spacing: 10) {
                     if coach.provider == .custom {
                         NoopButton("Connect", systemImage: "link", kind: .primary, action: connectCustom)
                             .disabled(coach.customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -383,6 +383,27 @@ struct CoachView: View {
                         NoopButton("Save key", systemImage: "key.fill", kind: .primary, action: saveKey)
                             .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+
+                    // The way OUT of this card, and it has to live HERE.
+                    //
+                    // "Save key" is disabled while the key field is empty, and that field is transient:
+                    // cleared after every save and never prefilled from the Keychain, because a stored
+                    // secret cannot be read back into a field. So selecting a provider with no stored
+                    // key leaves the card with every control dead. There is no toolbar in this state
+                    // either — `isConfigured` gates it — so the card must carry its own exit.
+                    //
+                    // Switching BACK is the action that helps, and the provider Picker above can do it,
+                    // but only if the user works out that the Picker is the escape. This states it:
+                    // jump straight to a provider that is ready, named so it is obvious where it goes.
+                    if let ready = readyProviderToReturnTo {
+                        NoopButton("Back to \(ready.displayName)", systemImage: "arrow.uturn.backward",
+                                   kind: .secondary) {
+                            coach.provider = ready
+                            keyDraft = ""
+                        }
+                        .accessibilityLabel("Return to \(ready.displayName), which already has a key")
+                    }
+
                     Spacer()
                 }
 
@@ -390,6 +411,14 @@ struct CoachView: View {
                 privacyFootnote
             }
         }
+    }
+
+    /// A provider other than the selected one that is already usable, if any — the destination for the
+    /// setup card's escape hatch. Nil when nothing is configured yet (a first run, where the card is the
+    /// correct place to be and there is nowhere to go back TO), so the button appears only when it can
+    /// actually rescue someone.
+    private var readyProviderToReturnTo: AIProvider? {
+        AIProvider.allCases.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
     }
 
     /// Model selector: a Picker over `coach.availableModels` with a free-text "Custom…" path and a
