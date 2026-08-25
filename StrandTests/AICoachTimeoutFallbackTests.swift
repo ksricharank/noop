@@ -1,12 +1,13 @@
 import XCTest
 @testable import Strand
 
-/// The one-shot timeout fallback: which failures earn a retry, and which model the retry uses.
+/// The one-shot lighter-model fallback: which failures earn the retry, and which model it uses.
 ///
-/// The retry spends a second request on the user's behalf, so the rules around it are worth pinning.
-/// Retrying the wrong class of failure (a rejected key, a rate limit) doubles the wait before showing
-/// an error that was never going to change; retrying on the wrong model wastes the attempt on
-/// something no faster than the one that just timed out.
+/// EXACTLY one retry, for latency: the user waits through both attempts, so a second failure must
+/// surface rather than trigger a third. The trigger set is defined by exclusion — only failures that
+/// are provably about the request (a rejected key, an empty question, a bad URL) skip it. Predicting
+/// the retry-worthy set the other way round failed twice in practice: timeouts-only missed the empty
+/// replies that thinking models produce, and adding rate limits still missed 503s.
 final class AICoachTimeoutFallbackTests: XCTestCase {
 
     /// Every cloud provider must name a fallback, or a timeout on it silently retries the same model
@@ -66,18 +67,43 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         XCTAssertTrue(AICoachError.timedOut.deservesLighterModelRetry)
     }
 
-    /// Everything a lighter model cannot fix must NOT retry: these fail identically on any model, so a
-    /// second request only doubles the wait before showing the same error.
-    func testFailuresALighterModelCannotFixDoNotRetry() {
+    /// Only failures that are about the REQUEST are excluded — a missing or rejected key, an empty
+    /// question, a bad server URL. These fail identically on any model, so retrying spends the user's
+    /// one retry (and their latency) on a certainty.
+    func testRequestLevelFailuresDoNotRetry() {
+        XCTAssertFalse(AICoachError.noKey.deservesLighterModelRetry)
         XCTAssertFalse(AICoachError.badKey.deservesLighterModelRetry,
                        "a rejected key is rejected by every model")
-        XCTAssertFalse(AICoachError.noKey.deservesLighterModelRetry)
-        XCTAssertFalse(AICoachError.decode.deservesLighterModelRetry)
-        XCTAssertFalse(AICoachError.server(500, "boom").deservesLighterModelRetry)
-        XCTAssertFalse(AICoachError.network("offline").deservesLighterModelRetry)
-        XCTAssertFalse(AICoachError.badCustomURL("nope").deservesLighterModelRetry)
         XCTAssertFalse(AICoachError.emptyQuestion.deservesLighterModelRetry)
         XCTAssertFalse(AICoachError.keySaveFailed.deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.badCustomURL("nope").deservesLighterModelRetry)
+    }
+
+    /// EVERYTHING else retries. Predicting the retry-worthy set failed twice — timeouts-only missed
+    /// empty replies, then adding rate limits missed 503s — so the rule is now inverted: enumerate
+    /// what provably cannot work, and retry the rest.
+    func testEverythingElseRetries() {
+        let shouldRetry: [AICoachError] = [
+            .timedOut,
+            .emptyReply("finishReason MAX_TOKENS"),
+            .rateLimited,
+            .transientServer(503, "model is overloaded"),
+            .server(400, "bad request"),
+            .network("connection reset"),
+            .decode
+        ]
+        for failure in shouldRetry {
+            XCTAssertTrue(failure.deservesLighterModelRetry,
+                          "\(failure.shortLabel) should fall back to a lighter model")
+        }
+    }
+
+    /// A 503 is the case that prompted this: the retry fired correctly but died against an overloaded
+    /// backend, because a generic 5xx was treated as terminal.
+    func testOverloadedProviderRetries() {
+        XCTAssertTrue(AICoachError.transientServer(503, "overloaded").deservesLighterModelRetry)
+        XCTAssertTrue(AICoachError.transientServer(500, "").deservesLighterModelRetry)
+        XCTAssertTrue(AICoachError.transientServer(502, "").deservesLighterModelRetry)
     }
 
     /// The timeout message must NOT claim a retry happened: one only runs when a genuinely faster model
@@ -116,7 +142,8 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         let cases: [AICoachError] = [
             .noKey, .emptyQuestion, .badKey, .rateLimited, .timedOut,
             .server(500, "boom"), .network("offline"), .decode,
-            .emptyReply("nothing"), .keySaveFailed, .badCustomURL("bad")
+            .emptyReply("nothing"), .keySaveFailed, .badCustomURL("bad"),
+            .transientServer(503, "overloaded")
         ]
         for e in cases {
             XCTAssertFalse(e.shortLabel.isEmpty, "\(e) has no short label")
