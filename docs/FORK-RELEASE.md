@@ -53,11 +53,42 @@ regenerates `Strand.xcodeproj`. Two env knobs:
 | `RELEASE_BRANCH` | `release` | Build under another name — `release` is often checked out in another worktree, and git refuses to update a branch that is |
 | `UPSTREAM_REMOTE` | `upstream`, falling back to `origin` | Only for a non-standard remote layout |
 
-### 4. Build to the phone
+### 4. Reset the provisioning clock
+
+```bash
+rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+```
+
+Do this on **every** release, before the build. A free personal team issues 7-day profiles, and
+Xcode reuses an existing valid one rather than minting a new one — so a rebuild does *not* reliably
+reset the clock, and the app can die mid-week after what looked like a fresh build. Deleting them
+first forces a new profile and buys the full seven days. See
+[Provisioning expires in 7 days](#provisioning-expires-in-7-days).
+
+Cheap to do and cheap to get wrong in the other direction: the profiles are regenerated on demand,
+so deleting them when they did not need it costs one extra fetch at build time.
+
+### 5. Build to the phone
 
 Open `Strand.xcodeproj`, scheme **NOOPiOS**, press ▶.
 
-### 5. Push
+Before pressing ▶ in a worktree you have not built in before, confirm the signing identity actually
+resolved — a worktree missing its gitignored `Config/BundleIdSecrets.xcconfig` builds as
+`com.noopapp` with no team and only fails later, at the signing step:
+
+```bash
+xcodebuild -project Strand.xcodeproj -scheme NOOPiOS -configuration Release -showBuildSettings \
+  | grep -E 'PRODUCT_BUNDLE_IDENTIFIER =|DEVELOPMENT_TEAM ='
+```
+
+### 6. Write the build notes
+
+One file per fork build in [`docs/releases/fork/`](releases/fork/), covering the `.N` portion only.
+Record what shipped — version, build number, the branches in the stack, what was verified and what
+was not — and restate the profile reset from step 4, since the notes are what gets re-read when
+reinstalling a build later and a stale profile is the first thing to check.
+
+### 7. Push
 
 See [Pushing](#pushing) — those are manual.
 
@@ -201,6 +232,9 @@ after what looked like a fresh build. For a full week, force a new profile:
 ```bash
 rm ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
 ```
+
+This is [step 4 of the procedure](#4-reset-the-provisioning-clock) rather than a remedy to reach for
+once the app has already died — by then the build is gone from the phone and has to be redone.
 
 Then rebuild. Check what you actually shipped with:
 

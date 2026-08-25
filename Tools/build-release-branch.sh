@@ -106,4 +106,13 @@ echo
 echo "'$RELEASE_BRANCH' is ready: $UPSTREAM + ${#FEATURES[@]} feature branch(es)."
 git --no-pager log --oneline "$UPSTREAM..$RELEASE_BRANCH" | sed 's/^/    /'
 echo
-echo "Next: open Strand.xcodeproj, scheme NOOPiOS, and build to your iPhone."
+cat <<'NEXT'
+Next:
+  1. Clear the stale provisioning profiles, or a rebuild silently reuses one with days already
+     spent on it and the app dies mid-week (free personal teams issue 7-day profiles):
+       rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+  2. Open Strand.xcodeproj, scheme NOOPiOS, and build to your iPhone.
+  3. Write the build's notes in docs/releases/fork/, restating step 1 there.
+
+See docs/FORK-RELEASE.md for the full procedure.
+NEXT
