@@ -28,6 +28,12 @@ struct CoachSettingsView: View {
     /// The coach-instructions editor, collapsed until asked for.
     @State private var promptExpanded: Bool = false
     @State private var promptDraft: String = ""
+    /// Whether the editable Today-synthesis prompt section is expanded. Collapsed by default, and a
+    /// separate section from the coach prompt because the two frame different surfaces.
+    @State private var synthesisPromptExpanded: Bool = false
+    /// Working copy of the synthesis instruction while editing, committed to the engine on change so
+    /// an edit takes effect on the next Today refresh. Seeded when the editor opens.
+    @State private var synthesisPromptDraft: String = ""
 
     var body: some View {
         // Literals, not String(localized:): `title`/`subtitle` are LocalizedStringKey, which converts
@@ -56,6 +62,7 @@ struct CoachSettingsView: View {
             if coach.dataConsent && coach.provider == .gemini { multimodalChartBar }
             systemPromptBar
             morningBriefBar
+            synthesisPromptBar
         }
         // Opening this screen is the moment a stale catalogue is worth refreshing: a key exists here by
         // definition, and the picker above is about to be read. Rate-limited and silent on failure.
@@ -303,6 +310,73 @@ struct CoachSettingsView: View {
                     .disabled(briefGenerating)
                     if let briefStatus {
                         Text(briefStatus).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var synthesisPromptBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: synthesisPromptExpanded ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        synthesisPromptExpanded.toggle()
+                        if synthesisPromptExpanded { synthesisPromptDraft = coach.customSynthesisPrompt }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "text.alignleft")
+                            .foregroundStyle(coach.hasCustomSynthesisPrompt ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Today synthesis instructions")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(coach.hasCustomSynthesisPrompt
+                                 ? "Customised. Your edited instructions shape the Today paragraph."
+                                 : "Edit the paragraph the coach writes on Today. Takes effect on the next refresh.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: synthesisPromptExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(synthesisPromptExpanded ? "Collapse Today synthesis instructions" : "Edit Today synthesis instructions")
+
+                if synthesisPromptExpanded {
+                    TextEditor(text: $synthesisPromptDraft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: synthesisPromptDraft) { newValue in
+                            coach.customSynthesisPrompt = newValue
+                        }
+                        .accessibilityLabel("Today synthesis instructions editor")
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            coach.resetSynthesisPrompt()
+                            synthesisPromptDraft = coach.customSynthesisPrompt
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!coach.hasCustomSynthesisPrompt)
+                        .accessibilityLabel("Reset Today synthesis instructions to default")
                     }
                 }
             }
