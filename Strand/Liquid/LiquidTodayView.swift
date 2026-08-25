@@ -1034,12 +1034,11 @@ struct LiquidTodayView: View {
                             HStack(spacing: 4) {
                                 Image(systemName: "sparkles").font(StrandFont.caption)
                                 Text("Written by your Coach").font(StrandFont.caption)
-                                // Names the model ONLY when a fallback wrote it — the selected model
-                                // needs no disclosure, but a paragraph from a different one would
-                                // otherwise read as the chosen model's work. Twin of the same line in
-                                // `TodayView.aiSynthesisCard`; keep the two in step.
-                                if let fallback = coach.synthesisFallbackModel {
-                                    Text("· \(fallback)").font(StrandFont.caption)
+                                // Always names the model that wrote it. Showing it only for a fallback made the
+                                // label's ABSENCE mean "your chosen model", which nobody can read off the
+                                // screen. Twin of the same line in the other Today view; keep them in step.
+                                if let model = coach.synthesisModel {
+                                    Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)").font(StrandFont.caption)
                                 }
                             }
                             .foregroundStyle(StrandPalette.textTertiary)

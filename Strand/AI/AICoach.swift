@@ -28,20 +28,30 @@ struct ChatMessage: Identifiable, Equatable {
     let id: UUID
     let role: Role
     let text: String
-    /// The model that produced this reply, when it is NOT the one currently selected — i.e. when a
-    /// fallback answered instead. Nil for user turns and for replies from the chosen model.
+    /// The model that produced this reply. Nil for user turns.
+    ///
+    /// Always recorded, not only when a fallback answered. Showing it exclusively for the retry made
+    /// the label itself carry hidden meaning — its ABSENCE silently meant "your chosen model", which
+    /// is only legible to someone who already knows the rule. Naming the model every time makes the
+    /// answer self-describing, and a fallback then stands out because the name differs from the
+    /// picker, not because a label appeared from nowhere.
     ///
     /// Carried on the message rather than held as one "last model" value because the transcript keeps
-    /// history: scroll back to a reply the fallback rescued and the attribution has to still be that
-    /// reply's, not the most recent request's. Attributing silently is the failure being avoided — an
-    /// answer from a model the picker does not name reads as the chosen model's work.
-    let fallbackModel: String?
+    /// history: scroll back and each reply must still name the model that actually wrote it, not the
+    /// most recent request's.
+    let generatedByModel: String?
 
-    init(id: UUID = UUID(), role: Role, text: String, fallbackModel: String? = nil) {
+    /// Whether this reply came from the one-shot fallback rather than the selected model. Drives the
+    /// emphasis on the attribution — the name alone does not say whether a substitution happened.
+    let cameFromFallback: Bool
+
+    init(id: UUID = UUID(), role: Role, text: String,
+         generatedByModel: String? = nil, cameFromFallback: Bool = false) {
         self.id = id
         self.role = role
         self.text = text
-        self.fallbackModel = fallbackModel
+        self.generatedByModel = generatedByModel
+        self.cameFromFallback = cameFromFallback
     }
 }
 
@@ -773,7 +783,8 @@ final class AICoachEngine: ObservableObject {
             let reply = try await callProvider(key: key, messages: wire)
             let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
             appendMessage(ChatMessage(role: .assistant, text: clean.isEmpty ? "(no reply)" : clean,
-                                      fallbackModel: lastTimeoutFallbackModel))
+                                      generatedByModel: lastAnsweringModel,
+                                      cameFromFallback: lastTimeoutFallbackModel != nil))
         } catch let e as AICoachError {
             errorText = e.errorDescription
         } catch {
@@ -803,7 +814,8 @@ final class AICoachEngine: ObservableObject {
             let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
             if !clean.isEmpty {
                 appendMessage(ChatMessage(role: .assistant, text: "Today's brief\n\n" + clean,
-                                          fallbackModel: lastTimeoutFallbackModel))
+                                          generatedByModel: lastAnsweringModel,
+                                          cameFromFallback: lastTimeoutFallbackModel != nil))
             }
         } catch let e as AICoachError {
             errorText = e.errorDescription
@@ -821,9 +833,14 @@ final class AICoachEngine: ObservableObject {
     /// Deliberately NEVER appended to `messages`: the chat transcript is the user's own conversation,
     /// and a per-open generation would bury it.
     @Published var synthesisText: String?
-    /// The model that wrote the current `synthesisText`, when a fallback produced it rather than the
-    /// selected model. Nil when the chosen model answered — nothing to disclose.
-    @Published private(set) var synthesisFallbackModel: String?
+    /// The model that wrote the current `synthesisText`, whichever it was. Nil only before the first
+    /// generation.
+    @Published private(set) var synthesisModel: String?
+
+    /// Whether the current `synthesisText` came from the one-shot fallback rather than the selected
+    /// model. The model name alone does not say a substitution happened — that only reads as unusual
+    /// if you remember what you had picked — so the card labels it explicitly.
+    @Published private(set) var synthesisCameFromFallback = false
 
     /// When `synthesisText` was generated. The Today card treats a text from a previous local day as
     /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
@@ -889,9 +906,11 @@ final class AICoachEngine: ObservableObject {
             if !clean.isEmpty {
                 synthesisText = clean
                 synthesisGeneratedAt = Date()
-                // Which model actually wrote it, when a fallback did. Same disclosure the chat makes:
-                // a paragraph from a model the picker does not name reads as the chosen model's work.
-                synthesisFallbackModel = lastTimeoutFallbackModel
+                // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
+                // for the retry made its absence carry the hidden meaning "your chosen model", which
+                // is legible only to someone who already knows the rule.
+                synthesisModel = lastAnsweringModel
+                synthesisCameFromFallback = lastTimeoutFallbackModel != nil
                 lastSynthesisError = nil   // a good generation clears the previous failure
             }
         } catch {
@@ -1029,6 +1048,7 @@ final class AICoachEngine: ObservableObject {
                 session: session
             )
             lastTimeoutFallbackModel = nil
+            lastAnsweringModel = attempted
             lastAttemptTrace = nil   // a clean success needs no explanation
             return reply
         } catch let failure as AICoachError where failure.deservesLighterModelRetry {
@@ -1049,6 +1069,7 @@ final class AICoachEngine: ObservableObject {
                     messages: messages,
                     session: session
                 )
+                lastAnsweringModel = fallback
                 lastAttemptTrace = "\(attempted) failed (\(failure.shortLabel)) — this answer came from "
                     + "\(fallback) instead."
                 return reply
@@ -1079,6 +1100,11 @@ final class AICoachEngine: ObservableObject {
     /// fallback ran and failed, or never ran at all — and neither could anyone reading the code. That
     /// ambiguity is what made "the retry doesn't work" impossible to diagnose from the outside.
     @Published private(set) var lastTimeoutFallbackModel: String?
+
+    /// The model that actually produced the last successful reply — the selected one, or the fallback
+    /// when the retry rescued it. Always set on success, unlike `lastTimeoutFallbackModel`, which is
+    /// nil precisely when nothing went wrong and so cannot answer "which model wrote this?".
+    @Published private(set) var lastAnsweringModel: String?
 
     /// A human-readable trace of what the last generation actually did — which model was tried, whether
     /// a fallback was attempted, and how it ended. Surfaced in the Coach screen.
