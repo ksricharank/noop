@@ -58,9 +58,19 @@ if ! $DRY_RUN; then
   # A branch checked out in ANY worktree cannot be force-updated; update it in place there instead.
   if wt=$(git worktree list --porcelain | grep -B2 "^branch refs/heads/main$" | head -1 | cut -d' ' -f2-) \
      && [[ -n "$wt" ]]; then
-    git -C "$wt" merge --ff-only "$UPSTREAM" >/dev/null \
-      && echo "    fast-forwarded in worktree $wt" \
-      || echo "    WARNING: main in $wt would not fast-forward (it has local commits?)"
+    if git -C "$wt" merge --ff-only "$UPSTREAM" >/dev/null 2>&1; then
+      echo "    fast-forwarded in worktree $wt"
+    elif ! git merge-base --is-ancestor main "$UPSTREAM"; then
+      echo "    WARNING: main has diverged from $UPSTREAM -- it is meant to be a pure mirror." >&2
+      echo "             Inspect with: git log --oneline $UPSTREAM..main" >&2
+    else
+      # main is a clean fast-forward; something in the worktree is in the way. Almost always the
+      # .xcstrings catalogs, which Xcode regenerates on nearly every build.
+      echo "    WARNING: main could not fast-forward -- worktree $wt is dirty:" >&2
+      git -C "$wt" status --porcelain | sed 's/^/               /' >&2
+      echo "             Discard generated churn, then re-run:" >&2
+      echo "               git -C $wt checkout -- '\''**/Localizable.xcstrings'\''" >&2
+    fi
   else
     git branch -f main "$UPSTREAM"
   fi
