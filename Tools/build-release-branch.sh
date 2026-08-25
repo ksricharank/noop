@@ -28,6 +28,7 @@ FEATURES=(
   "feature/locked-rescore-deferral"
   "feature/dynamic-island-minimal-hr"
   "feature/synthesis-horizons"
+  "feature/release-by-default"
 )
 
 cd "$(git rev-parse --show-toplevel)"
