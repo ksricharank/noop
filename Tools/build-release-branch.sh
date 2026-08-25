@@ -26,6 +26,10 @@ FEATURES=(
   "feature/release-branch-tooling"
   "feature/lock-screen-hr-average"
   "feature/locked-rescore-deferral"
+  # Stacked AFTER locked-rescore-deferral: both rewrite the same opt-out/disconnect guard in
+  # LiveActivityController. This one converts those exits to the generation-gated `endIfCurrent()`,
+  # so it must land on top of the presentation-policy rewrite rather than under it.
+  "feature/dynamic-ui-bug-fix"
   "feature/dynamic-island-minimal-hr"
   "feature/synthesis-horizons"
   "feature/release-by-default"
