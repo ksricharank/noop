@@ -4,7 +4,9 @@ How a build of this fork gets from "upstream moved / I changed a feature" to "in
 phone". [`FORK-WORKFLOW.md`](FORK-WORKFLOW.md) explains *why* the branch model is shaped this way;
 this page is the procedure, the version rules, and the traps that cost real time.
 
-Everything here is local except the pushes at the end.
+Everything here is local except the pushes at the end. Two steps must be run **by hand** and are
+marked where they appear: the [provisioning reset](#4-reset-the-provisioning-clock-manual-gate)
+before the build, and the [pushes](#pushing) after it.
 
 ---
 
@@ -53,7 +55,11 @@ regenerates `Strand.xcodeproj`. Two env knobs:
 | `RELEASE_BRANCH` | `release` | Build under another name — `release` is often checked out in another worktree, and git refuses to update a branch that is |
 | `UPSTREAM_REMOTE` | `upstream`, falling back to `origin` | Only for a non-standard remote layout |
 
-### 4. Reset the provisioning clock
+### 4. Reset the provisioning clock (manual gate)
+
+> **Run this yourself, and run it before step 5. Do not start the build until it has been done.**
+> It deletes files outside the repository, so an agent working in this repo is blocked from doing it
+> and cannot do it for you — the same shape of manual step as the [pushes](#pushing).
 
 ```bash
 rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
@@ -68,7 +74,20 @@ first forces a new profile and buys the full seven days. See
 Cheap to do and cheap to get wrong in the other direction: the profiles are regenerated on demand,
 so deleting them when they did not need it costs one extra fetch at build time.
 
+**Why this is a gate and not a reminder.** Skipping it produces a build that succeeds, signs,
+installs, and looks correct — and then dies partway through the week on a profile that was already
+part-expired when it was reused. There is nothing in the build output that distinguishes that build
+from a good one, so the failure surfaces days later as "the app stopped launching", far from the
+step that caused it. Ordering is the only defence: a build started before the reset cannot be
+salvaged afterwards, it has to be rebuilt.
+
+If an agent is driving the release, it should stop here, hand you this command, and wait for
+confirmation before continuing to step 5 rather than building and mentioning the reset afterwards.
+
 ### 5. Build to the phone
+
+**Precondition: step 4 has been run in this session.** If it has not, stop and do it first — a build
+made before the reset carries the stale profile and has to be thrown away.
 
 Open `Strand.xcodeproj`, scheme **NOOPiOS**, press ▶.
 
@@ -233,8 +252,9 @@ after what looked like a fresh build. For a full week, force a new profile:
 rm ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
 ```
 
-This is [step 4 of the procedure](#4-reset-the-provisioning-clock) rather than a remedy to reach for
-once the app has already died — by then the build is gone from the phone and has to be redone.
+This is [step 4 of the procedure](#4-reset-the-provisioning-clock-manual-gate) rather than a remedy
+to reach for once the app has already died — by then the build is gone from the phone and has to be
+redone.
 
 Then rebuild. Check what you actually shipped with:
 
