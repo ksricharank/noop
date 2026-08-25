@@ -18,7 +18,10 @@
 
 set -euo pipefail
 
-RELEASE_BRANCH="release"
+# Overridable so a second integration branch can be built while `release` is checked out in
+# another worktree (git refuses to update a branch that is), and to test a stack without
+# clobbering the one currently installed on the phone.
+RELEASE_BRANCH="${RELEASE_BRANCH:-release}"
 # Match sync-upstream.sh: build on the UPSTREAM remote's main, falling back to origin only when no
 # separate upstream is configured. Hardcoding origin/main built the release on the FORK's mirror of
 # main, which is only as current as the last push to it — after an upstream sync that mirror is
