@@ -229,6 +229,25 @@ enum AICoachError: LocalizedError {
         }
     }
 
+    /// A few words naming the failure, for the attempt trace. The full `errorDescription` is a
+    /// sentence written for someone reading one error; the trace strings several together and needs
+    /// each to be short enough to stay legible.
+    var shortLabel: String {
+        switch self {
+        case .noKey:            return "no key"
+        case .emptyQuestion:    return "empty question"
+        case .badKey:           return "key rejected"
+        case .rateLimited:      return "rate limited"
+        case .timedOut:         return "timed out"
+        case .server(let code, _): return "HTTP \(code)"
+        case .network:          return "network error"
+        case .decode:           return "unreadable reply"
+        case .emptyReply:       return "empty reply"
+        case .keySaveFailed:    return "key save failed"
+        case .badCustomURL:     return "bad server URL"
+        }
+    }
+
     /// Whether this failure is worth one automatic retry on the provider's lightest model.
     ///
     /// Two failures qualify, and they are the two a smaller model plausibly survives:
@@ -994,36 +1013,74 @@ final class AICoachEngine: ObservableObject {
     /// silently re-point the picker at a smaller model for every request that follows.
     private func callProvider(key: String,
                               messages: [(role: ChatMessage.Role, content: String)]) async throws -> String {
+        let attempted = model
         do {
-            return try await provider.client.send(
+            let reply = try await provider.client.send(
                 key: key,
-                model: model,
+                model: attempted,
                 systemPrompt: systemPrompt,
                 messages: messages,
                 session: session
             )
+            lastTimeoutFallbackModel = nil
+            lastAttemptTrace = nil   // a clean success needs no explanation
+            return reply
         } catch let failure as AICoachError where failure.deservesLighterModelRetry {
             // Only worth a second request if it is a genuinely DIFFERENT, lighter one. Same model ⇒
             // rethrow immediately rather than repeat a request that already failed exactly this way.
             guard let fallback = provider.cheapestModel, fallback != model else {
                 lastTimeoutFallbackModel = nil
+                lastAttemptTrace = "\(attempted) failed (\(failure.shortLabel)); no lighter model to "
+                    + "fall back to, so no retry was attempted."
                 throw failure
             }
             lastTimeoutFallbackModel = fallback
-            return try await provider.client.send(
-                key: key,
-                model: fallback,
-                systemPrompt: systemPrompt,
-                messages: messages,
-                session: session
-            )
+            do {
+                let reply = try await provider.client.send(
+                    key: key,
+                    model: fallback,
+                    systemPrompt: systemPrompt,
+                    messages: messages,
+                    session: session
+                )
+                lastAttemptTrace = "\(attempted) failed (\(failure.shortLabel)) — this answer came from "
+                    + "\(fallback) instead."
+                return reply
+            } catch let retryFailure {
+                let retryLabel = (retryFailure as? AICoachError)?.shortLabel
+                    ?? retryFailure.localizedDescription
+                lastAttemptTrace = "\(attempted) failed (\(failure.shortLabel)), and the retry on "
+                    + "\(fallback) also failed (\(retryLabel))."
+                throw retryFailure
+            }
+        } catch {
+            // Not retry-worthy: record WHY there was no second attempt, so "the retry didn't run" is
+            // an answerable question rather than a guess.
+            lastTimeoutFallbackModel = nil
+            let label = (error as? AICoachError)?.shortLabel ?? error.localizedDescription
+            lastAttemptTrace = "\(attempted) failed (\(label)). That kind of failure is not retried — a "
+                + "lighter model would fail the same way."
+            throw error
         }
     }
 
-    /// The model the last timeout retry fell back to, or nil if no retry has happened. Set even when
-    /// the retry itself fails, so the surfaced error can say a fallback was already tried rather than
-    /// implying the user's first choice was the only attempt.
-    private(set) var lastTimeoutFallbackModel: String?
+    /// The model the last retry fell back to, or nil if no retry has happened. Set even when the retry
+    /// itself fails, so the surfaced error can say a fallback was already tried rather than implying
+    /// the user's first choice was the only attempt.
+    ///
+    /// `@Published` because it is displayed. It was neither published nor read by any view, which meant
+    /// the retry was completely unobservable: a user seeing no synthesis could not tell whether the
+    /// fallback ran and failed, or never ran at all — and neither could anyone reading the code. That
+    /// ambiguity is what made "the retry doesn't work" impossible to diagnose from the outside.
+    @Published private(set) var lastTimeoutFallbackModel: String?
+
+    /// A human-readable trace of what the last generation actually did — which model was tried, whether
+    /// a fallback was attempted, and how it ended. Surfaced in the Coach screen.
+    ///
+    /// Deliberately records SUCCESS as well as failure. A retry that silently rescues the request is
+    /// just as confusing as one that silently does nothing: the answer arrives from a model the picker
+    /// does not name, and the user is left believing their chosen model produced it.
+    @Published private(set) var lastAttemptTrace: String?
 
     /// Sliding window over the chat: the FIRST user turn (it carries the metrics context) plus the most
     /// recent `maxHistoryMessages`, dropping the middle. Sending the whole growing history crowds out the
