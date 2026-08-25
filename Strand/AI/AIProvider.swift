@@ -283,6 +283,16 @@ func performRequest(_ req: URLRequest, session: URLSession) async throws -> [Str
         // it. Same shape of failure as a client-side timeout from the caller's point of view, and worth
         // the same one retry on a faster model, so it is reported as one rather than as a generic 5xx.
         throw AICoachError.timedOut
+    case 500, 502, 503, 529:
+        // Transient server-side trouble: 500 internal, 502 bad gateway, 503 unavailable/overloaded,
+        // 529 overloaded (Anthropic's). None of these say anything about the request — the key is
+        // good, the model id is real, the payload parsed. The provider is simply busy or briefly
+        // broken, which is exactly the failure a second attempt exists for.
+        //
+        // Separate from the `.server` catch-all because that is reported as terminal, and a 503 is
+        // not: Gemini returns it routinely when a model is overloaded, and that is what killed a
+        // fallback attempt in practice even after the retry had started firing correctly.
+        throw AICoachError.transientServer(http.statusCode, providerErrorMessage(from: data))
     default:
         throw AICoachError.server(http.statusCode, providerErrorMessage(from: data))
     }
