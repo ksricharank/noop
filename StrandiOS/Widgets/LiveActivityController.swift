@@ -60,6 +60,7 @@ final class LiveActivityController {
         case .present:
             break
         }
+        guard let bpm else { return }
 
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery, bonded: connected,
                                                         effort: effort)
