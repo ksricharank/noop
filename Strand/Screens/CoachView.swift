@@ -119,6 +119,13 @@ struct CoachView: View {
                 if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
                     errorBanner("Today's synthesis: \(synthesisError)")
                 }
+                // What the last generation actually DID — which model ran, whether a fallback was
+                // attempted, and how it ended. Without this the retry is invisible: a blank result
+                // cannot be told apart from a retry that ran and failed, which is precisely the
+                // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
+                if let trace = coach.lastAttemptTrace, !trace.isEmpty {
+                    attemptTraceNote(trace)
+                }
                 suggestionChips
                 composer
                 // K12: show a rough token estimate when the draft is non-empty.
@@ -1042,6 +1049,23 @@ struct CoachView: View {
         guard !trimmed.isEmpty else { return }
         coach.setKey(trimmed)
         keyFix = ""
+    /// What the last generation did. Informational, not an error — it reports a successful fallback as
+    /// readily as a failed one, because an answer that quietly came from a different model than the one
+    /// named in the picker is its own kind of confusion. Tertiary styling so it reads as a footnote
+    /// rather than competing with a real error banner above it.
+    private func attemptTraceNote(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(StrandPalette.textTertiary)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Model attempt: \(message)")
     }
 
     private var suggestionChips: some View {
