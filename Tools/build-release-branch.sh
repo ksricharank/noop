@@ -19,7 +19,14 @@
 set -euo pipefail
 
 RELEASE_BRANCH="release"
-UPSTREAM="origin/main"
+# Match sync-upstream.sh: build on the UPSTREAM remote's main, falling back to origin only when no
+# separate upstream is configured. Hardcoding origin/main built the release on the FORK's mirror of
+# main, which is only as current as the last push to it — after an upstream sync that mirror is
+# behind, so the release silently omitted upstream commits that sync-upstream.sh had already
+# rebased every feature branch onto.
+UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
+git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin"
+UPSTREAM="$UPSTREAM_REMOTE/main"
 
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
@@ -38,8 +45,8 @@ FEATURES=(
 cd "$(git rev-parse --show-toplevel)"
 
 if [[ "${1:-}" != "--no-fetch" ]]; then
-  echo "==> Fetching $UPSTREAM"
-  git fetch origin --prune
+  echo "==> Fetching $UPSTREAM_REMOTE"
+  git fetch "$UPSTREAM_REMOTE" --prune
 fi
 
 # A dirty tree would be silently carried into the rebuild (or block the checkout). Xcode regenerates
