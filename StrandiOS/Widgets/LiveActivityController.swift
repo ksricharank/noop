@@ -160,6 +160,23 @@ final class LiveActivityController {
             }
         }
 
+        // The sleep-window pause (fork): the presentation half of the re-score deferral — the same
+        // wall-clock window that pauses background scoring pauses the surface, from one source of
+        // truth (`RescoreBackgroundScheduler.isInSleepWindow`), so the two can never drift. The rule
+        // lives in `LiveActivityPresentationPolicy` (pure, unit-tested); only the window rides here —
+        // the switch, the gym hand-off and the link state belong to `LiveHRBannerLifecycle` below,
+        // which keeps the dash-on-disconnect instead of this policy's older teardown-on-drop.
+        if case .suppress(let reason) = LiveActivityPresentationPolicy.decide(
+                enabledByUser: true, inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
+                connected: true, hasBPM: true) {
+            if activity != nil, !isEnding {
+                isEnding = true
+                log("ended: " + reason)
+                Task { await end() }
+            }
+            return
+        }
+
         // The switch (#336) and the gym banner on screen end it; nothing that passes does (`LiveHRBannerLifecycle`).
         let now = Date()
         let switchOn = UnitPrefs.liveActivityEnabled()
