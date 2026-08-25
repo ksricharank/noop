@@ -20,11 +20,19 @@ struct GeminiClient: AIProviderClient {
         let body: [String: Any] = [
             "system_instruction": ["parts": [["text": systemPrompt]]],
             "contents": contents,
-            // Gemini 2.5 counts THINKING tokens against maxOutputTokens; the other providers'
-            // visible-reply cap (900) starves thinking models into empty replies (finishReason
-            // MAX_TOKENS, no text parts). 4096 leaves room for both — the system prompt keeps the
-            // visible reply short.
-            "generationConfig": ["temperature": 0.6, "maxOutputTokens": 4096]
+            // Gemini 2.5 counts THINKING tokens against maxOutputTokens, so this budget is SHARED
+            // between reasoning and the visible reply — it is not a cap on answer length.
+            //
+            // 4096 was not enough for the reasoning models. `gemini-pro-latest` can spend the entire
+            // budget thinking and return `finishReason: MAX_TOKENS` with no text parts: an empty reply,
+            // fast, over HTTP 200. And because how much a model thinks varies with the prompt, the same
+            // model succeeded on one request and returned nothing on the next — the intermittent
+            // "heavy model gives no synthesis" that motivated this.
+            //
+            // 16384 gives a reasoning model room to think and still answer. It costs nothing on the
+            // light models, which stop when they are done rather than filling the budget, and the
+            // system prompt is what actually keeps the visible reply short.
+            "generationConfig": ["temperature": 0.6, "maxOutputTokens": 16384]
         ]
 
         // Built via URL(string:): appendingPathComponent percent-encodes the ":" in
