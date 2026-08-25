@@ -493,13 +493,21 @@ targets:
 
 # Explicit schemes so `xcodebuild -scheme Strand …` builds + tests the macOS app (with StrandTests
 # wired in) and `-scheme NOOPiOS …` builds the iOS app. Names match the app-build CI matrix.
+#
+# Run/profile default to Release: these builds are sideloaded onto a personal device and left
+# installed for days, where the optimised build and its battery behaviour are what matter. The
+# tradeoff is that Run carries no debugger — switch a scheme back to Debug (Product > Scheme > Edit
+# Scheme > Run > Build Configuration) for a session that needs breakpoints.
+#
+# Test stays Debug: XCTest needs `@testable import`, which requires the testability that Release
+# builds turn off.
 schemes:
   Strand:
     build:
       targets:
         Strand: all
     run:
-      config: Debug
+      config: Release
     test:
       config: Debug
       targets:
@@ -509,7 +517,7 @@ schemes:
       targets:
         NOOPiOS: all
     run:
-      config: Debug
+      config: Release
   # `xcodebuild -scheme NOOPWatch …` compile-verifies the watchOS app + its embedded complication
   # extension (M3). Name matches the app-build CI matrix entry the verify script adds.
   NOOPWatch:
@@ -517,4 +525,4 @@ schemes:
       targets:
         NOOPWatch: all
     run:
-      config: Debug
+      config: Release
