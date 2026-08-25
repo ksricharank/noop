@@ -111,4 +111,27 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
                                     AICoachEngine.requestTimeoutSeconds,
                                     "the resource ceiling must not undercut the per-request budget")
     }
+
+    /// Every failure must produce a short label for the attempt trace — an empty or default-looking
+    /// label would make the trace unreadable exactly when it is needed most.
+    func testEveryFailureHasAShortLabel() {
+        let cases: [AICoachError] = [
+            .noKey, .emptyQuestion, .badKey, .rateLimited, .timedOut,
+            .server(500, "boom"), .network("offline"), .decode,
+            .emptyReply("nothing"), .keySaveFailed, .badCustomURL("bad")
+        ]
+        for e in cases {
+            XCTAssertFalse(e.shortLabel.isEmpty, "\(e) has no short label")
+            XCTAssertLessThan(e.shortLabel.count, 25,
+                              "\(e) label is too long for a one-line trace: \(e.shortLabel)")
+        }
+    }
+
+    /// The two retry-worthy failures name themselves distinctly in the trace, so "empty reply" and
+    /// "timed out" are never confused when reading what happened.
+    func testRetryWorthyFailuresAreDistinguishableInTheTrace() {
+        XCTAssertEqual(AICoachError.timedOut.shortLabel, "timed out")
+        XCTAssertEqual(AICoachError.emptyReply("x").shortLabel, "empty reply")
+        XCTAssertNotEqual(AICoachError.timedOut.shortLabel, AICoachError.emptyReply("x").shortLabel)
+    }
 }
