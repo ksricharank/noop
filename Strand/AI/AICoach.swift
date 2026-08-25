@@ -28,11 +28,20 @@ struct ChatMessage: Identifiable, Equatable {
     let id: UUID
     let role: Role
     let text: String
+    /// The model that produced this reply, when it is NOT the one currently selected — i.e. when a
+    /// fallback answered instead. Nil for user turns and for replies from the chosen model.
+    ///
+    /// Carried on the message rather than held as one "last model" value because the transcript keeps
+    /// history: scroll back to a reply the fallback rescued and the attribution has to still be that
+    /// reply's, not the most recent request's. Attributing silently is the failure being avoided — an
+    /// answer from a model the picker does not name reads as the chosen model's work.
+    let fallbackModel: String?
 
-    init(id: UUID = UUID(), role: Role, text: String) {
+    init(id: UUID = UUID(), role: Role, text: String, fallbackModel: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
+        self.fallbackModel = fallbackModel
     }
 }
 
@@ -271,7 +280,14 @@ enum AICoachError: LocalizedError {
     ///   one request and not the next: how much it thinks varies per prompt, so the failure is
     ///   intermittent rather than a fixed ceiling that would fail every time.
     ///
-    /// Everything else is excluded deliberately: a rejected key, a rate limit, a bad URL or a 4xx all
+    /// - `.rateLimited` — HTTP 429. Excluded at first on the reasoning that a rate limit "applies to
+    ///   the account, not the model", which is simply wrong for the providers here: Gemini meters
+    ///   per-model, so `gemini-pro-latest` can be exhausted while `gemini-flash-lite-latest` has its
+    ///   own untouched budget. This turned out to be the failure users actually hit — a heavy model
+    ///   429s on a free tier within a few requests — and the exact case a lighter-model fallback
+    ///   exists to rescue. Retrying costs one request against a different quota.
+    ///
+    /// Everything else is excluded deliberately: a rejected key, a bad URL, a 4xx or a decode failure
     /// fail identically on a smaller model, so retrying only doubles the wait before the same error.
     ///
     /// A caveat worth stating: `.emptyReply` also covers a genuinely wrong model id typed by hand, and
@@ -280,7 +296,7 @@ enum AICoachError: LocalizedError {
     /// quietly attributing the light model's answer to the heavy one.
     var deservesLighterModelRetry: Bool {
         switch self {
-        case .timedOut, .emptyReply: return true
+        case .timedOut, .emptyReply, .rateLimited: return true
         default: return false
         }
     }
@@ -995,7 +1011,8 @@ final class AICoachEngine: ObservableObject {
             if let lastIdx = messages.indices.last, messages[lastIdx].role == .assistant {
                 messages[lastIdx] = ChatMessage(
                     id: placeholder.id, role: .assistant,
-                    text: clean.isEmpty ? "(no reply)" : clean
+                    text: clean.isEmpty ? "(no reply)" : clean,
+                    fallbackModel: lastTimeoutFallbackModel
                 )
             }
         } catch let e as AICoachError {
@@ -1063,7 +1080,8 @@ final class AICoachEngine: ObservableObject {
                     messages.remove(at: lastIdx)
                 }
             } else if let lastIdx = messages.indices.last, messages[lastIdx].role == .assistant {
-                messages[lastIdx] = ChatMessage(id: placeholder.id, role: .assistant, text: prefix + clean)
+                messages[lastIdx] = ChatMessage(id: placeholder.id, role: .assistant, text: prefix + clean,
+                                                fallbackModel: lastTimeoutFallbackModel)
             }
         } catch let e as AICoachError {
             let partial = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1131,6 +1149,10 @@ final class AICoachEngine: ObservableObject {
     /// Deliberately NEVER appended to `messages`: the chat transcript is the user's own conversation,
     /// and a per-open generation would bury it.
     @Published var synthesisText: String?
+    /// The model that wrote the current `synthesisText`, when a fallback produced it rather than the
+    /// selected model. Nil when the chosen model answered — nothing to disclose.
+    @Published private(set) var synthesisFallbackModel: String?
+
     /// When `synthesisText` was generated. The Today card treats a text from a previous local day as
     /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
     /// read by the next morning rather than pinning yesterday's narrative to today's numbers.
@@ -1195,6 +1217,9 @@ final class AICoachEngine: ObservableObject {
             if !clean.isEmpty {
                 synthesisText = clean
                 synthesisGeneratedAt = Date()
+                // Which model actually wrote it, when a fallback did. Same disclosure the chat makes:
+                // a paragraph from a model the picker does not name reads as the chosen model's work.
+                synthesisFallbackModel = lastTimeoutFallbackModel
                 lastSynthesisError = nil   // a good generation clears the previous failure
             }
         } catch {

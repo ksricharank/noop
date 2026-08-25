@@ -71,8 +71,6 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
     func testFailuresALighterModelCannotFixDoNotRetry() {
         XCTAssertFalse(AICoachError.badKey.deservesLighterModelRetry,
                        "a rejected key is rejected by every model")
-        XCTAssertFalse(AICoachError.rateLimited.deservesLighterModelRetry,
-                       "a rate limit applies to the account, not the model")
         XCTAssertFalse(AICoachError.noKey.deservesLighterModelRetry)
         XCTAssertFalse(AICoachError.decode.deservesLighterModelRetry)
         XCTAssertFalse(AICoachError.server(500, "boom").deservesLighterModelRetry)
@@ -133,5 +131,14 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         XCTAssertEqual(AICoachError.timedOut.shortLabel, "timed out")
         XCTAssertEqual(AICoachError.emptyReply("x").shortLabel, "empty reply")
         XCTAssertNotEqual(AICoachError.timedOut.shortLabel, AICoachError.emptyReply("x").shortLabel)
+    }
+
+    /// The failure users actually hit. These providers meter rate limits PER MODEL, so a heavy model
+    /// can be exhausted while the lightest still has its own untouched budget — exactly what a
+    /// lighter-model fallback is for. Excluded at first on the wrong assumption that a 429 applies to
+    /// the whole account; a real 429 on gemini-pro-latest with flash-lite working proved otherwise.
+    func testRateLimitEarnsARetry() {
+        XCTAssertTrue(AICoachError.rateLimited.deservesLighterModelRetry,
+                      "a per-model rate limit is the main case the lighter-model fallback rescues")
     }
 }
