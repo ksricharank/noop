@@ -21,8 +21,11 @@ struct CoachView: View {
     @State private var keyDraft: String = ""
     /// Whether the model selector is in free-text "Custom…" mode.
     @State private var customModel: Bool = false
-    /// The id typed in the "Custom…" field.
+    /// The id typed in the "Custom…" field. Shared by the setup card's inline field and the connected
+    /// header's prompt — only one of the two is ever on screen.
     @State private var customModelDraft: String = ""
+    /// Whether the connected header's free-text model-id prompt is showing.
+    @State private var showConnectedCustomModel: Bool = false
     /// Whether the editable-system-prompt section is expanded. Collapsed by default so the settings
     /// stay compact; most users never touch the prompt.
     @State private var promptExpanded: Bool = false
@@ -471,14 +474,51 @@ struct CoachView: View {
 
     // MARK: - Connected state
 
+    /// Connected header. The model half of the pill is a live menu, not a label: switching models
+    /// within the connected provider used to be reachable ONLY through the setup card, which renders
+    /// only while disconnected — so the sole route was the Disconnect button, and disconnecting forgot
+    /// the key. Changing model therefore cost a re-entry of the key every single time. The key and the
+    /// model are unrelated, so the menu changes the model in place and touches no credential.
     private var connectedHeader: some View {
         HStack(spacing: 10) {
-            StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+            Menu {
+                Picker("Model", selection: connectedModelSelection) {
+                    ForEach(coach.availableModels, id: \.self) { m in
+                        Text(m).tag(m)
+                    }
+                }
+                Divider()
+                Button("Custom model id…") { showConnectedCustomModel = true }
+                Button {
+                    Task { await coach.refreshModels() }
+                } label: {
+                    Label("Refresh models", systemImage: "arrow.clockwise")
+                }
+            } label: {
+                StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Provider \(coach.provider.displayName), model \(coach.model). Change model")
+
             Spacer()
             if coach.sending {
                 StatePill("Thinking", tone: .accent, pulsing: true)
             }
         }
+        // Free-text id, same escape hatch the setup card offers, for a model the picker doesn't list.
+        .alert("Custom model id", isPresented: $showConnectedCustomModel) {
+            TextField("Model id", text: $customModelDraft)
+            Button("Use") { applyCustomModel() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Send requests to \(coach.provider.displayName) using this model id.")
+        }
+    }
+
+    /// Binds the connected-header menu straight to `coach.model`. No "Custom…" sentinel here — the
+    /// free-text path is its own menu item, so every tag in this picker is a real model id.
+    private var connectedModelSelection: Binding<String> {
+        Binding(get: { coach.model }, set: { coach.model = $0 })
     }
 
     private var transcript: some View {

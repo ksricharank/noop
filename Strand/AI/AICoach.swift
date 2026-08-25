@@ -38,13 +38,39 @@ struct ChatMessage: Identifiable, Equatable {
 
 // MARK: - Secure key storage (Keychain)
 
-/// Keychain Services wrapper for the user's API key. Uses a generic-password item under a fixed
-/// service so the key never lands in UserDefaults, a plist, or on disk in the clear.
+/// Keychain Services wrapper for the user's API keys. Uses generic-password items under a fixed
+/// service so a key never lands in UserDefaults, a plist, or on disk in the clear.
+///
+/// **One slot PER PROVIDER.** The store used to hold a single item under a fixed `api-key` account,
+/// tagged with a UserDefaults marker naming its owner. That made the providers mutually exclusive in
+/// the worst way: `save` begins by deleting the existing item, so pasting an OpenAI key silently
+/// destroyed the stored Anthropic one, and switching back meant re-entering it — every time, forever.
+/// The keys never conflicted in the first place; only the storage did. Each provider now owns
+/// `api-key.<provider>`, so all of them coexist and switching provider is a read, not a re-entry.
+///
+/// The cross-provider leak the old owner marker existed to prevent is now structural rather than
+/// checked: a key is stored under its provider's account and can only be read back by asking for that
+/// provider, so there is no path that sends one provider's secret to another's endpoint (above all the
+/// arbitrary user-typed Custom URL). The marker is retained for one job only — migrating the legacy
+/// item — and is deleted once that is done.
 enum AIKeyStore {
     private static let service = "com.noop.aicoach"
-    private static let account = "api-key"
 
-    private static var baseQuery: [String: Any] {
+    /// The pre-multi-slot account. Read (once, by `migrateLegacyKeyIfNeeded`) and then removed; never
+    /// written again.
+    private static let legacyAccount = "api-key"
+
+    /// UserDefaults marker naming the legacy item's owner. Only meaningful during migration.
+    private static let ownerKey = "ai.keyProvider"
+
+    /// Set once the legacy single-slot item has been dealt with, so the migration is attempted at most
+    /// once per install even though the entry points that call it run on every launch.
+    private static let migratedKey = "ai.keyStoreMigratedToPerProvider"
+
+    /// The Keychain account for one provider's key.
+    private static func account(for provider: String) -> String { "api-key.\(provider)" }
+
+    private static func baseQuery(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -52,39 +78,80 @@ enum AIKeyStore {
         ]
     }
 
-    /// UserDefaults key recording which provider the stored API key belongs to, so one provider's key
-    /// is never sent to another provider's endpoint (above all the arbitrary user-typed Custom URL).
-    private static let ownerKey = "ai.keyProvider"
+    // MARK: Legacy migration
 
-    /// The provider the stored key was saved for, or nil for a legacy key saved before this tracking.
-    static var ownerProvider: String? { UserDefaults.standard.string(forKey: ownerKey) }
+    /// Move a pre-multi-slot key into its owner's slot, once.
+    ///
+    /// The legacy item carried no provider of its own — the owner lived in a UserDefaults marker
+    /// alongside it. Where that marker names a provider, the key belongs in that provider's slot. Where
+    /// it is ABSENT (a key saved before owner-tracking existed) the old `resolvedKey` treated it as
+    /// belonging to whichever cloud provider was selected, so the safest equivalent is to file it under
+    /// the currently-selected provider — unless that is Custom, which the old code explicitly refused to
+    /// auto-send an unowned key to, and which is refused here for the same reason.
+    ///
+    /// Idempotent and non-destructive: it never overwrites a slot that already holds a key, and it only
+    /// deletes the legacy item after a successful write, so an interrupted or failed migration leaves
+    /// the user's key exactly where it was rather than losing it between two slots.
+    static func migrateLegacyKeyIfNeeded(selectedProvider: String) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migratedKey) else { return }
 
-    /// Store (or replace) the API key for `owner`. Empty/whitespace input is treated as a clear.
-    /// Returns true once the key is in the Keychain (or was cleared); false if the Keychain write
-    /// failed, in which case the owner marker is left untouched so it never points at a key that
-    /// isn't actually stored (#872). The live `read()`/`hasKey` gating already reads the real
-    /// Keychain, so this is defensive tidying of the discarded write result, not a behaviour change.
+        guard let legacy = read(account: legacyAccount) else {
+            // Nothing to move (fresh install, or already migrated by an earlier launch).
+            defaults.set(true, forKey: migratedKey)
+            defaults.removeObject(forKey: ownerKey)
+            return
+        }
+
+        // An unowned legacy key is never filed under Custom — same refusal the old resolver made.
+        let owner = defaults.string(forKey: ownerKey)
+            ?? (selectedProvider == AIProvider.custom.rawValue ? nil : selectedProvider)
+        guard let owner else {
+            // Leave the legacy item alone and try again next launch, when a cloud provider may be
+            // selected. Deleting it here would destroy a key we simply cannot place yet.
+            return
+        }
+
+        // Never clobber a slot the user has already populated.
+        if read(account: account(for: owner)) == nil {
+            guard write(legacy, account: account(for: owner)) else { return }   // retry next launch
+        }
+
+        SecItemDelete(baseQuery(legacyAccount) as CFDictionary)
+        defaults.removeObject(forKey: ownerKey)
+        defaults.set(true, forKey: migratedKey)
+    }
+
+    // MARK: Read / write
+
+    /// Store (or replace) the API key for `owner`. Empty/whitespace input is treated as a clear of that
+    /// provider's slot ONLY — the other providers' keys are untouched, which is the whole point.
+    /// Returns true once the key is in the Keychain (or was cleared); false if the write failed (#872),
+    /// so the caller can surface that rather than silently proceeding.
     @discardableResult
     static func save(_ key: String, owner: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { clear(); return true }
-        guard let data = trimmed.data(using: .utf8) else { return false }
-
-        // Delete any existing item first so we always insert a single, fresh value.
-        SecItemDelete(baseQuery as CFDictionary)
-
-        var attrs = baseQuery
-        attrs[kSecValueData as String] = data
-        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attrs as CFDictionary, nil)
-        guard status == errSecSuccess else { return false }
-        UserDefaults.standard.set(owner, forKey: ownerKey)
-        return true
+        guard !trimmed.isEmpty else { clear(owner: owner); return true }
+        return write(trimmed, account: account(for: owner))
     }
 
-    /// Read the stored API key, or nil if none is set.
-    static func read() -> String? {
-        var query = baseQuery
+    private static func write(_ value: String, account: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+
+        // Delete first so we always insert a single, fresh value for this account.
+        SecItemDelete(baseQuery(account) as CFDictionary)
+
+        var attrs = baseQuery(account)
+        attrs[kSecValueData as String] = data
+        attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// Read the stored API key for `provider`, or nil if that provider has none.
+    static func read(owner: String) -> String? { read(account: account(for: owner)) }
+
+    private static func read(account: String) -> String? {
+        var query = baseQuery(account)
         query[kSecReturnData as String] = kCFBooleanTrue
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -97,9 +164,17 @@ enum AIKeyStore {
         return str
     }
 
-    /// Remove any stored API key.
-    static func clear() {
-        SecItemDelete(baseQuery as CFDictionary)
+    /// Forget one provider's key, leaving every other provider's key in place.
+    static func clear(owner: String) {
+        SecItemDelete(baseQuery(account(for: owner)) as CFDictionary)
+    }
+
+    /// Forget EVERY provider's key, plus any legacy item. For an explicit "forget everything" action.
+    static func clearAll() {
+        for provider in AIProvider.allCases {
+            SecItemDelete(baseQuery(account(for: provider.rawValue)) as CFDictionary)
+        }
+        SecItemDelete(baseQuery(legacyAccount) as CFDictionary)
         UserDefaults.standard.removeObject(forKey: ownerKey)
     }
 }
@@ -112,6 +187,10 @@ enum AICoachError: LocalizedError {
     case emptyQuestion
     case badKey
     case rateLimited
+    /// The request ran out of time — either client-side (`URLError.timedOut` and friends) or reported
+    /// by the provider as a gateway timeout. Its own case, rather than a `.network` with a timeout-ish
+    /// message, so the one-shot fallback retry can recognise it without comparing localized strings.
+    case timedOut
     case server(Int, String)
     case network(String)
     case decode
@@ -133,6 +212,8 @@ enum AICoachError: LocalizedError {
             return "That API key was rejected. Check the key and the provider you selected."
         case .rateLimited:
             return "The provider is rate-limiting requests right now. Wait a moment and try again."
+        case .timedOut:
+            return "The model took too long to answer, and a retry on a faster model didn't finish either. Try again, or pick a smaller model."
         case .server(let code, let detail):
             let extra = detail.isEmpty ? "" : " - \(detail)"
             return "The provider returned an error (\(code))\(extra)."
@@ -143,6 +224,17 @@ enum AICoachError: LocalizedError {
         case .emptyReply(let message):
             return message
         }
+    }
+
+    /// Which `URLError` codes count as "ran out of time" for retry purposes.
+    ///
+    /// `.timedOut` is the plain case. `.cannotConnectToHost` / `.cannotFindHost` are deliberately NOT
+    /// here — those fail fast and mean the endpoint is wrong or unreachable, so a retry on a cheaper
+    /// model would just fail again against the same URL. `.networkConnectionLost` IS included: on a
+    /// long-running LLM request it is overwhelmingly a stalled connection being reaped rather than a
+    /// genuine link drop, and it is the shape a slow model most often fails in on mobile.
+    static func isTimeoutCode(_ code: URLError.Code) -> Bool {
+        code == .timedOut || code == .networkConnectionLost
     }
 }
 
@@ -360,12 +452,19 @@ final class AICoachEngine: ObservableObject {
         self.customAuthHeader = AIProvider.customAuthHeader
         self.customConnected = UserDefaults.standard.bool(forKey: Self.customConnectedKey)
         self.includeOnDeviceSignals = UserDefaults.standard.bool(forKey: Self.onDeviceSignalsKey)
+
+        // Move a pre-multi-slot key into its provider's slot so an existing install keeps the key it
+        // already had. Runs after `provider` is set because an unowned legacy key is filed under the
+        // selected provider. Self-gating and non-destructive — see `migrateLegacyKeyIfNeeded`.
+        AIKeyStore.migrateLegacyKeyIfNeeded(selectedProvider: storedProvider.rawValue)
     }
 
     // MARK: Key management
 
-    /// True when a key is present in the Keychain.
-    var hasKey: Bool { AIKeyStore.read() != nil }
+    /// True when a key is present for the CURRENTLY SELECTED provider. Per-provider by construction:
+    /// each provider has its own Keychain slot, so switching provider changes the answer without any
+    /// key being written or destroyed.
+    var hasKey: Bool { AIKeyStore.read(owner: provider.rawValue) != nil }
 
     /// True once the coach can actually send: a stored key for the cloud providers, or, for the
     /// Custom (local) provider, a committed base URL (a key is optional there, as local servers
@@ -374,16 +473,12 @@ final class AICoachEngine: ObservableObject {
 
     /// The key to send with a request: the stored key, or an empty string for the keyless Custom
     /// provider. `nil` means "not configured", the caller surfaces `.noKey`.
+    /// A key is read from the selected provider's OWN slot, so one provider's secret can never be sent
+    /// to another provider's endpoint (above all the arbitrary user-typed Custom URL). That used to be
+    /// an owner-marker comparison; it is now structural — there is no query that returns another
+    /// provider's key.
     private var resolvedKey: String? {
-        if let k = AIKeyStore.read() {
-            // Only send the stored key to the provider it was SAVED for, never Bearer one provider's
-            // key (e.g. a cloud OpenAI/Anthropic secret) to another provider's endpoint, above all the
-            // arbitrary user-typed Custom URL. A legacy key with no recorded owner is assumed to belong
-            // to a cloud provider, so it is never auto-sent to Custom.
-            let owner = AIKeyStore.ownerProvider
-            if owner == provider.rawValue { return k }
-            if owner == nil && provider != .custom { return k }
-        }
+        if let k = AIKeyStore.read(owner: provider.rawValue) { return k }
         return provider == .custom ? "" : nil
     }
 
@@ -404,10 +499,22 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
-    /// Disconnect entirely: forget any stored key and un-commit the Custom provider. The base URL is
-    /// kept so reconnecting pre-fills it.
+    /// Disconnect the CURRENTLY SELECTED provider: forget its key and, for Custom, un-commit it. The
+    /// base URL is kept so reconnecting pre-fills it.
+    ///
+    /// Scoped to the selected provider on purpose. It used to clear the single shared slot, which meant
+    /// disconnecting one provider silently discarded whatever key the others had. Forgetting every key
+    /// at once is still available as `forgetAllKeys()`, but it is now a distinct, explicit action rather
+    /// than a side effect of switching away from a provider.
     func disconnect() {
-        AIKeyStore.clear()
+        AIKeyStore.clear(owner: provider.rawValue)
+        if provider == .custom { customConnected = false }
+        objectWillChange.send()
+    }
+
+    /// Forget EVERY provider's key and un-commit Custom. The "leave nothing behind" action.
+    func forgetAllKeys() {
+        AIKeyStore.clearAll()
         customConnected = false
         objectWillChange.send()
     }
@@ -429,9 +536,9 @@ final class AICoachEngine: ObservableObject {
         // sends. Local Custom servers still refresh on Connect.
     }
 
-    /// Forget the stored key.
+    /// Forget the selected provider's key, leaving the other providers' keys in place.
     func clearKey() {
-        AIKeyStore.clear()
+        AIKeyStore.clear(owner: provider.rawValue)
         objectWillChange.send()
     }
 
@@ -749,17 +856,51 @@ final class AICoachEngine: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    /// Dispatch to the user's chosen provider client.
+    /// Dispatch to the user's chosen provider client, with ONE fallback retry on a timeout.
+    ///
+    /// A timed-out request is the one failure worth re-spending on automatically: the key is good, the
+    /// endpoint is right, and the request simply did not finish in time — usually because a large model
+    /// was asked for a long answer over a mobile link. Retrying on the provider's cheapest (and so
+    /// fastest) model converts that into an answer often enough to be worth a single extra request.
+    ///
+    /// Exactly one retry, and only on `.timedOut`. Every other failure — a rejected key, a rate limit,
+    /// a 4xx — would fail identically on a smaller model, so retrying would double the latency of an
+    /// error the user still has to read. Anything more than one retry would stack timeouts on top of a
+    /// request that is already too slow.
+    ///
+    /// Already on the cheapest model (or on Custom, where there is no cheaper id to pick — see
+    /// `cheapestModel`), the retry re-sends the SAME model, as intended: a timeout is frequently
+    /// transient, and one repeat of the cheapest request is bounded.
+    ///
+    /// The retry never mutates `model`. The user's chosen model is theirs; a rescued answer must not
+    /// silently re-point the picker at a smaller model for every request that follows.
     private func callProvider(key: String,
                               messages: [(role: ChatMessage.Role, content: String)]) async throws -> String {
-        try await provider.client.send(
-            key: key,
-            model: model,
-            systemPrompt: systemPrompt,
-            messages: messages,
-            session: session
-        )
+        do {
+            return try await provider.client.send(
+                key: key,
+                model: model,
+                systemPrompt: systemPrompt,
+                messages: messages,
+                session: session
+            )
+        } catch AICoachError.timedOut {
+            let fallback = provider.cheapestModel ?? model
+            lastTimeoutFallbackModel = fallback
+            return try await provider.client.send(
+                key: key,
+                model: fallback,
+                systemPrompt: systemPrompt,
+                messages: messages,
+                session: session
+            )
+        }
     }
+
+    /// The model the last timeout retry fell back to, or nil if no retry has happened. Set even when
+    /// the retry itself fails, so the surfaced error can say a fallback was already tried rather than
+    /// implying the user's first choice was the only attempt.
+    private(set) var lastTimeoutFallbackModel: String?
 
     /// Sliding window over the chat: the FIRST user turn (it carries the metrics context) plus the most
     /// recent `maxHistoryMessages`, dropping the middle. Sending the whole growing history crowds out the
