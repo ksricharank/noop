@@ -91,16 +91,30 @@ Identical patch-ids across two branches mean the same change is being carried tw
 
 ## Remotes
 
-If a personal fork is added later, the convention is `upstream` = `ryanbr/noop` (read-only) and
-`origin` = the fork:
+| Remote | Repo | Role |
+|---|---|---|
+| `upstream` | `ryanbr/noop` | Read-only source of truth. Fetched, never pushed to. |
+| `origin` | `ksricharank/noop` | The fork. Backup, and where PR branches are pushed from. |
+
+`sync-upstream.sh` prefers a remote named `upstream` and falls back to `origin`, so it works with
+either layout and needs no edit.
+
+Note that `ryanbr/noop` is **itself a fork**; the root of the network is `muftiarfan/noop`, which
+has been dormant since June 2026. GitHub therefore defaults a PR's base to that dormant root, which
+is almost never what you want. Always name the base repo:
 
 ```bash
-git remote rename origin upstream
-git remote add origin <your-fork-url>
+gh pr create --repo ryanbr/noop --base main --head ksricharank:<branch>
 ```
 
-`sync-upstream.sh` prefers a remote named `upstream` and falls back to `origin`, so it works either
-way with no edits.
+Feature branches are **rebased**, so pushing one that already exists on the fork needs
+`--force-with-lease` (never a plain `--force`: it refuses when the remote moved underneath you).
+
+### Pushing from a managed machine
+
+An Intuit guardrail (`intuit-git-push-guard`) blocks pushes to `github.com` when they are issued by
+an AI agent, so pushes to the fork must be run by hand in a terminal. Everything else in this
+workflow — sync, rebase, release rebuild — is local and unaffected.
 
 Note that feature branches are **rebased**, so pushing an already-pushed branch needs
 `git push --force-with-lease` (never a plain `--force`: it refuses when the remote moved
