@@ -56,6 +56,13 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
     /** Non-null when the last send failed; the UI shows it in red. Cleared on the next send. */
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    init {
+        // Move a pre-multi-slot key into its provider's slot so an existing install keeps the key it
+        // already had. Self-gating and non-destructive — see [AiKeyStore.migrateLegacyKeyIfNeeded].
+        // Runs before any `hasKey` gate is read, so the first composition already sees the right answer.
+        AiKeyStore.migrateLegacyKeyIfNeeded(app.applicationContext)
+    }
+
     // MARK: - Provider / model selection (persisted via AiKeyStore)
 
     private val _provider = MutableStateFlow(AiKeyStore.readProvider(app.applicationContext))
@@ -154,8 +161,13 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
 
     // MARK: - Key gate
 
-    /** True when a non-blank API key is stored. The UI shows the chat only when this is true. */
-    fun hasKey(ctx: Context): Boolean = AiKeyStore.hasKey(ctx)
+    /**
+     * True when a non-blank API key is stored FOR THE SELECTED PROVIDER. The UI shows the chat only
+     * when this is true. Reads against `_provider` (the live selection) rather than the persisted one
+     * so the gate is right the instant the user switches provider, without depending on the order in
+     * which [setProvider] happens to persist.
+     */
+    fun hasKey(ctx: Context): Boolean = AiKeyStore.hasKey(ctx, _provider.value)
 
     /**
      * True once the coach can actually send: a stored key for the cloud providers, or, for the
@@ -243,7 +255,7 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Save the user's API key (encrypted at rest). Blank input clears the key instead. */
     fun saveKey(ctx: Context, key: String) {
-        AiKeyStore.save(ctx, key)
+        AiKeyStore.save(ctx, key, _provider.value)
         _error.value = null
         _keyVersion.value += 1
         // #288: do NOT auto-fetch the provider's model list on key-save. For a cloud provider that GET hits
@@ -255,7 +267,7 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Clear the stored key and reset the transcript back to the setup screen. */
     fun clearKey(ctx: Context) {
-        AiKeyStore.clear(ctx)
+        AiKeyStore.clear(ctx, _provider.value)
         _messages.value = emptyList()
         // The day belongs to the transcript, so it goes with it. Harmless if left (a stale day only ever
         // clears an already-empty list) but it would be a field claiming something untrue.
@@ -269,7 +281,7 @@ class CoachViewModel(app: Application) : AndroidViewModel(app) {
      * the setup screen. The Custom base URL is kept so reconnecting pre-fills it.
      */
     fun disconnect(ctx: Context) {
-        AiKeyStore.clear(ctx)
+        AiKeyStore.clear(ctx, _provider.value)
         _customConnected.value = false
         AiKeyStore.saveCustomConnected(ctx, false)
         _messages.value = emptyList()

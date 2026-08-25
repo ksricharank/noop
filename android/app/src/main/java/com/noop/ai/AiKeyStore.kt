@@ -18,9 +18,18 @@ import com.noop.data.SecurePrefs
 object AiKeyStore {
 
     private const val FILE_NAME = "noop_ai_secure_prefs"
-    private const val KEY_API = "api_key"
-    private const val KEY_PROVIDER = "provider"
+
+    /**
+     * The pre-multi-slot key entry and the marker naming its owner. Read once by
+     * [migrateLegacyKeyIfNeeded], then removed; never written again.
+     */
+    private const val KEY_API_LEGACY = "api_key"
     private const val KEY_KEY_OWNER = "key_provider"
+
+    /** Set once the legacy single-slot key has been dealt with, so migration runs at most once. */
+    private const val KEY_MIGRATED = "key_migrated_per_provider"
+
+    private const val KEY_PROVIDER = "provider"
     private const val KEY_CONSENT = "data_consent"
     private const val KEY_CUSTOM_URL = "custom_base_url"
     private const val KEY_CUSTOM_AUTH_HEADER = "custom_auth_header"
@@ -28,6 +37,13 @@ object AiKeyStore {
 
     /** Per-provider model preference key, so each provider remembers its own last model. */
     private fun modelKey(provider: AiProvider) = "model_${provider.name}"
+
+    /**
+     * Per-provider API-key entry, so every provider keeps its own key instead of the four of them
+     * sharing one slot. Mirrors [modelKey], which has always been per-provider — the key was the odd
+     * one out, and that asymmetry is exactly what made switching provider destructive.
+     */
+    private fun apiKeyKey(provider: AiProvider) = "api_key_${provider.name}"
 
     /**
      * The encrypted preferences file. The master key uses the AES256_GCM key scheme and lives in the
@@ -40,62 +56,92 @@ object AiKeyStore {
     private fun prefs(ctx: Context): SharedPreferences = SecurePrefs.of(ctx, FILE_NAME)
 
     /**
-     * Persist the API [key] (encrypted at rest). Blank keys are treated as a clear.
+     * Move a pre-multi-slot key into its owner's slot, once.
      *
-     * Records [owner] (the provider the key belongs to) so a key saved for one provider is never
-     * sent to another provider's endpoint — above all the arbitrary user-typed Custom server URL
-     * (see the guarded [read] overload). [owner] defaults to the currently-persisted provider, which
-     * the UI selects (and persists via [saveProvider]) before the user pastes a key for it.
+     * The legacy entry carried no provider of its own — the owner lived in a separate marker. Where
+     * that marker names a provider, the key belongs in that provider's slot. Where it is ABSENT (a key
+     * saved before owner-tracking existed) the old guarded read treated it as belonging to whichever
+     * cloud provider was selected, so it is filed under the currently-selected provider — unless that
+     * is CUSTOM, which the old code explicitly refused to auto-send an unowned key to, and which is
+     * refused here for the same reason.
+     *
+     * Idempotent and non-destructive: never overwrites a slot that already holds a key, and removes the
+     * legacy entry only after the new one is written, so an interrupted migration leaves the key where
+     * it was rather than losing it between two slots. Byte-parity with Swift `migrateLegacyKeyIfNeeded`.
+     */
+    fun migrateLegacyKeyIfNeeded(ctx: Context) {
+        val p = prefs(ctx)
+        if (p.getBoolean(KEY_MIGRATED, false)) return
+
+        val legacy = p.getString(KEY_API_LEGACY, null)?.takeIf { it.isNotBlank() }
+        if (legacy == null) {
+            // Nothing to move (fresh install, or an earlier launch already migrated).
+            p.edit().putBoolean(KEY_MIGRATED, true).remove(KEY_KEY_OWNER).apply()
+            return
+        }
+
+        val markedOwner = p.getString(KEY_KEY_OWNER, null)
+            ?.let { name -> AiProvider.entries.firstOrNull { it.name == name } }
+        // An unowned legacy key is never filed under Custom — same refusal the old guarded read made.
+        val owner = markedOwner ?: readProvider(ctx).takeIf { it != AiProvider.CUSTOM }
+        // Leave the legacy entry alone and retry next launch, when a cloud provider may be selected.
+        // Deleting it here would destroy a key we simply cannot place yet.
+            ?: return
+
+        val editor = p.edit()
+        // Never clobber a slot the user has already populated.
+        if (p.getString(apiKeyKey(owner), null).isNullOrBlank()) {
+            editor.putString(apiKeyKey(owner), legacy)
+        }
+        editor.remove(KEY_API_LEGACY)
+            .remove(KEY_KEY_OWNER)
+            .putBoolean(KEY_MIGRATED, true)
+            .apply()
+    }
+
+    /**
+     * Persist the API [key] for [owner] (encrypted at rest). Blank keys clear THAT provider's slot
+     * only — every other provider's key is untouched, which is the whole point of the per-provider
+     * split. [owner] defaults to the currently-persisted provider, which the UI selects (and persists
+     * via [saveProvider]) before the user pastes a key for it.
      */
     fun save(ctx: Context, key: String, owner: AiProvider = readProvider(ctx)) {
         val trimmed = key.trim()
         if (trimmed.isEmpty()) {
-            clear(ctx)
+            clear(ctx, owner)
             return
         }
-        prefs(ctx).edit()
-            .putString(KEY_API, trimmed)
-            .putString(KEY_KEY_OWNER, owner.name)
-            .apply()
-    }
-
-    /** Read the stored API key, or null if none has been set. (Unguarded — used by [hasKey].) */
-    fun read(ctx: Context): String? =
-        prefs(ctx).getString(KEY_API, null)?.takeIf { it.isNotBlank() }
-
-    /** The provider the stored key was saved for, or null for a legacy key saved before tracking. */
-    fun keyOwner(ctx: Context): AiProvider? {
-        val name = prefs(ctx).getString(KEY_KEY_OWNER, null) ?: return null
-        return AiProvider.entries.firstOrNull { it.name == name }
+        prefs(ctx).edit().putString(apiKeyKey(owner), trimmed).apply()
     }
 
     /**
-     * Read the stored key ONLY if it is safe to send to [provider]: it was saved for that exact
-     * provider, OR it is a legacy key with no recorded owner AND [provider] is a cloud provider
-     * (legacy keys keep working for the cloud providers but are never auto-sent to a Custom URL).
-     * Otherwise returns null so the request fails safe — never Bearer one provider's secret to
-     * another provider's (or an arbitrary Custom) endpoint.
+     * Read the key stored for [provider], or null if that provider has none.
+     *
+     * The cross-provider leak the old owner marker guarded against is now structural: a key lives under
+     * its own provider's entry and there is no read that returns another provider's key, so one
+     * provider's secret can never reach another's endpoint (above all an arbitrary Custom URL).
      */
-    fun read(ctx: Context, provider: AiProvider): String? {
-        val key = read(ctx) ?: return null
-        val owner = keyOwner(ctx)
-        return when {
-            owner == provider -> key
-            owner == null && provider != AiProvider.CUSTOM -> key
-            else -> null
-        }
+    fun read(ctx: Context, provider: AiProvider): String? =
+        prefs(ctx).getString(apiKeyKey(provider), null)?.takeIf { it.isNotBlank() }
+
+    /** Remove [provider]'s key, leaving every other provider's key (and all model prefs) intact. */
+    fun clear(ctx: Context, provider: AiProvider = readProvider(ctx)) {
+        prefs(ctx).edit().remove(apiKeyKey(provider)).apply()
     }
 
-    /** Remove the stored API key (and its owner). The provider/model preferences are left intact. */
-    fun clear(ctx: Context) {
-        prefs(ctx).edit()
-            .remove(KEY_API)
-            .remove(KEY_KEY_OWNER)
-            .apply()
+    /** Remove EVERY provider's key, plus any legacy entry. The "leave nothing behind" action. */
+    fun clearAll(ctx: Context) {
+        val editor = prefs(ctx).edit()
+        AiProvider.entries.forEach { editor.remove(apiKeyKey(it)) }
+        editor.remove(KEY_API_LEGACY).remove(KEY_KEY_OWNER).apply()
     }
 
-    /** True when a non-blank key is stored — the gate the UI uses to enable sending. */
-    fun hasKey(ctx: Context): Boolean = read(ctx) != null
+    /**
+     * True when a non-blank key is stored for [provider] — the gate the UI uses to enable sending.
+     * Per-provider by construction, so switching provider changes the answer without any key moving.
+     */
+    fun hasKey(ctx: Context, provider: AiProvider = readProvider(ctx)): Boolean =
+        read(ctx, provider) != null
 
     // --- Non-secret selection helpers (provider + model). Convenience only. ---
 
