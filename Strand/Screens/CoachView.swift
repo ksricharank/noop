@@ -494,6 +494,20 @@ struct CoachView: View {
                 } label: {
                     Label("Refresh models", systemImage: "arrow.clockwise")
                 }
+                Divider()
+                // The PROVIDER switcher belongs here too, not only in the setup card. Switching to a
+                // provider with no stored key drops you into that card, whose own Picker is then the
+                // only way back — but its Save button is dead while the key field is empty, and the
+                // field can never be prefilled from the Keychain. That is a dead end reachable by
+                // ordinary use. Offering the switch from the connected header means a provider that
+                // already HAS a key is always one tap away, without passing through the card at all.
+                Picker("Provider", selection: $coach.provider) {
+                    ForEach(AIProvider.allCases) { p in
+                        // Mark which providers can be switched to without typing anything, so the
+                        // choice that strands you is visibly distinct from the ones that don't.
+                        Text(coach.hasStoredKey(for: p) ? "\(p.displayName) ✓" : p.displayName).tag(p)
+                    }
+                }
             } label: {
                 StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
             }

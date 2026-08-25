@@ -67,9 +67,22 @@ class AiCoach(
      *  JOURNAL_DEVICE_ID); used for the opt-in on-device-signals context only. */
     private val journalDeviceId = "noop-journal"
 
+    /**
+     * How long one coach request may wait for the reply body.
+     *
+     * The old 60 s read timeout was the real reason a powerful model appeared to produce nothing: these
+     * requests are NON-STREAMING and capped at `max_tokens` 4096, so nothing arrives until the whole
+     * reply is written, and a reasoning-class model composing a long answer routinely passes 60 s. The
+     * request was killed mid-generation every time and surfaced as a failure rather than a slow success.
+     *
+     * 180 s covers a slow large model rather than being generous: the coach is an explicitly
+     * user-initiated action with a visible thinking state, so waiting is legible, and OkHttp's read
+     * timeout is a between-bytes stall budget, not a deadline on the answer's length. Byte-parity with
+     * Swift `AICoachEngine.requestTimeoutSeconds`.
+     */
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
@@ -152,15 +165,19 @@ class AiCoach(
         // Exactly one retry, and only on a timeout. Every other failure — rejected key, rate limit, a
         // 4xx — would fail identically on a smaller model, so retrying would just double the latency of
         // an error the user still has to read. Already on the cheapest model (or on CUSTOM, where there
-        // is no cheaper id to pick) the retry re-sends the SAME model, as intended: a timeout is often
-        // transient and one repeat of the cheapest request is bounded.
+        // is no cheaper id to pick) the retry is SKIPPED rather than re-sending the identical request:
+        // repeating a call that just exhausted the full timeout budget on the same model mostly buys a
+        // second long wait before the same error, since the first attempt already proved the deadline
+        // is the binding constraint rather than luck.
         //
         // The retry never persists the fallback model — the user's chosen model stays theirs.
         // Byte-parity with Swift `AICoachEngine.callProvider`.
         try {
             dispatch(provider, model, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
         } catch (timeout: CoachTimeoutException) {
-            val fallback = provider.cheapestModel ?: model
+            val fallback = provider.cheapestModel
+            // Only worth a second request if it is a genuinely DIFFERENT, faster one.
+            if (fallback == null || fallback == model) throw timeout
             dispatch(provider, fallback, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
         }
     }
@@ -716,8 +733,7 @@ class AiCoach(
             // Its own type, not a generic Exception, so the one-shot fallback retry can recognise it
             // without comparing user-facing message strings. Byte-parity with Swift `AICoachError.timedOut`.
             throw CoachTimeoutException(
-                "The model took too long to answer, and a retry on a faster model didn't finish " +
-                    "either. Try again, or pick a smaller model."
+                "The model took too long to answer. Try again, or pick a faster model."
             )
         } catch (e: javax.net.ssl.SSLException) {
             throw Exception("A secure connection to the provider could not be established.")
@@ -745,8 +761,7 @@ class AiCoach(
         // the same one retry on a faster model — so it is reported as a timeout, not a generic 5xx.
         // Checked before the `500..599` arm, which would otherwise swallow it. Parity with Swift.
         if (code == 504 || code == 524) {
-            val base = "The model took too long to answer, and a retry on a faster model didn't " +
-                "finish either. Try again, or pick a smaller model."
+            val base = "The model took too long to answer. Try again, or pick a faster model."
             return CoachTimeoutException(if (detail != null) "$base ($detail)" else base)
         }
 
@@ -797,6 +812,13 @@ class AiCoach(
 
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        /**
+         * Read-timeout budget for one coach request, in seconds. Internal rather than private so the
+         * unit tests can assert it clears the old 60 s ceiling that caused the bug.
+         * Byte-parity with Swift `AICoachEngine.requestTimeoutSeconds`.
+         */
+        internal const val REQUEST_TIMEOUT_SECONDS: Long = 180
 
         /**
          * Normalise a user-entered Custom base URL: trim, drop a trailing slash, and tolerate a pasted
