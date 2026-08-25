@@ -2320,11 +2320,11 @@ struct TodayView: View {
                     Image(systemName: "sparkles").font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                     Text("Written by your Coach").strandOverline()
-                    // Names the model ONLY when a fallback wrote it — the selected model needs no
-                    // disclosure, but a paragraph from a different one would otherwise be read as the
-                    // chosen model's work. Same rule as the Coach transcript's attribution.
-                    if let fallback = coach.synthesisFallbackModel {
-                        Text("· \(fallback)")
+                    // Always names the model that wrote it. Showing it only for a fallback made the
+                    // label's ABSENCE mean "your chosen model", which nobody can read off the
+                    // screen. Twin of the same line in the other Today view; keep them in step.
+                    if let model = coach.synthesisModel {
+                        Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
