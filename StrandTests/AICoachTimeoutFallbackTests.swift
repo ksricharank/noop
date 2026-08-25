@@ -52,6 +52,36 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         XCTAssertFalse(AICoachError.isTimeoutCode(.userAuthenticationRequired))
     }
 
+    /// The failure that made the fallback look broken. A Gemini reasoning model can spend the whole
+    /// shared token budget THINKING and return `finishReason: MAX_TOKENS` with no text parts — an
+    /// empty reply, delivered fast over HTTP 200. That is not a timeout, so a timeout-only retry never
+    /// fired and the heavy model simply produced nothing. It must earn the retry.
+    func testEmptyReplyEarnsARetry() {
+        XCTAssertTrue(AICoachError.emptyReply("finishReason MAX_TOKENS").deservesLighterModelRetry,
+                      "a thinking-exhausted empty reply is the main heavy-model failure and must retry")
+    }
+
+    /// A timeout still earns it — the original case, unchanged.
+    func testTimeoutEarnsARetry() {
+        XCTAssertTrue(AICoachError.timedOut.deservesLighterModelRetry)
+    }
+
+    /// Everything a lighter model cannot fix must NOT retry: these fail identically on any model, so a
+    /// second request only doubles the wait before showing the same error.
+    func testFailuresALighterModelCannotFixDoNotRetry() {
+        XCTAssertFalse(AICoachError.badKey.deservesLighterModelRetry,
+                       "a rejected key is rejected by every model")
+        XCTAssertFalse(AICoachError.rateLimited.deservesLighterModelRetry,
+                       "a rate limit applies to the account, not the model")
+        XCTAssertFalse(AICoachError.noKey.deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.decode.deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.server(500, "boom").deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.network("offline").deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.badCustomURL("nope").deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.emptyQuestion.deservesLighterModelRetry)
+        XCTAssertFalse(AICoachError.keySaveFailed.deservesLighterModelRetry)
+    }
+
     /// The timeout message must NOT claim a retry happened: one only runs when a genuinely faster model
     /// exists to switch to, so asserting it unconditionally would send someone hunting for a second
     /// attempt that never occurred.
