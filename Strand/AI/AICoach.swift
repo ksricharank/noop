@@ -213,7 +213,10 @@ enum AICoachError: LocalizedError {
         case .rateLimited:
             return "The provider is rate-limiting requests right now. Wait a moment and try again."
         case .timedOut:
-            return "The model took too long to answer, and a retry on a faster model didn't finish either. Try again, or pick a smaller model."
+            // Deliberately does NOT claim a retry happened — one only runs when a genuinely faster
+            // model exists to switch to. Saying otherwise would send someone hunting for a second
+            // attempt that never occurred.
+            return "The model took too long to answer. Try again, or pick a faster model."
         case .server(let code, let detail):
             let extra = detail.isEmpty ? "" : " - \(detail)"
             return "The provider returned an error (\(code))\(extra)."
@@ -427,9 +430,41 @@ final class AICoachEngine: ObservableObject {
     them to enable "Let the coach use my data" for guidance tailored to their real numbers.
     """
 
-    init(repo: Repository, session: URLSession = .shared) {
+    /// How long one coach request may take before URLSession gives up.
+    ///
+    /// `URLSession.shared` defaults to 60 s, which is simply too short for this workload and was the
+    /// real reason a powerful model appeared to produce nothing at all: the requests are
+    /// NON-STREAMING and capped at `max_tokens: 4096`, so nothing arrives until the whole reply is
+    /// written. A reasoning-class model (Opus, GPT-4.1) composing a long answer routinely passes 60 s,
+    /// so the request was killed mid-generation every time and the user saw a failure rather than a
+    /// slow success. The fallback retry then made it worse, spending a second full budget before
+    /// surfacing anything.
+    ///
+    /// 180 s is chosen to cover a slow large model rather than to be generous: the coach is an
+    /// explicitly user-initiated action with a visible "Thinking" state, so waiting is legible, and a
+    /// request that genuinely hangs is still bounded. `timeoutIntervalForRequest` measures the gap
+    /// between bytes rather than total wall time, so this is a stall budget, not a deadline on the
+    /// answer's length.
+    nonisolated static let requestTimeoutSeconds: TimeInterval = 180
+
+    /// A session configured for LLM latency. Used whenever a caller does not inject its own (the tests
+    /// do), so the app never runs the coach on `URLSession.shared`'s 60 s default again.
+    ///
+    /// `nonisolated` because it builds a fresh value from constants and touches no engine state; the
+    /// class's `@MainActor` isolation would otherwise ride along and force callers onto the main actor
+    /// for what is a pure factory.
+    nonisolated static func makeDefaultSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = requestTimeoutSeconds
+        // The ceiling for the whole resource, retry included, so one wedged request cannot outlive the
+        // screen the user is looking at.
+        config.timeoutIntervalForResource = requestTimeoutSeconds * 2
+        return URLSession(configuration: config)
+    }
+
+    init(repo: Repository, session: URLSession? = nil) {
         self.repo = repo
-        self.session = session
+        self.session = session ?? Self.makeDefaultSession()
 
         // Restore persisted provider / model (falling back to sane defaults).
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -469,6 +504,13 @@ final class AICoachEngine: ObservableObject {
     /// each provider has its own Keychain slot, so switching provider changes the answer without any
     /// key being written or destroyed.
     var hasKey: Bool { AIKeyStore.read(owner: provider.rawValue) != nil }
+
+    /// Whether a GIVEN provider is ready to use — not just the selected one. Lets the UI show which
+    /// providers can be switched to without typing anything, so a switch that would strand the user in
+    /// the setup card is visibly distinct from one that lands straight in the chat.
+    func hasStoredKey(for candidate: AIProvider) -> Bool {
+        candidate == .custom ? customConnected : AIKeyStore.read(owner: candidate.rawValue) != nil
+    }
 
     /// True once the coach can actually send: a stored key for the cloud providers, or, for the
     /// Custom (local) provider, a committed base URL (a key is optional there, as local servers
@@ -904,8 +946,10 @@ final class AICoachEngine: ObservableObject {
     /// request that is already too slow.
     ///
     /// Already on the cheapest model (or on Custom, where there is no cheaper id to pick — see
-    /// `cheapestModel`), the retry re-sends the SAME model, as intended: a timeout is frequently
-    /// transient, and one repeat of the cheapest request is bounded.
+    /// `cheapestModel`), the retry is SKIPPED rather than re-sending the identical request. Repeating a
+    /// request that just exhausted the full timeout budget on the same model mostly buys the user a
+    /// second long wait before the same error — the first attempt already proved the deadline is the
+    /// binding constraint, not luck. Reporting promptly is the better outcome.
     ///
     /// The retry never mutates `model`. The user's chosen model is theirs; a rescued answer must not
     /// silently re-point the picker at a smaller model for every request that follows.
@@ -920,7 +964,12 @@ final class AICoachEngine: ObservableObject {
                 session: session
             )
         } catch AICoachError.timedOut {
-            let fallback = provider.cheapestModel ?? model
+            // Only worth a second request if it is a genuinely DIFFERENT, faster one. Same model ⇒
+            // rethrow immediately instead of making the user wait out another full budget.
+            guard let fallback = provider.cheapestModel, fallback != model else {
+                lastTimeoutFallbackModel = nil
+                throw AICoachError.timedOut
+            }
             lastTimeoutFallbackModel = fallback
             return try await provider.client.send(
                 key: key,
