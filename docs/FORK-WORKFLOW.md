@@ -61,7 +61,9 @@ discarded on the next rebuild and would return every single time.
 ```
 
 Deletes `release`, recreates it at `origin/main`, merges each branch in `FEATURES` in order, and
-regenerates `Strand.xcodeproj`. Then build the `NOOPiOS` scheme to your phone.
+regenerates `Strand.xcodeproj`. Then clear the stale provisioning profiles and build the `NOOPiOS`
+scheme to your phone — see [`FORK-RELEASE.md`](FORK-RELEASE.md#the-procedure) for both steps, and
+why skipping the first one costs you most of the week.
 
 ### Adding a feature
 
