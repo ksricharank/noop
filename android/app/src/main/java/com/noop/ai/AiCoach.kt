@@ -22,17 +22,27 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
 /**
- * A request that ran out of time — client-side (a socket timeout) or reported by the provider as a
- * gateway timeout (HTTP 504/524).
+ * A failure that one retry on a LIGHTER model can plausibly survive.
  *
- * A distinct type rather than a generic `Exception` so the one-shot fallback retry can recognise a
- * timeout without matching on user-facing message text, which would work in English and silently stop
- * retrying in every other language the app ships. Still an [Exception] with a ready user-facing
- * message, so the ViewModel's existing error path shows it unchanged when the retry also fails.
+ * A distinct type rather than a generic `Exception` so the retry can recognise it without matching on
+ * user-facing message text — which would work in English and silently stop retrying in every other
+ * language the app ships. Still an [Exception] carrying a ready user-facing message, so the
+ * ViewModel's existing error path shows it unchanged when the retry also fails.
  *
- * Counterpart to Swift `AICoachError.timedOut`.
+ * Two failures qualify: a timeout (see [CoachTimeoutException]) and a rate limit. The rate limit is
+ * the one users actually hit — these providers meter PER MODEL, so a heavy model can be exhausted
+ * while the lightest still has its own untouched budget, which is exactly what a lighter-model
+ * fallback exists to rescue.
+ *
+ * Counterpart to Swift `AICoachError.deservesLighterModelRetry`.
  */
-class CoachTimeoutException(message: String) : Exception(message)
+open class CoachRetryableException(message: String) : Exception(message)
+
+/**
+ * A request that ran out of time — client-side (a socket timeout) or reported by the provider as a
+ * gateway timeout (HTTP 504/524). A [CoachRetryableException], so it earns the lighter-model retry.
+ */
+class CoachTimeoutException(message: String) : CoachRetryableException(message)
 
 /**
  * The AI Coach.
@@ -174,10 +184,10 @@ class AiCoach(
         // Byte-parity with Swift `AICoachEngine.callProvider`.
         try {
             dispatch(provider, model, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
-        } catch (timeout: CoachTimeoutException) {
+        } catch (retryable: CoachRetryableException) {
             val fallback = provider.cheapestModel
             // Only worth a second request if it is a genuinely DIFFERENT, faster one.
-            if (fallback == null || fallback == model) throw timeout
+            if (fallback == null || fallback == model) throw retryable
             dispatch(provider, fallback, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
         }
     }
@@ -765,9 +775,19 @@ class AiCoach(
             return CoachTimeoutException(if (detail != null) "$base ($detail)" else base)
         }
 
+        // A rate limit is metered PER MODEL on these providers, not per account: a heavy model can be
+        // exhausted while the lightest one still has its own untouched budget. So it earns the same
+        // one-shot lighter-model retry as a timeout, and is reported as retry-worthy rather than as a
+        // terminal error. This is the failure users actually hit — a heavy model 429s on a free tier
+        // within a few requests — and the exact case the fallback exists to rescue. Parity with Swift
+        // `AICoachError.deservesLighterModelRetry`.
+        if (code == 429) {
+            val base = "${provider.displayName} rate limit reached (or quota exhausted) for this model."
+            return CoachRetryableException(if (detail != null) "$base ($detail)" else base)
+        }
+
         val base = when (code) {
             401, 403 -> "Your ${provider.displayName} API key was rejected. Check the key and try again."
-            429 -> "${provider.displayName} rate limit reached (or quota exhausted). Wait a moment and retry."
             in 500..599 -> "${provider.displayName} had a server error (HTTP $code). Please try again shortly."
             400 -> "The request was rejected by ${provider.displayName} (HTTP 400)."
             else -> "${provider.displayName} returned an error (HTTP $code)."

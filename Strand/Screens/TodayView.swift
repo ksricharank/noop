@@ -2320,6 +2320,14 @@ struct TodayView: View {
                     Image(systemName: "sparkles").font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                     Text("Written by your Coach").strandOverline()
+                    // Names the model ONLY when a fallback wrote it — the selected model needs no
+                    // disclosure, but a paragraph from a different one would otherwise be read as the
+                    // chosen model's work. Same rule as the Coach transcript's attribution.
+                    if let fallback = coach.synthesisFallbackModel {
+                        Text("· \(fallback)")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
                 }
                 // LLM replies arrive as Markdown; plain Text showed literal asterisks. Rendered
                 // through the same MarkdownUI pipeline as the Coach chat, sized for this card
