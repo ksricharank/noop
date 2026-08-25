@@ -5,6 +5,9 @@ local features which are not (yet) upstream. The problem it solves: as the numbe
 grows, combining them into something installable gets harder — and naively merging them into `main`
 makes every future upstream sync a conflict.
 
+For the procedure built on this model — cutting a build, the fork version scheme, signing, and the
+traps that come with all three — see [`FORK-RELEASE.md`](FORK-RELEASE.md).
+
 ## The rule that makes this work
 
 **`main` is a pure mirror of upstream. It never carries a local commit.**
