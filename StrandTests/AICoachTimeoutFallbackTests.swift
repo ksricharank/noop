@@ -52,11 +52,33 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         XCTAssertFalse(AICoachError.isTimeoutCode(.userAuthenticationRequired))
     }
 
-    /// The timeout message must say a fallback was already attempted — otherwise the user reads it as
-    /// "try again" and repeats by hand what the app already did for them.
-    func testTimeoutMessageMentionsTheRetry() {
-        let text = AICoachError.timedOut.errorDescription ?? ""
-        XCTAssertTrue(text.lowercased().contains("retry") || text.lowercased().contains("faster"),
-                      "the message should say a faster-model retry was already tried; got: \(text)")
+    /// The timeout message must NOT claim a retry happened: one only runs when a genuinely faster model
+    /// exists to switch to, so asserting it unconditionally would send someone hunting for a second
+    /// attempt that never occurred.
+    func testTimeoutMessageDoesNotClaimARetryHappened() {
+        let text = (AICoachError.timedOut.errorDescription ?? "").lowercased()
+        XCTAssertFalse(text.contains("didn't finish either"),
+                       "the message must not assert a retry that may never have run; got: \(text)")
+        XCTAssertTrue(text.contains("too long"), "it should still name the cause; got: \(text)")
+    }
+
+    /// The request budget must comfortably exceed `URLSession.shared`'s 60 s default — the specific
+    /// value that made a powerful model look like it produced nothing. These requests are
+    /// non-streaming and capped at 4096 tokens, so a reasoning-class model writing a long answer passes
+    /// 60 s and was being killed mid-generation every time.
+    func testRequestTimeoutIsLongEnoughForALargeModel() {
+        XCTAssertGreaterThan(AICoachEngine.requestTimeoutSeconds, 60,
+                             "a budget at or under URLSession's 60 s default reproduces the original bug")
+    }
+
+    /// The constant is worthless if the session the app actually builds ignores it, so assert the
+    /// configuration carries it rather than trusting that it was applied.
+    func testDefaultSessionCarriesTheConfiguredTimeout() {
+        let session = AICoachEngine.makeDefaultSession()
+        XCTAssertEqual(session.configuration.timeoutIntervalForRequest,
+                       AICoachEngine.requestTimeoutSeconds)
+        XCTAssertGreaterThanOrEqual(session.configuration.timeoutIntervalForResource,
+                                    AICoachEngine.requestTimeoutSeconds,
+                                    "the resource ceiling must not undercut the per-request budget")
     }
 }
