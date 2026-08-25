@@ -214,6 +214,7 @@ final class AICoachEngine: ObservableObject {
     /// built-in default". Small text key, never a secret, so plain UserDefaults is fine. Read FRESH
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
     static let systemPromptKey = "ai.systemPrompt"
+    static let synthesisPromptKey = "ai.synthesisPrompt"
 
     /// The built-in system prompt that frames every request. Anonymous, frames the assistant only as a
     /// coach. Exposed (read-only) so the UI's "Reset to default" can restore it and show it when nothing
@@ -274,6 +275,53 @@ final class AICoachEngine: ObservableObject {
     /// Restore the built-in system prompt by clearing the stored override.
     func resetSystemPrompt() {
         UserDefaults.standard.removeObject(forKey: Self.systemPromptKey)
+        objectWillChange.send()
+    }
+
+    /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
+    /// instructions own the voice and priorities, and this only names the surface and its shape.
+    /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
+    static let defaultSynthesisPrompt = """
+    Following your coaching instructions and using my data above, write today's synthesis for my \
+    Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
+    No headings, no lists, no greeting.
+    """
+
+    /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
+    /// edit takes effect on the next refresh. Blank/absent falls back to `defaultSynthesisPrompt`, so
+    /// clearing it never sends an empty instruction.
+    var synthesisPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stored, !stored.isEmpty { return stored }
+        return Self.defaultSynthesisPrompt
+    }
+
+    /// The user's stored synthesis override, or the default when nothing custom is set. The UI binds
+    /// its editor to this; writing a blank string clears the override.
+    var customSynthesisPrompt: String {
+        get { synthesisPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultSynthesisPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.synthesisPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.synthesisPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    /// True when the stored synthesis instruction differs from the built-in default; gates "Reset".
+    var hasCustomSynthesisPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultSynthesisPrompt
+    }
+
+    /// Restore the built-in synthesis instruction by clearing the stored override.
+    func resetSynthesisPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.synthesisPromptKey)
         objectWillChange.send()
     }
 
@@ -599,14 +647,8 @@ final class AICoachEngine: ObservableObject {
         guard !repo.days.isEmpty else { return }
 
         let context = await buildFullContext()
-        // Deliberately thin: the coach's own instructions (`systemPrompt`, the user-editable "coach
-        // instructions" — sent on every `callProvider`) own the voice and priorities; this turn only
-        // names the surface and its shape.
-        let instruction = """
-        Following your coaching instructions and using my data above, write today's synthesis for my \
-        Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
-        No headings, no lists, no greeting.
-        """
+        // Read fresh (see `synthesisPrompt`), so an edit in the settings applies to this refresh.
+        let instruction = synthesisPrompt
         let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
         do {
             let reply = try await callProvider(key: key, messages: wire)
