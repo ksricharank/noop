@@ -22,6 +22,19 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
 /**
+ * A request that ran out of time — client-side (a socket timeout) or reported by the provider as a
+ * gateway timeout (HTTP 504/524).
+ *
+ * A distinct type rather than a generic `Exception` so the one-shot fallback retry can recognise a
+ * timeout without matching on user-facing message text, which would work in English and silently stop
+ * retrying in every other language the app ships. Still an [Exception] with a ready user-facing
+ * message, so the ViewModel's existing error path shows it unchanged when the retry also fails.
+ *
+ * Counterpart to Swift `AICoachError.timedOut`.
+ */
+class CoachTimeoutException(message: String) : Exception(message)
+
+/**
  * The AI Coach.
  *
  * Privacy posture: this is an opt-in networked feature, independent of the default-off Experimental
@@ -129,6 +142,39 @@ class AiCoach(
         // the data context, so it is always kept; the middle is dropped, the recent tail retained.
         val grounded = trimmedHistory(groundedFull, MAX_HISTORY_TURNS)
 
+        // Dispatch, with ONE fallback retry on a timeout.
+        //
+        // A timed-out request is the one failure worth re-spending on automatically: the key is good,
+        // the endpoint is right, and the request simply did not finish in time — usually a large model
+        // asked for a long answer over a mobile link. Retrying on the provider's cheapest (and so
+        // fastest) model converts that into an answer often enough to be worth one extra request.
+        //
+        // Exactly one retry, and only on a timeout. Every other failure — rejected key, rate limit, a
+        // 4xx — would fail identically on a smaller model, so retrying would just double the latency of
+        // an error the user still has to read. Already on the cheapest model (or on CUSTOM, where there
+        // is no cheaper id to pick) the retry re-sends the SAME model, as intended: a timeout is often
+        // transient and one repeat of the cheapest request is bounded.
+        //
+        // The retry never persists the fallback model — the user's chosen model stays theirs.
+        // Byte-parity with Swift `AICoachEngine.callProvider`.
+        try {
+            dispatch(provider, model, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
+        } catch (timeout: CoachTimeoutException) {
+            val fallback = provider.cheapestModel ?: model
+            dispatch(provider, fallback, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
+        }
+    }
+
+    /** Route one already-built request to the selected provider's client. */
+    private suspend fun dispatch(
+        provider: AiProvider,
+        model: String,
+        key: String?,
+        grounded: List<ChatMsg>,
+        systemPrompt: String,
+        customBaseUrl: String,
+        customAuthHeader: CustomAiAuthHeader,
+    ): String =
         when (provider) {
             AiProvider.OPENAI ->
                 callOpenAiCompatible(provider, provider.endpoint, model, key, grounded, systemPrompt)
@@ -147,7 +193,6 @@ class AiCoach(
                     customAuthHeader,
                 )
         }
-    }
 
     /**
      * Today's derived stress line for the consent-gated coach context. Reads R-R for the local day
@@ -668,7 +713,12 @@ class AiCoach(
         } catch (e: java.net.UnknownHostException) {
             throw Exception("No internet connection. The coach needs a connection to reach the provider.")
         } catch (e: java.net.SocketTimeoutException) {
-            throw Exception("The request timed out. Please check your connection and try again.")
+            // Its own type, not a generic Exception, so the one-shot fallback retry can recognise it
+            // without comparing user-facing message strings. Byte-parity with Swift `AICoachError.timedOut`.
+            throw CoachTimeoutException(
+                "The model took too long to answer, and a retry on a faster model didn't finish " +
+                    "either. Try again, or pick a smaller model."
+            )
         } catch (e: javax.net.ssl.SSLException) {
             throw Exception("A secure connection to the provider could not be established.")
         } catch (e: java.io.IOException) {
@@ -686,9 +736,20 @@ class AiCoach(
         }
     }
 
-    /** Map a non-2xx response to a clear, user-facing message (key, rate-limit, server). */
+    /** Map a non-2xx response to a clear, user-facing message (key, rate-limit, timeout, server). */
     private fun httpError(provider: AiProvider, code: Int, body: String): Exception {
         val detail = extractApiErrorMessage(body)
+
+        // A gateway / origin timeout: the request DID reach the provider, which then ran out of time on
+        // it. Same shape of failure as a client-side timeout from the caller's point of view, and worth
+        // the same one retry on a faster model — so it is reported as a timeout, not a generic 5xx.
+        // Checked before the `500..599` arm, which would otherwise swallow it. Parity with Swift.
+        if (code == 504 || code == 524) {
+            val base = "The model took too long to answer, and a retry on a faster model didn't " +
+                "finish either. Try again, or pick a smaller model."
+            return CoachTimeoutException(if (detail != null) "$base ($detail)" else base)
+        }
+
         val base = when (code) {
             401, 403 -> "Your ${provider.displayName} API key was rejected. Check the key and try again."
             429 -> "${provider.displayName} rate limit reached (or quota exhausted). Wait a moment and retry."

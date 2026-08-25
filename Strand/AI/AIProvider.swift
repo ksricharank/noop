@@ -28,6 +28,22 @@ enum AIProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The cheapest / fastest model this provider offers, used as the one-shot fallback when a request
+    /// times out. Cheapest is a proxy for fastest here, which is what actually matters: the retry only
+    /// helps if it is likelier to finish inside the same deadline than the attempt that just failed.
+    ///
+    /// Nil for `.custom`: that provider points at whatever server the user runs, its catalogue is not
+    /// known ahead of time, and there is no basis for calling one of its ids cheaper than another —
+    /// so a Custom timeout is reported rather than silently re-sent to a model we guessed at.
+    var cheapestModel: String? {
+        switch self {
+        case .openAI:    return "gpt-4.1-nano"
+        case .anthropic: return "claude-haiku-4-5-20251001"
+        case .gemini:    return "gemini-flash-lite-latest"
+        case .custom:    return nil
+        }
+    }
+
     /// Models offered in the picker. A "Custom…" path in the UI lets the user pick any id beyond
     /// these, and `refreshModels()` can merge the provider's live list.
     var modelOptions: [String] {
@@ -238,6 +254,11 @@ func performRequest(_ req: URLRequest, session: URLSession) async throws -> [Str
 
     do {
         (data, response) = try await session.data(for: req)
+    } catch let urlError as URLError where AICoachError.isTimeoutCode(urlError.code) {
+        // Distinct from `.network` so the retry path can key off a real signal. Matching on
+        // `error.localizedDescription` instead would be a localized-string comparison — it would work
+        // in English and silently stop retrying in every other language the app ships.
+        throw AICoachError.timedOut
     } catch {
         throw AICoachError.network(error.localizedDescription)
     }
@@ -257,6 +278,11 @@ func performRequest(_ req: URLRequest, session: URLSession) async throws -> [Str
         throw AICoachError.badKey
     case 429:
         throw AICoachError.rateLimited
+    case 504, 524:
+        // Gateway / origin timeout: the request did reach the provider, which then ran out of time on
+        // it. Same shape of failure as a client-side timeout from the caller's point of view, and worth
+        // the same one retry on a faster model, so it is reported as one rather than as a generic 5xx.
+        throw AICoachError.timedOut
     default:
         throw AICoachError.server(http.statusCode, providerErrorMessage(from: data))
     }
