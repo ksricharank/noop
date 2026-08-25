@@ -201,6 +201,10 @@ enum AICoachError: LocalizedError {
     /// message, so the one-shot fallback retry can recognise it without comparing localized strings.
     case timedOut
     case server(Int, String)
+    /// A TRANSIENT server-side failure — 500/502/503/529. Distinct from `.server` because that is
+    /// terminal and this is not: the request was fine and the provider was simply busy, so it is worth
+    /// one more attempt. Gemini's 503-when-overloaded is the common one.
+    case transientServer(Int, String)
     case network(String)
     case decode
     case emptyReply(String)   // #1074: verbatim provider-error / empty-reply text (byte-parity with Android emptyReplyMessage)
@@ -226,6 +230,9 @@ enum AICoachError: LocalizedError {
             // model exists to switch to. Saying otherwise would send someone hunting for a second
             // attempt that never occurred.
             return "The model took too long to answer. Try again, or pick a faster model."
+        case .transientServer(let code, let detail):
+            let extra = detail.isEmpty ? "" : " - \(detail)"
+            return "The provider is busy right now (\(code))\(extra). Try again in a moment."
         case .server(let code, let detail):
             let extra = detail.isEmpty ? "" : " - \(detail)"
             return "The provider returned an error (\(code))\(extra)."
@@ -249,6 +256,7 @@ enum AICoachError: LocalizedError {
         case .rateLimited:      return "rate limited"
         case .timedOut:         return "timed out"
         case .server(let code, _): return "HTTP \(code)"
+        case .transientServer(let code, _): return "provider busy (\(code))"
         case .network:          return "network error"
         case .decode:           return "unreadable reply"
         case .emptyReply:       return "empty reply"
@@ -286,8 +294,16 @@ enum AICoachError: LocalizedError {
     /// quietly attributing the light model's answer to the heavy one.
     var deservesLighterModelRetry: Bool {
         switch self {
-        case .timedOut, .emptyReply, .rateLimited: return true
-        default: return false
+        // Failures that are about the REQUEST rather than the model, where a second attempt on any
+        // model would fail identically and only cost the user another wait. Excluded so the one retry
+        // is spent where it can actually help.
+        case .noKey, .emptyQuestion, .badKey, .keySaveFailed, .badCustomURL: return false
+        // Everything else retries. Enumerating what CANNOT work, rather than guessing which failures
+        // can, is the lesson of this bug: each attempt to predict the retry-worthy set missed the one
+        // that mattered — first timeouts only (missed empty replies), then rate limits (missed 503s).
+        // The list above is short and provably model-independent; the rest is not worth predicting.
+        case .timedOut, .emptyReply, .rateLimited, .transientServer, .server, .network, .decode:
+            return true
         }
     }
 

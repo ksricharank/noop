@@ -29,10 +29,13 @@ import kotlin.math.roundToInt
  * language the app ships. Still an [Exception] carrying a ready user-facing message, so the
  * ViewModel's existing error path shows it unchanged when the retry also fails.
  *
- * Two failures qualify: a timeout (see [CoachTimeoutException]) and a rate limit. The rate limit is
- * the one users actually hit — these providers meter PER MODEL, so a heavy model can be exhausted
- * while the lightest still has its own untouched budget, which is exactly what a lighter-model
- * fallback exists to rescue.
+ * Nearly everything qualifies. Only an auth failure is terminal — a rejected key is rejected by every
+ * model, so retrying spends the single retry on a certainty. Timeouts, rate limits (metered PER MODEL
+ * here, so a heavy model can be exhausted while the lightest still has budget), overloaded backends
+ * (503) and malformed replies all fall back.
+ *
+ * Defined by exclusion on purpose: predicting the retry-worthy set failed twice — timeouts-only missed
+ * thinking models' empty replies, and adding rate limits still missed the 503s.
  *
  * Counterpart to Swift `AICoachError.deservesLighterModelRetry`.
  */
@@ -767,24 +770,28 @@ class AiCoach(
             return CoachTimeoutException(if (detail != null) "$base ($detail)" else base)
         }
 
-        // A rate limit is metered PER MODEL on these providers, not per account: a heavy model can be
-        // exhausted while the lightest one still has its own untouched budget. So it earns the same
-        // one-shot lighter-model retry as a timeout, and is reported as retry-worthy rather than as a
-        // terminal error. This is the failure users actually hit — a heavy model 429s on a free tier
-        // within a few requests — and the exact case the fallback exists to rescue. Parity with Swift
+        // Only an AUTH failure is terminal: a rejected key is rejected by every model, so retrying
+        // would spend the user's one retry — and their latency — on a certainty. Everything else falls
+        // back to the lighter model.
+        //
+        // Defined by exclusion rather than by listing what to retry, because predicting the
+        // retry-worthy set failed twice: timeouts-only missed the empty replies thinking models
+        // produce, and adding rate limits still missed the 503 an overloaded Gemini returns. Rate
+        // limits in particular are metered PER MODEL here, so a heavy model can be exhausted while the
+        // lightest still has its own untouched budget. Parity with Swift
         // `AICoachError.deservesLighterModelRetry`.
-        if (code == 429) {
-            val base = "${provider.displayName} rate limit reached (or quota exhausted) for this model."
-            return CoachRetryableException(if (detail != null) "$base ($detail)" else base)
+        if (code == 401 || code == 403) {
+            val base = "Your ${provider.displayName} API key was rejected. Check the key and try again."
+            return Exception(if (detail != null) "$base ($detail)" else base)
         }
 
         val base = when (code) {
-            401, 403 -> "Your ${provider.displayName} API key was rejected. Check the key and try again."
-            in 500..599 -> "${provider.displayName} had a server error (HTTP $code). Please try again shortly."
+            429 -> "${provider.displayName} rate limit reached (or quota exhausted) for this model."
+            in 500..599 -> "${provider.displayName} is busy right now (HTTP $code)."
             400 -> "The request was rejected by ${provider.displayName} (HTTP 400)."
             else -> "${provider.displayName} returned an error (HTTP $code)."
         }
-        return Exception(if (detail != null) "$base ($detail)" else base)
+        return CoachRetryableException(if (detail != null) "$base ($detail)" else base)
     }
 
     /** Pull the provider's error message out of an error JSON body, if present. */
