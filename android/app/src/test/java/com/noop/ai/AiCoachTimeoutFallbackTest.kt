@@ -57,4 +57,23 @@ class AiCoachTimeoutFallbackTest {
         assertTrue("a timeout must be distinguishable by type", e is CoachTimeoutException)
         assertTrue("and still a plain Exception for the existing error path", e is Exception)
     }
+
+    /**
+     * The read-timeout budget must clear the old 60 s ceiling — the specific value that made a powerful
+     * model look like it produced nothing. These requests are non-streaming and capped at 4096 tokens,
+     * so a reasoning-class model writing a long answer passed 60 s and was killed mid-generation every
+     * time. Pinned to the same number as Swift, or the two platforms give up at different points.
+     */
+    @Test
+    fun requestTimeoutIsLongEnoughForALargeModel() {
+        assertTrue(
+            "a budget at or under the old 60 s read timeout reproduces the original bug",
+            AiCoach.REQUEST_TIMEOUT_SECONDS > 60,
+        )
+        assertEquals(
+            "Android and Swift must use the same budget",
+            180L,
+            AiCoach.REQUEST_TIMEOUT_SECONDS,
+        )
+    }
 }
