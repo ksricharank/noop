@@ -36,9 +36,14 @@ FEATURES=(
   "feature/release-branch-tooling"
   "feature/lock-screen-hr-average"
   "feature/locked-rescore-deferral"
-  # Stacked AFTER locked-rescore-deferral: both rewrite the same opt-out/disconnect guard in
-  # LiveActivityController. This one converts those exits to the generation-gated `endIfCurrent()`,
-  # so it must land on top of the presentation-policy rewrite rather than under it.
+  # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
+  # opt-out/disconnect guard in LiveActivityController — the deferral branch replaces it with a
+  # LiveActivityPresentationPolicy switch, this one replaces the `Task { await end() }` inside it
+  # with the generation-gated `endIfCurrent()`. As independent branches they conflicted here on
+  # every rebuild; stacked, the fix is expressed against the policy and merges clean. So: keep it
+  # directly after its base, rebase it with `git rebase --onto feature/locked-rescore-deferral`
+  # (a plain rebase onto main flattens the stack and brings the conflict back), and upstream the
+  # two together, base first.
   "feature/dynamic-ui-bug-fix"
   "feature/dynamic-island-minimal-hr"
   "feature/synthesis-horizons"
