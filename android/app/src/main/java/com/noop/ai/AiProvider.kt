@@ -92,6 +92,25 @@ enum class AiProvider(
         modelsEndpoint = "",
     );
 
+    /**
+     * The cheapest / fastest model this provider offers, used as the one-shot fallback when a request
+     * times out. Cheapest is a proxy for fastest here, which is what actually matters: the retry only
+     * helps if it is likelier to finish inside the same deadline than the attempt that just failed.
+     *
+     * Null for [CUSTOM]: that provider points at whatever server the user runs, its catalogue is not
+     * known ahead of time, and there is no basis for calling one of its ids cheaper than another — so a
+     * Custom timeout is reported rather than silently re-sent to a model we guessed at.
+     *
+     * Byte-parity with Swift `AIProvider.cheapestModel`.
+     */
+    val cheapestModel: String?
+        get() = when (this) {
+            OPENAI -> "gpt-4.1-nano"
+            ANTHROPIC -> "claude-haiku-4-5-20251001"
+            GEMINI -> "gemini-flash-lite-latest"
+            CUSTOM -> null
+        }
+
     companion object {
         /** Resolve a provider by its persisted [name], falling back to [OPENAI]. */
         fun fromName(name: String?): AiProvider =
