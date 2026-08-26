@@ -142,6 +142,13 @@ final class Backfiller {
     /// Logged once per session when the strap reports trim=0xFFFFFFFF — the "no valid flash cursor"
     /// sentinel: it has no banked history to offload (a clock/charge state, not a decode bug).
     private var loggedNoCursor = false
+    /// True once this session saw a trim=0xFFFFFFFF END — the strap's "nothing past the last trim"
+    /// sentinel. Distinct from `loggedNoCursor`, which is a once-per-session LOG latch: this is the
+    /// state the auto-continue decision reads, so it stays meaningful even when the line was already
+    /// logged. Read by `exitBackfilling` to suppress a re-kick that provably cannot return data —
+    /// re-asking a strap that has just said "caught up" costs a full round trip for a guaranteed empty
+    /// session. Reset in `begin()` alongside the rest of the session tally.
+    private(set) var sessionSawNoCursor = false
     /// #773: logged once per session the first time a HISTORY_END's own timestamp is dated implausibly far
     /// in the FUTURE (a corrupt strap RTC). Distinct from #547's per-record drop tally: this fires on the
     /// chunk metadata's own clock, the earliest visible tell that the strap's RTC is bogus. Reset in begin().
@@ -270,6 +277,7 @@ final class Backfiller {
         sessionUsedIdentityRef = false
         chunkIndex = 0
         loggedNoCursor = false
+        sessionSawNoCursor = false
         loggedFutureRtc = false
         sessionDroppedImplausible = 0
         sessionUnhandledPacketTypes = [:]   // #891: a second offload must re-log its first sighting
@@ -740,6 +748,11 @@ final class Backfiller {
         // `sessionRowsPersisted == 0` HERE: if rows landed (this run or this END), log the neutral caught-up
         // line; a genuinely empty session (0 rows) still gets the real no-history guidance. Logs once per
         // session (loggedNoCursor) and the ack still proceeds below.
+        if trim == 0xFFFFFFFF {
+            // Record the sentinel for the auto-continue decision on EVERY such END, not only the first:
+            // the log line below is latched to once per session, but the state must survive that latch.
+            sessionSawNoCursor = true
+        }
         if trim == 0xFFFFFFFF, !loggedNoCursor {
             loggedNoCursor = true
             log?(Backfiller.noCursorLine(rowsPersisted: sessionRowsPersisted, continuedAfterRows: continuedAfterRows))

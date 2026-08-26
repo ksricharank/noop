@@ -428,6 +428,66 @@ final class BackfillContinuationTests: XCTestCase {
             consecutiveCount: 0))
     }
 
+    // MARK: - trim=0xFFFFFFFF "caught up" sentinel
+
+    /// The 5/MG shape from the 260825 strap log: no `strapNewestTs` (GET_DATA_RANGE does not feed sync
+    /// there), a productive session, an advancing trim — so guard 2b would re-kick — but the session ended
+    /// on the strap's own "nothing past the last trim" sentinel. That re-kick is a guaranteed-empty round
+    /// trip; 45% of the log's 107 offload sessions were exactly this. It must stop.
+    func testStopsWhenSessionEndedOnNoCursorSentinel() {
+        XCTAssertFalse(BackfillContinuation.shouldAutoContinue(
+            stillConnected: true,
+            strapNewestTs: nil,                      // 5/MG: feedsSync=false ⇒ always nil ⇒ 2a unreachable
+            ourFrontierTs: wallNow - 86_400,
+            wallNowUnix: wallNow,
+            persistedSensorRows: true,               // 2b would otherwise continue on this alone
+            sawNoCursorSentinel: true,
+            lastTrimAdvanced: true,
+            consecutiveCount: 0))
+    }
+
+    /// The same session WITHOUT the sentinel still continues — this is the control that proves the new
+    /// guard, not some other condition, is what stopped the case above. A real backlog is unaffected: the
+    /// strap reports a live trim while it still holds records.
+    func testStillContinuesWhenNoSentinelSeen() {
+        XCTAssertTrue(BackfillContinuation.shouldAutoContinue(
+            stillConnected: true,
+            strapNewestTs: nil,
+            ourFrontierTs: wallNow - 86_400,
+            wallNowUnix: wallNow,
+            persistedSensorRows: true,
+            sawNoCursorSentinel: false,
+            lastTrimAdvanced: true,
+            consecutiveCount: 0))
+    }
+
+    /// The sentinel outranks guard 2a as well, not just 2b: even a strap reporting a wide backlog gap has
+    /// just said it has nothing past the last trim, and the strap's own answer wins over the inference.
+    func testSentinelOutranksReportedBacklogGap() {
+        XCTAssertFalse(BackfillContinuation.shouldAutoContinue(
+            stillConnected: true,
+            strapNewestTs: wallNow,                  // 2a's gap holds wide open…
+            ourFrontierTs: wallNow - 86_400,
+            wallNowUnix: wallNow,
+            persistedSensorRows: true,
+            sawNoCursorSentinel: true,               // …but the strap says it is caught up
+            lastTrimAdvanced: true,
+            consecutiveCount: 0))
+    }
+
+    /// Default-off: every pre-existing caller and fixture omits the parameter, so the guard cannot change
+    /// behaviour for anything that has not opted in. Pins the defaulted-parameter contract itself.
+    func testSentinelDefaultsToOffAndPreservesPriorBehaviour() {
+        XCTAssertTrue(BackfillContinuation.shouldAutoContinue(
+            stillConnected: true,
+            strapNewestTs: nil,
+            ourFrontierTs: wallNow - 86_400,
+            wallNowUnix: wallNow,
+            persistedSensorRows: true,
+            lastTrimAdvanced: true,                  // no sawNoCursorSentinel: argument at all
+            consecutiveCount: 0))
+    }
+
     // MARK: - #1598 clock-correlation family gate
 
     /// A 5/MG must never chase or DERIVE a GET_CLOCK correlation: its records already carry real-unix

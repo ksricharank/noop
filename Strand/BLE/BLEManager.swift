@@ -375,6 +375,7 @@ struct BackfillContinuation {
                                    ourFrontierTs: Int?,
                                    wallNowUnix: Int,
                                    persistedSensorRows: Bool = false,
+                                   sawNoCursorSentinel: Bool = false,
                                    lastTrimAdvanced: Bool,
                                    consecutiveCount: Int,
                                    maxAutoContinues: Int = defaultMaxAutoContinues,
@@ -383,6 +384,16 @@ struct BackfillContinuation {
         guard stillConnected else { return false }                 // 1
         guard consecutiveCount < maxAutoContinues else { return false }   // 4 (cap)
         guard lastTrimAdvanced else { return false }               // 3 (don't spin on a frozen cursor)
+        // 3c: the session just ended on trim=0xFFFFFFFF — the strap's own "nothing past the last trim"
+        // sentinel. Re-asking cannot return data: the strap has already answered the question this
+        // re-kick would ask, so the extra SEND_HISTORICAL is a guaranteed-empty round trip. On a 5/MG
+        // this is the difference between one offload per sync and two, because guard 2a is unreachable
+        // there (GET_DATA_RANGE does not feed sync, so `strapNewestTs` is always nil) and every
+        // productive session therefore falls through to 2b's bare `persistedSensorRows` — which re-kicks
+        // unconditionally and learns "caught up" only by paying for the empty session. A real backlog is
+        // unaffected: the strap reports a live trim while it still holds records, and only reaches for
+        // the sentinel once it does not. The periodic floor still re-drains across connects either way.
+        guard !sawNoCursorSentinel else { return false }
         // 3b (#1144/#1146): a session that persisted NO NEW sensor rows never auto-continues, whatever the
         // reported frontier gap. When the strap advertises a `newest` AHEAD of our frontier but the offload
         // for that range banks no new rows (a PHANTOM gap — a timestamp it won't actually offload, a
@@ -2302,6 +2313,11 @@ public final class BLEManager: NSObject, ObservableObject {
         // never a fresh `backfiller.sessionRowsPersisted` re-read that a re-kicked session / trailing frames
         // could have mutated across the offload boundary.
         let persistedSensorRows = (backfiller?.sessionRowsPersisted ?? 0) > 0
+        // Snapshot the "no valid flash cursor" sentinel on the SAME terms and for the same reason as the
+        // row verdict above: a re-kicked session's `begin()` clears it, so a fresh read at the decision
+        // site (which runs on a Task, after this function returns) could observe the NEXT session's
+        // cleared flag and re-kick the very round trip this is meant to suppress.
+        let sawNoCursorSentinel = backfiller?.sessionSawNoCursor ?? false
         if persistedSensorRows { consecutiveEmptyOffloads = 0 }
         else if consecutiveAutoContinues == 0 { consecutiveEmptyOffloads += 1 }
         if reason == "HISTORY_COMPLETE" {
@@ -2436,7 +2452,8 @@ public final class BLEManager: NSObject, ObservableObject {
             // Snapshotting `> 0` = the auto-continue can't disagree with the empty verdict, and a dup-only
             // re-offload (0 new rows) stops instead of spinning on already-synced data.
             maybeAutoContinueBackfill(trimAdvanced: trimAdvanced,
-                                      persistedSensorRows: persistedSensorRows)
+                                      persistedSensorRows: persistedSensorRows,
+                                      sawNoCursorSentinel: sawNoCursorSentinel)
         }
     }
 
@@ -2451,7 +2468,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// `trimAdvanced` is the spin-detector signal computed in exitBackfilling (did this session move the
     /// trim cursor vs the previous one) — passed in because exitBackfilling has already advanced
     /// `lastSessionEndTrim` past the comparison point by the time this Task runs.
-    private func maybeAutoContinueBackfill(trimAdvanced: Bool, persistedSensorRows: Bool) {
+    private func maybeAutoContinueBackfill(trimAdvanced: Bool, persistedSensorRows: Bool,
+                                           sawNoCursorSentinel: Bool) {
         // Cheap pre-checks first (no Task if we already know we won't continue): still connected, under
         // the cap, and the trim moved. The frontier read only happens when those already hold.
         guard state.connected, state.bonded else { return }
@@ -2467,6 +2485,7 @@ public final class BLEManager: NSObject, ObservableObject {
                 ourFrontierTs: frontier,
                 wallNowUnix: wallNow,
                 persistedSensorRows: persistedSensorRows,
+                sawNoCursorSentinel: sawNoCursorSentinel,
                 lastTrimAdvanced: trimAdvanced,
                 consecutiveCount: count) else {
                 // #1012: name the stop honestly when the future-clock gate is what ended the chain —
@@ -2479,6 +2498,15 @@ public final class BLEManager: NSObject, ObservableObject {
                    BackfillContinuation.isFutureDatedNewest(newest, wallNowUnix: wallNow) {
                     let aheadH = ((newest ?? wallNow) - wallNow) / 3600
                     log("Backfill: not auto-continuing (#1012) - the strap-reported newest banked record reads \(aheadH)h AHEAD of the wall clock, so the range is future-dated and the strap clock is likely wrong (#928). Stopping after one pass instead of chasing future-dated ranges; the periodic sync keeps draining across connects.")
+                }
+                // Name the sentinel stop for the same reason (#1012's): without a line here the chain just
+                // goes quiet after a productive pass, and a strap log cannot tell this apart from a frozen
+                // trim or a spent cap. Gated to the case where the OTHER guards would have continued, so a
+                // cap / disconnect / frozen-trim stop is never misattributed to the sentinel.
+                if stillConnected, persistedSensorRows, trimAdvanced,
+                   count < BackfillContinuation.defaultMaxAutoContinues,
+                   sawNoCursorSentinel {
+                    log("Backfill: not auto-continuing - this session ended on the strap's own trim=0xFFFFFFFF \"nothing past the last trim\" sentinel, so a re-kick would buy a guaranteed-empty offload. Stopping here; the periodic sync keeps draining across connects.")
                 }
                 // No re-kick. THIS is the real "we're done draining" signal (#25): clear the auto-continue
                 // streak so the NEXT deep backlog (e.g. after the app's been off again) gets a fresh budget
