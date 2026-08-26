@@ -74,6 +74,22 @@ first forces a new profile and buys the full seven days. See
 Cheap to do and cheap to get wrong in the other direction: the profiles are regenerated on demand,
 so deleting them when they did not need it costs one extra fetch at build time.
 
+**Confirm it took, before trusting the build.** The profiles are re-minted the moment Xcode next
+needs them, so "files are present" proves nothing — read their dates. A `CreationDate` from minutes
+ago and an `ExpirationDate` seven days out is the proof; anything older means the reset did not
+happen (or a build beat it) and the clock was not reset:
+
+```bash
+for f in ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision; do
+  security cms -D -i "$f" | plutil -extract Name raw -
+  security cms -D -i "$f" | plutil -extract CreationDate raw -
+  security cms -D -i "$f" | plutil -extract ExpirationDate raw -
+done
+```
+
+This is the one cheap check that distinguishes a good build from the mid-week-death build described
+above, and it takes a second.
+
 **Why this is a gate and not a reminder.** Skipping it produces a build that succeeds, signs,
 installs, and looks correct — and then dies partway through the week on a profile that was already
 part-expired when it was reused. There is nothing in the build output that distinguishes that build
@@ -91,6 +107,14 @@ made before the reset carries the stale profile and has to be thrown away.
 
 Open `Strand.xcodeproj`, scheme **NOOPiOS**, press ▶.
 
+Confirm the phone is actually attached first — a signed build for a `generic/platform=iOS`
+destination succeeds with no device present and produces a `.app` that never installs, which reads
+as success until you look for it on the phone:
+
+```bash
+xcrun xctrace list devices | sed -n '/^== Devices ==/,/^== /p' | grep -vi simulator
+```
+
 Before pressing ▶ in a worktree you have not built in before, confirm the signing identity actually
 resolved — a worktree missing its gitignored `Config/BundleIdSecrets.xcconfig` builds as
 `com.noopapp` with no team and only fails later, at the signing step:
@@ -106,6 +130,26 @@ One file per fork build in [`docs/releases/fork/`](releases/fork/), covering the
 Record what shipped — version, build number, the branches in the stack, what was verified and what
 was not — and restate the profile reset from step 4, since the notes are what gets re-read when
 reinstalling a build later and a stale profile is the first thing to check.
+
+**Commit them on `feature/release-branch-tooling`, not on `release`.** The notes are a durable
+artifact and `release` is deleted on the next rebuild, so a note committed there is silently lost —
+including one written *after* a hand-finished merge, when `release` is the branch you happen to be
+standing on. If that happens, recover it rather than retyping:
+
+```bash
+git checkout feature/release-branch-tooling
+git cherry-pick <the-commit-on-release>
+```
+
+The same applies to anything else durable that gets written mid-release: the fix belongs on a feature
+branch, and only the merge commits belong on `release`.
+
+State plainly what was **not** verified. A fork build is normally compiled and unit-tested but not
+exercised on a strap, and the notes are the only place that distinction survives — see
+[BLE behaviour cannot be verified by any of this](#ble-behaviour-cannot-be-verified-by-any-of-this).
+Where a change predicts a measurable outcome, write the number down: it is what the next build's log
+gets compared against, and a prediction recorded before the fact is worth more than one reconstructed
+afterwards.
 
 ### 7. Push
 
@@ -145,6 +189,31 @@ a mismatch ("extension version must match parent app", upstream #416).
 
 Both live on `feature/release-by-default`, which already owns `project.yml`, so the rebuild resolves
 one change against that file instead of two.
+
+#### The build number conflicts on most rebuilds — resolve it UPWARD
+
+`CURRENT_PROJECT_VERSION` is the one key the fork and upstream **both** write, and upstream bumps it
+every time it stages a build ("Bump build numbers for the next 10.6.1 staging build"). So
+`feature/release-by-default` collides with `upstream/main` on that line whenever upstream has staged
+since the last fork build — routinely, and mid-rebuild if upstream moves while you are working.
+
+**Always keep the higher number.** A build number may only ever increase: iOS refuses to install a
+build whose number is lower than the one already on the phone, and the app and its widget must match
+(#416). Taking "ours" mechanically can therefore hand you a build that will not install.
+
+```
+<<<<<<< HEAD
+    CURRENT_PROJECT_VERSION: "248"      # upstream staged this
+=======
+    CURRENT_PROJECT_VERSION: "247"      # what the fork bumped to
+>>>>>>> feature/release-by-default
+```
+→ keep **248**, and note the real number in the build notes. `MARKETING_VERSION` in the same hunk is
+not in conflict — the fork's four-part value wins there, since upstream never writes it.
+
+This is expected, not a sign anything is wrong. It is a two-line resolution in the throwaway release
+branch, so it does **not** need a permanent fix on the feature branch — unlike a structural conflict,
+it recurs by design.
 
 Verify what actually shipped, rather than what the file says:
 
@@ -282,6 +351,24 @@ xcodebuild -project Strand.xcodeproj -scheme Strand -destination 'platform=macOS
 Build **both** app targets: `StrandiOS/` is iOS-only, but `Strand/` is shared, so an edit there can
 compile for iOS and break macOS.
 
+### The macOS build cannot be skipped, even on an iOS-only fork
+
+Tempting, since this fork only ever installs an iPhone build — but the macOS target is load-bearing
+for two independent reasons:
+
+1. **`StrandTests` is a macOS target.** In `project.yml` it is `platform: macOS`, depends on
+   `target: Strand`, and is hosted in the macOS app (`TEST_HOST` → `NOOP Staging.app/Contents/MacOS/
+   NOOP Staging`, with `@testable import Strand`). There is no iOS unit-test target at all, so
+   **dropping the macOS build drops the entire 1350-test suite** — the only automated check this fork
+   has, given `app-build.yml` is disabled.
+2. **`Strand/` is shared source, not macOS source.** The iOS app compiles most of it. A change there
+   that builds for iOS can still break macOS (and vice versa), and that break is what the macOS
+   compile catches before it reaches a feature branch.
+
+So the macOS *app* is not a deliverable here, but its target is the test host and the second compiler
+pass over shared code. Build it; just do not ship it. If the goal is a faster loop, narrow the test
+run (`-only-testing:StrandTests/<Suite>`) rather than dropping the target.
+
 ### BLE behaviour cannot be verified by any of this
 
 Compiling proves nothing about connection behaviour, and neither does one good night. Anything on
@@ -295,6 +382,15 @@ what you tested on hardware — and say plainly when you have not.
 
 `build-release-branch.sh` stops on a conflict and leaves the tree mid-merge. Resolve it to finish
 the build — then **fix it permanently on the feature branch**, or it returns on every rebuild.
+
+Two mechanics worth knowing before you resolve one:
+
+- **`git merge --continue` opens an editor** and rejects `--no-edit` (that flag belongs on `git
+  merge`, not on `--continue`). In a non-interactive shell it will appear to hang or error. Use
+  `git -c core.editor=true merge --continue` to accept the generated message.
+- **The script exits before `xcodegen generate`** when a merge fails, so a hand-finished merge leaves
+  a *stale* `Strand.xcodeproj` referencing the pre-merge source list. Run `xcodegen generate`
+  yourself after `merge --continue`, or re-run the script with `--no-fetch` once the tree is clean.
 
 Which fix depends on what kind of conflict it is:
 
