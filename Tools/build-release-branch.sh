@@ -37,6 +37,10 @@ FEATURES=(
   # Touches HealthKitBridge/AppleHealthView/HealthSyncPolicy, which no other branch in this stack
   # modifies, so it merges clean from anywhere in the order.
   "feature/health-read-only-sync"
+  # Log-only instrumentation (IntelligenceEngine cost line + WhoopStore SQL tally). Touches
+  # IntelligenceEngine.swift, which locked-rescore-deferral also edits, but in different regions
+  # (the pass-1 loop vs the debt/scheduler wiring) - merges clean as of this writing.
+  "feature/rescore-prep-instrumentation"
   "feature/lock-screen-hr-average"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
