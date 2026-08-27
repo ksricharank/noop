@@ -384,6 +384,22 @@ final class AICoachEngine: ObservableObject {
     @Published var includeOnDeviceSignals: Bool {
         didSet { UserDefaults.standard.set(includeOnDeviceSignals, forKey: Self.onDeviceSignalsKey) }
     }
+    /// THIRD opt-in: widen the per-day lines with the sleep-architecture / autonomic fields already held
+    /// in `DailyMetric` (stages, efficiency, disturbances, SDNN, absolute skin temp) and append a TRENDS
+    /// block of deterministic roll-ups (training load, sleep debt, baseline deviations, data density).
+    /// OFF by default and gated behind `dataConsent` too, so it never adds anything without both consents.
+    ///
+    /// Nothing here reaches past the data the core summary is already built from: the extra day fields ride
+    /// the SAME `repo.days` rows the coach already reads five columns off, and every trend is a pure
+    /// function over those rows. So this widens RESOLUTION, not scope — no new store reads, no raw-sample
+    /// egress, same text-only channel.
+    ///
+    /// NOTE: `buildFullContext()` also backs `refreshSynthesis()`, so this enriches the Today synthesis
+    /// paragraph as well as the Coach chat. That is intended — the synthesis is the surface this data was
+    /// asked for — and the toggle's copy says so.
+    @Published var includeDerivedTrends: Bool {
+        didSet { UserDefaults.standard.set(includeDerivedTrends, forKey: Self.derivedTrendsKey) }
+    }
 
     private let repo: Repository
     private let session: URLSession
@@ -393,6 +409,7 @@ final class AICoachEngine: ObservableObject {
     private static let consentKey = "ai.dataConsent"
     private static let customConnectedKey = "ai.customConnected"
     private static let onDeviceSignalsKey = "ai.includeOnDeviceSignals"
+    private static let derivedTrendsKey = "ai.includeDerivedTrends"
     /// UserDefaults key holding the user's EDITED system prompt. Absent (or blank) means "use the
     /// built-in default". Small text key, never a secret, so plain UserDefaults is fine. Read FRESH
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
@@ -575,6 +592,7 @@ final class AICoachEngine: ObservableObject {
         self.customAuthHeader = AIProvider.customAuthHeader
         self.customConnected = UserDefaults.standard.bool(forKey: Self.customConnectedKey)
         self.includeOnDeviceSignals = UserDefaults.standard.bool(forKey: Self.onDeviceSignalsKey)
+        self.includeDerivedTrends = UserDefaults.standard.bool(forKey: Self.derivedTrendsKey)
 
         // Move a pre-multi-slot key into its provider's slot so an existing install keeps the key it
         // already had. Runs after `provider` is set because an unowned legacy key is filed under the
@@ -940,6 +958,13 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        // Third opt-in: deterministic roll-ups (training load, sleep debt, baseline deviations) over the
+        // SAME `repo.days` rows the summary above is built from. Pure and store-free, so it adds no read
+        // and no egress surface — only resolution on data already in the context.
+        if includeDerivedTrends {
+            let trends = Self.derivedTrendsBlock(days: repo.days)
+            if !trends.isEmpty { ctx += "\n\n" + trends }
+        }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
@@ -1163,7 +1188,9 @@ final class AICoachEngine: ObservableObject {
         // Last ~14 days, newest first for readability.
         let recent = Array(days.suffix(14)).reversed()
         lines.append("")
-        lines.append("Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), HRV(ms), RHR(bpm):")
+        lines.append(includeDerivedTrends
+            ? "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), HRV(RMSSD, ms), RHR(bpm), deep/REM sleep(min), eff(sleep efficiency %), wakes(disturbances), SDNN(broad HRV, ms), skin(skin temperature — labelled either absolute °C or a signed deviation vs baseline). Fields are omitted on nights that didn't record them:"
+            : "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), HRV(ms), RHR(bpm):")
         for d in recent {
             lines.append("  " + dayLine(d))
         }
@@ -1206,15 +1233,128 @@ final class AICoachEngine: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - Derived trends (third opt-in)
+
+    /// A block of DETERMINISTIC roll-ups over the same `repo.days` rows the core summary is built from:
+    /// training load (CTL/ATL/TSB), the sleep-debt ledger, personal baseline deviations, and a data-density
+    /// note. Pure — no store reads, no network, no new consent surface beyond the caller's gate.
+    ///
+    /// Why these and not more raw days: the context targets a small token budget, and one computed sentence
+    /// ("acute load is above chronic") carries more usable signal per token than ten additional day rows the
+    /// model would have to trend-fit itself — badly, and unstated. Every figure here is one the app already
+    /// computes for its own screens, so the coach stops disagreeing with the UI the user is looking at.
+    ///
+    /// Each sub-block is INDEPENDENTLY nil-guarded: a user with 6 nights gets the sleep-debt line and no
+    /// training-load line, rather than a fabricated ratio. Returns "" when nothing qualifies.
+    nonisolated static func derivedTrendsBlock(days: [DailyMetric]) -> String {
+        guard !days.isEmpty else { return "" }
+        var lines: [String] = []
+
+        // 1. Training load — CTL (chronic), ATL (acute), TSB (form). The engine reports its OWN state, so
+        //    a still-calibrating model is labelled as such instead of being read as established.
+        let loads = days.map { TrainingLoadEngine.DailyLoad(day: $0.day, load: $0.strain) }
+        let tl = TrainingLoadEngine.evaluate(days: loads)
+        if tl.isAvailable, let ctl = tl.ctl, let atl = tl.atl, let tsb = tl.tsb {
+            let qualifier = tl.state == .building ? " (still calibrating — treat as directional)" : ""
+            let direction: String
+            if tsb < -5 { direction = "acute load is running ABOVE chronic — accumulating fatigue" }
+            else if tsb > 5 { direction = "acute load is BELOW chronic — freshening / detraining" }
+            else { direction = "acute and chronic load are balanced" }
+            lines.append(String(format:
+                "Training load: chronic (42d) %.1f, acute (7d) %.1f, balance %+.1f — %@%@",
+                ctl, atl, tsb, direction, qualifier))
+        }
+
+        // 2. Sleep debt — a running balance vs need over the ledger window. Far more actionable than the
+        //    per-night durations alone, which the model would otherwise have to sum by eye.
+        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) })
+        if ledger.nightCount > 0 {
+            let hours = ledger.magnitudeMin / 60.0
+            if ledger.magnitudeMin < SleepDebt.onTargetBandMin {
+                lines.append(String(format:
+                    "Sleep debt: balanced over the last %d nights (within %.0f min of a %.1fh nightly need).",
+                    ledger.nightCount, SleepDebt.onTargetBandMin, ledger.needMin / 60.0))
+            } else {
+                lines.append(String(format:
+                    "Sleep debt: %.1fh %@ over the last %d nights, against a %.1fh nightly need.",
+                    hours, ledger.isDebt ? "SHORT" : "surplus", ledger.nightCount, ledger.needMin / 60.0))
+            }
+        }
+
+        // 3. Personal baselines — the single biggest interpretive win. Absolutes ("HRV 42ms") tell the model
+        //    nothing without knowing what is normal FOR THIS USER; a z turns every vital into a deviation.
+        //    Only `usable` baselines are emitted, so a cold-start never ships a confident-looking z.
+        var deviations: [String] = []
+        func deviationLine(_ label: String, values: [Double?], cfgKey: String, latest: Double?, unit: String) {
+            guard let latest, let cfg = Baselines.metricCfg[cfgKey] else { return }
+            let state = Baselines.foldHistory(values, cfg: cfg)
+            guard state.usable else { return }
+            let dev = Baselines.deviation(latest, state: state)
+            let tag = state.status == .provisional ? ", provisional baseline" : ""
+            deviations.append(String(format: "%@ %.0f%@ vs personal baseline %.0f%@ (z %+.1f%@)",
+                                     label, latest, unit, state.baseline, unit, dev.z, tag))
+        }
+        let newest = days.last
+        deviationLine("HRV", values: days.map { $0.avgHrv }, cfgKey: "hrv",
+                      latest: newest?.avgHrv, unit: "ms")
+        deviationLine("Resting HR", values: days.map { $0.restingHr.map(Double.init) }, cfgKey: "resting_hr",
+                      latest: newest?.restingHr.map(Double.init), unit: "bpm")
+        deviationLine("Respiration", values: days.map { $0.respRateBpm }, cfgKey: "resp",
+                      latest: newest?.respRateBpm, unit: "/min")
+        if !deviations.isEmpty {
+            lines.append("Latest night vs personal baseline (z = SDs from this user's own norm; |z| <= 1 is typical):")
+            for d in deviations { lines.append("  • " + d) }
+        }
+
+        // 4. Data density — so thin history is hedged rather than over-read as a real trend.
+        let scored = days.filter { $0.recovery != nil }.count
+        lines.append("Data density: \(scored) scored days of \(days.count) in history"
+                     + (scored < 14 ? " — thin history, so state trends cautiously and avoid strong claims." : "."))
+
+        guard !lines.isEmpty else { return "" }
+        return (["DERIVED TRENDS (computed on-device from the days above — deterministic, not model estimates):"]
+                + lines).joined(separator: "\n")
+    }
+
     // MARK: Formatting helpers
 
     private func dayLine(_ d: DailyMetric) -> String {
+        Self.dayLine(d, wide: includeDerivedTrends)
+    }
+
+    /// Pure per-day formatter, kept static so it is unit-testable without a store or a live engine.
+    ///
+    /// `wide` appends the sleep-architecture / autonomic columns that already ride the SAME `DailyMetric`
+    /// row the narrow line is built from — deep/REM, efficiency, disturbances, SDNN and ABSOLUTE skin
+    /// temperature. None of these is a new read: the coach has held them all along and used five columns.
+    ///
+    /// Skin temperature comes from `skinTempDevC`, which is BIMODAL: strap nights store a deviation from
+    /// baseline, while CSV/Apple imports write an absolute wrist °C into the same column. They are told
+    /// apart by magnitude (`VitalBands.isAbsoluteSkinTemp`) and LABELLED accordingly, so the model is
+    /// never handed a "+31.2" that it reads as a deviation. Emitting one fixed meaning for both would
+    /// misreport every row of whichever kind lost the coin toss.
+    ///
+    /// Every field is optional and simply ABSENT when nil — never a placeholder that could be read as a
+    /// measured zero.
+    nonisolated static func dayLine(_ d: DailyMetric, wide: Bool) -> String {
         var parts: [String] = [d.day + ":"]
         parts.append("charge " + (d.recovery.map { "\(Int($0.rounded()))" } ?? "—"))
         parts.append("effort " + (d.strain.map { String(format: "%.1f", $0) } ?? "—"))
         parts.append("rest " + (d.totalSleepMin.map { String(format: "%.1fh", $0 / 60) } ?? "—"))
         parts.append("HRV " + (d.avgHrv.map { "\(Int($0.rounded()))ms" } ?? "—"))
         parts.append("RHR " + (d.restingHr.map { "\($0)bpm" } ?? "—"))
+        guard wide else { return parts.joined(separator: ", ") }
+
+        if let deep = d.deepMin { parts.append("deep \(Int(deep.rounded()))m") }
+        if let rem = d.remMin { parts.append("REM \(Int(rem.rounded()))m") }
+        if let eff = d.efficiency { parts.append("eff \(Int(eff.rounded()))%") }
+        if let dist = d.disturbances { parts.append("wakes \(dist)") }
+        if let sdnn = d.avgSdnn { parts.append("SDNN \(Int(sdnn.rounded()))ms") }
+        if let skin = d.skinTempDevC {
+            parts.append(VitalBands.isAbsoluteSkinTemp(skin)
+                ? String(format: "skin %.1f°C", skin)
+                : String(format: "skin %+.1f°C vs baseline", skin))
+        }
         return parts.joined(separator: ", ")
     }
 
