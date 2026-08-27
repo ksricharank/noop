@@ -70,6 +70,10 @@ struct CoachView: View {
                 // v5: a SECOND opt-in, only meaningful once data access is on, folds a summary of the
                 // new on-device signals (your strongest patterns + Lab Book) into the coach context.
                 if coach.dataConsent { onDeviceSignalsBar }
+                // A THIRD opt-in, likewise only meaningful once data access is on: widen the per-day
+                // detail and append deterministic on-device trends. Same rows, more resolution. Feeds the
+                // Today synthesis as well as this chat, since both share `buildFullContext()`.
+                if coach.dataConsent { derivedTrendsBar }
                 systemPromptBar
                 synthesisPromptBar
                 transcript
@@ -193,6 +197,38 @@ struct CoachView: View {
                 Toggle("", isOn: $coach.includeOnDeviceSignals)
                     .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
                     .accessibilityLabel("Also share my patterns and Lab Book with the coach")
+            }
+        }
+    }
+
+    /// A THIRD opt-in: widen the per-day rows with the sleep-architecture / autonomic fields the coach
+    /// already holds (deep/REM, efficiency, disturbances, SDNN, absolute skin temp) and append a block of
+    /// deterministic on-device trends (training load, sleep debt, personal-baseline deviations).
+    ///
+    /// This adds RESOLUTION, not reach: every figure is computed from the same days already summarised
+    /// above, so no new data category leaves the device and the summary-only posture is unchanged.
+    ///
+    /// It applies to the Today synthesis too — both surfaces build on `buildFullContext()` — so the copy
+    /// names both rather than implying this is chat-only.
+    private var derivedTrendsBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            HStack(spacing: 10) {
+                Image(systemName: coach.includeDerivedTrends ? "chart.line.uptrend.xyaxis.circle.fill" : "chart.line.uptrend.xyaxis.circle")
+                    .foregroundStyle(coach.includeDerivedTrends ? StrandPalette.accent : StrandPalette.textTertiary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Also share additional data & trends")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                    Text(coach.includeDerivedTrends
+                         ? "On: adds sleep stages, efficiency, SDNN and skin temperature to each day, plus training load, sleep debt and how today compares with your own baseline. Used by the Today synthesis as well as this chat. All computed on \(Platform.deviceNounPhrase) from the days already shared."
+                         : "Off: only the core daily figures are shared, without sleep detail or computed trends.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $coach.includeDerivedTrends)
+                    .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
+                    .accessibilityLabel("Also share additional data and trends with the coach")
             }
         }
     }
