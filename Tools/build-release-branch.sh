@@ -34,6 +34,9 @@ UPSTREAM="$UPSTREAM_REMOTE/main"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
+  # Touches HealthKitBridge/AppleHealthView/HealthSyncPolicy, which no other branch in this stack
+  # modifies, so it merges clean from anywhere in the order.
+  "feature/health-read-only-sync"
   "feature/lock-screen-hr-average"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
