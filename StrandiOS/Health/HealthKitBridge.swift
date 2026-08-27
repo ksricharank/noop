@@ -238,21 +238,34 @@ final class HealthKitBridge: ObservableObject {
     /// Resume a prior grant on launch without re-prompting. `auth` is a fresh `.unknown` every
     /// process (the bridge isn't persisted), so a user who already enabled Apple Health would
     /// otherwise have to re-tap "Enable" each session before the scenePhase sync runs. HealthKit
-    /// never reveals *read* status, but *write*/share status is observable — if the user already
-    /// authorized all of our write types, treat the bridge as `.authorized`. This only reads
-    /// status, so no system permission sheet is shown.
+    /// never reveals *read* status, so two write-independent signals stand in: observable
+    /// *write*/share status, and the stored read-type signature (persisted only after a SUCCESSFUL
+    /// `requestAuthorization()`, so it proves the user completed the Health sheet in some earlier
+    /// process). Write status alone silently disarmed a read-only user — all reads on, every write
+    /// off resumed nothing, so `enableLiveDelivery()` never ran and background ingestion was dead
+    /// for exactly the battery-friendly configuration. This only reads status, so no system
+    /// permission sheet is shown.
     func refreshAuthIfPreviouslyGranted() {
         guard auth == .unknown, HKHealthStore.isHealthDataAvailable() else { return }
         // Share authorization is per type. Resume when at least one write type is granted so a person
         // who intentionally declined (for example) workouts still gets sleep/vitals exported after a
         // relaunch. Requiring every legacy type made partial grants look wholly disconnected.
         let granted = writeTypes.contains { store.authorizationStatus(for: $0) == .sharingAuthorized }
-        if granted {
+        // Treating a signature-only resume as `.authorized` matches requestAuthorization()'s own
+        // semantics: read status is unobservable, so `.authorized` has always meant "the sheet
+        // completed", with queries returning empty for anything the user declined. The decision is the
+        // pure `HealthSyncPolicy.shouldResumePriorGrant`, pinned in HealthSyncPolicyTests.
+        let hasReadSignature =
+            UserDefaults.standard.string(forKey: HealthKitBridge.readTypeSignatureKey) != nil
+        if HealthSyncPolicy.shouldResumePriorGrant(anyWriteAuthorized: granted,
+                                                   hasStoredReadSignature: hasReadSignature) {
             auth = .authorized
             // A returning user who already granted access should get the live stream re-armed for this
             // process. enableLiveDelivery is idempotent (HealthKit dedups observers + background
             // delivery per type), so calling it here as well as after a fresh requestAuthorization is safe.
             enableLiveDelivery()
+        }
+        if granted {
             // The high-res write-back added share types (HR stream, workouts, energy/distance) that a
             // pre-update grant has as `.notDetermined`. Re-request once: HealthKit shows a single sheet
             // listing ONLY the new types, and each write feature independently guards on its own type's
@@ -264,6 +277,9 @@ final class HealthKitBridge: ObservableObject {
             // also called from the offload write-back (#1021), which runs in processes that were never
             // foregrounded. Asking there would spend the one request we get where no sheet can be
             // presented. The status read above is unaffected, so a legacy grant still resumes.
+            //
+            // Kept on the WRITE-granted path only: a signature-only (read-only) user chose no writes,
+            // and the new-share-types nudge exists to complete a write set they never started.
             let newTypesPending = writeTypes.contains { store.authorizationStatus(for: $0) == .notDetermined }
             if newTypesPending, UIApplication.shared.applicationState == .active {
                 Task { try? await store.requestAuthorization(toShare: writeTypes, read: readTypes) }
@@ -704,6 +720,11 @@ final class HealthKitBridge: ObservableObject {
         // No authorization is a successful no-op for a background task. The scheduler is cancelled by
         // its app-owned operation after observing this state, so it does not keep waking unnecessarily.
         guard auth == .authorized else { return true }
+        // Writes switched off is the same successful no-op — bail before the single-flight gate and
+        // the store fetch, not inside writeBack, so a disabled write-back never spends the background
+        // task's budget acquiring a store handle it will not use. (writeBack has its own guard too:
+        // it is the shared funnel for the `sync()` path, where the READS still must run.)
+        guard HealthSyncPolicy.writeBackEnabled() else { return true }
         guard !syncing else {
             writeBackPending = true
             return true
@@ -749,6 +770,14 @@ final class HealthKitBridge: ObservableObject {
     /// Throws on save failure so the caller can decide whether to advance `lastSync`.
     private func writeBack(whoopStore: WhoopStore, days: Int = 14) async throws {
         guard auth == .authorized else { return }
+        // The user-facing "Write to Apple Health" switch (default ON — see HealthSyncPolicy). This is
+        // the single funnel every write path runs through (`sync()` and `writeBackAfterNewData()`
+        // both land here), so one guard covers all four writers. Reads are untouched: the switch
+        // exists precisely so a read-only configuration keeps its scores without paying for the
+        // write-back — the expensive half of a sync, and the trigger of the observer self-wake loop
+        // (NOOP's own saves wake the `predicate: nil` observers; the anchored query then filters them
+        // out as `notNoopAuthored` and finds nothing — 608 of 764 wakes in the 260827 capture).
+        guard HealthSyncPolicy.writeBackEnabled() else { return }
         let now = Date()
         guard let fromDate = Calendar.current.date(byAdding: .day, value: -days, to: now) else { return }
         let fromTs = Int(fromDate.timeIntervalSince1970)
