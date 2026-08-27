@@ -34,9 +34,6 @@ UPSTREAM="$UPSTREAM_REMOTE/main"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
-  # Touches only Strand/BLE + Strand/Collect, which no other branch in this stack modifies, so it
-  # merges clean from anywhere in the order. Kept early and well clear of the dependent pair below.
-  "feature/backfill-skip-empty-recontinue"
   "feature/lock-screen-hr-average"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
