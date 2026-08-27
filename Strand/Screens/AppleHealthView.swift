@@ -47,6 +47,9 @@ struct AppleHealthView: View {
     #if os(iOS)
     @EnvironmentObject private var health: HealthKitBridge
     @EnvironmentObject private var model: AppModel
+    // The "Write strap data to Health" switch. Same key + default (ON) as the bridge's own guard —
+    // both read HealthSyncPolicy, so the toggle and the behaviour cannot drift apart.
+    @AppStorage(HealthSyncPolicy.writeBackEnabledKey) private var writeBackEnabled = true
     #endif
 
     // Imperial/Metric display preference (D#103). Weight and lean mass (stored kg) re-label to lb here;
@@ -467,6 +470,23 @@ struct AppleHealthView: View {
                     .buttonStyle(.bordered)
                     .tint(StrandPalette.metricCyan)
                     .disabled(health.syncing)
+
+                    // The write-back switch (default ON — HealthSyncPolicy). Reads are unaffected: NOOP
+                    // keeps ingesting the watch's data and every score keeps working; what stops is the
+                    // export of strap data INTO Health — the expensive half of a sync (the heart-rate
+                    // writer alone rewrites a rolling 48 h window every pass) and the trigger of the
+                    // observer self-wake loop. Takes effect on the next sync; nothing already written
+                    // to Health is removed.
+                    Toggle(isOn: $writeBackEnabled) {
+                        Text("Write strap data to Health")
+                            .font(StrandFont.subhead)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
+                    .tint(StrandPalette.metricCyan)
+                    Text("Off keeps every read working — scores, trends and Fitness Age are unaffected. NOOP just stops exporting sleep, heart rate, workouts and vitals into Apple Health, which is the battery-heavy half of a sync. Already-written data stays in Health.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let err = health.lastError {
