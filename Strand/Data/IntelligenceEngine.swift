@@ -899,6 +899,24 @@ final class IntelligenceEngine: ObservableObject {
             let rrWindow = SlidingStreamWindow<RRInterval>(tsOf: { $0.ts }, limit: streamLimit) { o, f, t in
                 try? await store.rrIntervals(deviceId: o, from: f, to: t, limit: streamLimit)
             }
+            // #1538 follow-up: split `prep` into its two halves, measured, not modelled. `read` is the
+            // wall time spent AWAITING the store across the prep bracket's reads — actor queue wait +
+            // hop + SQL together, which is what the caller actually pays. `compute` (= prep − read) is
+            // the Swift derivation between the reads. The 260827 capture showed the same one-day prep
+            // costing 489 ms or 148 s with the cache state identical, and the offload-contention theory
+            // FAILED its correlation test (slow preps had FEWER nearby offload writes than fast ones),
+            // so which half carries the 300× spread is exactly the unknown. Beside it, the store's own
+            // SQL tally (reset below, snapshotted at the end) says how much of `read` was actually
+            // executing SQL: read ≫ sql means the WhoopStore actor is queueing WAL-parallel reads
+            // behind bulk writes; read ≈ sql means SQLite itself (WAL size, I/O) is the slow half.
+            var dayReadSeconds = 0.0
+            func timedRead<T>(_ op: () async -> T) async -> T {
+                let t0 = Date()
+                let r = await op()
+                dayReadSeconds += Date().timeIntervalSince(t0)
+                return r
+            }
+            await store.perfReset()
             for offset in 0..<maxDays {
                 let dayStart = nowLocalMidnight - offset * 86_400
                 let day = AnalyticsEngine.dayString(dayStart, offsetSec: tzOffset)
@@ -974,7 +992,7 @@ final class IntelligenceEngine: ObservableObject {
                 // what decides whether narrowing the read windows is worth building at all. Measured, not
                 // guessed, for the same reason the day-cache duration is.
                 let tPrep0 = Date()
-                let hr = await hrWindow.rows(owner: owner, from: from, to: to)
+                let hr = await timedRead { await hrWindow.rows(owner: owner, from: from, to: to) }
                 guard hr.count >= IntelligenceEngine.minHrSamples else {
                     // This day still paid for its read; count it, or the tally under-reports exactly the
                     // sparse-history installs where reads dominate most.
@@ -982,7 +1000,7 @@ final class IntelligenceEngine: ObservableObject {
                     skippedSleepDays.append((day: day, hrSamples: hr.count))
                     continue
                 }
-                let rr = await rrWindow.rows(owner: owner, from: from, to: to)
+                let rr = await timedRead { await rrWindow.rows(owner: owner, from: from, to: to) }
                 // `forScoring` drops an Oura ring's respiration rows: those are the ring's OWN per-window
                 // RATE (0x6A, milli-bpm, ~1 row per 5 min), stored as instrumentation, while the stager
                 // reads this stream as a ~1 Hz raw ADC waveform. Refusing by provenance keeps the
@@ -996,16 +1014,16 @@ final class IntelligenceEngine: ObservableObject {
                 // `analyzeDay` as what they are: the device's OWN measured respiratory rate, which
                 // becomes the night's `respRateBpm` instead of the RSA estimate. A WHOOP owner gets the
                 // rows in the first list and nothing in the second, so its night is unchanged.
-                let respRows = (try? await store.respSamples(deviceId: owner, from: from, to: to,
-                                                             limit: 200_000)) ?? []
+                let respRows = await timedRead { (try? await store.respSamples(deviceId: owner, from: from, to: to,
+                                                                                limit: 200_000)) ?? [] }
                 let resp = OuraRespScale.forScoring(respRows, deviceId: owner)
                 let vendorResp = OuraRespScale.forVendorRate(respRows, deviceId: owner)
-                let grav = (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
-                let steps = (try? await store.stepSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
-                let skin = (try? await store.skinTempSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                let grav = await timedRead { (try? await store.gravitySamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? [] }
+                let steps = await timedRead { (try? await store.stepSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? [] }
+                let skin = await timedRead { (try? await store.skinTempSamples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? [] }
                 // #93: WHOOP 4.0 raw SpO2 PPG samples for the night; analyzeDay banks the nightly red/IR ADC
                 // means on the DailyMetric. Empty on a 5/MG (no v24 spo2 channels) → the raw means stay nil.
-                let spo2 = (try? await store.spo2Samples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? []
+                let spo2 = await timedRead { (try? await store.spo2Samples(deviceId: owner, from: from, to: to, limit: 200_000)) ?? [] }
                 // #938: the strap family that WROTE this owner's skin-temp rows, so analyzeDay converts the raw
                 // register on the right scale (5/MG banks centidegrees, a WHOOP 4.0 v24 banks a raw ADC). The
                 // registry knows each device's model; unknown/non-WHOOP owners fall back to `.whoop5` (the prior
@@ -1046,7 +1064,7 @@ final class IntelligenceEngine: ObservableObject {
                 // only when its off-wrist coverage reaches maxOffWristSleepFraction, so a real night with a
                 // short off-wrist tail survives. Pairing needs WRIST_ON too (to bound each interval); a span
                 // still open at the window end closes at `to`. Empty when the strap emitted no wrist events.
-                let wristEvents = (try? await store.events(deviceId: owner, from: from, to: to, limit: 50_000)) ?? []
+                let wristEvents = await timedRead { (try? await store.events(deviceId: owner, from: from, to: to, limit: 50_000)) ?? [] }
                 let wristOff = AnalyticsEngine.offWristIntervals(events: wristEvents, windowEnd: to)
 
                 // Calendar-day window for the ADDITIVE daily totals (steps + calories). The night window
@@ -1074,14 +1092,14 @@ final class IntelligenceEngine: ObservableObject {
                                                                  dayLo: dayMid, dayHi: dayEnd, ts: { $0.ts }) {
                     dayHr = slice
                 } else {
-                    dayHr = (try? await store.hrSamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
+                    dayHr = await timedRead { (try? await store.hrSamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? [] }
                 }
                 let daySteps: [StepSample]
                 if let slice = AnalyticsEngine.daySliceFromNight(steps, nightLo: from, nightHi: to,
                                                                  dayLo: dayMid, dayHi: dayEnd, ts: { $0.ts }) {
                     daySteps = slice
                 } else {
-                    daySteps = (try? await store.stepSamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
+                    daySteps = await timedRead { (try? await store.stepSamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? [] }
                 }
                 // Full calendar-day gravity for WORKOUT detection. The night window above ends at
                 // dayStart+12h (≈ noon), so an afternoon/evening workout sits outside it and was only
@@ -1093,7 +1111,7 @@ final class IntelligenceEngine: ObservableObject {
                                                                  dayLo: dayMid, dayHi: dayEnd, ts: { $0.ts }) {
                     dayGrav = slice
                 } else {
-                    dayGrav = (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? []
+                    dayGrav = await timedRead { (try? await store.gravitySamples(deviceId: owner, from: dayMid, to: dayEnd, limit: 200_000)) ?? [] }
                 }
 
                 // CONSUME (#531 / #175): the strap's OWN band sleep_state for the night window as timestamped
@@ -1106,11 +1124,11 @@ final class IntelligenceEngine: ObservableObject {
                 // bar and no per-session state is persisted. Honest: only real banded epochs are ever surfaced.
                 // Fall back to the prior pass's persisted per-session state when the raw stream is absent (an
                 // older DB banded before the v21 stream landed), so a legacy install keeps the H7 confirm.
-                var bandSleepState = (try? await store.sleepStateSamples(deviceId: owner, from: from, to: to))?
-                    .map { (ts: $0.ts, state: $0.state) } ?? []
+                var bandSleepState = await timedRead { (try? await store.sleepStateSamples(deviceId: owner, from: from, to: to))?
+                    .map { (ts: $0.ts, state: $0.state) } ?? [] }
                 if bandSleepState.isEmpty {
-                    bandSleepState = await Self.bandSleepStateSamples(computedId: computedId,
-                                                                     from: from, to: to, store: store)
+                    bandSleepState = await timedRead { await Self.bandSleepStateSamples(computedId: computedId,
+                                                                                        from: from, to: to, store: store) }
                 }
 
                 // #690: read the experimental-V2 toggle ONCE here (off the detached executor, matching the
@@ -1149,8 +1167,8 @@ final class IntelligenceEngine: ObservableObject {
                 // nothing and is skipped, so only real stage timelines are injected).
                 let providedSleep: [SleepSession]
                 if owner != Repository.whoopSource, grav.count < 2 {
-                    let persisted = (try? await store.sleepSessions(deviceId: owner, from: from, to: to,
-                                                                    limit: 4000)) ?? []
+                    let persisted = await timedRead { (try? await store.sleepSessions(deviceId: owner, from: from, to: to,
+                                                                                       limit: 4000)) ?? [] }
                     providedSleep = persisted.compactMap { AnalyticsEngine.sleepSession(fromProvided: $0) }
                 } else {
                     providedSleep = []
@@ -1475,7 +1493,10 @@ final class IntelligenceEngine: ObservableObject {
             // them as a RATIO, which is the only thing the question needs. Reads dominating means the
             // 54-hour window on a 24-hour stride (each row materialised ~2.25x per pass) is worth
             // narrowing; `analyzeDay` dominating means it is not, whatever the row counts look like.
+            let perf = await store.perfSnapshot()
             skippedDayLines.append("analyzeRecent cost prep=\(Int(dayPrepSeconds * 1000))ms "
+                                   + "(read=\(Int(dayReadSeconds * 1000))ms "
+                                   + "compute=\(Int(max(0, dayPrepSeconds - dayReadSeconds) * 1000))ms) "
                                    + "score=\(Int(dayScoreSeconds * 1000))ms")
             // #1538: what the sliding windows saved, beside the line the decision to build them was made
             // from. A pass where `served` is ~0 means they are declining (truncation, an owner flip, or a
@@ -1484,6 +1505,13 @@ final class IntelligenceEngine: ObservableObject {
             skippedDayLines.append(WindowedStreamPlan.logLine(
                 hrRead: hrWindow.rowsRead, hrServed: hrWindow.rowsServed,
                 rrRead: rrWindow.rowsRead, rrServed: rrWindow.rowsServed))
+            // The store's own view of the same pass: SQL time actually executing, pass-wide (every store
+            // consumer, so a concurrent dashboard read or backfill write shows up here — that is the
+            // point). read ≫ sql ⇒ the awaits were spent QUEUEING on the WhoopStore actor, not in
+            // SQLite; read ≈ sql ⇒ SQLite itself is the slow half. writes>0 says a backfill overlapped.
+            skippedDayLines.append("analyzeRecent store sql reads=\(Int(perf.sqlReadSeconds * 1000))ms"
+                                   + "/\(perf.sqlReadCount) writes=\(Int(perf.sqlWriteSeconds * 1000))ms "
+                                   + "(pass-wide, all consumers)")
             return (out, skippedDayLines, dayScanCacheLocal)
         }.value
         // #1005: write the loop's updated reuse cache back to the (main-actor) stored property. The pass ran
