@@ -17,11 +17,17 @@ configFiles:
   Release: Config/BundleId.xcconfig
 settings:
   base:
-    MARKETING_VERSION: "11.6.0"
+    # Fork versioning: <last upstream tag>.<fork counter>. The counter went to 17 for the v11.6.0
+    # uplift (11.1.0 -> 11.6.0 moves the upstream base, so the fork counter takes its next major and
+    # resets its minor to 0). 17.0 is the PURE uplift: same feature set as 16.24, rebased onto
+    # v11.6.0 with no new functionality. New features resume at 17.1.
+    MARKETING_VERSION: "11.6.0.17.0"
     # iOS build number (CFBundleVersion). GLOBAL so the iOS app AND its widget extension inherit the
     # SAME value — they must match or iOS warns "extension version must match parent app" (#416).
     # macOS sets its own CFBundleVersion on the Strand target and is unaffected by this.
-    CURRENT_PROJECT_VERSION: "371"
+    # Resolves UPWARD past BOTH the installed 336 and upstream's own 371 — never back to either,
+    # which would make iOS refuse the install as a downgrade.
+    CURRENT_PROJECT_VERSION: "372"
     SWIFT_VERSION: "5.0"
     # Emit localizable strings so Xcode auto-extracts every LocalizedStringKey into the
     # String Catalog on build (the English (US) base entries).
