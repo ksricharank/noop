@@ -48,6 +48,10 @@ final class LiveActivityController {
     /// this long (a tester's log, 23 Sep 2026). A steady number is re-pushed once half of this has passed
     /// (`LiveHRBannerPushPolicy`), so a banner fed by a worn strap never goes stale.
     static let staleAfter: TimeInterval = 30
+    /// Whether the previous push happened while locked — the lock EDGE detector: the first locked
+    /// tick pushes the window average immediately instead of waiting out a whole `lockedSpacing`
+    /// with the last live beat frozen on the card.
+    private var lastPushWasLocked = false
 
     /// Re-point `activity` at reality before a DATA repaint (`updateFromData`, the locked duty-cycle
     /// path, which runs outside the live-tick machinery above). Two corpse sources, one symptom (the
@@ -66,6 +70,9 @@ final class LiveActivityController {
         if activity == nil, !isStarting {
             activity = Activity<NOOPActivityAttributes>.activities
                 .first { $0.activityState == .active || $0.activityState == .stale }
+            // Adopted from a previous process: the true birth time is unknown, so the lease clock
+            // starts at adoption. A too-early renewal is one invisible blink; too late is the cap.
+            if activity != nil, activityStartedAt == nil { activityStartedAt = Date() }
         }
     }
 
@@ -208,7 +215,8 @@ final class LiveActivityController {
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
         // which is typically the strap coming back — exactly when the banner should stay.
         let state = NOOPActivityAttributes.ContentState(bpm: connected ? shownBpm : nil, recovery: recovery,
-                                                        bonded: connected, effort: effort, rest: rest)
+                                                        bonded: connected, effort: effort, rest: rest,
+                                                        live: !locked)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses
@@ -224,18 +232,27 @@ final class LiveActivityController {
             guard LiveHRBannerPushPolicy.due(shown: shownState, next: state, reading: \.bpm,
                                              sinceLastPush: now.timeIntervalSince(lastPush),
                                              staleAfter: Self.staleAfter) else { return }
-            // Locked cadence (fork): the configured window between pushes — except the dash transition,
-            // which is often the last tick a quiet strap sends, so it goes out whatever the spacing.
+            // Locked cadence (fork): the configured window between pushes — except the dash transition
+            // (often the last tick a quiet strap sends) and the LOCK EDGE: the first locked tick pushes
+            // the window average immediately, otherwise the card holds the last LIVE beat for a whole
+            // `lockedSpacing` ("captures the last HR value and freezes it", the +5 report).
             let dashFlip = shownState.map { ($0.bpm == nil) != (state.bpm == nil) } ?? true
-            if locked, !dashFlip,
+            let lockEdge = locked && !lastPushWasLocked
+            if locked, !dashFlip, !lockEdge,
                !LiveActivityHrPolicy.shouldPush(locked: true, now: now, lastPush: lastPush,
                                                 lockedSpacing: lockedSpacing) { return }
             if let shown = shownState, (shown.bpm == nil) != (state.bpm == nil) { logReading(state) }
             lastPush = now
+            lastPushWasLocked = locked
             shownState = state
-            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
+            // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
+            // REMOVES a stale activity from both surfaces rather than greying it, and a locked span
+            // can legitimately go quiet past any window we'd pick. Live pushes keep the short net —
+            // they refresh every ~2 s, so it only ever catches a crashed app.
+            let staleDate: Date? = locked ? nil : now.addingTimeInterval(Self.staleAfter)
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else if start(state, at: now) {
+            lastPushWasLocked = locked
             log(state.bpm == nil ? "started, showing – until a heart rate arrives" : "started")
             removeLeftovers(Activity<NOOPActivityAttributes>.activities, beside: activity)
         }
@@ -269,7 +286,8 @@ final class LiveActivityController {
         }
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                        bonded: connected, effort: effort, rest: rest)
+                                                        bonded: connected, effort: effort, rest: rest,
+                                                        live: false)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
         // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
         // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island
@@ -282,6 +300,7 @@ final class LiveActivityController {
         // properly if the strap is genuinely gone.
         let staleDate: Date? = nil
         if let activity {
+            lastPushWasLocked = true
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             // Foreground-active only, same as the live path: a request from anywhere else throws.
@@ -303,6 +322,8 @@ final class LiveActivityController {
                     content: ActivityContent(state: state, staleDate: staleDate),
                     pushType: nil
                 )
+                lastPushWasLocked = true
+                activityStartedAt = Date()
             } catch {
                 activity = nil
                 log?("Live Activity: start failed — \(error.localizedDescription)")
