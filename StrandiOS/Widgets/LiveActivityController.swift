@@ -160,9 +160,12 @@ final class LiveActivityController {
         // unavailable: the keybag tracks the passcode lock, not the screen, but on current hardware/iOS
         // it follows the physical lock near-instantly in both directions.
         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+        // -1 (duty cycle) keeps the 1-minute averaging window: while locked, ticks only arrive inside
+        // a spot burst, so the window naturally holds that burst's beats and the push shows its mean.
+        let dutyCycle = LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes)
         let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
         if let bpm { hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing) }
-        let locked = lockedMinutes > 0 && !UIApplication.shared.isProtectedDataAvailable
+        let locked = lockedMinutes != 0 && !UIApplication.shared.isProtectedDataAvailable
         // Locked: show the window's average — steadier, and honest about its cadence. The
         // instantaneous fallback only fires if the window is somehow empty.
         let shownBpm = (locked && bpm != nil)
@@ -197,9 +200,11 @@ final class LiveActivityController {
             if let shown = shownState, (shown.bpm == nil) != (state.bpm == nil) { logReading(state) }
             lastPush = now
             shownState = state
-            // Locked pushes are a window apart, so their staleDate adds that spacing on top — the
-            // freshness window must sit on the cadence, not race it.
-            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
+            // Duty cycle: locked pushes come one per burst (~10 min apart), not one per cadence —
+            // the freshness window must cover the burst gap or iOS greys a card that is quiet by
+            // design. Plain cadence keeps the spacing-based window.
+            let lockedSlack = dutyCycle ? LockedStreamPolicy.liveActivityStaleSlack : lockedSpacing
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSlack : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else if start(state, at: now) {
             log(state.bpm == nil ? "started, showing – until a heart rate arrives" : "started")
