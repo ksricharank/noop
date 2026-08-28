@@ -35,7 +35,7 @@ final class LiveActivityController {
     /// unlocked (the Dynamic Island reads as live), once a minute with a one-minute HR average while
     /// it is locked (nobody can watch beat-level movement there, and on an Always-On display every
     /// push repaints the Lock Screen — the live cadence was a measurable all-day battery cost).
-    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil) {
+    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
         // Re-adopt an activity that outlived a previous app session. ActivityKit keeps Live Activities
@@ -98,12 +98,12 @@ final class LiveActivityController {
                 ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm)
                 : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
-                                                            bonded: connected, effort: effort)
+                                                            bonded: connected, effort: effort, rest: rest)
             let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                            bonded: connected, effort: effort)
+                                                            bonded: connected, effort: effort, rest: rest)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Set the start gate SYNCHRONOUSLY before any await so a second `update` arriving on the
             // main actor while `Activity.request` is still in flight bails here instead of issuing a
@@ -112,7 +112,7 @@ final class LiveActivityController {
             isStarting = true
             do {
                 activity = try Activity.request(
-                    attributes: NOOPActivityAttributes(title: String(localized: "Live HR")),
+                    attributes: NOOPActivityAttributes(title: String(localized: "HR")),
                     content: ActivityContent(state: state, staleDate: staleDate),
                     pushType: nil
                 )
@@ -132,7 +132,7 @@ final class LiveActivityController {
     /// genuinely cannot arrive sooner, and greying in between would misread "quiet by design" as
     /// "stale". Deliberately does NOT touch `lastPush`: the live cadence's own throttle state belongs
     /// to live ticks, and an unlock moments after a data repaint should push live immediately.
-    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, connected: Bool, windowMinutes: Int) {
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool, windowMinutes: Int) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
         if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
         if !connected {
@@ -141,7 +141,7 @@ final class LiveActivityController {
         }
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                        bonded: connected, effort: effort)
+                                                        bonded: connected, effort: effort, rest: rest)
         let staleDate = Date().addingTimeInterval(
             Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(
                 windowMinutes: windowMinutes, lowRefresh: PuffinExperiment.lowRefreshEnabled))
@@ -154,7 +154,7 @@ final class LiveActivityController {
             isStarting = true
             do {
                 activity = try Activity.request(
-                    attributes: NOOPActivityAttributes(title: String(localized: "Live HR")),
+                    attributes: NOOPActivityAttributes(title: String(localized: "HR")),
                     content: ActivityContent(state: state, staleDate: staleDate),
                     pushType: nil
                 )
