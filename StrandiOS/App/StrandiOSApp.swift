@@ -190,6 +190,18 @@ struct StrandiOSApp: App {
                         )
                     }
                 }
+                // The LOCK EDGE repaint: without this, the frozen number is whatever the last LIVE
+                // tick pushed a beat before locking — not the window average the locked mode promises
+                // (observed on the first 10.6.0.9 install: "the lock screen always shows the last
+                // island value"). The live path persists its samples continuously, so the store can
+                // answer the window average AT the lock, not just after the next sync. Latch first —
+                // this may run before BLEManager's observer for the same note, and the refresh's own
+                // guard reads the latch — then reuse the exact offload-refresh path.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+                    DeviceLockState.noteWillLock()
+                    Task { await model.lockedActivityRefresh?() }
+                }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
                 // change mid-session. The only other publish site is the scenePhase .active handler, so
                 // during a long foreground session the widget froze at the last-foreground snapshot while
