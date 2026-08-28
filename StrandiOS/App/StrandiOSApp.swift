@@ -151,6 +151,24 @@ struct StrandiOSApp: App {
                 }
                 // End the Live Activity the moment the link drops, even if no further HR tick arrives.
                 .onReceive(model.live.$connected) { isConnected in
+                    // …EXCEPT while the duty cycle has the phone locked: the link is silenced by
+                    // design there and can time out, and this immediate end was one-way — live ticks
+                    // are gated off while locked and iOS forbids background starts, so the island
+                    // stayed dead until the next app open (260828-0731, locked 07:17:33 → drop
+                    // 07:20:55 → island gone). Hold the frozen average; the reconnect's next sync
+                    // repaints it, and the foreground kick below ends it properly if the strap is
+                    // genuinely gone. This call-site gate is the ONLY disconnect path while locked:
+                    // no BLE link means no live ticks can reach `update` with connected=false.
+                    if !isConnected {
+                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+                        if LockedStreamPolicy.holdOnDisconnect(
+                            dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                            locked: DeviceLockState.isLocked(
+                                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
+                            model.live.append(log: "Duty cycle: link dropped while locked — holding the Lock-Screen average (standing reconnect will repaint)")
+                            return
+                        }
+                    }
                     // #911: same shared anchor as the heartRate site above, so the Live Activity, the
                     // widget, the watch and Today never disagree about which day they describe. Memoized
                     // (shares the heartRate site's cache; recomputes only on a data refresh or day-roll).
@@ -169,6 +187,10 @@ struct StrandiOSApp: App {
                 // window plus the last recorded recovery/effort. Wired in `onAppear` (not `init`)
                 // because the closure needs the @State controller; idempotent on re-fire.
                 .onAppear {
+                    // Rare-event evidence into the strap log: Live Activity start failures and
+                    // dropped dead handles were silent, which made every "the island never came
+                    // back" report unanswerable from an export.
+                    liveActivity.log = { model.live.append(log: $0) }
                     model.lockedActivityRefresh = { [weak model] in
                         guard let model else { return }
                         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
@@ -305,6 +327,21 @@ struct StrandiOSApp: App {
         // safe no-op until the user opts in.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                // Live Activity resurrection kick. The island cannot be (re)started from the
+                // background, so a legitimate end while away — the sleep-window pause, a long
+                // disconnect, iOS's own lifetime cap — leaves the Lock Screen empty until a
+                // FOREGROUND push. This is that push: same values a live tick would carry, so the
+                // controller restarts the activity the moment the app opens instead of waiting on
+                // tick timing — or, if the strap is genuinely gone (and we're no longer holding a
+                // locked duty-cycle freeze), ends a held one properly.
+                let anchorDay = model.repo.cachedWidgetAnchor()
+                liveActivity.update(
+                    bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                    recovery: anchorDay?.recovery.map { Int($0.rounded()) },
+                    connected: model.live.connected,
+                    effort: anchorDay?.strain.map { Int($0.rounded()) },
+                    rest: anchorDay?.restingHr
+                )
                 model.drainPendingIntents()
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.

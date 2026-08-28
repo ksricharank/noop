@@ -116,4 +116,16 @@ final class LockedStreamPolicyTests: XCTestCase {
         d.set(90, forKey: UnitPrefs.liveActivityLockedMinutesKey)
         XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), 60)
     }
+
+    // 8. A link drop HOLDS the Live Activity exactly while the duty cycle owns a locked phone —
+    // there, the idle link timing out is routine and the end was one-way (no background starts;
+    // the 260828-0731 "island dead after lock + a few minutes" bug). Every other state keeps the
+    // immediate end: a frozen number presented as live is the #911 bug the hold must not
+    // reintroduce.
+    func testDisconnectHoldsOnlyWhileLockedUnderTheDutyCycle() {
+        XCTAssertTrue(Policy.holdOnDisconnect(dutyCycle: true, locked: true))
+        XCTAssertFalse(Policy.holdOnDisconnect(dutyCycle: true, locked: false))
+        XCTAssertFalse(Policy.holdOnDisconnect(dutyCycle: false, locked: true))
+        XCTAssertFalse(Policy.holdOnDisconnect(dutyCycle: false, locked: false))
+    }
 }
