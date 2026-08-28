@@ -28,6 +28,30 @@ final class LiveActivityController {
     /// (`LiveActivityHrPolicy.windowAverage`). Fed on every tick regardless of lock state, so the
     /// first locked push already has a full window behind it.
     private var hrSamples: [LiveActivityHrPolicy.Sample] = []
+    /// Rare-event sink into the strap log (wired by the app layer). Start failures and dropped dead
+    /// handles were both silent, which is exactly what made "the island never comes back" a
+    /// phone-in-hand mystery instead of one log line.
+    var log: ((String) -> Void)?
+
+    /// Re-point `activity` at reality before every push. Two corpse sources, one symptom (the #341
+    /// class): a handle whose activity was ended ELSEWHERE (the sleep-window pause, a disconnect
+    /// end, the system's own lifetime cap) stays non-nil here, so every push vanishes into it and
+    /// the non-nil check blocks the restart path — the island then never returns until the user
+    /// bounces the toggle. And `Activity.activities` keeps `.ended`/`.dismissed` handles around for
+    /// a while after they stop showing, so blindly adopting `.first` re-poisons the handle the same
+    /// way (how the locked-span link drops killed the island for the rest of the day, 260828-0731).
+    /// `.stale` is NOT a corpse — a push revives it — so both the held handle and adoption keep it.
+    private func revalidateHandle() {
+        if let activity, activity.activityState != .active, activity.activityState != .stale {
+            log?("Live Activity: dropped a dead handle (state=\(activity.activityState)) — restart path open again")
+            self.activity = nil
+        }
+        // Not while a start is in flight: `Activity.request` will assign the fresh handle itself.
+        if activity == nil, !isStarting {
+            activity = Activity<NOOPActivityAttributes>.activities
+                .first { $0.activityState == .active || $0.activityState == .stale }
+        }
+    }
 
     /// Drive the activity from the latest live values. Lazily starts when the strap is CONNECTED (the
     /// live link, not the sticky "paired" flag) and a heart rate is present; ends the moment the link
@@ -38,13 +62,12 @@ final class LiveActivityController {
     func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
-        // Re-adopt an activity that outlived a previous app session. ActivityKit keeps Live Activities
-        // alive across launches/relaunches, but a fresh controller starts with `activity == nil`, so
-        // without recovering the handle here we can neither update nor END an already-showing activity
-        // — which made the #336 opt-out a no-op (#341: toggle off, heart stays) and risked spawning a
-        // duplicate on the start path below. Done on the HR tick rather than in `init` because
-        // `Activity.activities` isn't reliably hydrated at the instant of process launch.
-        if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
+        // Re-adopt an activity that outlived a previous app session (ActivityKit keeps Live
+        // Activities alive across relaunches; a fresh controller starts with `activity == nil` —
+        // #336/#341), and drop a handle whose activity has since died. Both live in
+        // `revalidateHandle` — done per tick rather than in `init` because `Activity.activities`
+        // isn't reliably hydrated at the instant of process launch.
+        revalidateHandle()
 
         // User opt-out (#336): if the in-app toggle is off, never start — and end any activity that's
         // already showing (the user just turned it off; this fires on the next ~1 Hz HR tick).
@@ -105,6 +128,12 @@ final class LiveActivityController {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                             bonded: connected, effort: effort, rest: rest)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
+            // Local Live Activities can only be STARTED while the app is foreground-active; a
+            // background request throws every time. Skipping quietly matters beyond tidiness: after
+            // a legitimate end, ticks otherwise re-request (and re-throw) at ~1 Hz for as long as
+            // the app stays backgrounded. The start then happens on the next foreground — the
+            // scenePhase kick or the first live tick, whichever lands first.
+            guard UIApplication.shared.applicationState == .active else { return }
             // Set the start gate SYNCHRONOUSLY before any await so a second `update` arriving on the
             // main actor while `Activity.request` is still in flight bails here instead of issuing a
             // second request. The 2-second throttle above only guards the update path.
@@ -119,6 +148,7 @@ final class LiveActivityController {
                 lastPush = Date()
             } catch {
                 activity = nil
+                log?("Live Activity: start failed — \(error.localizedDescription)")
             }
             isStarting = false
         }
@@ -134,8 +164,19 @@ final class LiveActivityController {
     /// to live ticks, and an unlock moments after a data repaint should push live immediately.
     func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool, windowMinutes: Int) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
-        if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
+        revalidateHandle()
         if !connected {
+            // A drop while the duty cycle has the phone locked is routine — the link is idle BY
+            // DESIGN, and the standing reconnect restores it. Ending here was one-way (no background
+            // starts), so it left the Lock Screen empty until the next app open. Hold the frozen
+            // average instead; unlocked or duty-cycle-off drops still end immediately (#911).
+            let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+            if LockedStreamPolicy.holdOnDisconnect(
+                dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                locked: DeviceLockState.isLocked(
+                    protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
+                return
+            }
             Task { await end() }
             return
         }
@@ -148,6 +189,10 @@ final class LiveActivityController {
         if let activity {
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
+            // Foreground-active only, same as the live path: a request from anywhere else throws.
+            // This path runs almost exclusively while locked/backgrounded, so in practice the start
+            // it skips is handled by the next foreground (scenePhase kick / first live tick).
+            guard UIApplication.shared.applicationState == .active else { return }
             // Same synchronous start gate as the live path — two offloads finishing close together
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
@@ -160,6 +205,7 @@ final class LiveActivityController {
                 )
             } catch {
                 activity = nil
+                log?("Live Activity: start failed — \(error.localizedDescription)")
             }
             isStarting = false
         }

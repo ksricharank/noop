@@ -61,6 +61,20 @@ enum LockedStreamPolicy {
         !(dutyCycle && locked)
     }
 
+    /// Whether a link drop should HOLD the current Live Activity rather than end it. True exactly
+    /// while the duty cycle owns a locked phone: the link there is idle BY DESIGN (0x2A37
+    /// unsubscribed, TOGGLE 0), so a timeout drop is routine and the standing reconnect restores it
+    /// shortly. Ending the activity for such a drop killed the Lock Screen a few minutes into every
+    /// locked span — and the end was one-way, because iOS forbids starting a Live Activity from the
+    /// background, so nothing could bring it back before the next app open (260828-0731: locked
+    /// 07:17:33, "connection timed out" 07:20:55, island gone). The frozen window average stays
+    /// honest meanwhile — it never claimed liveness, and its staleDate greys it if no successor
+    /// arrives. Unlocked (or duty cycle off), a drop still ends the activity immediately: a frozen
+    /// number presented as live is the #911 bug this rule must not reintroduce.
+    static func holdOnDisconnect(dutyCycle: Bool, locked: Bool) -> Bool {
+        dutyCycle && locked
+    }
+
     /// The locked Lock-Screen average window. `-1` (auto) ties it to the offload cadence that
     /// produces the data — 15 minutes on the normal cadence (`BLEManager.backfillIntervalSeconds`
     /// = 900), 60 in low-refresh mode (3600) — so each repaint summarizes exactly the span since the
