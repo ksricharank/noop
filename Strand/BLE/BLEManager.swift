@@ -4138,10 +4138,14 @@ public final class BLEManager: NSObject, ObservableObject {
         let captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
         if wantsRealtime != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
             if captureWantNow {
-                log("Continuous HRV: overnight window opened; arming the realtime stream (#927)")
+                // Name only what this edge observed: the combined want flipped on. The old wording
+                // ("overnight window opened") asserted a CAUSE this line never checked — under the
+                // duty cycle the same edge fires on every unlock, and the 260828-1425 log's midday
+                // "window opened" lines sent the analysis down the wrong path (the #1635 class).
+                log("Continuous capture: realtime want flipped ON — arming the stream (#927 window, unlock, or a settings change)")
             } else {
                 send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
-                log("Continuous HRV: overnight window closed; realtime stream disarmed until tonight (#927)")
+                log("Continuous capture: realtime want flipped OFF — stream disarmed (#927 window closed, lock, or a settings change)")
             }
         }
         reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
