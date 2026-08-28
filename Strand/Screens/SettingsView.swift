@@ -1431,17 +1431,19 @@ struct SettingsView: View {
                         Spacer()
                         TextField("1", value: $liveActivityLockedMinutes, format: .number)
                             .textFieldStyle(.roundedBorder)
-                            .keyboardType(.numberPad)
+                            // numbersAndPunctuation, not numberPad: the duty-cycle sentinel is -1
+                            // and the plain number pad has no minus key to type it with.
+                            .keyboardType(.numbersAndPunctuation)
                             .multilineTextAlignment(.trailing)
                             .frame(width: 64)
-                            // Clamp to the range the controller reads (0...60); the guard stops the
+                            // Clamp to the range the controller reads (-1...60); the guard stops the
                             // re-assignment from re-firing this onChange forever.
                             .onChange(of: liveActivityLockedMinutes) { _, v in
-                                let clamped = min(max(v, 0), 60)
+                                let clamped = min(max(v, LockedStreamPolicy.dutyCycleSentinel), 60)
                                 if clamped != v { liveActivityLockedMinutes = clamped }
                             }
                     }
-                    Text("While the phone is locked, the Lock Screen number updates once per this many minutes, showing the average heart rate over that window. 0 keeps it fully live (~2 s) at the highest battery cost. Unlocked, the Dynamic Island is always live.")
+                    Text("While the phone is locked, the Lock Screen number updates once per this many minutes, showing the average heart rate over that window. 0 keeps it fully live (~2 s) at the highest battery cost. -1 goes further and pauses the heart-rate stream itself while locked (outside your sleep window): the strap keeps recording, syncs continue, and the Lock Screen refreshes from short periodic spot readings — the lowest phone-battery mode. Unlocked, the Dynamic Island is always live.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
