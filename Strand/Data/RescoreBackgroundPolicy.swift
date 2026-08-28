@@ -79,6 +79,17 @@ enum RescoreBackgroundPolicy {
     ///     rule steps aside: the first post-window trigger runs the pass (still subject to the measured
     ///     rule), and that run is the morning settle. False for any debt with attempt evidence behind
     ///     it, which keeps the full #1538 escalation.
+    ///   - isDeviceLocked: whether the phone is locked (protected data unavailable). A backgrounded
+    ///     trigger on a LOCKED phone defers whatever the measurement says, closing the measured rule's
+    ///     trailing-edge hole: every fast foreground pass resets `lastCompletedPassSeconds` to under a
+    ///     second, so the FIRST post-lock trigger was waved through — and a locked background pass runs
+    ///     I/O-throttled (the 260827 log's two: 56 s and 66 s for work a foreground pass does in ~1 s),
+    ///     which is also what re-teaches the rule, one wasted throttled pass per pocket-in. Locked means
+    ///     nobody can see the result, so nothing is staled by waiting for the processing task or the
+    ///     next unlock's forced pass. Distinct from the sleep-window rule's deliberate lock-state
+    ///     rejection: THAT case must not schedule a background task at all (it would run mid-night);
+    ///     this one wants exactly that escalation, and its debt coalesces every later locked trigger
+    ///     into the one settle — not a pass per unlock.
     ///   - lastCompletedPassSeconds: how long the last pass that ran to completion took, or nil if none
     ///     has. Measured rather than assumed — the cost varies by more than an order of magnitude with
     ///     history size, and a fixed guess would either defer installs that finish comfortably or wave
@@ -89,6 +100,7 @@ enum RescoreBackgroundPolicy {
                        inSleepWindow: Bool,
                        rescoreAlreadyOwed: Bool,
                        owedByWindowDeferralOnly: Bool,
+                       isDeviceLocked: Bool = false,
                        lastCompletedPassSeconds: Double?,
                        budgetSeconds: Double = backgroundBudgetSeconds) -> Decision {
         guard isBackground else { return .run }
@@ -109,6 +121,15 @@ enum RescoreBackgroundPolicy {
         if rescoreAlreadyOwed, !owedByWindowDeferralOnly {
             return .deferToBackgroundTask(
                 reason: "a re-score is already outstanding from an earlier trigger")
+        }
+
+        // Locked ⇒ defer, whatever the measurement says (see the `isDeviceLocked` parameter doc): the
+        // measured rule below only knows the LAST pass's cost, and after any fast foreground pass it
+        // would wave the first post-lock trigger through into a ~60× I/O-throttled pass nobody can see.
+        if isDeviceLocked {
+            return .deferToBackgroundTask(
+                reason: "the phone is locked — a locked background pass runs I/O-throttled and unseen; "
+                        + "the background task or the next unlock settles it")
         }
 
         // Only a FINITE, positive measurement can justify deferring. A nil (nothing has ever completed),
