@@ -76,7 +76,9 @@ struct NOOPLiveActivity: Widget {
 private func bannerStat(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        Text(value).font(.headline).foregroundStyle(StrandPalette.textPrimary)
+        // .title3 (one step up from .headline): the four values are the banner's whole payload and
+        // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
+        Text(value).font(.title3).fontWeight(.semibold).foregroundStyle(StrandPalette.textPrimary)
     }
     .multilineTextAlignment(.center)
     .fixedSize()

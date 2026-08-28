@@ -222,7 +222,7 @@ struct StrandiOSApp: App {
                         // While a sync runs its own activity is the useful banner; don't stack the HR one.
                         connected: model.live.connected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day?.restingHr
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                     pushLiftActivity()
                 }
@@ -255,7 +255,7 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day?.restingHr
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
                 // The gym session's own banner. Driven off the session's 1 Hz tick so a stage change
@@ -292,7 +292,7 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
-                            rest: day?.restingHr,
+                            rest: day.flatMap { model.repo.restScore(for: $0) },
                             connected: model.live.connected,
                             windowMinutes: window
                         )
@@ -412,7 +412,7 @@ struct StrandiOSApp: App {
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    rest: anchorDay?.restingHr
+                    rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
                 )
                 model.drainPendingIntents(router: router)
                 // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
