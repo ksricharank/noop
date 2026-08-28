@@ -6312,6 +6312,22 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         }
     }
 
+    /// Short channel label for the `BatteryDiag` wake counters. Static mapping, no allocation beyond
+    /// the literal; anything unrecognised keeps its UUID string so a new channel shows up named rather
+    /// than hidden in an "other" bucket.
+    private static func notifyLabel(for uuid: CBUUID) -> String {
+        switch uuid {
+        case heartRateChar: return "hr2A37"
+        case batteryChar: return "battery"
+        case cmdNotifyChar: return "cmd"
+        case eventNotifyChar: return "event"
+        case dataNotifyChar: return "data"
+        case disSerialChar, disHwRevChar: return "dis"
+        default:
+            return whoop5NotifyChars.contains(uuid) ? "puffin" : uuid.uuidString
+        }
+    }
+
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateValueFor characteristic: CBCharacteristic,
                            error: Error?) {
@@ -6325,6 +6341,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         guard let data = characteristic.value else { return }
         let bytes = [UInt8](data)
         lastDataAt = Date()   // feed the liveness watchdog on every notification
+        // Battery attribution: every notification is a process resume, and which CHANNEL resumes us is
+        // the whole question a drain report needs answered. One integer increment (BatteryDiag).
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:
