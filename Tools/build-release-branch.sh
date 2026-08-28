@@ -41,6 +41,10 @@ FEATURES=(
   # IntelligenceEngine.swift, which locked-rescore-deferral also edits, but in different regions
   # (the pass-1 loop vs the debt/scheduler wiring) - merges clean as of this writing.
   "feature/rescore-prep-instrumentation"
+  # Log/header-only battery attribution (BLE wake counters, getrusage at export, MetricKit daily
+  # line). Touches BLEManager's didUpdateValueFor and the LiveState header assembly - regions no
+  # other branch edits.
+  "feature/battery-instrumentation"
   "feature/lock-screen-hr-average"
   # DEPENDENT BRANCH: based on feature/lock-screen-hr-average, not on main. The duty cycle's -1
   # sentinel lives in that branch's Lock-Screen refresh setting and its Live Activity handling
