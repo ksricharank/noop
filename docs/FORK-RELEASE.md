@@ -124,6 +124,23 @@ xcodebuild -project Strand.xcodeproj -scheme NOOPiOS -configuration Release -sho
   | grep -E 'PRODUCT_BUNDLE_IDENTIFIER =|DEVELOPMENT_TEAM ='
 ```
 
+**ONE Xcode window, and verify the version ON THE PHONE before judging anything.** The repo exists
+as the main checkout plus several worktrees, each with its own `Strand.xcodeproj`, and their Xcode
+windows are indistinguishable at a glance. During the 10.6.0.9 cycle a ▶ pressed in a window on the
+stale main checkout installed the months-old `release` assembly (10.6.0.6) — a build with none of
+the features under test — which read as "the fix made things worse" and burned an evening. Two rules
+close it:
+
+- Before ▶: quit Xcode entirely, keep the main checkout's `release` branch reset to the current
+  assembly (`git -C <main-checkout> reset --hard release-NNNNN && xcodegen generate` — the branch is
+  disposable by design), and open exactly ONE project window.
+- After install, before any testing: confirm the app itself reports the new version (the strap-log
+  header's `App:` line, or the About display). The version on the phone is the only build identity
+  that counts; three separate incidents (the 10.6.0.6 log header, a stale-DerivedData verification,
+  and this one) all trace to skipping this check. Settings persist across installs, so a sentinel
+  value entered under a newer build silently degrades under an older one (10.6.0.6 clamped a stored
+  `-1` to `0` = fully-live locked pushes — "worse", not just "unchanged").
+
 ### 6. Write the build notes
 
 One file per fork build in [`docs/releases/fork/`](releases/fork/), covering the `.N` portion only.
