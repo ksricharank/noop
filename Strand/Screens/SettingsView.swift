@@ -1457,6 +1457,34 @@ struct SettingsView: View {
     /// Rename the WHOOP 4.0's BLE advertising name. Shows the current name (read back from firmware in
     /// the connect handshake → `LiveState.advertisingName`) and writes a new one via `renameStrap`. The
     /// strap reboots to apply, so the new name lands on the next connect. WHOOP 4.0 only (Harvard).
+    #if os(iOS)
+    /// Sleep-window bindings: the shared quiet-hours keys (minutes since local midnight, the same
+    /// store macOS's Notification settings edits) exposed as hour-and-minute pickers. Writing re-runs
+    /// the capture reconciler, same as the Overnight-only toggle's onChange, so an edited window moves
+    /// the overnight stream gate immediately — not on the next keep-alive tick.
+    private var sleepWindowStartBinding: Binding<Date> {
+        sleepWindowBinding(key: ContinuousHrvSchedule.quietStartKey,
+                           fallback: ContinuousHrvSchedule.defaultStartMinutes)
+    }
+    private var sleepWindowEndBinding: Binding<Date> {
+        sleepWindowBinding(key: ContinuousHrvSchedule.quietEndKey,
+                           fallback: ContinuousHrvSchedule.defaultEndMinutes)
+    }
+    private func sleepWindowBinding(key: String, fallback: Int) -> Binding<Date> {
+        Binding(
+            get: {
+                let minutes = UserDefaults.standard.object(forKey: key) as? Int ?? fallback
+                return Calendar.current.date(bySettingHour: minutes / 60, minute: minutes % 60,
+                                             second: 0, of: Date()) ?? Date()
+            },
+            set: { date in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+                UserDefaults.standard.set((c.hour ?? 0) * 60 + (c.minute ?? 0), forKey: key)
+                model.ble.setKeepRealtimeForData(PuffinExperiment.keepRealtimeForDataEnabled)
+            })
+    }
+    #endif
+
     @ViewBuilder private var strapNameControl: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Strap name").strandOverline()
@@ -1725,6 +1753,27 @@ struct SettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                #if os(iOS)
+                // The sleep window (the reused quiet-hours window). It gates three things: the
+                // overnight-only capture window above, notification quiet hours, and — the reason it
+                // finally has iOS pickers — background re-scoring, which pauses entirely inside the
+                // window and settles once after it ends (RescoreBackgroundPolicy). macOS edits the same
+                // keys in Notification settings; iOS had NO surface for them, silently pinning everyone
+                // to the 22:00–07:00 default.
+                FormRow(label: "Sleep starts") {
+                    DatePicker("", selection: sleepWindowStartBinding, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                }
+                FormRow(label: "Sleep ends") {
+                    DatePicker("", selection: sleepWindowEndBinding, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                }
+                Text("Your sleep window. While it is on, NOOP pauses background re-scoring entirely (one catch-up pass runs when the window ends), and it is also the overnight capture window and the notifications quiet-hours window.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                #endif
 
                 // HRV window (#141) — Whole night (NOOP's long-standing value) or DEEP sleep only
                 // (WHOOP-style, reads lower). Unlike the Effort scale this CHANGES the number, so a switch

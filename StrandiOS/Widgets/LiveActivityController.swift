@@ -82,19 +82,28 @@ final class LiveActivityController {
         // isn't reliably hydrated at the instant of process launch.
         revalidateHandle()
 
-        // User opt-out (#336): if the in-app toggle is off, never start — and end any activity that's
-        // already showing (the user just turned it off; this fires on the next ~1 Hz HR tick).
-        guard UnitPrefs.liveActivityEnabled() else {
+        // Should the activity be on screen at all? The rule itself lives in
+        // `LiveActivityPresentationPolicy` (pure, unit-tested); this side owns only the ActivityKit
+        // handles. Covers the #336 user opt-out, the sleep-window pause (the presentation half of the
+        // re-score deferral — same `isInSleepWindow` source of truth, so the two can never drift), and
+        // the live-link drop that once left a frozen, fabricated HR on the Lock Screen after the strap
+        // went out of range (`bonded` stays true across disconnects; `connected` does not).
+        let decision = LiveActivityPresentationPolicy.decide(
+            enabledByUser: UnitPrefs.liveActivityEnabled(),
+            inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
+            connected: connected,
+            hasBPM: bpm != nil)
+
+        switch decision {
+        case .suppress:
+            // Tear down only what is actually showing; `end()` on nothing is a wasted hop.
             if activity != nil { Task { await end() } }
             return
-        }
-
-        // End the moment the live link drops — `bonded` stays true across every disconnect (it means
-        // "this strap is paired"), so keying off it left a frozen, fabricated "live" HR on the Lock
-        // Screen / Dynamic Island indefinitely after the strap went out of range.
-        if !connected {
-            Task { await end() }
+        case .holdIfShowing:
+            // Leave a running activity exactly as it is — no push, no teardown.
             return
+        case .present:
+            break
         }
         guard let bpm else { return }
 

@@ -82,6 +82,13 @@ struct StrandiOSApp: App {
         RescoreBackgroundScheduler.register { [weak model] in
             await model?.runDeferredRescoreIfOwed()
         }
+        // Deliberately NO unlock-triggered settle here. An earlier revision observed
+        // protectedDataDidBecomeAvailable and settled the deferred re-score on every unlock — which both
+        // ran a pass per unlock (dogfooding: "this happens too many times") and raced the foreground
+        // settle into duplicate simultaneous passes when unlocking straight into the app. The sleep
+        // window's debt now settles through the first post-window data-driven trigger (the policy lets a
+        // never-attempted debt run once the window ends) or the foreground entry below — no lock-state
+        // trigger at all.
         let bridge = HealthKitBridge(
             repo: model.repo,
             appleDeviceId: model.appleDeviceId,
