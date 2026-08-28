@@ -52,11 +52,15 @@ FEATURES=(
   # Units.swift / SettingsView.swift / LiveActivityController.swift on every rebuild. Keep it
   # directly after its base, rebase it with `git rebase --onto feature/lock-screen-hr-average`,
   # and upstream the two together, base first.
-  # KNOWN RECURRING CONFLICT with feature/dynamic-ui-bug-fix (parallel stack): both insert methods
-  # before `func end()` in LiveActivityController. Resolve in the release merge by keeping BOTH,
-  # and integrating: `updateFromData` routes its disconnect end through `endIfCurrent()` and its
-  # `Activity.request` path bumps `generation` (+ clears `isEnding`) exactly like the live start —
-  # a bare end/start there would re-open the stale-end bug that branch exists to fix.
+  # KNOWN RECURRING CONFLICT with feature/dynamic-ui-bug-fix (parallel stack): both edit
+  # LiveActivityController. Two-part resolution in the release merge:
+  #  1. update()'s handle-adoption block conflicts textually: keep THIS branch's single
+  #     `revalidateHandle()` call — it is a superset of the other branch's inline
+  #     `.active`-filtered adoption (it also drops a handle whose activity died in-hand).
+  #  2. Then integrate updateFromData by hand (it merges without markers but arrives with this
+  #     branch's bare calls): route its disconnect end through `endIfCurrent()` and give its
+  #     `Activity.request` path the same `generation &+= 1` / `isEnding = false` epoch bump as
+  #     the live start — a bare end/start there re-opens the stale-end bug that branch fixes.
   "feature/locked-stream-duty-cycle"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
