@@ -41,6 +41,10 @@ struct StrandiOSApp: App {
         // #1008: pin the pre-change Overnight-only default for existing installs before
         // anything reads it. Idempotent; a no-op on fresh installs and after the first launch.
         PuffinExperiment.migrateContinuousHrvOvernightDefault()
+        // Battery attribution: subscribe to iOS's own daily per-app metrics (MetricKit). Zero
+        // collection cost — the OS records them regardless; this only parks yesterday's totals where
+        // the strap-log header prints them (BatteryDiag).
+        MetricKitDiag.start()
         #if DEBUG
         // DEBUG-only promo-screenshot harness: when launched with `--demo-hour <Int>`, pin Today to that
         // hour's day-cycle scene + a per-hour stat frame. No-op (active stays nil) when the arg is absent.
