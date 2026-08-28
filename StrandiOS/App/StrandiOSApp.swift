@@ -287,6 +287,7 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
+                            rest: day?.restingHr,
                             connected: model.live.connected,
                             windowMinutes: window
                         )

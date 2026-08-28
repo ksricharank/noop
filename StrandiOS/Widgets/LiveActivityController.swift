@@ -93,7 +93,7 @@ final class LiveActivityController {
         update(bpm: connected ? (model.bpm ?? model.live.heartRate) : nil,
                recovery: day?.recovery.map { Int($0.rounded()) }, connected: connected, standsAside: standsAside(),
                appActive: appActive ?? (UIApplication.shared.applicationState == .active),
-               effort: day?.strain.map { Int($0.rounded()) })
+               effort: day?.strain.map { Int($0.rounded()) }, rest: day?.restingHr)
     }
 
     /// Drive the activity from the latest live values (`LiveHRBannerLifecycle` decides start / push / end). Starts
@@ -103,7 +103,7 @@ final class LiveActivityController {
     /// (`standsAside`). Pushed when what it shows changes, and often enough to stay fresh (`LiveHRBannerPushPolicy`,
     /// `staleAfter`).
     private func update(bpm: Int?, recovery: Int?, connected: Bool, standsAside: Bool, appActive: Bool,
-                        effort: Int?) {
+                        effort: Int?, rest: Int? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
         // A banner iOS ended (after about eight hours) or the user swiped away is gone: forget it, so the next time
@@ -188,7 +188,7 @@ final class LiveActivityController {
         // left a fabricated "live" HR standing). No timed end: a timer in a suspended app fires at its next wake,
         // which is typically the strap coming back — exactly when the banner should stay.
         let state = NOOPActivityAttributes.ContentState(bpm: connected ? shownBpm : nil, recovery: recovery,
-                                                        bonded: connected, effort: effort)
+                                                        bonded: connected, effort: effort, rest: rest)
 
         if step == .renew, activity != nil {
             // The fresh banner first, then the old one goes, so the Lock Screen is never without one; if iOS refuses
@@ -229,7 +229,7 @@ final class LiveActivityController {
     /// genuinely cannot arrive sooner, and greying in between would misread "quiet by design" as
     /// "stale". Deliberately does NOT touch `lastPush`: the live cadence's own throttle state belongs
     /// to live ticks, and an unlock moments after a data repaint should push live immediately.
-    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, connected: Bool, windowMinutes: Int) {
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool, windowMinutes: Int) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
         if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
         if !connected {
@@ -238,7 +238,7 @@ final class LiveActivityController {
         }
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                        bonded: connected, effort: effort)
+                                                        bonded: connected, effort: effort, rest: rest)
         let staleDate = Date().addingTimeInterval(
             Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(
                 windowMinutes: windowMinutes, lowRefresh: PuffinExperiment.lowRefreshEnabled))
@@ -251,7 +251,7 @@ final class LiveActivityController {
             isStarting = true
             do {
                 activity = try Activity.request(
-                    attributes: NOOPActivityAttributes(title: String(localized: "Live HR")),
+                    attributes: NOOPActivityAttributes(title: String(localized: "HR")),
                     content: ActivityContent(state: state, staleDate: staleDate),
                     pushType: nil
                 )
