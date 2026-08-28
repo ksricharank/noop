@@ -19,7 +19,9 @@ import Foundation
 ///
 /// In `Strand/` rather than `StrandiOS/` on purpose, like `HealthSyncStats`: shared-target, so
 /// `StrandTests` can pin the formatting. Counts and durations only — no payloads, no timestamps,
-/// same privacy class as the rest of the header. Process-lifetime, never persisted.
+/// same privacy class as the rest of the header. The session counters are process-lifetime; the
+/// per-day totals are additionally banked in UserDefaults (today + yesterday only) so a process
+/// death no longer erases the day — see `flush()`.
 @MainActor
 enum BatteryDiag {
 
@@ -36,12 +38,56 @@ enum BatteryDiag {
     static func recordNotify(_ label: String, now: Date = Date()) {
         if firstNotifyAt == nil { firstNotifyAt = now }
         notifyCounts[label, default: 0] += 1
+        unflushed[label, default: 0] += 1
+    }
+
+    // MARK: Cross-session persistence
+    //
+    // Per-process counters alone cannot answer the day question: the process that holds the
+    // interesting totals is exactly the one that dies before an export (the 260828-0731 log's
+    // overnight session was relaunched at 07:31, so the header could only extrapolate the 30 s
+    // launch burst — "224148/h over 0.0h"). So the counters are ALSO banked per local day in
+    // UserDefaults, merged on `flush()` — called from the offload-completion path (one small
+    // defaults write per sync) and at export — and pruned to today + yesterday.
+
+    /// Counts not yet merged into the persisted day bucket. Separate from `notifyCounts` so the
+    /// session line keeps its process-lifetime meaning.
+    private static var unflushed: [String: Int] = [:]
+    private static let persistKey = "noop.batterydiag.days"
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Merge the since-last-flush counts into today's persisted bucket. Cheap enough for a per-sync
+    /// call site: a dictionary merge plus one defaults write, and a no-op when nothing new arrived.
+    static func flush(now: Date = Date()) {
+        guard !unflushed.isEmpty else { return }
+        let persisted = (UserDefaults.standard.dictionary(forKey: persistKey) as? [String: [String: Int]]) ?? [:]
+        let day = dayFormatter.string(from: now)
+        UserDefaults.standard.set(merged(persisted: persisted, adding: unflushed, day: day),
+                                  forKey: persistKey)
+        unflushed = [:]
+    }
+
+    /// Pure merge + prune: add `counts` into `day`'s bucket and keep only the `keepDays` newest day
+    /// keys (the header prints today + yesterday; anything older is dead weight in the plist).
+    static func merged(persisted: [String: [String: Int]], adding counts: [String: Int],
+                       day: String, keepDays: Int = 2) -> [String: [String: Int]] {
+        var out = persisted
+        out[day, default: [:]].merge(counts, uniquingKeysWith: +)
+        for stale in out.keys.sorted(by: >).dropFirst(keepDays) {
+            out.removeValue(forKey: stale)
+        }
+        return out
     }
 
     /// Test seam — the counters are process-lifetime, so a suite needs a way back to zero.
     static func reset() {
         notifyCounts = [:]
         firstNotifyAt = nil
+        unflushed = [:]
     }
 
     /// The header lines, or nothing when no notification arrived this session (a log exported before
@@ -52,6 +98,17 @@ enum BatteryDiag {
            let n = Self.formatNotifyLine(counts: notifyCounts,
                                          seconds: now.timeIntervalSince(since)) {
             lines.append(n)
+        }
+        // The persisted per-day totals — the numbers that survive a relaunch. Flush first so this
+        // export's own counts are included; print today then yesterday, silent when a day is empty.
+        flush(now: now)
+        let persisted = (UserDefaults.standard.dictionary(forKey: persistKey) as? [String: [String: Int]]) ?? [:]
+        let today = dayFormatter.string(from: now)
+        let yesterday = dayFormatter.string(from: now.addingTimeInterval(-86_400))
+        for (label, day) in [("today", today), ("yesterday", yesterday)] {
+            if let counts = persisted[day], let line = formatDayLine(label: label, counts: counts) {
+                lines.append(line)
+            }
         }
         if let c = Self.cpuLine() { lines.append(c) }
         #if os(iOS)
@@ -72,9 +129,26 @@ enum BatteryDiag {
         let total = counts.values.reduce(0, +)
         let parts = counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
             .map { "\($0.key)=\($0.value)" }
+        // Under ten minutes, an hourly extrapolation is noise dressed as a rate — the 260828-0731
+        // header turned a 30 s launch-time offload burst into "224148/h". Short windows report the
+        // honest span in seconds and no rate; the persisted per-day lines carry the real day totals.
+        guard span >= 600 else {
+            return "BLE wakes: " + parts.joined(separator: " ")
+                + String(format: " — %d total over %.0fs (window too short for a rate)", total, span)
+        }
         let perHour = Double(total) / (span / 3600)
         return "BLE wakes: " + parts.joined(separator: " ")
             + String(format: " — %d total, %.0f/h over %.1fh", total, perHour, span / 3600)
+    }
+
+    /// Pure formatter for one persisted day bucket — same channel ordering as the session line.
+    /// Nil when the bucket is empty (a day with no strap contact stays silent).
+    static func formatDayLine(label: String, counts: [String: Int]) -> String? {
+        guard !counts.isEmpty else { return nil }
+        let total = counts.values.reduce(0, +)
+        let parts = counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+            .map { "\($0.key)=\($0.value)" }
+        return "BLE wakes \(label): " + parts.joined(separator: " ") + " — \(total) total"
     }
 
     /// Process CPU consumed since launch, user+system — one `getrusage` call, made only here.
