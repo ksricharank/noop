@@ -7,28 +7,25 @@ import StrandDesign
 struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation.
+            // Lock Screen / banner presentation: four EQUAL stat columns — HR, Charge, Effort,
+            // Rest — one shared type size, no oversized hero number. HR is a labelled peer of the
+            // others (the old caption-title + 26 pt bpm read as "live beat" even when the locked
+            // duty cycle is showing a window average; equal columns read as the summary they are).
             HStack(spacing: 14) {
                 Image(systemName: "waveform.path.ecg")
                     .font(.title2)
                     .foregroundStyle(StrandPalette.statusCritical)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.attributes.title)
-                        .font(.caption).foregroundStyle(StrandPalette.textSecondary)
-                    Text("\(context.state.bpm.map(String.init) ?? "–") bpm")
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
                 Spacer()
-                // Charge + Effort (#446) on the banner, mirroring the Dynamic Island expanded stats.
-                HStack(spacing: 12) {
-                    if let r = context.state.recovery {
-                        bannerStat(label: "Charge", value: "\(r)%")
-                    }
-                    if let e = context.state.effort {
-                        bannerStat(label: "Effort", value: "\(e)")
-                    }
-                }
+                bannerStat(label: "HR", value: context.state.bpm.map(String.init) ?? "–")
+                Spacer()
+                bannerStat(label: "Charge",
+                           value: context.state.recovery.map { "\($0)%" } ?? "–")
+                Spacer()
+                bannerStat(label: "Effort",
+                           value: context.state.effort.map(String.init) ?? "–")
+                Spacer()
+                bannerStat(label: "Rest",
+                           value: context.state.rest.map(String.init) ?? "–")
             }
             .padding()
             .activityBackgroundTint(StrandPalette.surfaceBase)
@@ -40,13 +37,16 @@ struct NOOPLiveActivity: Widget {
                         .foregroundStyle(StrandPalette.statusCritical)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge + Effort (#446) — one more stat alongside the leading live HR.
+                    // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
                     HStack(spacing: 10) {
                         if let r = context.state.recovery {
                             statColumn(label: "Charge", value: "\(r)%")
                         }
                         if let e = context.state.effort {
                             statColumn(label: "Effort", value: "\(e)")
+                        }
+                        if let rhr = context.state.rest {
+                            statColumn(label: "Rest", value: "\(rhr)")
                         }
                     }
                 }

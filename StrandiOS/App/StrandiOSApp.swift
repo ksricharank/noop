@@ -221,7 +221,8 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         // While a sync runs its own activity is the useful banner; don't stack the HR one.
                         connected: model.live.connected && !liftSession.isActive && !model.live.backfilling,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day?.restingHr
                     )
                     pushLiftActivity()
                 }
@@ -235,7 +236,8 @@ struct StrandiOSApp: App {
                         bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected && !liftSession.isActive && !model.live.backfilling,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day?.restingHr
                     )
                 }
                 // The gym session's own banner. Driven off the session's 1 Hz tick so a stage change
@@ -268,6 +270,7 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
+                            rest: day?.restingHr,
                             connected: model.live.connected,
                             windowMinutes: window
                         )
