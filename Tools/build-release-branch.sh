@@ -42,6 +42,13 @@ FEATURES=(
   # (the pass-1 loop vs the debt/scheduler wiring) - merges clean as of this writing.
   "feature/rescore-prep-instrumentation"
   "feature/lock-screen-hr-average"
+  # DEPENDENT BRANCH: based on feature/lock-screen-hr-average, not on main. The duty cycle's -1
+  # sentinel lives in that branch's Lock-Screen refresh setting and its Live Activity handling
+  # extends that branch's lock-aware cadence code — as an independent branch it would conflict in
+  # Units.swift / SettingsView.swift / LiveActivityController.swift on every rebuild. Keep it
+  # directly after its base, rebase it with `git rebase --onto feature/lock-screen-hr-average`,
+  # and upstream the two together, base first.
+  "feature/locked-stream-duty-cycle"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
   # opt-out/disconnect guard in LiveActivityController — the deferral branch replaces it with a
