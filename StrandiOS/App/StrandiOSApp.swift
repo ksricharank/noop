@@ -248,14 +248,19 @@ struct StrandiOSApp: App {
                         let samples = await model.repo.hrSamples(from: to - window * 60, to: to)
                         let avg: Int? = samples.isEmpty ? nil
                             : Int((Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)).rounded())
+                        // Rare-event: an empty window means this repaint carries no number and the
+                        // card keeps its previous one — worth a line, since a recurring copy says the
+                        // offload landed somewhere the averaging window can't see.
+                        if avg == nil {
+                            model.live.append(log: "Duty cycle: locked repaint skipped — no HR rows in the averaging window")
+                        }
                         let day = model.repo.cachedWidgetAnchor()
                         liveActivity.updateFromData(
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
                             rest: day.flatMap { model.repo.restScore(for: $0) },
-                            connected: model.live.connected,
-                            windowMinutes: window
+                            connected: model.live.connected
                         )
                     }
                 }
@@ -270,6 +275,26 @@ struct StrandiOSApp: App {
                     for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
                     DeviceLockState.noteWillLock()
                     Task { await model.lockedActivityRefresh?() }
+                }
+                // The UNLOCK edge: locked repaints are deliberately never-stale (iOS 26 REMOVES a
+                // stale activity from both surfaces rather than greying it), so the clock no longer
+                // retires a card whose strap has genuinely gone — this kick does, explicitly. Clear
+                // the latch first (idempotent; observer order with BLEManager's for the same note is
+                // unspecified), then push once with the CURRENT link state: connected → the card
+                // refreshes live a beat before the resubscribed stream's own ticks take over;
+                // disconnected → update() ends it properly (ends, unlike starts, work from the
+                // background). While still locked-held this can't fire — the note IS the unlock.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                    DeviceLockState.noteUnlocked()
+                    let anchorDay = model.repo.cachedWidgetAnchor()
+                    liveActivity.update(
+                        bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                        recovery: anchorDay?.recovery.map { Int($0.rounded()) },
+                        connected: model.live.connected,
+                        effort: anchorDay?.strain.map { Int($0.rounded()) },
+                        rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                    )
                 }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
                 // change mid-session. The only other publish site is the scenePhase .active handler, so

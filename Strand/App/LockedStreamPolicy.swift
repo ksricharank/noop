@@ -88,10 +88,11 @@ enum LockedStreamPolicy {
         return min(max(-lockedMinutes, windowMinutesRange.lowerBound), windowMinutesRange.upperBound)
     }
 
-    /// How long a data-driven locked push stays fresh: until the next SYNC can produce a successor
-    /// (the repaint cadence — 15/60 min — not the averaging window, which can be shorter), plus
-    /// slack. iOS greying the card in between would misread "by design quiet" as "stale".
-    static func liveActivityStaleSeconds(windowMinutes: Int, lowRefresh: Bool) -> TimeInterval {
-        TimeInterval(max(windowMinutes, lowRefresh ? 60 : 15) * 60) + 300
-    }
 }
+
+// HISTORY: a `liveActivityStaleSeconds` (repaint cadence + slack) once lived here so a locked card
+// whose successor stopped coming would grey as stale. iOS 26 does not grey a stale Live Activity —
+// it REMOVES it from the Lock Screen and the Dynamic Island — so the honest-grey design shipped as
+// "the card vanishes ~20 min into every away span" (260828-0914). Locked repaints now carry no
+// staleDate at all; the exit is explicit (live refresh or an end on unlock/foreground), never the
+// clock.
