@@ -67,6 +67,9 @@ final class LiveActivityController {
         // pushes, each showing the mean HR over that window; 0 disables the locked slowdown entirely
         // (fully live, the pre-cadence behaviour). Read per tick so a Settings edit applies at once.
         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+        // -1 (duty cycle) keeps the 1-minute averaging window: while locked, ticks only arrive inside
+        // a spot burst, so the window naturally holds that burst's beats and the push shows its mean.
+        let dutyCycle = LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes)
         let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
         hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing)
         // Locked = protected data (keychain/file keybag) unavailable. The keybag tracks the passcode
@@ -74,7 +77,7 @@ final class LiveActivityController {
         // in both directions, so the cadence switches with the lock itself. Re-read per tick rather than
         // observed: a tick is already the only moment a push can happen. `lockedMinutes == 0` opts out
         // of lock-awareness altogether.
-        let locked = lockedMinutes > 0 && !UIApplication.shared.isProtectedDataAvailable
+        let locked = lockedMinutes != 0 && !UIApplication.shared.isProtectedDataAvailable
 
         if let activity {
             guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
@@ -88,7 +91,11 @@ final class LiveActivityController {
                 : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
                                                             bonded: connected, effort: effort)
-            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
+            // Duty cycle: locked pushes come one per burst (~10 min apart), not one per cadence —
+            // the freshness window must cover the burst gap or iOS greys a card that is quiet by
+            // design. Plain cadence keeps the spacing-based window.
+            let lockedSlack = dutyCycle ? LockedStreamPolicy.liveActivityStaleSlack : lockedSpacing
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSlack : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
