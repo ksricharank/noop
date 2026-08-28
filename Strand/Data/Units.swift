@@ -117,12 +117,16 @@ enum UnitPrefs {
 
     /// How often the Live Activity refreshes while the phone is LOCKED, in minutes. The number shown
     /// is a moving average of HR over that window; 0 means fully live (~2 s, no locked slowdown at
-    /// all) at the highest battery cost. Clamped to 0...60, default 1. Unlocked is always live.
-    /// Read by `LiveActivityController` on every tick, so a Settings edit applies immediately.
+    /// all) at the highest battery cost. -1 (`LockedStreamPolicy.dutyCycleSentinel`) opts into the
+    /// stream duty cycle instead: the realtime BLE stream itself is silenced while the phone is
+    /// locked outside the sleep window, and the Lock Screen refreshes from periodic spot bursts.
+    /// Clamped to -1...60, default 1. Unlocked is always live.
+    /// Read by `LiveActivityController` on every tick and by `BLEManager`'s stream reconciler, so a
+    /// Settings edit applies immediately.
     static let liveActivityLockedMinutesKey = "liveActivity.lockedRefreshMinutes"
     static func liveActivityLockedMinutes() -> Int {
         let stored = UserDefaults.standard.object(forKey: liveActivityLockedMinutesKey) as? Int ?? 1
-        return min(max(stored, 0), 60)
+        return min(max(stored, LockedStreamPolicy.dutyCycleSentinel), 60)
     }
 
     /// Resolve the stored raw values into a concrete temperature unit, applying the

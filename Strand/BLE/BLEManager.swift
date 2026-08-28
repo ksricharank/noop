@@ -698,6 +698,17 @@ public final class BLEManager: NSObject, ObservableObject {
     /// toggle only on the false↔true edge instead of on every input change. Cleared on disconnect — the
     /// strap forgets the toggle across a connection, and the post-bond branch re-arms from `wantsRealtime`.
     private var realtimeArmed = false
+    /// Locked-stream duty cycle (`LockedStreamPolicy`): the wall time until which the current spot burst
+    /// holds the stream open, nil when no burst has started. Only meaningful while the duty cycle is
+    /// enabled (Lock-Screen refresh = -1) — an offload completion or the best-effort burst timer extends
+    /// it, `continuousCaptureWantsNow()` reads it, and the timer that closes it just re-reconciles.
+    private var dutyCycleBurstUntil: Date?
+    /// True after `reconcileRealtime()` has DELIBERATELY silenced the stream under the duty cycle
+    /// (locked, outside the sleep window, no burst). Read by `enableLiveNotifications` (skip
+    /// re-subscribing 0x2A37 — firmware can keep emitting it with the TOGGLE off, which would keep the
+    /// per-beat wakes this mode exists to stop) and by the keep-alive's no-data bounce (silence is
+    /// intentional, not a dead link). Cleared whenever the want goes true again.
+    private var dutyCycleSilenced = false
     /// #80 marginal-radio fallback: tracks consecutive arm-then-quick-timeout cycles. When it trips,
     /// `standardHRFallback` goes true and the next connect skips arming R10/R11 (relies on 0x2A37).
     private var marginalRadio = MarginalRadioDetector()
@@ -1603,6 +1614,43 @@ public final class BLEManager: NSObject, ObservableObject {
             Task { @MainActor in self?.salvageProbeIfBondLoopPaused() }
         }
         #endif
+        installDutyCycleLockObservers()
+    }
+
+    /// Locked-stream duty cycle: reconcile the stream on both lock edges. Unlock re-arms the stream
+    /// immediately when the process is running (a suspended app misses the note and catches up at its
+    /// next wake via the keep-alive's reconcile); lock silences it and starts the burst timer chain.
+    /// Observers are installed unconditionally and the handlers gate on the mode, so flipping the
+    /// Settings value needs no re-wiring. iOS-only — the mode itself never engages elsewhere.
+    private var dutyCycleLockObservers: [NSObjectProtocol] = []
+    private func installDutyCycleLockObservers() {
+        #if os(iOS)
+        dutyCycleLockObservers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.dutyCycleModeEnabled else { return }
+                self.log("Duty cycle: phone unlocked — re-arming the realtime stream")
+                self.reconcileRealtime()
+            }
+        })
+        dutyCycleLockObservers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.dutyCycleModeEnabled else { return }
+                self.log("Duty cycle: phone locking — silencing the realtime stream (bursts + sleep window keep coverage)")
+                // The keybag is still open when this note fires (`isProtectedDataAvailable` flips a
+                // beat LATER), so the immediate reconcile is a no-op and the +15s one does the
+                // silencing. The keep-alive's ~60s reconcile is the backstop for both.
+                self.reconcileRealtime()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                    self?.reconcileRealtime()
+                }
+                self.scheduleNextDutyCycleBurst()
+            }
+        })
+        #endif
     }
 
     // MARK: Multi-WHOOP (additive — inert on the single-WHOOP path)
@@ -2209,6 +2257,10 @@ public final class BLEManager: NSObject, ObservableObject {
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
         if reason == "HISTORY_COMPLETE" { maybeBuzzInactivity() }
+        // Locked-stream duty cycle: an offload completion is a moment the app is provably awake with
+        // fresh rows just landed — the cheapest possible anchor for the locked-phone spot burst (the
+        // gate inside no-ops this everywhere outside duty mode / locked daytime).
+        if reason == "HISTORY_COMPLETE" { maybeStartDutyCycleBurst(source: "offload complete") }
         // Success-side summary (#150 forensics): we logged failures (decoded-to-0) but never successes,
         // so a strap log couldn't tell a banking strap from a broken one. Emit the per-session persistence
         // tally whenever anything actually landed — the win-rate signal a log previously lacked.
@@ -2750,9 +2802,55 @@ public final class BLEManager: NSObject, ObservableObject {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         let d = UserDefaults.standard
-        return ContinuousHrvSchedule.streamWanted(
+        let fallback = ContinuousHrvSchedule.streamWanted(
             continuousHrv: true,
             overnightOnly: PuffinExperiment.continuousHrvOvernightOnlyEnabled,
+            minuteOfDay: minuteOfDay,
+            startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
+            endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes)
+        // Locked-stream duty cycle (Lock-Screen refresh = -1): NARROW the pre-existing want. The
+        // stream stays armed through the sleep window (dense night R-R = HRV coverage) and while the
+        // phone is unlocked; locked daytime keeps it only inside a spot burst. All the guards above
+        // (preference off, strap-battery pause) and #927's own window keep their authority — the duty
+        // cycle can silence an armed stream, never arm a silenced one.
+        guard dutyCycleModeEnabled else { return fallback }
+        return LockedStreamPolicy.streamWanted(
+            dutyCycle: true, fallbackWant: fallback,
+            locked: deviceIsLocked(),
+            inSleepWindow: inContinuousSleepWindow(minuteOfDay: minuteOfDay),
+            burstActive: LockedStreamPolicy.burstActive(now: now, burstUntil: dutyCycleBurstUntil))
+    }
+
+    /// Whether the locked-stream duty cycle is opted in (Lock-Screen refresh minutes = -1). Read per
+    /// evaluation, like the #927 window, so a Settings edit applies at the next reconcile. iOS-only:
+    /// macOS has no lock-screen surface and never duty-cycles.
+    private var dutyCycleModeEnabled: Bool {
+        #if os(iOS)
+        return LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: UnitPrefs.liveActivityLockedMinutes())
+        #else
+        return false
+        #endif
+    }
+
+    /// Locked = protected data unavailable, same read `LiveActivityController` uses for the cadence:
+    /// the keybag tracks the passcode lock and follows the physical lock near-instantly both ways.
+    /// Safe here: BLEManager is @MainActor.
+    private func deviceIsLocked() -> Bool {
+        #if os(iOS)
+        return !UIApplication.shared.isProtectedDataAvailable
+        #else
+        return false
+        #endif
+    }
+
+    /// The duty cycle's night window: the SAME user-configured quiet-hours window #927 uses, but read
+    /// as if "overnight only" were on — under the duty cycle the night must stream regardless of that
+    /// separate toggle, because dense night R-R is the coverage the mode promises to protect.
+    private func inContinuousSleepWindow(minuteOfDay: Int) -> Bool {
+        let d = UserDefaults.standard
+        return ContinuousHrvSchedule.streamWanted(
+            continuousHrv: true,
+            overnightOnly: true,
             minuteOfDay: minuteOfDay,
             startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
             endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes)
@@ -2770,10 +2868,79 @@ public final class BLEManager: NSObject, ObservableObject {
     private func reconcileRealtime() {
         let want = screenWantsRealtime || continuousCaptureWantsNow()
         wantsRealtime = want   // keep-alive + post-bond arm-on-connect read this derived value
+        // Duty-cycle bookkeeping runs on EVERY reconcile, not only on toggle edges: "silenced" means
+        // "the duty cycle is why the stream is off", which the keep-alive (skip the no-data bounce)
+        // and enableLiveNotifications (don't re-subscribe 0x2A37) read even when nothing was sent.
+        dutyCycleSilenced = dutyCycleModeEnabled && keepRealtimeForData && !want
         guard want != realtimeArmed else { return }                      // no edge — nothing to send
         guard selectedModel.deviceFamily == .whoop4 || state.bonded else { return }   // can't reach the strap yet
         realtimeArmed = want
         send(.toggleRealtimeHR, payload: [want ? 0x01 : 0x00])
+        // Duty cycle only: the TOGGLE alone is not enough to stop the per-beat wakes — firmware can
+        // keep emitting the standard 0x2A37 HR profile with the realtime toggle off (that survival is
+        // load-bearing for #927/#80 users, so this stays scoped to the duty cycle, where the silence
+        // IS the feature). Drop the subscription on the silence edge; re-request it on the arm edge.
+        if dutyCycleModeEnabled, let p = peripheral, let hr = heartRateCharacteristic {
+            if want {
+                requestNotify(hr, on: p, reason: "duty-cycle burst")
+            } else if hr.isNotifying {
+                p.setNotifyValue(false, for: hr)
+                log("Duty cycle: 0x2A37 unsubscribed while locked — per-beat wakes silenced until the next burst/unlock/sleep window")
+            }
+        }
+    }
+
+    /// True while a best-effort next-burst timer is pending, so burst sources (offload completions,
+    /// the timer itself, lock transitions) never stack duplicate timers.
+    private var dutyCycleNextBurstScheduled = false
+
+    /// Duty-cycle burst entry point — called from every source (offload completion, the chained
+    /// timer, a lock transition). Applies the policy gate itself so callers stay one-liners; keeps
+    /// the timer chain alive while the mode is on even when the gate says "not now" (unlocked or
+    /// night), because the chain is the only self-driven wake attempt a silenced app has.
+    private func maybeStartDutyCycleBurst(source: String) {
+        guard dutyCycleModeEnabled else { return }
+        scheduleNextDutyCycleBurst()
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        guard keepRealtimeForData, state.connected,
+              LockedStreamPolicy.shouldStartBurst(
+                  dutyCycle: true,
+                  locked: deviceIsLocked(),
+                  inSleepWindow: inContinuousSleepWindow(minuteOfDay: minuteOfDay)) else { return }
+        let now = Date()
+        let extending = LockedStreamPolicy.burstActive(now: now, burstUntil: dutyCycleBurstUntil)
+        dutyCycleBurstUntil = now.addingTimeInterval(LockedStreamPolicy.burstSeconds)
+        // Liveness accountability moves here from the keep-alive fuse (which skips silenced spans):
+        // measure link silence from the burst's start, so a burst that truly delivers nothing re-arms
+        // the bounce instead of the silence masking a dead link forever.
+        lastDataAt = now
+        log("Duty cycle: \(Int(LockedStreamPolicy.burstSeconds))s spot burst \(extending ? "extended" : "armed") (\(source)) — locked-phone stream resumes for a Lock-Screen average + a daytime R-R sample")
+        reconcileRealtime()
+        // Close the burst: the burst's own stream keeps the process awake for its duration, so this
+        // short timer fires on time; the close is just a reconcile (burstActive turns false on its own).
+        DispatchQueue.main.asyncAfter(deadline: .now() + LockedStreamPolicy.burstSeconds + 2) { [weak self] in
+            self?.reconcileRealtime()
+        }
+    }
+
+    /// Chain the next best-effort burst attempt. A suspended app does NOT fire this on schedule — it
+    /// fires on the app's next wake, whatever causes it (a strap event, an offload, unlock). That is
+    /// by design: the wake pattern this timer actually achieves is exactly what the strap log needs
+    /// to show before anything smarter (BGTask scheduling) is worth building.
+    private func scheduleNextDutyCycleBurst() {
+        guard !dutyCycleNextBurstScheduled else { return }
+        dutyCycleNextBurstScheduled = true
+        let scheduledAt = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + LockedStreamPolicy.burstGapSeconds) { [weak self] in
+            guard let self else { return }
+            self.dutyCycleNextBurstScheduled = false
+            let late = Date().timeIntervalSince(scheduledAt) - LockedStreamPolicy.burstGapSeconds
+            if late > 60 {   // fired on a wake, not on schedule — the strap log's suspension tell
+                self.log("Duty cycle: burst timer fired \(Int(late))s late (app was suspended; woken by something else)")
+            }
+            self.maybeStartDutyCycleBurst(source: "timer")
+        }
     }
 
     /// EXPERIMENTAL R22 telemetry (#174): give the user (and us) live proof of what the strap is doing.
@@ -3990,7 +4157,11 @@ public final class BLEManager: NSObject, ObservableObject {
         // (`historyEmpty` still gates the battery-backfill interval below — a separate concern, left as-is.)
         let bounceFuse: TimeInterval =
             selectedModel.deviceFamily == .whoop5 ? 600 : 120
-        if Date().timeIntervalSince(lastDataAt) > bounceFuse {
+        // Duty cycle: while the stream is deliberately silenced, "no data" is the design, not a stall —
+        // bouncing here would thrash the link every fuse-width all afternoon. Liveness accountability
+        // moves to the burst: arming one grants a fresh `lastDataAt` grace, so a burst that truly
+        // produces nothing re-arms this fuse on the next tick.
+        if Date().timeIntervalSince(lastDataAt) > bounceFuse, !dutyCycleSilenced {
             log("No data for >\(Int(bounceFuse))s — bouncing link to resume streaming")
             if let p = peripheral { central.cancelPeripheralConnection(p) }
             return
@@ -4222,11 +4393,14 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private func enableLiveNotifications(reason: String) {
         guard let p = peripheral, p.state == .connected else { return }
+        // Duty cycle: while the stream is deliberately silenced, 0x2A37 stays UNSUBSCRIBED — this
+        // runs on every keep-alive tick and would otherwise quietly re-arm the per-beat wakes the
+        // silence just stopped. The reconciler re-requests it itself on the arm edge.
         let chars = [
             cmdNotifyCharacteristic,
             eventNotifyCharacteristic,
             dataNotifyCharacteristic,
-            heartRateCharacteristic,
+            dutyCycleSilenced ? nil : heartRateCharacteristic,
             batteryCharacteristic,
         ].compactMap { $0 }
         // #613: normally skip already-notifying chars (requestNotify would just log "already active" on
