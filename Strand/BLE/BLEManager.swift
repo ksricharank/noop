@@ -2420,6 +2420,11 @@ public final class BLEManager: NSObject, ObservableObject {
         backfillTimeout = nil
         backfillFrameQueue.removeAll()
         log("Backfill: session ended — reason=\(reason)")
+        // Persist the wake counters on this already-running path (one small defaults write per sync,
+        // every 10-15 min). Per-process counters alone lose the whole day whenever the process dies
+        // before an export — the 260828-0731 log's overnight totals vanished at a 07:31 relaunch and
+        // the header could only extrapolate a 30 s launch burst.
+        BatteryDiag.flush()
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
         if reason == "HISTORY_COMPLETE" { maybeBuzzInactivity() }
