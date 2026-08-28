@@ -2299,6 +2299,11 @@ public final class BLEManager: NSObject, ObservableObject {
         backfillTimeout = nil
         backfillFrameQueue.removeAll()
         log("Backfill: session ended — reason=\(reason)")
+        // Persist the wake counters on this already-running path (one small defaults write per sync,
+        // every 10-15 min). Per-process counters alone lose the whole day whenever the process dies
+        // before an export — the 260828-0731 log's overnight totals vanished at a 07:31 relaunch and
+        // the header could only extrapolate a 30 s launch burst.
+        BatteryDiag.flush()
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
         if reason == "HISTORY_COMPLETE" { maybeBuzzInactivity() }
@@ -6091,6 +6096,22 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         }
     }
 
+    /// Short channel label for the `BatteryDiag` wake counters. Static mapping, no allocation beyond
+    /// the literal; anything unrecognised keeps its UUID string so a new channel shows up named rather
+    /// than hidden in an "other" bucket.
+    private static func notifyLabel(for uuid: CBUUID) -> String {
+        switch uuid {
+        case heartRateChar: return "hr2A37"
+        case batteryChar: return "battery"
+        case cmdNotifyChar: return "cmd"
+        case eventNotifyChar: return "event"
+        case dataNotifyChar: return "data"
+        case disSerialChar, disHwRevChar: return "dis"
+        default:
+            return whoop5NotifyChars.contains(uuid) ? "puffin" : uuid.uuidString
+        }
+    }
+
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateValueFor characteristic: CBCharacteristic,
                            error: Error?) {
@@ -6104,6 +6125,9 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         guard let data = characteristic.value else { return }
         let bytes = [UInt8](data)
         lastDataAt = Date()   // feed the liveness watchdog on every notification
+        // Battery attribution: every notification is a process resume, and which CHANNEL resumes us is
+        // the whole question a drain report needs answered. One integer increment (BatteryDiag).
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:
