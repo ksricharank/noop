@@ -1610,8 +1610,12 @@ public final class BLEManager: NSObject, ObservableObject {
             Task { @MainActor in
                 self?.salvageProbeIfBondLoopPaused()
                 // Duty cycle: becoming active is the strongest unlock signal a previously-SUSPENDED
-                // app ever gets (the protectedData note is only delivered to a running process), so
-                // re-derive the stream want here too — opening the app re-arms the stream instantly.
+                // app ever gets (the protectedData note is only delivered to a running process) —
+                // and it can only happen unlocked, so it also clears the lock latch before the
+                // reconcile re-derives the stream want. Opening the app re-arms instantly.
+                #if os(iOS)
+                DeviceLockState.noteUnlocked()
+                #endif
                 self?.reconcileRealtime()
             }
         }
@@ -1631,6 +1635,9 @@ public final class BLEManager: NSObject, ObservableObject {
             forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                // The latch clears whether or not duty mode is on — DeviceLockState is a plain fact
+                // about the phone, and a Settings flip mid-latch must not strand it.
+                DeviceLockState.noteUnlocked()
                 guard let self, self.dutyCycleModeEnabled else { return }
                 self.log("Duty cycle: phone unlocked — re-arming the realtime stream")
                 self.reconcileRealtime()
@@ -1640,11 +1647,13 @@ public final class BLEManager: NSObject, ObservableObject {
             forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                DeviceLockState.noteWillLock()
                 guard let self, self.dutyCycleModeEnabled else { return }
                 self.log("Duty cycle: phone locking — silencing the realtime stream (the sleep window and offload-driven Lock-Screen refreshes keep coverage)")
-                // The keybag is still open when this note fires (`isProtectedDataAvailable` flips a
-                // beat LATER), so the immediate reconcile is a no-op and the +15s one does the
-                // silencing. The keep-alive's ~60s reconcile is the backstop for both.
+                // The latch above makes `deviceIsLocked()` already true, so THIS reconcile silences
+                // immediately — no more waiting out the keybag's 10–60 s grace, which was the
+                // rapid-lock/unlock churn the 260827-2142 test exposed. The +15 s follow-up is now
+                // just a backstop for the keybag's own flip; the ~60 s keep-alive backstops both.
                 self.reconcileRealtime()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
                     self?.reconcileRealtime()
@@ -2829,12 +2838,13 @@ public final class BLEManager: NSObject, ObservableObject {
         #endif
     }
 
-    /// Locked = protected data unavailable, same read `LiveActivityController` uses for the cadence:
-    /// the keybag tracks the passcode lock and follows the physical lock near-instantly both ways.
-    /// Safe here: BLEManager is @MainActor.
+    /// Locked = the shared latch-or-keybag signal (`DeviceLockState`), same read the Live Activity
+    /// uses. The keybag alone flips 10–60 s AFTER the physical lock, which left the stream armed and
+    /// the locked Lock Screen repainting for that whole grace window; the latch (set the instant the
+    /// lock notification fires) is what makes this edge crisp. Safe here: BLEManager is @MainActor.
     private func deviceIsLocked() -> Bool {
         #if os(iOS)
-        return !UIApplication.shared.isProtectedDataAvailable
+        return DeviceLockState.isLocked(protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
         #else
         return false
         #endif

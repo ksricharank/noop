@@ -171,7 +171,9 @@ struct StrandiOSApp: App {
                         guard let model else { return }
                         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
                         guard LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
-                              !UIApplication.shared.isProtectedDataAvailable else { return }
+                              DeviceLockState.isLocked(
+                                  protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
+                        else { return }
                         let window = LockedStreamPolicy.averagingWindowMinutes(
                             lowRefresh: PuffinExperiment.lowRefreshEnabled)
                         let to = Int(Date().timeIntervalSince1970)
