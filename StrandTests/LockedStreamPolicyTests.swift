@@ -10,10 +10,12 @@ import XCTest
 final class LockedStreamPolicyTests: XCTestCase {
     private typealias Policy = LockedStreamPolicy
 
-    // 1. The sentinel is exactly -1: 0 (fully live) and positive cadences keep today's behaviour,
-    // and the Units clamp maps anything below -1 back onto the sentinel rather than past it.
-    func testSentinelIsExactlyMinusOne() {
+    // 1. ANY negative opts into the duty cycle; 0 (fully live) and positive cadences keep today's
+    // behaviour.
+    func testAnyNegativeEnablesTheDutyCycle() {
         XCTAssertTrue(Policy.dutyCycleEnabled(lockedMinutes: -1))
+        XCTAssertTrue(Policy.dutyCycleEnabled(lockedMinutes: -15))
+        XCTAssertTrue(Policy.dutyCycleEnabled(lockedMinutes: -240))
         XCTAssertFalse(Policy.dutyCycleEnabled(lockedMinutes: 0))
         XCTAssertFalse(Policy.dutyCycleEnabled(lockedMinutes: 1))
         XCTAssertFalse(Policy.dutyCycleEnabled(lockedMinutes: 60))
@@ -66,27 +68,36 @@ final class LockedStreamPolicyTests: XCTestCase {
         XCTAssertTrue(Policy.lockedLiveTickPushAllowed(dutyCycle: false, locked: false))
     }
 
-    // 6. The locked average window follows the offload cadence that produces the data: 15 minutes on
-    // the normal 900 s cadence, 60 on the low-refresh 3600 s one — pinned against the BLEManager
-    // constants so a cadence change cannot silently desynchronise the shown average.
-    func testAveragingWindowTracksTheOffloadCadence() {
-        XCTAssertEqual(Policy.averagingWindowMinutes(lowRefresh: false), 15)
-        XCTAssertEqual(Policy.averagingWindowMinutes(lowRefresh: true), 60)
-        XCTAssertEqual(Policy.averagingWindowMinutes(lowRefresh: false) * 60,
+    // 6. The locked average window: -1 (auto) follows the offload cadence that produces the data —
+    // pinned against the BLEManager constants so a cadence change cannot silently desynchronise the
+    // shown average — while any other negative is the user's explicit window in minutes, clamped to
+    // the sane range.
+    func testAveragingWindowAutoAndExplicit() {
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -1, lowRefresh: false), 15)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -1, lowRefresh: true), 60)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -1, lowRefresh: false) * 60,
                        BLEManager.backfillIntervalSeconds)
-        XCTAssertEqual(Policy.averagingWindowMinutes(lowRefresh: true) * 60,
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -1, lowRefresh: true) * 60,
                        BLEManager.lowRefreshBackfillIntervalSeconds)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -15, lowRefresh: false), 15)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -20, lowRefresh: false), 20)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -20, lowRefresh: true), 20)
+        XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -999, lowRefresh: false), 240)
     }
 
-    // 7. A data-driven push stays fresh across one full window plus sync slack — the next repaint
-    // cannot arrive sooner, and anything shorter would grey a healthy card.
+    // 7. A data-driven push stays fresh across one full SYNC cadence plus slack — the next repaint
+    // cannot arrive sooner, whatever the averaging window (a 5-minute window still repaints only per
+    // sync), and anything shorter would grey a healthy card.
     func testDataPushStaleWindowCoversOneCadence() {
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 15), 15 * 60)
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 60), 60 * 60)
+        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 15, lowRefresh: false), 15 * 60)
+        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 5, lowRefresh: false), 15 * 60)
+        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 5, lowRefresh: true), 60 * 60)
+        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 120, lowRefresh: false), 120 * 60)
     }
 
-    // 8. The Units clamp accepts the sentinel and folds deeper negatives onto it (a fat-fingered
-    // "-5" opts into the duty cycle rather than into undefined behaviour).
+    // 8. The Units clamp passes explicit negative windows through and folds anything beyond the
+    // sane range onto its edge (a fat-fingered "-999" becomes a 240-minute window, not undefined
+    // behaviour).
     func testUnitPrefsClampKeepsSentinel() {
         let d = UserDefaults.standard
         let saved = d.object(forKey: UnitPrefs.liveActivityLockedMinutesKey)
@@ -96,8 +107,10 @@ final class LockedStreamPolicyTests: XCTestCase {
         }
         d.set(-1, forKey: UnitPrefs.liveActivityLockedMinutesKey)
         XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), -1)
-        d.set(-5, forKey: UnitPrefs.liveActivityLockedMinutesKey)
-        XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), -1)
+        d.set(-20, forKey: UnitPrefs.liveActivityLockedMinutesKey)
+        XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), -20)
+        d.set(-999, forKey: UnitPrefs.liveActivityLockedMinutesKey)
+        XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), -240)
         d.set(0, forKey: UnitPrefs.liveActivityLockedMinutesKey)
         XCTAssertEqual(UnitPrefs.liveActivityLockedMinutes(), 0)
         d.set(90, forKey: UnitPrefs.liveActivityLockedMinutesKey)
