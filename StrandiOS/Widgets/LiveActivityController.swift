@@ -113,7 +113,7 @@ final class LiveActivityController {
         update(bpm: connected ? (model.bpm ?? model.live.heartRate) : nil,
                recovery: day?.recovery.map { Int($0.rounded()) }, connected: connected, standsAside: standsAside(),
                appActive: appActive ?? (UIApplication.shared.applicationState == .active),
-               effort: day?.strain.map { Int($0.rounded()) }, rest: day?.restingHr)
+               effort: day?.strain.map { Int($0.rounded()) }, rest: day.flatMap { model.repo.restScore(for: $0) })
     }
 
     /// Drive the activity from the latest live values (`LiveHRBannerLifecycle` decides start / push / end). Starts
