@@ -26,13 +26,20 @@ import Foundation
 /// device. The lock input is read by the caller (BLEManager / the app layer on iOS); macOS never
 /// duty-cycles.
 enum LockedStreamPolicy {
-    /// The Settings sentinel: a Lock-Screen refresh of `-1` minutes means "duty-cycle the stream"
-    /// rather than "refresh every -1 minutes". Any other stored value keeps today's behaviour.
+    /// The Settings sentinel: ANY negative Lock-Screen refresh means "duty-cycle the stream" rather
+    /// than "refresh every N minutes". `-1` is AUTO — the average window matches the sync cadence
+    /// (15 min, 60 in low-refresh mode); any other negative is an EXPLICIT window in minutes
+    /// (`-20` → a 20-minute average). The repaint moments are set by data arrival either way — the
+    /// window only sets what the number MEANS at each repaint (how much smoothing). Values ≥ 0 keep
+    /// today's behaviour.
     static let dutyCycleSentinel = -1
+    /// Explicit windows are clamped to this range: a sub-minute window is meaningless, and past four
+    /// hours the "current HR" framing stops being honest.
+    static let windowMinutesRange = 1...240
 
     /// Whether the stored Lock-Screen refresh value opts into the duty cycle.
     static func dutyCycleEnabled(lockedMinutes: Int) -> Bool {
-        lockedMinutes == dutyCycleSentinel
+        lockedMinutes < 0
     }
 
     /// The two-state want. `fallbackWant` is what the pre-existing policy (continuous capture,
@@ -54,18 +61,23 @@ enum LockedStreamPolicy {
         !(dutyCycle && locked)
     }
 
-    /// The locked Lock-Screen average window, tied to the offload cadence that produces the data:
-    /// 15 minutes on the normal cadence (`BLEManager.backfillIntervalSeconds` = 900), 60 in
-    /// low-refresh mode (3600). The number shown is always "the mean over roughly one sync's worth
-    /// of data", whatever the cadence.
-    static func averagingWindowMinutes(lowRefresh: Bool) -> Int {
-        lowRefresh ? 60 : 15
+    /// The locked Lock-Screen average window. `-1` (auto) ties it to the offload cadence that
+    /// produces the data — 15 minutes on the normal cadence (`BLEManager.backfillIntervalSeconds`
+    /// = 900), 60 in low-refresh mode (3600) — so each repaint summarizes exactly the span since the
+    /// previous one. Any other negative is the user's explicit window in minutes, clamped to
+    /// `windowMinutesRange`: larger than the cadence = smoother, overlapping averages; smaller =
+    /// "the last N minutes as of this sync" (the span between paints is then partly unshown, which
+    /// is why auto is the default recommendation).
+    static func averagingWindowMinutes(lockedMinutes: Int, lowRefresh: Bool) -> Int {
+        guard lockedMinutes < 0 else { return lowRefresh ? 60 : 15 }
+        if lockedMinutes == dutyCycleSentinel { return lowRefresh ? 60 : 15 }
+        return min(max(-lockedMinutes, windowMinutesRange.lowerBound), windowMinutesRange.upperBound)
     }
 
-    /// How long a data-driven locked push stays fresh: one full averaging window until the next
-    /// offload can produce a successor, plus slack for the sync itself — iOS greying the card in
-    /// between would misread "by design quiet" as "stale".
-    static func liveActivityStaleSeconds(windowMinutes: Int) -> TimeInterval {
-        TimeInterval(windowMinutes * 60) + 300
+    /// How long a data-driven locked push stays fresh: until the next SYNC can produce a successor
+    /// (the repaint cadence — 15/60 min — not the averaging window, which can be shorter), plus
+    /// slack. iOS greying the card in between would misread "by design quiet" as "stale".
+    static func liveActivityStaleSeconds(windowMinutes: Int, lowRefresh: Bool) -> TimeInterval {
+        TimeInterval(max(windowMinutes, lowRefresh ? 60 : 15) * 60) + 300
     }
 }
