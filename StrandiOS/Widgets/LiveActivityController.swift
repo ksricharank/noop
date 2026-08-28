@@ -67,8 +67,6 @@ final class LiveActivityController {
         // pushes, each showing the mean HR over that window; 0 disables the locked slowdown entirely
         // (fully live, the pre-cadence behaviour). Read per tick so a Settings edit applies at once.
         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-        // -1 (duty cycle) keeps the 1-minute averaging window: while locked, ticks only arrive inside
-        // a spot burst, so the window naturally holds that burst's beats and the push shows its mean.
         let dutyCycle = LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes)
         let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
         hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing)
@@ -78,6 +76,14 @@ final class LiveActivityController {
         // observed: a tick is already the only moment a push can happen. `lockedMinutes == 0` opts out
         // of lock-awareness altogether.
         let locked = lockedMinutes != 0 && !UIApplication.shared.isProtectedDataAvailable
+
+        // Duty cycle (-1): while locked, LIVE ticks never push — the stream is supposed to be silent,
+        // and any stray tick (the strap can keep pushing HR over the puffin data channels whatever the
+        // TOGGLE says) repainting the Lock Screen is exactly the v1 bug. The locked presentation is
+        // owned by `updateFromData`, driven once per completed offload.
+        guard LockedStreamPolicy.lockedLiveTickPushAllowed(dutyCycle: dutyCycle, locked: locked) else {
+            return
+        }
 
         if let activity {
             guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
@@ -91,11 +97,7 @@ final class LiveActivityController {
                 : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
                                                             bonded: connected, effort: effort)
-            // Duty cycle: locked pushes come one per burst (~10 min apart), not one per cadence —
-            // the freshness window must cover the burst gap or iOS greys a card that is quiet by
-            // design. Plain cadence keeps the spacing-based window.
-            let lockedSlack = dutyCycle ? LockedStreamPolicy.liveActivityStaleSlack : lockedSpacing
-            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSlack : 0))
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
@@ -113,6 +115,46 @@ final class LiveActivityController {
                     pushType: nil
                 )
                 lastPush = Date()
+            } catch {
+                activity = nil
+            }
+            isStarting = false
+        }
+    }
+
+    /// Repaint the activity from PERSISTED data — the locked-phone path under the stream duty cycle
+    /// (Lock-Screen refresh = -1). Called once per completed offload (`AppModel.lockedActivityRefresh`),
+    /// so no throttle: each call is already one sync apart. `bpm` is the mean over the offload
+    /// cadence's own window (15/60 min); recovery/effort are the last recorded values, same anchor the
+    /// widget uses. The stale window covers one full cadence plus sync slack — the next repaint
+    /// genuinely cannot arrive sooner, and greying in between would misread "quiet by design" as
+    /// "stale". Deliberately does NOT touch `lastPush`: the live cadence's own throttle state belongs
+    /// to live ticks, and an unlock moments after a data repaint should push live immediately.
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, connected: Bool, windowMinutes: Int) {
+        guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
+        if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
+        if !connected {
+            Task { await end() }
+            return
+        }
+        guard let bpm else { return }
+        let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
+                                                        bonded: connected, effort: effort)
+        let staleDate = Date().addingTimeInterval(
+            Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(windowMinutes: windowMinutes))
+        if let activity {
+            Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
+        } else {
+            // Same synchronous start gate as the live path — two offloads finishing close together
+            // must not race two `Activity.request`s.
+            guard !isStarting else { return }
+            isStarting = true
+            do {
+                activity = try Activity.request(
+                    attributes: NOOPActivityAttributes(title: String(localized: "Live HR")),
+                    content: ActivityContent(state: state, staleDate: staleDate),
+                    pushType: nil
+                )
             } catch {
                 activity = nil
             }
