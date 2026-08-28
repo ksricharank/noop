@@ -153,6 +153,17 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
+    /// Whether the phone is locked (protected data unavailable) — the same read the Live Activity's
+    /// cadence and the stream duty cycle use; the keybag tracks the passcode lock and follows the
+    /// physical lock near-instantly both ways. Always false on macOS, like `isBackgrounded`.
+    static var isDeviceLocked: Bool {
+        #if os(iOS)
+        return !UIApplication.shared.isProtectedDataAvailable
+        #else
+        return false
+        #endif
+    }
+
     /// Whether the local wall clock is inside the user's sleep window — the reused quiet-hours window
     /// (`ContinuousHrvSchedule.quietStartKey`/`quietEndKey`, 22:00–07:00 by default, editable in
     /// Settings on iOS and in Notification settings on macOS). Re-derived on every call, same as the
@@ -188,6 +199,7 @@ enum RescoreBackgroundScheduler {
     ///   untouched either way.
     static func run(isBackground: Bool? = nil,
                     inSleepWindow: Bool? = nil,
+                    isLocked: Bool? = nil,
                     owesOnDefer: Bool = true,
                     log: @escaping (String) -> Void,
                     work: () async -> Void) async {
@@ -196,6 +208,7 @@ enum RescoreBackgroundScheduler {
             inSleepWindow: inSleepWindow ?? isInSleepWindow,
             rescoreAlreadyOwed: isRescoreOwed,
             owedByWindowDeferralOnly: isOwedByWindowDeferralOnly,
+            isDeviceLocked: isLocked ?? isDeviceLocked,
             lastCompletedPassSeconds: lastCompletedPassSeconds)
 
         switch decision {

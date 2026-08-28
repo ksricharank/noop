@@ -14,12 +14,14 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
                         inWindow: Bool = false,
                         unfinished: Bool = false,
                         deferralOnly: Bool = false,
+                        locked: Bool = false,
                         lastSeconds: Double? = nil,
                         budget: Double = 20) -> RescoreBackgroundPolicy.Decision {
         RescoreBackgroundPolicy.decide(isBackground: background,
                                        inSleepWindow: inWindow,
                                        rescoreAlreadyOwed: unfinished,
                                        owedByWindowDeferralOnly: deferralOnly,
+                                       isDeviceLocked: locked,
                                        lastCompletedPassSeconds: lastSeconds,
                                        budgetSeconds: budget)
     }
@@ -178,5 +180,35 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// onto it.
     func testAKilledPassDebtStillEscalates() {
         XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: false, lastSeconds: 2)))
+    }
+
+    // MARK: - The locked trailing edge
+
+    /// The measured rule's recurring hole: every fast foreground pass resets the measurement, so the
+    /// FIRST post-lock background trigger was waved through — into a ~60× I/O-throttled pass nobody can
+    /// see (the 260827 log's 56 s and 66 s passes for ~1 s of foreground work). Locked ⇒ defer, whatever
+    /// the last pass cost, fresh installs (no measurement) included.
+    func testALockedBackgroundTriggerDefersDespiteAFastMeasurement() {
+        XCTAssertTrue(isDeferred(decide(locked: true, lastSeconds: 1)))
+        XCTAssertTrue(isDeferred(decide(locked: true)))
+    }
+
+    /// Unlocked-background keeps the measured behaviour exactly — pocket-time is the locked case; a
+    /// backgrounded app on an unlocked phone (app switcher, another app frontmost) is not throttled the
+    /// same way and the cadence rules already fit it.
+    func testAnUnlockedBackgroundTriggerKeepsTheMeasuredRule() {
+        XCTAssertEqual(decide(locked: false, lastSeconds: 5), .run)
+        XCTAssertTrue(isDeferred(decide(locked: false, lastSeconds: 475)))
+    }
+
+    /// Foreground outranks the lock input (the two cannot co-occur on a phone; the gate order makes the
+    /// combination moot rather than surprising), and the sleep window still wins over locked — an
+    /// in-window deferral must resolve to the window's end, never to a background task that would run
+    /// the pass mid-night after all.
+    func testLockGateOrdering() {
+        XCTAssertEqual(decide(background: false, locked: true), .run)
+        if case .deferUntilSleepWindowEnds = decide(inWindow: true, locked: true) {} else {
+            XCTFail("an in-window locked trigger must defer to the window's end, not to a background task")
+        }
     }
 }
