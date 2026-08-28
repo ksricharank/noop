@@ -604,6 +604,12 @@ final class AppModel: ObservableObject {
     /// A closure rather than a direct reference because `HealthKitBridge` owns iOS-only HealthKit state
     /// while this type is shared with macOS, and the bridge is a `@StateObject` the app scene owns.
     var healthWriteBack: (() async -> Void)?
+    /// Refresh the locked-phone Live Activity from just-persisted data, set by `StrandiOSApp`. The
+    /// locked-stream duty cycle (Lock-Screen refresh = -1) silences the live stream while locked, so
+    /// the Lock Screen is repainted here instead — once per completed offload, with the window-average
+    /// HR plus the last recorded recovery/effort. Same closure shape and lifetime reasoning as
+    /// `healthWriteBack` above; nil on macOS and in tests.
+    var lockedActivityRefresh: (() async -> Void)?
     #endif
 
     /// Settle a re-score that is owed (#1538) — one an earlier attempt started and was killed partway
@@ -663,6 +669,10 @@ final class AppModel: ObservableObject {
         // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
         // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
         await healthWriteBack?()
+        // Locked-stream duty cycle: this completed offload IS the "new data" moment the locked Lock
+        // Screen waits for — repaint it from the persisted rows (the closure gates itself on duty
+        // mode + locked, so this is a no-op everywhere else).
+        await lockedActivityRefresh?()
         #endif
     }
 
