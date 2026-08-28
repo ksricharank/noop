@@ -174,16 +174,21 @@ See [Pushing](#pushing) — those are manual.
 
 ---
 
-## Versioning: why fork builds are four-part
+## Versioning: upstream tag + the fork's own major.minor
 
 An upstream-versioned build and a fork build were indistinguishable on the phone, which made "which
 one is actually installed?" unanswerable from the About screen.
 
-> **A fork build's version is the last *released* upstream tag plus a fork counter.**
-> `10.6.0.2` = upstream `v10.6.0`, second fork build.
+> **A fork build's version is the last *released* upstream tag plus the fork's own
+> `major.minor`.** `10.6.0.14.1` = upstream `v10.6.0`, fork feature-set 14, first fix within it.
 
-The counter moves whenever the `FEATURES` set changes — a branch added, removed, or materially
-reworked. The first three parts move when upstream **tags** a new release.
+The fork **major** moves whenever the `FEATURES` set changes — a branch added, removed, or
+materially reworked. The fork **minor** moves for fixes and small iterations *within* the same
+feature set, starting at `.1` (the bare major, e.g. `10.6.0.14`, is that set's first cut — history:
+builds `.2`–`.14` predate the minor and burned a major per build, fixes included). The first three
+parts move when upstream **tags** a new release, which resets the fork major. Build numbers keep
+incrementing independently across all of it, so "what exactly is installed" is always answerable
+from About even mid-iteration.
 
 **Base on the newest tag, not on upstream's `project.yml`.** They disagree routinely: upstream bumps
 `MARKETING_VERSION` to the *next* version as soon as it starts staging builds toward it. At the time
