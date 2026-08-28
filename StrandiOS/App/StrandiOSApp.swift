@@ -149,11 +149,30 @@ struct StrandiOSApp: App {
                         bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
                 // End the Live Activity the moment the link drops, even if no further HR tick arrives.
                 .onReceive(model.live.$connected) { isConnected in
+                    // …EXCEPT while the duty cycle has the phone locked: the link is silenced by
+                    // design there and can time out, and this immediate end was one-way — live ticks
+                    // are gated off while locked and iOS forbids background starts, so the island
+                    // stayed dead until the next app open (260828-0731, locked 07:17:33 → drop
+                    // 07:20:55 → island gone). Hold the frozen average; the reconnect's next sync
+                    // repaints it, and the foreground kick below ends it properly if the strap is
+                    // genuinely gone. This call-site gate is the ONLY disconnect path while locked:
+                    // no BLE link means no live ticks can reach `update` with connected=false.
+                    if !isConnected {
+                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+                        if LockedStreamPolicy.holdOnDisconnect(
+                            dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                            locked: DeviceLockState.isLocked(
+                                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
+                            model.live.append(log: "Duty cycle: link dropped while locked — holding the Lock-Screen average (standing reconnect will repaint)")
+                            return
+                        }
+                    }
                     // #911: same shared anchor as the heartRate site above, so the Live Activity, the
                     // widget, the watch and Today never disagree about which day they describe. Memoized
                     // (shares the heartRate site's cache; recomputes only on a data refresh or day-roll).
@@ -162,7 +181,80 @@ struct StrandiOSApp: App {
                         bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                    )
+                }
+                // Locked-stream duty cycle (Lock-Screen refresh = -1): while locked, live ticks are
+                // gated off inside the controller and the Lock Screen is repainted HERE instead — once
+                // per completed offload, from persisted rows: the mean HR over the offload cadence's own
+                // window plus the last recorded recovery/effort. Wired in `onAppear` (not `init`)
+                // because the closure needs the @State controller; idempotent on re-fire.
+                .onAppear {
+                    // Rare-event evidence into the strap log: Live Activity start failures and
+                    // dropped dead handles were silent, which made every "the island never came
+                    // back" report unanswerable from an export.
+                    liveActivity.log = { model.live.append(log: $0) }
+                    model.lockedActivityRefresh = { [weak model] in
+                        guard let model else { return }
+                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+                        guard LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                              DeviceLockState.isLocked(
+                                  protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
+                        else { return }
+                        let window = LockedStreamPolicy.averagingWindowMinutes(
+                            lockedMinutes: lockedMinutes,
+                            lowRefresh: PuffinExperiment.lowRefreshEnabled)
+                        let to = Int(Date().timeIntervalSince1970)
+                        let samples = await model.repo.hrSamples(from: to - window * 60, to: to)
+                        let avg: Int? = samples.isEmpty ? nil
+                            : Int((Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)).rounded())
+                        // Rare-event: an empty window means this repaint carries no number and the
+                        // card keeps its previous one — worth a line, since a recurring copy says the
+                        // offload landed somewhere the averaging window can't see.
+                        if avg == nil {
+                            model.live.append(log: "Duty cycle: locked repaint skipped — no HR rows in the averaging window")
+                        }
+                        let day = model.repo.cachedWidgetAnchor()
+                        liveActivity.updateFromData(
+                            bpm: avg,
+                            recovery: day?.recovery.map { Int($0.rounded()) },
+                            effort: day?.strain.map { Int($0.rounded()) },
+                            rest: day.flatMap { model.repo.restScore(for: $0) },
+                            connected: model.live.connected
+                        )
+                    }
+                }
+                // The LOCK EDGE repaint: without this, the frozen number is whatever the last LIVE
+                // tick pushed a beat before locking — not the window average the locked mode promises
+                // (observed on the first 10.6.0.9 install: "the lock screen always shows the last
+                // island value"). The live path persists its samples continuously, so the store can
+                // answer the window average AT the lock, not just after the next sync. Latch first —
+                // this may run before BLEManager's observer for the same note, and the refresh's own
+                // guard reads the latch — then reuse the exact offload-refresh path.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+                    DeviceLockState.noteWillLock()
+                    Task { await model.lockedActivityRefresh?() }
+                }
+                // The UNLOCK edge: locked repaints are deliberately never-stale (iOS 26 REMOVES a
+                // stale activity from both surfaces rather than greying it), so the clock no longer
+                // retires a card whose strap has genuinely gone — this kick does, explicitly. Clear
+                // the latch first (idempotent; observer order with BLEManager's for the same note is
+                // unspecified), then push once with the CURRENT link state: connected → the card
+                // refreshes live a beat before the resubscribed stream's own ticks take over;
+                // disconnected → update() ends it properly (ends, unlike starts, work from the
+                // background). While still locked-held this can't fire — the note IS the unlock.
+                .onReceive(NotificationCenter.default.publisher(
+                    for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                    DeviceLockState.noteUnlocked()
+                    let anchorDay = model.repo.cachedWidgetAnchor()
+                    liveActivity.update(
+                        bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                        recovery: anchorDay?.recovery.map { Int($0.rounded()) },
+                        connected: model.live.connected,
+                        effort: anchorDay?.strain.map { Int($0.rounded()) },
+                        rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
@@ -264,6 +356,21 @@ struct StrandiOSApp: App {
         // safe no-op until the user opts in.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                // Live Activity resurrection kick. The island cannot be (re)started from the
+                // background, so a legitimate end while away — the sleep-window pause, a long
+                // disconnect, iOS's own lifetime cap — leaves the Lock Screen empty until a
+                // FOREGROUND push. This is that push: same values a live tick would carry, so the
+                // controller restarts the activity the moment the app opens instead of waiting on
+                // tick timing — or, if the strap is genuinely gone (and we're no longer holding a
+                // locked duty-cycle freeze), ends a held one properly.
+                let anchorDay = model.repo.cachedWidgetAnchor()
+                liveActivity.update(
+                    bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                    recovery: anchorDay?.recovery.map { Int($0.rounded()) },
+                    connected: model.live.connected,
+                    effort: anchorDay?.strain.map { Int($0.rounded()) },
+                    rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                )
                 model.drainPendingIntents()
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
                 // and iOS can't re-arm it while suspended, so it would otherwise fire once and stop.
