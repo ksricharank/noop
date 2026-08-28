@@ -204,6 +204,33 @@ struct StrandiOSApp: App {
                         effort: day?.strain.map { Int($0.rounded()) }
                     )
                 }
+                // Locked-stream duty cycle (Lock-Screen refresh = -1): while locked, live ticks are
+                // gated off inside the controller and the Lock Screen is repainted HERE instead — once
+                // per completed offload, from persisted rows: the mean HR over the offload cadence's own
+                // window plus the last recorded recovery/effort. Wired in `onAppear` (not `init`)
+                // because the closure needs the @State controller; idempotent on re-fire.
+                .onAppear {
+                    model.lockedActivityRefresh = { [weak model] in
+                        guard let model else { return }
+                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+                        guard LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                              !UIApplication.shared.isProtectedDataAvailable else { return }
+                        let window = LockedStreamPolicy.averagingWindowMinutes(
+                            lowRefresh: PuffinExperiment.lowRefreshEnabled)
+                        let to = Int(Date().timeIntervalSince1970)
+                        let samples = await model.repo.hrSamples(from: to - window * 60, to: to)
+                        let avg: Int? = samples.isEmpty ? nil
+                            : Int((Double(samples.reduce(0) { $0 + $1.bpm }) / Double(samples.count)).rounded())
+                        let day = model.repo.cachedWidgetAnchor()
+                        liveActivity.updateFromData(
+                            bpm: avg,
+                            recovery: day?.recovery.map { Int($0.rounded()) },
+                            effort: day?.strain.map { Int($0.rounded()) },
+                            connected: model.live.connected,
+                            windowMinutes: window
+                        )
+                    }
+                }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
                 // change mid-session. The only other publish site is the scenePhase .active handler, so
                 // during a long foreground session the widget froze at the last-foreground snapshot while

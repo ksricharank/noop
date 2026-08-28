@@ -1443,7 +1443,7 @@ struct SettingsView: View {
                                 if clamped != v { liveActivityLockedMinutes = clamped }
                             }
                     }
-                    Text("While the phone is locked, the Lock Screen number updates once per this many minutes, showing the average heart rate over that window. 0 keeps it fully live (~2 s) at the highest battery cost. -1 goes further and pauses the heart-rate stream itself while locked (outside your sleep window): the strap keeps recording, syncs continue, and the Lock Screen refreshes from short periodic spot readings — the lowest phone-battery mode. Unlocked, the Dynamic Island is always live.")
+                    Text("While the phone is locked, the Lock Screen number updates once per this many minutes, showing the average heart rate over that window. 0 keeps it fully live (~2 s) at the highest battery cost. -1 goes further and pauses the heart-rate stream itself while locked (outside your sleep window): the strap keeps recording, syncs continue, and the Lock Screen refreshes once per sync with that sync window's average heart rate plus the last recorded recovery and effort — the lowest phone-battery mode. Unlocked, the Dynamic Island is always live.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
