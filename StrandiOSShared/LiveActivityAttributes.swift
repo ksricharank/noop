@@ -13,8 +13,9 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         // Effort / strain on NOOP's 0–100 axis (#446) — one more stat in the Dynamic Island expanded
         // region. OPTIONAL with a nil default so an activity started by an older build still decodes.
         public var effort: Int?
-        // Resting heart rate (the day anchor's NOOP RHR), the fourth banner stat. Same nil-default
-        // decode-compatibility rule as `effort`.
+        // The Rest SCORE (0–100, the day anchor's sleep-performance composite — the SAME metric the
+        // app's Today "Rest" tile shows; it briefly carried resting HR, which could never match that
+        // tile under the same label). Same nil-default decode-compatibility rule as `effort`.
         public var rest: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil) {

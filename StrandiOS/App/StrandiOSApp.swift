@@ -146,7 +146,7 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day?.restingHr
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
                 // End the Live Activity the moment the link drops, even if no further HR tick arrives.
@@ -178,7 +178,7 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day?.restingHr
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
                 // Locked-stream duty cycle (Lock-Screen refresh = -1): while locked, live ticks are
@@ -210,7 +210,7 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
-                            rest: day?.restingHr,
+                            rest: day.flatMap { model.repo.restScore(for: $0) },
                             connected: model.live.connected,
                             windowMinutes: window
                         )
@@ -340,7 +340,7 @@ struct StrandiOSApp: App {
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    rest: anchorDay?.restingHr
+                    rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
                 )
                 model.drainPendingIntents()
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
