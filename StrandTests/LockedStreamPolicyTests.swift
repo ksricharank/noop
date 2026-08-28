@@ -85,15 +85,10 @@ final class LockedStreamPolicyTests: XCTestCase {
         XCTAssertEqual(Policy.averagingWindowMinutes(lockedMinutes: -999, lowRefresh: false), 240)
     }
 
-    // 7. A data-driven push stays fresh across one full SYNC cadence plus slack — the next repaint
-    // cannot arrive sooner, whatever the averaging window (a 5-minute window still repaints only per
-    // sync), and anything shorter would grey a healthy card.
-    func testDataPushStaleWindowCoversOneCadence() {
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 15, lowRefresh: false), 15 * 60)
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 5, lowRefresh: false), 15 * 60)
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 5, lowRefresh: true), 60 * 60)
-        XCTAssertGreaterThanOrEqual(Policy.liveActivityStaleSeconds(windowMinutes: 120, lowRefresh: false), 120 * 60)
-    }
+    // 7. RETIRED: `liveActivityStaleSeconds` (cadence + slack) is gone — iOS 26 REMOVES a stale
+    // Live Activity from both surfaces instead of greying it, so locked repaints carry no staleDate
+    // at all (260828-0914: the card vanished ~20 min into every away span). See LockedStreamPolicy's
+    // HISTORY note.
 
     // 8. The Units clamp passes explicit negative windows through and folds anything beyond the
     // sane range onto its edge (a fat-fingered "-999" becomes a 240-minute window, not undefined

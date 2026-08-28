@@ -156,13 +156,13 @@ final class LiveActivityController {
 
     /// Repaint the activity from PERSISTED data — the locked-phone path under the stream duty cycle
     /// (Lock-Screen refresh = -1). Called once per completed offload (`AppModel.lockedActivityRefresh`),
-    /// so no throttle: each call is already one sync apart. `bpm` is the mean over the offload
-    /// cadence's own window (15/60 min); recovery/effort are the last recorded values, same anchor the
-    /// widget uses. The stale window covers one full cadence plus sync slack — the next repaint
-    /// genuinely cannot arrive sooner, and greying in between would misread "quiet by design" as
-    /// "stale". Deliberately does NOT touch `lastPush`: the live cadence's own throttle state belongs
-    /// to live ticks, and an unlock moments after a data repaint should push live immediately.
-    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool, windowMinutes: Int) {
+    /// so no throttle: each call is already one sync apart. `bpm` is the mean over the averaging
+    /// window (15/60 min auto, or the user's explicit -N); recovery/effort are the last recorded
+    /// values, same anchor the widget uses. Pushes carry NO staleDate — see the comment at the push
+    /// below (iOS 26 removes, not greys, a stale activity). Deliberately does NOT touch `lastPush`:
+    /// the live cadence's own throttle state belongs to live ticks, and an unlock moments after a
+    /// data repaint should push live immediately.
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
         revalidateHandle()
         if !connected {
@@ -183,16 +183,29 @@ final class LiveActivityController {
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                         bonded: connected, effort: effort, rest: rest)
-        let staleDate = Date().addingTimeInterval(
-            Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(
-                windowMinutes: windowMinutes, lowRefresh: PuffinExperiment.lowRefreshEnabled))
+        // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
+        // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
+        // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island
+        // (260828-0914: both vanish ~15–25 min into every away span — a locked link drop or a
+        // background process kill stops the repaints — then both reappear the instant the app opens,
+        // because the activity still existed and one push revived it; no end ran, no start failed).
+        // A vanished card misreads as "the app broke"; the frozen window average never claimed
+        // liveness, so persisting it is honest. The exit is explicit instead of clock-driven: on
+        // unlock the live path refreshes it within a tick, or the unlock/foreground kicks end it
+        // properly if the strap is genuinely gone.
+        let staleDate: Date? = nil
         if let activity {
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             // Foreground-active only, same as the live path: a request from anywhere else throws.
             // This path runs almost exclusively while locked/backgrounded, so in practice the start
-            // it skips is handled by the next foreground (scenePhase kick / first live tick).
-            guard UIApplication.shared.applicationState == .active else { return }
+            // it skips is handled by the next foreground (scenePhase kick / first live tick). Logged
+            // (rare-event): recurring copies of this line are the "dead until next app open"
+            // signature, one per sync.
+            guard UIApplication.shared.applicationState == .active else {
+                log?("Live Activity: locked repaint found nothing to adopt — a start needs the next foreground")
+                return
+            }
             // Same synchronous start gate as the live path — two offloads finishing close together
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
