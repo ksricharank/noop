@@ -15,6 +15,7 @@ import SwiftUI
 import StrandDesign
 import WhoopStore
 import StrandAnalytics
+import MarkdownUI
 
 struct LiquidTodayView: View {
     @EnvironmentObject var repo: Repository
@@ -25,6 +26,15 @@ struct LiquidTodayView: View {
     // would re-render all of Today every second (the exact churn the LiveState leaves isolate). BLEManager
     // only publishes connect/discovery state, never HR. Injected at the app roots beside .environmentObject(model).
     @EnvironmentObject var ble: BLEManager
+    /// The coach engine, for the LLM-written Today synthesis (`synthesisText`). Observing it re-renders
+    /// on generation only (a couple of times per app open at most), never on the HR tick — the engine
+    /// publishes chat/config state, not live samples. Injected at both app roots.
+    @EnvironmentObject var coach: AICoachEngine
+    /// For the unified Refresh control on the synthesis card (forced re-score). Publishes on pass
+    /// start/end only — no per-tick churn. Injected at both app roots.
+    @EnvironmentObject var intelligence: IntelligenceEngine
+    /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
+    @State private var refreshingAll = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
     /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
@@ -74,7 +84,6 @@ struct LiquidTodayView: View {
     @State private var guideSection: ScoreSection?
     @State private var customizationDestination: TodayCustomizationDestination?
     @State private var showSettings = false
-    @State private var synthesisExpanded = false
     @State private var showLiveSession = false
 
     /// Live Sessions (silent guardian) beta gate — the SAME key the Settings toggle writes. Default ON
@@ -1019,18 +1028,15 @@ struct LiquidTodayView: View {
             .padding(.horizontal, 2)
             .padding(.top, 4)
 
-            Button { withAnimation(.easeInOut(duration: 0.2)) { synthesisExpanded.toggle() } } label: {
+            // A plain card, no expand/collapse: the synthesis is the day's read, always fully shown.
+            // (It collapsed to a one-liner until the coach-written paragraph became the main content —
+            // hiding the thing the card exists for behind a "show" tap outlived its purpose.)
                 card {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("SYNTHESIS").font(StrandFont.overline).tracking(1.6)
                                 .foregroundStyle(StrandPalette.textSecondary)
                             Spacer()
-                            Text(synthesisExpanded
-                                 ? String(localized: "hide")
-                                 : String(localized: "show"))
-                                .font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textTertiary)
                         }
                         // While the baseline calibrates, the honest "N of 4 nights" progress replaces the
                         // readiness one-liner here — the same swap classic makes (`calibrationDetail ??
@@ -1053,16 +1059,158 @@ struct LiquidTodayView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        if synthesisExpanded {
+                        // The coach-written synthesis, when the provider has answered TODAY, replaces
+                        // the rule-based summary + horizons (its prose covers the same horizons).
+                        // Unconfigured / no consent / not-yet-answered / stale-day all fall back to
+                        // the rule-based read below, unchanged.
+                        if let ai = coach.synthesisText,
+                           AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                            // LLM replies arrive as Markdown; plain Text showed literal asterisks.
+                            // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
+                            // for this card (see Theme.strandSynthesis).
+                            Markdown(ai)
+                                .markdownTheme(.strandSynthesis)
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles").font(StrandFont.caption)
+                                Text("Written by your Coach").font(StrandFont.caption)
+                                // Always names the model that wrote it. Showing it only for a fallback made the
+                                // label's ABSENCE mean "your chosen model", which nobody can read off the
+                                // screen. Twin of the same line in the other Today view; keep them in step.
+                                if let model = coach.synthesisModel {
+                                    Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)").font(StrandFont.caption)
+                                }
+                            }
+                            .foregroundStyle(StrandPalette.textTertiary)
+                        } else {
                             Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                            horizonRows
                         }
+                        coachLink
                     }
                 }
-            }
-            .buttonStyle(LiquidPressStyle())
         }
+    }
+
+    // MARK: Horizons (1h / 3h / 6h)
+
+    /// What to do next, on three timescales, under the "how am I today" read above. Rule-based via the
+    /// pure `HorizonPlanner`; see that type for why it is not LLM-backed and what it deliberately does
+    /// not claim to know.
+    ///
+    /// Shown only while the card is EXPANDED, so the collapsed Today stays a single glanceable line —
+    /// the reason the collapse exists. `plan` returns only the horizons it can justify, so this renders
+    /// nothing at all rather than a placeholder when there is no honest read.
+    @ViewBuilder private var horizonRows: some View {
+        let plans = horizonPlans
+        if !plans.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Divider().overlay(StrandPalette.textTertiary.opacity(0.2))
+                ForEach(plans) { plan in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(plan.horizon.rawValue)
+                            .font(StrandFont.caption.weight(.bold))
+                            .foregroundStyle(StrandPalette.chargeColor)
+                            // Fixed width so the three labels form a column and the sentences align,
+                            // reading as a timeline rather than three unrelated lines.
+                            .frame(width: 26, alignment: .leading)
+                        Text(LocalizedStringKey(plan.text))
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(Self.horizonAccessibilityLabel(plan))
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    /// VoiceOver reads "1h" as the literal characters, which is meaningless spoken. Spell the horizon out.
+    static func horizonAccessibilityLabel(_ plan: HorizonPlanner.Plan) -> String {
+        let window: String
+        switch plan.horizon {
+        case .hour: window = String(localized: "Next hour")
+        case .threeHours: window = String(localized: "Next three hours")
+        case .sixHours: window = String(localized: "Next six hours")
+        }
+        return "\(window): \(plan.text)"
+    }
+
+    private var horizonPlans: [HorizonPlanner.Plan] {
+        HorizonPlanner.plan(HorizonPlanner.Input(
+            level: readiness.level,
+            strainSoFar: displayDay?.strain,
+            sleepMinutes: displayDay?.totalSleepMin.map { Int($0.rounded()) },
+            hour: Calendar.current.component(.hour, from: Date()),
+            bedtimeHour: Self.targetBedtimeHour()))
+    }
+
+    /// The user's target bedtime as an hour, derived the same way the wind-down nudge derives its own
+    /// schedule: earliest wake minus sleep need. Deliberately WITHOUT the nudge's notification lead —
+    /// that lead exists to fire a reminder early, whereas the planner applies its own
+    /// `windDownLeadHours`, and stacking both would start winding the user down an hour too soon.
+    static func targetBedtimeHour() -> Int {
+        let day = 24 * 60
+        let raw = WindDownNudge.wakeMinutes - WindDownNudge.sleepNeedMinutes
+        return ((((raw % day) + day) % day) / 60)
+    }
+
+    /// A way into the Coach from the synthesis, for the follow-up questions this card inevitably raises.
+    /// Deliberately a LINK, not an embedded chat: `AICoachEngine` is a single app-lifetime instance with
+    /// one `messages` transcript, so a second inline chat surface would either share that transcript or
+    /// need the engine reworked to be conversation-keyed. Neither is worth it to save one tap.
+    /// The unified on-demand refresh: kick a manual strap offload (same gated path as pull-to-sync and
+    /// the Health screen's "Sync now" — bypasses the periodic floor, safely no-ops when disconnected or
+    /// already syncing; its completion re-scores whatever new data banks via the existing post-offload
+    /// pipeline), force a scoring pass over what is already on the device, then regenerate the
+    /// coach-written paragraph from the fresh scores (a no-op when the Coach is unconfigured).
+    /// Classic twin: `TodayView.refreshEverything` — keep the two in step.
+    private func refreshEverything() async {
+        ble.syncNow()
+        await intelligence.analyzeRecent()
+        await coach.refreshSynthesis(force: true)
+    }
+
+    @ViewBuilder private var coachLink: some View {
+        HStack {
+            // One Refresh for everything — data fetch, re-score, coach paragraph — always visible
+            // (the coach step simply no-ops when unconfigured).
+            if refreshingAll || coach.synthesisRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Button {
+                    Task {
+                        refreshingAll = true
+                        await refreshEverything()
+                        refreshingAll = false
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                        Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Refresh data, scores, and synthesis")
+            }
+            Spacer()
+            Button {
+                router.openCoach()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                }
+                .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Opens the AI Coach chat"))
+        }
+        .padding(.top, 2)
     }
 
     // MARK: - Recovery vitals
