@@ -65,4 +65,39 @@ final class BatteryDiagTests: XCTestCase {
         let line = try XCTUnwrap(BatteryDiag.cpuLine())
         XCTAssertTrue(line.hasPrefix("CPU this app session: user="), line)
     }
+
+    // 7. A sub-ten-minute window reports the honest span and NO hourly rate: the 260828-0731 header
+    // extrapolated a 30 s launch-time offload burst into "224148/h", which reads as a day verdict
+    // and is nothing of the kind. The line itself must still appear (test 5's first-export rule).
+    func testShortWindowsCarryNoRate() {
+        let line = BatteryDiag.formatNotifyLine(counts: ["puffin": 1360], seconds: 30)
+        XCTAssertEqual(line, "BLE wakes: puffin=1360 — 1360 total over 30s (window too short for a rate)")
+        XCTAssertNil(line?.range(of: "/h"))
+    }
+
+    // 8. The per-day bank: counts merge additively into the day's bucket, and pruning keeps only the
+    // newest `keepDays` day keys — the header prints today + yesterday, so anything older is dead
+    // weight in the plist (and the store must never grow without bound).
+    func testPersistedDayMergeAddsAndPrunes() {
+        var persisted: [String: [String: Int]] = [
+            "2026-08-26": ["puffin": 10],
+            "2026-08-27": ["puffin": 100, "hr2A37": 5],
+        ]
+        persisted = BatteryDiag.merged(persisted: persisted, adding: ["puffin": 7, "battery": 1],
+                                       day: "2026-08-28")
+        XCTAssertEqual(persisted.keys.sorted(), ["2026-08-27", "2026-08-28"])
+        XCTAssertEqual(persisted["2026-08-28"], ["puffin": 7, "battery": 1])
+        persisted = BatteryDiag.merged(persisted: persisted, adding: ["puffin": 3],
+                                       day: "2026-08-28")
+        XCTAssertEqual(persisted["2026-08-28"]?["puffin"], 10)
+        XCTAssertEqual(persisted["2026-08-27"]?["hr2A37"], 5)
+    }
+
+    // 9. The day line: same busiest-first ordering as the session line, silent for an empty bucket.
+    func testDayLineFormatsAndStaysSilentWhenEmpty() {
+        XCTAssertEqual(
+            BatteryDiag.formatDayLine(label: "today", counts: ["battery": 2, "puffin": 900]),
+            "BLE wakes today: puffin=900 battery=2 — 902 total")
+        XCTAssertNil(BatteryDiag.formatDayLine(label: "today", counts: [:]))
+    }
 }
