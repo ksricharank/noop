@@ -27,7 +27,7 @@ struct NOOPLiveActivity: Widget {
                 bannerStat(label: "HR", value: Self.shownBpm(context).map(String.init) ?? "–")
                 Spacer()
                 bannerStat(label: "Charge",
-                           value: context.state.recovery.map { "\($0)%" } ?? "–")
+                           value: context.state.recovery.map(String.init) ?? "–")
                 Spacer()
                 bannerStat(label: "Effort",
                            value: context.state.effort.map(String.init) ?? "–")
@@ -48,7 +48,7 @@ struct NOOPLiveActivity: Widget {
                     // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
                     HStack(spacing: 10) {
                         if let r = context.state.recovery {
-                            statColumn(label: "Charge", value: "\(r)%")
+                            statColumn(label: "Charge", value: "\(r)")
                         }
                         if let e = context.state.effort {
                             statColumn(label: "Effort", value: "\(e)")
