@@ -52,6 +52,11 @@ FEATURES=(
   # Units.swift / SettingsView.swift / LiveActivityController.swift on every rebuild. Keep it
   # directly after its base, rebase it with `git rebase --onto feature/lock-screen-hr-average`,
   # and upstream the two together, base first.
+  # KNOWN RECURRING CONFLICT with feature/dynamic-ui-bug-fix (parallel stack): both insert methods
+  # before `func end()` in LiveActivityController. Resolve in the release merge by keeping BOTH,
+  # and integrating: `updateFromData` routes its disconnect end through `endIfCurrent()` and its
+  # `Activity.request` path bumps `generation` (+ clears `isEnding`) exactly like the live start —
+  # a bare end/start there would re-open the stale-end bug that branch exists to fix.
   "feature/locked-stream-duty-cycle"
   "feature/locked-rescore-deferral"
   # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
