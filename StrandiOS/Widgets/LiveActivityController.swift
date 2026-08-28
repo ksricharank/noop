@@ -163,7 +163,15 @@ final class LiveActivityController {
         let dutyCycle = LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes)
         let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
         if let bpm { hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing) }
-        let locked = lockedMinutes != 0 && !UIApplication.shared.isProtectedDataAvailable
+        // Locked = the shared latch-or-keybag signal. The keybag alone flips 10–60 s AFTER the
+        // physical lock, so a keybag-only read kept live pushes repainting the locked Lock Screen for
+        // that whole grace window (the 260827-2142 rapid lock/unlock churn); the latch — set the
+        // instant the lock notification fires — is what freezes the number AT the lock. Re-read per
+        // tick rather than observed: a tick is already the only moment a push can happen.
+        // `lockedMinutes == 0` opts out of lock-awareness altogether.
+        let locked = lockedMinutes != 0
+            && DeviceLockState.isLocked(protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
+
         // Duty cycle (-1): while locked, LIVE ticks never push — the stream is supposed to be silent,
         // and any stray tick (the strap can keep pushing HR over the puffin data channels whatever the
         // TOGGLE says) repainting the Lock Screen is exactly the v1 bug. The locked presentation is
