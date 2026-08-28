@@ -49,6 +49,26 @@ final class LiveActivityController {
     /// (`LiveHRBannerPushPolicy`), so a banner fed by a worn strap never goes stale.
     static let staleAfter: TimeInterval = 30
 
+    /// Re-point `activity` at reality before a DATA repaint (`updateFromData`, the locked duty-cycle
+    /// path, which runs outside the live-tick machinery above). Two corpse sources, one symptom (the
+    /// #341 class): a handle whose activity was ended ELSEWHERE (the sleep-window pause, the system's
+    /// own lifetime cap) stays non-nil, so every push vanishes into it and the non-nil check blocks
+    /// the restart path. And `Activity.activities` keeps `.ended`/`.dismissed` handles around for a
+    /// while after they stop showing, so blindly adopting `.first` re-poisons the handle the same way
+    /// (how the locked-span link drops killed the island for the rest of the day, 260828-0731).
+    /// `.stale` is NOT a corpse — a push revives it — so both the held handle and adoption keep it.
+    private func revalidateHandle() {
+        if let activity, activity.activityState != .active, activity.activityState != .stale {
+            log("dropped a dead handle (state=\(activity.activityState)) — restart path open again")
+            self.activity = nil
+        }
+        // Not while a start is in flight: `Activity.request` will assign the fresh handle itself.
+        if activity == nil, !isStarting {
+            activity = Activity<NOOPActivityAttributes>.activities
+                .first { $0.activityState == .active || $0.activityState == .stale }
+        }
+    }
+
     /// Follow the strap from process start, not from a screen. iOS starts NOOP in the background — the strap
     /// reconnecting, a sync, the Sync Strap shortcut — and a process started that way need not build any screen (the
     /// shortcut's never does), while a banner the previous run left on the Lock Screen is there to be picked up and
@@ -231,8 +251,19 @@ final class LiveActivityController {
     /// to live ticks, and an unlock moments after a data repaint should push live immediately.
     func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool, windowMinutes: Int) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
-        if activity == nil { activity = Activity<NOOPActivityAttributes>.activities.first }
+        revalidateHandle()
         if !connected {
+            // A drop while the duty cycle has the phone locked is routine — the link is idle BY
+            // DESIGN, and the standing reconnect restores it. Ending here was one-way (no background
+            // starts), so it left the Lock Screen empty until the next app open. Hold the frozen
+            // average instead; unlocked or duty-cycle-off drops still end immediately (#911).
+            let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+            if LockedStreamPolicy.holdOnDisconnect(
+                dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                locked: DeviceLockState.isLocked(
+                    protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
+                return
+            }
             Task { await end() }
             return
         }
@@ -245,6 +276,10 @@ final class LiveActivityController {
         if let activity {
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
+            // Foreground-active only, same as the live path: a request from anywhere else throws.
+            // This path runs almost exclusively while locked/backgrounded, so in practice the start
+            // it skips is handled by the next foreground (scenePhase kick / first live tick).
+            guard UIApplication.shared.applicationState == .active else { return }
             // Same synchronous start gate as the live path — two offloads finishing close together
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
@@ -257,6 +292,7 @@ final class LiveActivityController {
                 )
             } catch {
                 activity = nil
+                log?("Live Activity: start failed — \(error.localizedDescription)")
             }
             isStarting = false
         }
@@ -288,7 +324,7 @@ final class LiveActivityController {
         defer { isStarting = false }
         do {
             let started = try Activity.request(
-                attributes: NOOPActivityAttributes(title: String(localized: "Live HR")),
+                attributes: NOOPActivityAttributes(title: String(localized: "HR")),
                 content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.staleAfter)),
                 pushType: nil
             )

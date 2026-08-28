@@ -268,6 +268,10 @@ struct StrandiOSApp: App {
                 // window plus the last recorded recovery/effort. Wired in `onAppear` (not `init`)
                 // because the closure needs the @State controller; idempotent on re-fire.
                 .onAppear {
+                    // Rare-event evidence into the strap log: Live Activity start failures and
+                    // dropped dead handles were silent, which made every "the island never came
+                    // back" report unanswerable from an export.
+                    liveActivity.log = { model.live.append(log: $0) }
                     model.lockedActivityRefresh = { [weak model] in
                         guard let model else { return }
                         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
