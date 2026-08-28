@@ -143,7 +143,8 @@ final class LiveActivityController {
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                         bonded: connected, effort: effort)
         let staleDate = Date().addingTimeInterval(
-            Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(windowMinutes: windowMinutes))
+            Self.staleAfter + LockedStreamPolicy.liveActivityStaleSeconds(
+                windowMinutes: windowMinutes, lowRefresh: PuffinExperiment.lowRefreshEnabled))
         if let activity {
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {

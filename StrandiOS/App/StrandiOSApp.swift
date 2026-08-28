@@ -175,6 +175,7 @@ struct StrandiOSApp: App {
                                   protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
                         else { return }
                         let window = LockedStreamPolicy.averagingWindowMinutes(
+                            lockedMinutes: lockedMinutes,
                             lowRefresh: PuffinExperiment.lowRefreshEnabled)
                         let to = Int(Date().timeIntervalSince1970)
                         let samples = await model.repo.hrSamples(from: to - window * 60, to: to)
