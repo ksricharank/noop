@@ -28,6 +28,16 @@ final class LiveActivityController {
     /// (`LiveActivityHrPolicy.windowAverage`). Fed on every tick regardless of lock state, so the
     /// first locked push already has a full window behind it.
     private var hrSamples: [LiveActivityHrPolicy.Sample] = []
+    /// Whether the previous push happened while locked — the lock EDGE detector: the first locked
+    /// tick pushes the window average immediately instead of waiting out a whole `lockedSpacing`
+    /// with the last live beat frozen on the card.
+    private var lastPushWasLocked = false
+    /// When the CURRENT activity was requested — the system ends every Live Activity ~8 h after
+    /// creation, so `update` renews the lease (end + fresh request) once an activity crosses this
+    /// age and the app is foreground-active. Approximated with the adoption time for an activity
+    /// inherited from a previous process (a too-early renewal is a blink; a too-late one is the cap).
+    private var activityStartedAt: Date?
+    private static let leaseRenewalAge: TimeInterval = 6.5 * 3600
     /// Rare-event sink into the strap log (wired by the app layer). Start failures and dropped dead
     /// handles were both silent, which is exactly what made "the island never comes back" a
     /// phone-in-hand mystery instead of one log line.
@@ -50,6 +60,9 @@ final class LiveActivityController {
         if activity == nil, !isStarting {
             activity = Activity<NOOPActivityAttributes>.activities
                 .first { $0.activityState == .active || $0.activityState == .stale }
+            // Adopted from a previous process: the true birth time is unknown, so the lease clock
+            // starts at adoption. A too-early renewal is one invisible blink; too late is the cap.
+            if activity != nil, activityStartedAt == nil { activityStartedAt = Date() }
         }
     }
 
@@ -110,10 +123,30 @@ final class LiveActivityController {
             return
         }
 
+        // Lease renewal against the system's ~8 h Live Activity lifetime (counted from creation;
+        // updates never extend it). An activity older than the renewal age is ended and immediately
+        // re-requested by the start path below with this tick's state — foreground-active only, so
+        // in practice it happens invisibly on an app open. Without this, a card born in the morning
+        // is ended by iOS mid-afternoon and (no background starts) stays gone until the next open.
+        if let a = activity, let born = activityStartedAt,
+           now.timeIntervalSince(born) > Self.leaseRenewalAge,
+           UIApplication.shared.applicationState == .active, !isStarting {
+            log?("Live Activity: renewing the 8 h lease (activity is \(Int(now.timeIntervalSince(born) / 3600)) h old)")
+            Task { await a.end(nil, dismissalPolicy: .immediate) }
+            activity = nil
+            activityStartedAt = nil
+        }
+
         if let activity {
-            guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
-                                                  lockedSpacing: lockedSpacing) else { return }
+            // The LOCK EDGE pushes immediately: the first spaced push otherwise arrives a full
+            // `lockedSpacing` after locking, so for those minutes the card held the last LIVE beat —
+            // the "captures the last HR value and freezes it" report on +5 (the -1 mode has its own
+            // lock-edge repaint; this is the +N twin, driven by the ticks that keep flowing there).
+            let lockEdge = locked && !lastPushWasLocked
+            guard lockEdge || LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
+                                                              lockedSpacing: lockedSpacing) else { return }
             lastPush = now
+            lastPushWasLocked = locked
             // Locked: show the window's average — steadier, and honest about its cadence. The
             // instantaneous fallback only fires if the window is somehow empty (it can't be: the
             // current tick was just appended above).
@@ -121,12 +154,18 @@ final class LiveActivityController {
                 ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm)
                 : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
-                                                            bonded: connected, effort: effort, rest: rest)
-            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
+                                                            bonded: connected, effort: effort, rest: rest,
+                                                            live: !locked)
+            // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
+            // REMOVES a stale activity from both surfaces rather than greying it, and a locked span
+            // can legitimately go quiet past any window we'd pick. Live pushes keep the short net —
+            // they refresh every ~2 s, so it only ever catches a crashed app.
+            let staleDate: Date? = locked ? nil : now.addingTimeInterval(Self.staleAfter)
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                            bonded: connected, effort: effort, rest: rest)
+                                                            bonded: connected, effort: effort, rest: rest,
+                                                            live: !locked)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Local Live Activities can only be STARTED while the app is foreground-active; a
             // background request throws every time. Skipping quietly matters beyond tidiness: after
@@ -146,6 +185,8 @@ final class LiveActivityController {
                     pushType: nil
                 )
                 lastPush = Date()
+                lastPushWasLocked = locked
+                activityStartedAt = Date()
             } catch {
                 activity = nil
                 log?("Live Activity: start failed — \(error.localizedDescription)")
@@ -182,7 +223,8 @@ final class LiveActivityController {
         }
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
-                                                        bonded: connected, effort: effort, rest: rest)
+                                                        bonded: connected, effort: effort, rest: rest,
+                                                        live: false)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
         // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
         // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island
@@ -195,6 +237,7 @@ final class LiveActivityController {
         // properly if the strap is genuinely gone.
         let staleDate: Date? = nil
         if let activity {
+            lastPushWasLocked = true
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             // Foreground-active only, same as the live path: a request from anywhere else throws.
@@ -216,6 +259,8 @@ final class LiveActivityController {
                     content: ActivityContent(state: state, staleDate: staleDate),
                     pushType: nil
                 )
+                lastPushWasLocked = true
+                activityStartedAt = Date()
             } catch {
                 activity = nil
                 log?("Live Activity: start failed — \(error.localizedDescription)")
@@ -232,6 +277,7 @@ final class LiveActivityController {
             await act.end(nil, dismissalPolicy: .immediate)
         }
         self.activity = nil
+        self.activityStartedAt = nil
     }
 }
 #endif
