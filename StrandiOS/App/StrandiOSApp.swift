@@ -145,7 +145,8 @@ struct StrandiOSApp: App {
                         bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day?.restingHr
                     )
                 }
                 // End the Live Activity the moment the link drops, even if no further HR tick arrives.
@@ -158,7 +159,8 @@ struct StrandiOSApp: App {
                         bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
-                        effort: day?.strain.map { Int($0.rounded()) }
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day?.restingHr
                     )
                 }
                 // Locked-stream duty cycle (Lock-Screen refresh = -1): while locked, live ticks are
@@ -186,6 +188,7 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
+                            rest: day?.restingHr,
                             connected: model.live.connected,
                             windowMinutes: window
                         )
