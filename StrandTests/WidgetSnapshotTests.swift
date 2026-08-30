@@ -57,7 +57,8 @@ final class WidgetSnapshotTests: XCTestCase {
     private func renderedSnapshot(updated: Date = Date(timeIntervalSince1970: 1_700_000_000)) -> WidgetSnapshot {
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: updated,
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
-                       effortDisplay: "38", effortWhoop: false)
+                       effortDisplay: "38", effortWhoop: false,
+                       avgHr: 64, kcal: 180, kcalTarget: 450, sleepNeedMin: 495)
     }
 
     func testRenderedContentFirstPublishAlwaysChanges() {
@@ -85,6 +86,63 @@ final class WidgetSnapshotTests: XCTestCase {
         next.rest = 82
 
         XCTAssertTrue(WidgetSnapshot.renderedContentChanged(from: previous, to: next))
+    }
+
+    /// The targets-trio fields are RENDERED content (the NOOP Targets widget's whole payload), so a
+    /// burst that only moved them must still republish — a dedup miss here would freeze the new
+    /// widget at its first snapshot for the rest of the day.
+    func testRenderedContentDetectsTargetsTrioChange() {
+        let previous = renderedSnapshot()
+        for mutate: (inout WidgetSnapshot) -> Void in [
+            { $0.avgHr = 71 }, { $0.kcal = 240 }, { $0.kcalTarget = nil }, { $0.sleepNeedMin = 510 }
+        ] {
+            var next = previous
+            mutate(&next)
+            XCTAssertTrue(WidgetSnapshot.renderedContentChanged(from: previous, to: next))
+        }
+    }
+
+    /// A snapshot written by an OLDER app build (no targets-trio keys) must still decode — the widget
+    /// extension can update ahead of the app's first fresh publish.
+    func testOlderSnapshotWithoutTargetsFieldsStillDecodes() throws {
+        var old = renderedSnapshot()
+        old.avgHr = nil; old.kcal = nil; old.kcalTarget = nil; old.sleepNeedMin = nil
+        let data = try JSONEncoder().encode(old)
+        // Simulate the older writer by stripping the keys entirely, not just nulling them.
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        for key in ["avgHr", "kcal", "kcalTarget", "sleepNeedMin"] { json.removeValue(forKey: key) }
+        let stripped = try JSONSerialization.data(withJSONObject: json)
+        let decoded = try JSONDecoder().decode(WidgetSnapshot.self, from: stripped)
+        XCTAssertNil(decoded.avgHr)
+        XCTAssertNil(decoded.kcal)
+        XCTAssertNil(decoded.kcalTarget)
+        XCTAssertNil(decoded.sleepNeedMin)
+        XCTAssertEqual(decoded.recovery, 72)
+    }
+
+    /// The display strings are the SAME vocabulary as the Live Activity card's Cal/Sleep columns —
+    /// either Cal side degrades alone, and a missing count reads "0/target" (early morning honestly
+    /// is zero); Sleep zero-pads minutes so the glyph count is stable across pushes.
+    func testTargetsDisplayStrings() {
+        var snap = renderedSnapshot()
+        XCTAssertEqual(snap.calDisplay, "180/450")
+        XCTAssertEqual(snap.sleepDisplay, "8h15")
+
+        snap.kcal = nil
+        XCTAssertEqual(snap.calDisplay, "0/450")
+        snap.kcal = 180; snap.kcalTarget = nil
+        XCTAssertEqual(snap.calDisplay, "180")
+        snap.kcal = nil
+        XCTAssertNil(snap.calDisplay)
+
+        snap.sleepNeedMin = 510
+        XCTAssertEqual(snap.sleepDisplay, "8h30")
+        snap.sleepNeedMin = 425
+        XCTAssertEqual(snap.sleepDisplay, "7h05")
+        snap.sleepNeedMin = 0
+        XCTAssertNil(snap.sleepDisplay)
+        snap.sleepNeedMin = nil
+        XCTAssertNil(snap.sleepDisplay)
     }
 
     func testLiveUpdateReusesSnapshotWithinSameLocalDay() {
