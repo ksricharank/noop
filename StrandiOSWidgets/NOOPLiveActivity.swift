@@ -24,8 +24,9 @@ struct NOOPLiveActivity: Widget {
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
                 // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen
-                // value is the plain settled number; the # marker is the live "go breathe" read.
-                bannerStat(label: "HR", value: hrText(context.state))
+                // value is the plain settled number; the RED value is the live "go breathe" read.
+                bannerStat(label: "HR", value: hrText(context.state),
+                           tint: breatheTint(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
                 Spacer()
@@ -37,10 +38,18 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    // Same not-connected cue as the banner's icon: grey heart while the link is down.
-                    Label(hrText(context.state), systemImage: "heart.fill")
-                        .foregroundStyle(context.state.bonded
-                                         ? StrandPalette.statusCritical : StrandPalette.textSecondary)
+                    // Icon and digits are colored SEPARATELY: the heart carries the identity + the
+                    // not-connected cue (red = linked, grey = dropped), while the digits stay primary
+                    // and turn red only on the breathe cue — one red element is identity, two is the
+                    // alarm. (A single Label tinted the digits red permanently, which would have made
+                    // the cue invisible exactly here.)
+                    HStack(spacing: 4) {
+                        Image(systemName: "heart.fill")
+                            .foregroundStyle(context.state.bonded
+                                             ? StrandPalette.statusCritical : StrandPalette.textSecondary)
+                        Text(hrText(context.state))
+                            .foregroundStyle(breatheTint(context.state) ?? Color.primary)
+                    }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     // Charge (its band set today's targets) + the same Cal/Sleep pillars the banner
@@ -64,9 +73,10 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                // The compact slot carries the FULL marked reading ("~78#") by explicit design —
-                // the breathe cue must reach the island even when it is small.
+                // The compact slot carries the full reading with the breathe cue by explicit
+                // design — the cue must reach the island even when it is small.
                 Text(hrText(context.state))
+                    .foregroundStyle(breatheTint(context.state) ?? Color.primary)
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
                 // — it is the only presentation the user sees then, so it has to carry the number. A bare
@@ -101,18 +111,24 @@ struct NOOPLiveActivity: Widget {
 }
 
 /// The HR display string: a LIVE beat carries the tilde ("~72" — still moving), a window average /
-/// frozen value is the plain settled number, and the `#` marker rides after the digits when the
-/// body is in a non-metabolic HRV dip right now — "go breathe" ("~78#"). The marker is a LEVEL from
-/// the live autonomic read (fast RMSSD vs the rolling baseline, exercise-gated), not a threshold on
-/// the number it follows — a fixed ceiling denominator lived here for one build and was retired as
-/// too crude ("always 96? come on"). `live`/`breathe` are nil on activities written by older builds
-/// — treated as not-live / no-claim, so an inherited card never asserts what it can't back.
-/// File-scope for the same reason as `bannerStat`. The `minimal` slot deliberately uses none of
-/// this: it clips rather than shrinks, and the extra glyphs would cost the third digit of a workout HR.
+/// frozen value is the plain settled number. `live` is nil on activities written by older builds —
+/// treated as not-live, so an inherited card never claims liveness it can't back. File-scope for
+/// the same reason as `bannerStat`.
 private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
     guard let bpm = state.bpm else { return "–" }
-    let reading = state.live == true ? "~\(bpm)" : "\(bpm)"
-    return state.breathe == true ? "\(reading)#" : reading
+    return state.live == true ? "~\(bpm)" : "\(bpm)"
+}
+
+/// RED digits when the body is in a non-metabolic HRV dip right now — the live "go breathe" cue
+/// (a LEVEL from `StressOnsetDetector.breatheCue`: fast RMSSD vs the rolling baseline,
+/// exercise-gated). The tint replaced a trailing `#` glyph the same night it shipped (maintainer's
+/// call after seeing both: color, not punctuation). A fixed ceiling denominator lived here for one
+/// build before either and was retired as too crude ("always 96? come on"). nil = no tint — both
+/// calm and the abstain case: an unjudgeable minute must not look like a verdict. The `minimal`
+/// slot cannot carry the cue: its digits are permanently red for identity when demoted next to
+/// another app's activity.
+private func breatheTint(_ state: NOOPActivityAttributes.ContentState) -> Color? {
+    state.breathe == true ? StrandPalette.statusCritical : nil
 }
 
 
@@ -146,14 +162,14 @@ private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
 /// read as "the number doesn't line up with its label". `fixedSize` stops either line truncating so the
 /// pairing is never clipped at narrow widths.
 @ViewBuilder
-private func bannerStat(label: String, value: String) -> some View {
+private func bannerStat(label: String, value: String, tint: Color? = nil) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
         // .title3 (one step up from .headline): the three values are the banner's whole payload and
         // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
-        // Deliberately NO tint anywhere in the row — the # glyph alone carries the breathe cue
-        // (the maintainer's call: "let's skip the tint").
-        Text(value).font(.title3).fontWeight(.semibold).foregroundStyle(StrandPalette.textPrimary)
+        // `tint` carries the breathe cue on the HR value (red digits = "go breathe").
+        Text(value).font(.title3).fontWeight(.semibold)
+            .foregroundStyle(tint ?? StrandPalette.textPrimary)
     }
     .multilineTextAlignment(.center)
     .fixedSize()
