@@ -59,6 +59,13 @@ extension WidgetSnapshot {
             }
             return "\(Int(stored.rounded()))"
         }
+        // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
+        // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
+        // refresh or day roll), plus the freshest offload burst's mean HR. This full publish runs
+        // post-offload even in the BACKGROUND (#980), which is exactly the ~15-minute burst cadence
+        // the targets widget is built around — no extra trigger needed.
+        let targets = model.repo.cachedLiveTargets(now: now)
+        let avgHr = await model.repo.burstAvgHr(now: now)
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
@@ -71,7 +78,11 @@ extension WidgetSnapshot {
             hrv: day?.avgHrv.map { Int($0.rounded()) },
             restingHr: day?.restingHr,
             effortDisplay: effortDisplay,
-            effortWhoop: effortScale == .whoop
+            effortWhoop: effortScale == .whoop,
+            avgHr: avgHr,
+            kcal: targets.exerciseKcalToday,
+            kcalTarget: targets.kcalTargetKcal,
+            sleepNeedMin: targets.sleepNeedTonightMin
         )
         saveAndReloadIfChanged(snap)
     }
