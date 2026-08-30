@@ -7,10 +7,12 @@ import StrandDesign
 struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation: four EQUAL stat columns — HR, Charge, Effort,
-            // Rest — one shared type size, no oversized hero number. HR is a labelled peer of the
-            // others (the old caption-title + 26 pt bpm read as "live beat" even when the locked
-            // duty cycle is showing a window average; equal columns read as the summary they are).
+            // Lock Screen / banner presentation: three EQUAL stat columns, one per pillar —
+            // HR n/ceiling (breathing & heart rate), Cal n/target (activity & exercise), and Sleep
+            // hours needed tonight (rest & sleep) — one shared type size, no oversized hero number.
+            // Charge left the banner deliberately: the targets already encode it (they are derived
+            // from its band), and it still reads in the expanded Dynamic Island. Effort and Rest
+            // live in the coach synthesis now, not on the card.
             HStack(spacing: 14) {
                 // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
                 // down (charging, out of range — the card now holds its last values through a drop
@@ -22,19 +24,14 @@ struct NOOPLiveActivity: Widget {
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
                 // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
-                // is the plain settled number. Deliberately this way round: when the phone locks and
-                // pushes stop reaching the card, whatever is on it is by definition not live — the
-                // plain form it is left holding stays honest without needing a repaint.
-                bannerStat(label: "HR", value: hrText(context.state))
+                // is the plain settled number. The denominator is the calm ceiling — over it the
+                // value tints red: the meditate cue.
+                bannerStat(label: "HR", value: hrText(context.state, withCeiling: true),
+                           tint: elevatedTint(context.state))
                 Spacer()
-                bannerStat(label: "Charge",
-                           value: context.state.recovery.map(String.init) ?? "–")
+                bannerStat(label: "Cal", value: calText(context.state))
                 Spacer()
-                bannerStat(label: "Effort",
-                           value: context.state.effort.map(String.init) ?? "–")
-                Spacer()
-                bannerStat(label: "Rest",
-                           value: context.state.rest.map(String.init) ?? "–")
+                bannerStat(label: "Sleep", value: sleepText(context.state))
             }
             .padding()
             .activityBackgroundTint(StrandPalette.surfaceBase)
@@ -43,22 +40,19 @@ struct NOOPLiveActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     // Same not-connected cue as the banner's icon: grey heart while the link is down.
-                    Label(hrText(context.state), systemImage: "heart.fill")
+                    Label(hrText(context.state, withCeiling: true), systemImage: "heart.fill")
                         .foregroundStyle(context.state.bonded
                                          ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
+                    // Charge (its band set today's targets) + the same Cal/Sleep pillars the banner
+                    // carries, one size.
                     HStack(spacing: 10) {
                         if let r = context.state.recovery {
                             statColumn(label: "Charge", value: "\(r)")
                         }
-                        if let e = context.state.effort {
-                            statColumn(label: "Effort", value: "\(e)")
-                        }
-                        if let rhr = context.state.rest {
-                            statColumn(label: "Rest", value: "\(rhr)")
-                        }
+                        statColumn(label: "Cal", value: calText(context.state))
+                        statColumn(label: "Sleep", value: sleepText(context.state))
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
@@ -72,7 +66,10 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                Text(hrText(context.state))
+                // No ceiling in the compact slot — "~72/85" does not fit; the denominator reads in
+                // the expanded island and on the banner.
+                Text(hrText(context.state, withCeiling: false))
+                    .foregroundStyle(elevatedTint(context.state) ?? Color.primary)
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
                 // — it is the only presentation the user sees then, so it has to carry the number. A bare
@@ -108,12 +105,46 @@ struct NOOPLiveActivity: Widget {
 
 /// The HR display string: a LIVE beat carries the tilde ("~72" — still moving), a window average /
 /// frozen value is the plain settled number. `live` is nil on activities written by older builds —
-/// treated as not-live, so an inherited card never claims liveness it can't back. File-scope for the
-/// same reason as `bannerStat`. The `minimal` slot deliberately does NOT use this: it clips rather
-/// than shrinks, and the tilde would cost the third digit of a workout HR.
-private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
+/// treated as not-live, so an inherited card never claims liveness it can't back. With
+/// `withCeiling`, the calm ceiling rides as the denominator ("~72/85") — the tilde belongs to the
+/// reading, never the target. File-scope for the same reason as `bannerStat`. The `minimal` slot
+/// deliberately uses NEITHER: it clips rather than shrinks, and the extra glyphs would cost the
+/// third digit of a workout HR.
+private func hrText(_ state: NOOPActivityAttributes.ContentState, withCeiling: Bool) -> String {
     guard let bpm = state.bpm else { return "–" }
-    return state.live == true ? "~\(bpm)" : "\(bpm)"
+    let reading = state.live == true ? "~\(bpm)" : "\(bpm)"
+    guard withCeiling, let ceiling = state.hrCeiling else { return reading }
+    return "\(reading)/\(ceiling)"
+}
+
+/// Red when the reading sits ABOVE the calm ceiling — the meditate/calm-down cue; nil (no tint)
+/// otherwise, including when no ceiling is known yet. Honest to a fault during exercise: a workout
+/// legitimately exceeds the ceiling and reads red — the ceiling is a rest-state line, and the card
+/// has no workout signal to suppress on, so the tint simply says "your heart is above calm" either way.
+private func elevatedTint(_ state: NOOPActivityAttributes.ContentState) -> Color? {
+    guard let bpm = state.bpm, let ceiling = state.hrCeiling, bpm > ceiling else { return nil }
+    return StrandPalette.statusCritical
+}
+
+/// The Cal column: active calories so far over today's target ("820/2100"). Either side degrades
+/// alone — no target yet (thin history) shows just the count; no count yet (today's row hasn't
+/// landed) shows "0/2100", which early morning honestly is.
+private func calText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    let count = state.kcal.map(String.init)
+    let target = state.kcalTarget.map(String.init)
+    switch (count, target) {
+    case let (c?, t?): return "\(c)/\(t)"
+    case let (c?, nil): return c
+    case let (nil, t?): return "0/\(t)"
+    case (nil, nil): return "–"
+    }
+}
+
+/// The Sleep column: hours of sleep to target tonight, as "8h05" (minutes zero-padded so the glyph
+/// count is stable across pushes).
+private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    guard let need = state.sleepNeedMin, need > 0 else { return "–" }
+    return String(format: "%dh%02d", need / 60, need % 60)
 }
 
 /// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`
@@ -125,12 +156,14 @@ private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
 /// read as "the number doesn't line up with its label". `fixedSize` stops either line truncating so the
 /// pairing is never clipped at narrow widths.
 @ViewBuilder
-private func bannerStat(label: String, value: String) -> some View {
+private func bannerStat(label: String, value: String, tint: Color? = nil) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        // .title3 (one step up from .headline): the four values are the banner's whole payload and
+        // .title3 (one step up from .headline): the three values are the banner's whole payload and
         // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
-        Text(value).font(.title3).fontWeight(.semibold).foregroundStyle(StrandPalette.textPrimary)
+        // `tint` overrides for a state worth flagging (HR above the calm ceiling).
+        Text(value).font(.title3).fontWeight(.semibold)
+            .foregroundStyle(tint ?? StrandPalette.textPrimary)
     }
     .multilineTextAlignment(.center)
     .fixedSize()
