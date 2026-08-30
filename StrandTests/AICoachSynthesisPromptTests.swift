@@ -99,10 +99,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("No greeting"))
         // The heart vocabulary is DEFINED for the model, not assumed (260830: "I don't think the
         // LLM understands what elevated means"): each of the three verdict words is named and
-        // explained, and the # marker is tied to STRESSED so the synthesis can reference the card.
+        // explained, and the red-digits cue is tied to STRESSED so the synthesis can reference the
+        // card.
         XCTAssertTrue(d.contains("STRESSED"))
         XCTAssertTrue(d.contains("not judgeable"))
-        XCTAssertTrue(d.contains("# after the heart"))
+        XCTAssertTrue(d.contains("turning RED"))
         XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
         XCTAssertFalse(d.contains("elevated,"), "undefined 'elevated' phrasing must not return")
     }

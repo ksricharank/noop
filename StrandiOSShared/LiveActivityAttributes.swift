@@ -30,9 +30,9 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         /// maintainer replaced the threshold with the live autonomic read (`breathe`) — but the
         /// field stays declared so activities written by the 268/269 builds still decode.
         public var hrCeiling: Int?
-        /// The breathe marker: true = a non-metabolic HRV dip right now (fast RMSSD well below the
-        /// rolling baseline while at rest) — the widget appends `#` to the HR and tints it. False =
-        /// calm; nil (also the older-build decode default) = not judgeable — no marker, no claim.
+        /// The breathe cue: true = a non-metabolic HRV dip right now (fast RMSSD well below the
+        /// rolling baseline while at rest) — the widget renders the HR digits in RED. False = calm;
+        /// nil (also the older-build decode default) = not judgeable — no cue, no claim.
         public var breathe: Bool?
         /// Active calories so far today.
         public var kcal: Int?
