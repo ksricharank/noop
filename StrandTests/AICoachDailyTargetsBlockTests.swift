@@ -1,100 +1,79 @@
 import XCTest
+import StrandAnalytics
 @testable import Strand
 
 /// The three-pillar targets block (`AICoachEngine.dailyTargetsBlock`) and the bedtime line behind it.
 /// Pinned because the block's whole contract is agreement: it must state the SAME numbers the
-/// Lock-Screen card prints, and the synthesis prompt forbids the model to invent alternatives — so a
-/// formatter drift here silently re-opens the "the card and the coach disagree" bug class.
+/// Lock-Screen card prints — and name the real basis for each (Karvonen for the ceiling, the
+/// prescribed session for the activity pair) — so a formatter drift silently re-opens the "the card
+/// and the coach disagree" bug class.
 @MainActor
 final class AICoachDailyTargetsBlockTests: XCTestCase {
 
-    private func targets(ceiling: Int? = 85, kcalToday: Int? = 320, kcalTarget: Int? = 700,
-                         kcalBaseline: Int? = nil, sleepNeed: Int? = 510,
-                         effortTarget: Int? = 62) -> LiveTargets {
-        LiveTargets(hrCeilingBpm: ceiling, kcalToday: kcalToday, kcalTargetKcal: kcalTarget,
-                    kcalBaseline: kcalBaseline, sleepNeedTonightMin: sleepNeed,
-                    effortTarget: effortTarget)
+    private func targets(ceiling: Int? = 98, exerciseKcal: Int? = 120, kcalTarget: Int? = 450,
+                         sessionMinutes: Int? = 45, sessionHr: Int? = 143, restDay: Bool = false,
+                         sleepNeed: Int? = 510, effortTarget: Int? = 51) -> LiveTargets {
+        LiveTargets(hrCeilingBpm: ceiling, exerciseKcalToday: exerciseKcal,
+                    kcalTargetKcal: kcalTarget, sessionMinutes: sessionMinutes,
+                    sessionHrBpm: sessionHr, restDay: restDay,
+                    sleepNeedTonightMin: sleepNeed, effortTarget: effortTarget)
     }
 
-    /// The full block names all three pillars' numbers; without a fit baseline the calorie line
-    /// falls back to naming its band, and the effort line names its readiness basis.
+    /// The full block names all three pillars: the Karvonen ceiling with the calm verdict, the
+    /// prescribed session with its effort and exercise-calorie targets, and tonight's sleep plan.
     func testBlockCarriesAllThreePillars() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(kcalBaseline: nil), charge: 81, effortToday: 34, currentBpm: 72,
+            targets: targets(), charge: 81, effortToday: 12, currentBpm: 72,
             midsleepSec: 12_600, typicalSleepHours: 7)
-        XCTAssertTrue(block.contains("85 bpm"), block)
+        XCTAssertTrue(block.contains("98 bpm"), block)
+        XCTAssertTrue(block.contains("Karvonen"), block)
         XCTAssertTrue(block.contains("within the calm range"), block)
-        XCTAssertTrue(block.contains("700 kcal (a push day)"), block)
-        XCTAssertTrue(block.contains("so far today: 320"), block)
-        XCTAssertTrue(block.contains("Effort target: 62.0 of 100"), block)
-        XCTAssertTrue(block.contains("READINESS"), block)
+        XCTAssertTrue(block.contains("45 min at ~143 bpm"), block)
+        XCTAssertTrue(block.contains("effort 51.0 of 100"), block)
+        XCTAssertTrue(block.contains("450 kcal"), block)
+        XCTAssertTrue(block.contains("so far today: 120 kcal"), block)
         XCTAssertTrue(block.contains("target 8h30 asleep"), block)
     }
 
-    /// A fit-based calorie target carries its decomposition — the coach must be able to EXPLAIN the
-    /// number as baseline + the effort target's exercise, not present it bare (the 260829 "how am I
-    /// close to target at effort 0" question is exactly what this line answers).
-    func testFitBasedCalorieTargetExplainsItself() {
+    /// Over the ceiling reads as ELEVATED with the breathing prescription — the pillar-2 cue.
+    func testElevatedHeartRateIsNamed() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(kcalTarget: 2650, kcalBaseline: 1400, effortTarget: 57),
-            charge: 50, effortToday: 0, currentBpm: nil,
+            targets: targets(), charge: 50, effortToday: nil, currentBpm: 104,
             midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(block.contains("2650 kcal"), block)
-        XCTAssertTrue(block.contains("1400 kcal zero-effort baseline"), block)
-        XCTAssertTrue(block.contains("readiness-derived effort target of 57.0"), block)
-        XCTAssertFalse(block.contains("maintain day"), "a fit-based target must not also claim a band basis")
+        XCTAssertTrue(block.contains("ELEVATED"), block)
+        XCTAssertTrue(block.contains("104 bpm"), block)
+    }
+
+    /// A REST day says rest — no session, no calorie ask, and the effort target reads as a hold.
+    func testRestDaySaysRest() {
+        let block = AICoachEngine.dailyTargetsBlock(
+            targets: targets(kcalTarget: nil, sessionMinutes: nil, sessionHr: nil,
+                             restDay: true, effortTarget: 12),
+            charge: 40, effortToday: 12, currentBpm: nil,
+            midsleepSec: nil, typicalSleepHours: nil)
+        XCTAssertTrue(block.contains("REST"), block)
+        XCTAssertTrue(block.contains("hold near 12.0"), block)
+        XCTAssertFalse(block.contains("prescribed session"), block)
     }
 
     /// Effort figures render on the user's chosen display scale — "optimal effort is around 10"
     /// means the 0–21 axis, and a 0–100 figure under the same label reads as a different number.
     func testEffortRendersOnTheWhoopScaleWhenChosen() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(effortTarget: 57), charge: 50, effortToday: 10, currentBpm: nil,
+            targets: targets(effortTarget: 51), charge: 81, effortToday: 10, currentBpm: nil,
             midsleepSec: nil, typicalSleepHours: nil, effortScale: .whoop)
-        XCTAssertTrue(block.contains("Effort target: 12.0 of 21"), block)
+        XCTAssertTrue(block.contains("effort 10.7 of 21"), block)
         XCTAssertTrue(block.contains("so far today: 2.1"), block)
     }
 
-    /// Over the ceiling reads as ELEVATED with the breathing prescription — the pillar-2 cue.
-    func testElevatedHeartRateIsNamed() {
-        let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: 50, effortToday: nil, currentBpm: 96,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(block.contains("ELEVATED"), block)
-        XCTAssertTrue(block.contains("96 bpm"), block)
-        XCTAssertTrue(block.contains("maintain"), block)
-    }
-
-    /// Cold start is honest: nothing computed → no block at all, and an unscored charge names the
-    /// neutral band rather than guessing an aggressive one.
+    /// Cold start is honest: nothing computed → no block at all.
     func testColdStartEmitsNothing() {
-        let empty = LiveTargets(hrCeilingBpm: nil, kcalToday: nil, kcalTargetKcal: nil,
-                                kcalBaseline: nil, sleepNeedTonightMin: nil, effortTarget: nil)
+        let empty = LiveTargets(hrCeilingBpm: nil, exerciseKcalToday: nil, kcalTargetKcal: nil,
+                                sessionMinutes: nil, sessionHrBpm: nil, restDay: false,
+                                sleepNeedTonightMin: nil, effortTarget: nil)
         XCTAssertEqual(AICoachEngine.dailyTargetsBlock(
             targets: empty, charge: nil, effortToday: nil, currentBpm: nil,
             midsleepSec: nil, typicalSleepHours: nil), "")
-        let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: nil, effortToday: nil, currentBpm: nil,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(block.contains("charge not scored yet"), block)
-    }
-
-    /// The ceiling line names its REAL basis: the daytime-beat percentile when the histogram spoke,
-    /// the RHR fallback (named as such) when it did not — a diagnostic may only assert what it can
-    /// attribute, and these are different claims about the same number.
-    func testCeilingNamesItsRealBasis() {
-        let hist = LiveTargets(hrCeilingBpm: 92, hrCeilingFromDaytimeBeats: true, kcalToday: nil,
-                               kcalTargetKcal: nil, kcalBaseline: nil, sleepNeedTonightMin: nil,
-                               effortTarget: nil)
-        let block = AICoachEngine.dailyTargetsBlock(
-            targets: hist, charge: nil, effortToday: nil, currentBpm: nil,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(block.contains("85th percentile"), block)
-        XCTAssertFalse(block.contains("fallback"), block)
-        let cold = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: nil, effortToday: nil, currentBpm: nil,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(cold.contains("fallback"), cold)
     }
 
     // MARK: - The bedtime line
