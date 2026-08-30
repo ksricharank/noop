@@ -32,34 +32,47 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         // exclusion broke.
         days.append(metric(day: "2026-08-15", sleepMin: nil, rhr: nil, kcal: 120))
 
-        let t = Repository.liveTargets(days: days, charge: 80, todayKey: "2026-08-15")
+        let t = Repository.liveTargets(days: days, charge: 80, restScore: nil, todayKey: "2026-08-15")
         XCTAssertEqual(t.hrCeilingBpm, 60 + DailyTargets.calmMarginBpm)
         XCTAssertEqual(t.kcalToday, 120)
+        // No strain history → no kcal fit → the percentile fallback:
         // p75 of 425…750 (14 values, step 25): pos 9.75 → 668.75 → rounded to 25 = 675.
         XCTAssertEqual(t.kcalTargetKcal, 675)
         // 8 h nights against the 8 h adult-target need: no debt, so tonight is the plain need.
         XCTAssertEqual(t.sleepNeedTonightMin, 480)
+        // The effort target is readiness-driven off the charge-80 band (14–18 of 21) — pinned by the
+        // same chain the implementation uses, since the readiness level over fixtures is the
+        // engine's business, not this test's.
+        let expected21 = DailyTargets.effortTarget21(
+            band: CoupledView.optimalStrainRange(recovery: 80)!,
+            readiness: ReadinessEngine.evaluate(days: days).level,
+            restScore: nil)
+        XCTAssertEqual(t.effortTarget, Int((expected21 / UnitFormatter.effortScaleFactor).rounded()))
     }
 
-    /// Days carrying BOTH effort and kcal switch the calorie target to the fit path: the effort
-    /// target priced in the user's own calories, with the baseline carried for the coach to explain.
-    /// The 260829 motivating case: at effort 0 the count sits near baseline and the gap IS the
-    /// exercise still owed — not a percentile a sedentary day drifts into.
+    /// Days carrying BOTH effort and kcal switch the calorie target to the fit path: the
+    /// readiness-derived effort target priced in the user's own calories, with the baseline carried
+    /// for the coach to explain. The fit deliberately EXTRAPOLATES past the observed efforts — a
+    /// readiness target leading a sedentary history is the point (the 260829 "close to target at
+    /// effort 0" complaint), so the expected value here sits far above every history day.
     func testPairedHistorySwitchesToTheFitTarget() {
         var days: [DailyMetric] = []
         for i in 0...13 {
             days.append(metric(day: String(format: "2026-08-%02d", i + 1),
                                strain: Double(i), kcal: 1400 + 22 * Double(i)))   // effort 0…13
         }
-        let t = Repository.liveTargets(days: days, charge: 50, todayKey: "2026-08-15")
+        let t = Repository.liveTargets(days: days, charge: 50, restScore: nil, todayKey: "2026-08-15")
         XCTAssertEqual(t.kcalBaseline, 1400)
-        // Maintain band → effort target = median of 0…13 = 6.5 → 6 or 7 by rounding; the target is
-        // 1400 + 22 × effortTarget rounded to 25. Pin the exact chain rather than re-deriving:
-        let effortTarget = DailyTargets.effortTarget(charge: 50, recentEffort: (0...13).map(Double.init))
+        let expected21 = DailyTargets.effortTarget21(
+            band: CoupledView.optimalStrainRange(recovery: 50)!,   // 10–14 of 21
+            readiness: ReadinessEngine.evaluate(days: days).level,
+            restScore: nil)
+        let effortTarget = Int((expected21 / UnitFormatter.effortScaleFactor).rounded())
         XCTAssertEqual(t.effortTarget, effortTarget)
+        XCTAssertGreaterThan(effortTarget, 13, "the readiness target must lead the sedentary history")
         let fit = DailyTargets.EffortCalorieFit(interceptKcal: 1400, kcalPerEffortPoint: 22)
         XCTAssertEqual(t.kcalTargetKcal,
-                       DailyTargets.calorieTargetKcal(effortTarget: effortTarget!, fit: fit))
+                       DailyTargets.calorieTargetKcal(effortTarget: effortTarget, fit: fit))
     }
 
     /// A short-sleeping week accrues ledger debt, and tonight's need carries the capped repayment.
@@ -68,7 +81,7 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         for i in 1...14 {
             days.append(metric(day: String(format: "2026-08-%02d", i), sleepMin: 360))   // 6 h nights
         }
-        let t = Repository.liveTargets(days: days, charge: nil, todayKey: "2026-08-15")
+        let t = Repository.liveTargets(days: days, charge: nil, restScore: nil, todayKey: "2026-08-15")
         // Need floors at the 8 h adult target; 14 nights × 2 h short = far past the 90 min cap.
         XCTAssertEqual(t.sleepNeedTonightMin, 480 + 90)
     }

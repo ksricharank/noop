@@ -16,17 +16,18 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
                     effortTarget: effortTarget)
     }
 
-    /// The full block names all three pillars' numbers and the band that set the activity targets
-    /// (percentile fallback here — no fit baseline supplied).
+    /// The full block names all three pillars' numbers; without a fit baseline the calorie line
+    /// falls back to naming its band, and the effort line names its readiness basis.
     func testBlockCarriesAllThreePillars() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: 81, effortToday: 34, currentBpm: 72,
+            targets: targets(kcalBaseline: nil), charge: 81, effortToday: 34, currentBpm: 72,
             midsleepSec: 12_600, typicalSleepHours: 7)
         XCTAssertTrue(block.contains("85 bpm"), block)
         XCTAssertTrue(block.contains("within the calm range"), block)
         XCTAssertTrue(block.contains("700 kcal (a push day)"), block)
         XCTAssertTrue(block.contains("so far today: 320"), block)
-        XCTAssertTrue(block.contains("Effort target (0-100): 62"), block)
+        XCTAssertTrue(block.contains("Effort target: 62.0 of 100"), block)
+        XCTAssertTrue(block.contains("READINESS"), block)
         XCTAssertTrue(block.contains("target 8h30 asleep"), block)
     }
 
@@ -35,13 +36,23 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
     /// close to target at effort 0" question is exactly what this line answers).
     func testFitBasedCalorieTargetExplainsItself() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(kcalTarget: 1650, kcalBaseline: 1450, effortTarget: 10),
+            targets: targets(kcalTarget: 2650, kcalBaseline: 1400, effortTarget: 57),
             charge: 50, effortToday: 0, currentBpm: nil,
             midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(block.contains("1650 kcal"), block)
-        XCTAssertTrue(block.contains("1450 kcal zero-effort baseline"), block)
-        XCTAssertTrue(block.contains("10-point effort target"), block)
+        XCTAssertTrue(block.contains("2650 kcal"), block)
+        XCTAssertTrue(block.contains("1400 kcal zero-effort baseline"), block)
+        XCTAssertTrue(block.contains("readiness-derived effort target of 57.0"), block)
         XCTAssertFalse(block.contains("maintain day"), "a fit-based target must not also claim a band basis")
+    }
+
+    /// Effort figures render on the user's chosen display scale — "optimal effort is around 10"
+    /// means the 0–21 axis, and a 0–100 figure under the same label reads as a different number.
+    func testEffortRendersOnTheWhoopScaleWhenChosen() {
+        let block = AICoachEngine.dailyTargetsBlock(
+            targets: targets(effortTarget: 57), charge: 50, effortToday: 10, currentBpm: nil,
+            midsleepSec: nil, typicalSleepHours: nil, effortScale: .whoop)
+        XCTAssertTrue(block.contains("Effort target: 12.0 of 21"), block)
+        XCTAssertTrue(block.contains("so far today: 2.1"), block)
     }
 
     /// Over the ceiling reads as ELEVATED with the breathing prescription — the pillar-2 cue.

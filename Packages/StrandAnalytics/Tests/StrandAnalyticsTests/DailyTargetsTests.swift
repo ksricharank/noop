@@ -63,12 +63,34 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertNil(DailyTargets.calorieTargetKcal(charge: 80, recentActiveKcal: [500, 600, 0]))
     }
 
-    /// The effort twin follows the same band and history rules, rounded to a whole point.
-    func testEffortTargetFollowsTheSameBands() {
-        let history: [Double] = [20, 40, 60, 80]
-        XCTAssertEqual(DailyTargets.effortTarget(charge: 80, recentEffort: history), 65)   // p75
-        XCTAssertEqual(DailyTargets.effortTarget(charge: 50, recentEffort: history), 50)   // median
-        XCTAssertNil(DailyTargets.effortTarget(charge: 80, recentEffort: [10, 20]))
+    // MARK: - Effort target (readiness ladder)
+
+    /// The ladder over the maintain band (10–14 of 21): rundown prescribes BELOW the band, strained
+    /// its floor, balanced (and insufficient) the midpoint, primed just under the top. History plays
+    /// no part — the target is the body's state, by explicit design.
+    func testEffortLadderOverTheMaintainBand() {
+        let band = 10...14
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .rundown, restScore: nil), 7)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .strained, restScore: nil), 10)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: nil), 12)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .insufficient, restScore: nil), 12)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .primed, restScore: nil), 13)
+    }
+
+    /// Rest shifts the ladder one notch: a poor night drags a balanced read to the band floor, an
+    /// excellent one lifts it toward primed — and the shifts clamp at the ladder's ends.
+    func testRestShiftsTheLadderOneNotch() {
+        let band = 10...14
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: 40), 10)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: 90), 13)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .rundown, restScore: 40), 7)
+        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .primed, restScore: 90), 13)
+    }
+
+    /// The recover band's below-band notch floors at the stated minimum — a prescription of 1 of 21
+    /// would just be noise dressed as a target.
+    func testTheBelowBandNotchFloors() {
+        XCTAssertEqual(DailyTargets.effortTarget21(band: 4...10, readiness: .rundown, restScore: nil), 2)
     }
 
     // MARK: - The kcal-per-effort fit (the weight-loss calorie target)
