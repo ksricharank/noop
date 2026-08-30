@@ -37,3 +37,26 @@ struct WidgetAnchorMemo {
         return row
     }
 }
+
+/// Memo for the Live Activity's deterministic daily-targets bundle (`Repository.cachedLiveTargets`) —
+/// the calm ceiling, the calorie target + today's total, and tonight's sleep need all derive from
+/// `days`, so they are keyed and invalidated exactly like the anchor above: recompute on a data
+/// refresh (`refreshSeq`) or a day roll, reuse on every streaming tick in between. Same MainActor-only
+/// ownership, so the plain `mutating` cache needs no locking.
+struct LiveTargetsMemo {
+    private var cached: (seq: Int, logicalKey: String, localKey: String, value: LiveTargets)?
+
+    mutating func resolve(
+        seq: Int,
+        logicalKey: String,
+        localKey: String,
+        compute: () -> LiveTargets
+    ) -> LiveTargets {
+        if let cached, cached.seq == seq, cached.logicalKey == logicalKey, cached.localKey == localKey {
+            return cached.value
+        }
+        let value = compute()
+        cached = (seq, logicalKey, localKey, value)
+        return value
+    }
+}

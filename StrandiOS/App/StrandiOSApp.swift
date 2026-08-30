@@ -276,6 +276,21 @@ struct StrandiOSApp: App {
                     // the banner only when `LiftBannerPushPolicy` says it is worth a push. Everything else
                     // about the session pushes through `pushLiftActivity` below, carrying the current number.
                     liftActivity.updateHeartRate(model.live.connected ? (model.bpm ?? hr) : nil)
+                    // #911: anchor the Live Activity on the SAME shared `Repository.widgetAnchor` the
+                    // Home/Lock widget and the watch snapshot use, so this fourth surface can't drift to a
+                    // different day at the rollover (it previously read `days.last(where: recovery != nil)`,
+                    // which kept pointing at yesterday's scored row after Today had moved on).
+                    // Memoized: this closure fires on EVERY live-HR tick, so re-deriving the anchor here
+                    // scanned the whole history + hit the DateFormatter lock ~1-3x/sec (#1051-shaped).
+                    let day = model.repo.cachedWidgetAnchor()
+                    liveActivity.update(
+                        bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                        recovery: day?.recovery.map { Int($0.rounded()) },
+                        // While a sync runs its own activity is the useful banner; don't stack the HR one.
+                        connected: model.live.connected && !liftSession.isActive && !model.live.backfilling,
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        targets: model.repo.cachedLiveTargets()
+                    )
                 }
                 // Repaint the Live Activity on connection edges, even when no HR tick arrives to
                 // carry them. A DROP never ends the card any more (260829): the end was one-way —
@@ -298,7 +313,7 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // The gym session's own banner follows each change to the session once it has landed —
@@ -343,8 +358,9 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
-                            rest: day.flatMap { model.repo.restScore(for: $0) },
-                            connected: model.live.connected
+                            rest: nil,
+                            connected: model.live.connected,
+                            targets: model.repo.cachedLiveTargets()
                         )
                     }
                 }
@@ -360,14 +376,12 @@ struct StrandiOSApp: App {
                     DeviceLockState.noteWillLock()
                     Task { await model.lockedActivityRefresh?() }
                 }
-                // The UNLOCK edge: locked repaints are deliberately never-stale (iOS 26 REMOVES a
-                // stale activity from both surfaces rather than greying it), so the clock no longer
-                // retires a card whose strap has genuinely gone — this kick does, explicitly. Clear
-                // the latch first (idempotent; observer order with BLEManager's for the same note is
-                // unspecified), then push once with the CURRENT link state: connected → the card
-                // refreshes live a beat before the resubscribed stream's own ticks take over;
-                // disconnected → update() ends it properly (ends, unlike starts, work from the
-                // background). While still locked-held this can't fire — the note IS the unlock.
+                // The UNLOCK edge: clear the latch first (idempotent; observer order with
+                // BLEManager's for the same note is unspecified), then push once with the CURRENT
+                // link state: connected → the card refreshes live a beat before the resubscribed
+                // stream's own ticks take over; disconnected → the card HOLDS with its not-connected
+                // cue (260829 — a drop never ends it; only the toggle or the sleep window does).
+                // While still locked-held this can't fire — the note IS the unlock.
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
                     DeviceLockState.noteUnlocked()
@@ -377,7 +391,7 @@ struct StrandiOSApp: App {
                         recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: anchorDay?.strain.map { Int($0.rounded()) },
-                        rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
@@ -475,6 +489,22 @@ struct StrandiOSApp: App {
             RescoreBackgroundScheduler.noteScenePhase(isActive: phase == .active)
             if phase == .active {
                 CoachBriefScheduler.activateIfEnabled { await model.coach.generateBrief() }
+
+                // Live Activity resurrection kick. The island cannot be (re)started from the
+                // background, so a legitimate end while away — the sleep-window pause, a long
+                // disconnect, iOS's own lifetime cap — leaves the Lock Screen empty until a
+                // FOREGROUND push. This is that push: same values a live tick would carry, so the
+                // controller restarts the activity the moment the app opens instead of waiting on
+                // tick timing. (A disconnected strap no longer ends a held card here — 260829: the
+                // hold + not-connected cue persist until the toggle or the sleep window.)
+                let anchorDay = model.repo.cachedWidgetAnchor()
+                liveActivity.update(
+                    bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
+                    recovery: anchorDay?.recovery.map { Int($0.rounded()) },
+                    connected: model.live.connected,
+                    effort: anchorDay?.strain.map { Int($0.rounded()) },
+                    targets: model.repo.cachedLiveTargets()
+                )
                 model.drainPendingIntents(router: router)
                 // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
                 // the background comes back now, whether or not the strap is sending anything.

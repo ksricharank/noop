@@ -23,15 +23,32 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         // the phone (no pushes can reach it) is left holding the honest plain form, never the live
         // marker. Optional with a nil default (= no marker) so older builds' activities still decode.
         public var live: Bool?
+        // The three-pillar targets (deterministic, `DailyTargets` — the same numbers the coach
+        // synthesis cites). All optional with nil defaults for the same decode-compatibility reason
+        // as `effort`: nil simply drops the denominator / column on the card.
+        /// The calm heart-rate ceiling (bpm) — the HR column's denominator; over it at rest is the
+        /// meditate cue (the widget tints the value).
+        public var hrCeiling: Int?
+        /// Active calories so far today.
+        public var kcal: Int?
+        /// Today's active-calorie target — the Cal column's denominator.
+        public var kcalTarget: Int?
+        /// Minutes of sleep to target tonight — the Sleep column ("8h05").
+        public var sleepNeedMin: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
-                    live: Bool? = nil) {
+                    live: Bool? = nil, hrCeiling: Int? = nil, kcal: Int? = nil,
+                    kcalTarget: Int? = nil, sleepNeedMin: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
             self.effort = effort
             self.rest = rest
             self.live = live
+            self.hrCeiling = hrCeiling
+            self.kcal = kcal
+            self.kcalTarget = kcalTarget
+            self.sleepNeedMin = sleepNeedMin
         }
     }
 

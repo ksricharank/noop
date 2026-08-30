@@ -83,11 +83,16 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertEqual(engine.systemPrompt, AICoachEngine.defaultSystemPrompt)
     }
 
-    /// The default is the instruction the Today turn actually shipped with before it became editable.
+    /// The default names the surface and its three-pillar shape (260829): the pillar labels in their
+    /// stated order, and the instruction to cite the deterministic TODAY'S TARGETS rather than invent
+    /// parallel numbers — the agreement contract with the Lock-Screen card.
     func testDefaultNamesTheSurfaceAndItsShape() {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
-        XCTAssertTrue(d.contains("paragraph"))
-        XCTAssertTrue(d.contains("No headings, no lists, no greeting."))
+        XCTAssertTrue(d.contains("**Rest & sleep**"))
+        XCTAssertTrue(d.contains("**Breathing & heart**"))
+        XCTAssertTrue(d.contains("**Activity & exercise**"))
+        XCTAssertTrue(d.contains("TODAY'S TARGETS"))
+        XCTAssertTrue(d.contains("No greeting"))
     }
 }
