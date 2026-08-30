@@ -41,7 +41,7 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
             targets: targets(), charge: 50, effortToday: nil, currentBpm: 84, breatheNow: true,
             midsleepSec: nil, typicalSleepHours: nil)
         XCTAssertTrue(stressed.contains("STRESSED"), stressed)
-        XCTAssertTrue(stressed.contains("# breathe marker"), stressed)
+        XCTAssertTrue(stressed.contains("heart rate in red"), stressed)
         let unknown = AICoachEngine.dailyTargetsBlock(
             targets: targets(), charge: 50, effortToday: nil, currentBpm: 84, breatheNow: nil,
             midsleepSec: nil, typicalSleepHours: nil)

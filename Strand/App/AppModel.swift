@@ -197,7 +197,7 @@ final class AppModel: ObservableObject {
     /// Which live R-R packet `rrBuf` last took, so each packet enters it once (`RRPacketCursor`).
     private var stressPackets = RRPacketCursor()
     private var stressState = BiofeedbackPrefs.loadStressState()
-    /// The live autonomic read behind the Live Activity's `#` breathe marker (260830): true = a
+    /// The live autonomic read behind the Live Activity's red-digits breathe cue (260830): true = a
     /// non-metabolic HRV dip right now, false = calm (or the elevation is exercise), nil = not
     /// judgeable this minute (thin beats, no baseline, or no live link) — the card then abstains.
     /// Level, not edge: it stays up for the whole dip and clears when the autonomic state recovers.

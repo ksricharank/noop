@@ -46,7 +46,7 @@ final class LiveActivityController {
     /// `lastPushWasLocked`: the first tick after a reconnect repaints immediately (clearing the
     /// not-connected cue) instead of waiting out the locked spacing with the grey cue still up.
     private var lastPushedBonded: Bool?
-    /// The breathe marker on the last push — the third edge detector: the `#` appearing or
+    /// The breathe cue on the last push — the third edge detector: the red digits appearing or
     /// clearing is the whole point of the cue, so it repaints immediately, locked or not, rather
     /// than waiting out the locked spacing. Flips are rare by construction (the RMSSD dip has
     /// EMA-baseline hysteresis), so the bypass costs nothing against the update budget.
@@ -182,7 +182,7 @@ final class LiveActivityController {
             // not-connected cue, the first tick of the restored link must clear it now, not a full
             // locked spacing later.
             let bondedEdge = connected != (lastPushedBonded ?? connected)
-            // The `#` marker appearing or clearing pushes NOW — see `lastPushedBreathe`.
+            // The breathe cue appearing or clearing pushes NOW — see `lastPushedBreathe`.
             let breatheEdge = (breathe == true) != (lastPushedBreathe == true)
             guard lockEdge || bondedEdge || breatheEdge
                 || LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
@@ -273,7 +273,7 @@ final class LiveActivityController {
         guard let activity, var state = lastPushedState, lastPushedBonded != false else { return }
         state.live = false
         state.bonded = false
-        // No link = no beats = no autonomic claim: the # marker clears with the connection.
+        // No link = no beats = no autonomic claim: the breathe cue clears with the connection.
         state.breathe = nil
         lastPushedState = state
         lastPushedBonded = false
