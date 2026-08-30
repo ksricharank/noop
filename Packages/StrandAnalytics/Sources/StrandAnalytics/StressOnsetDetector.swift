@@ -171,6 +171,61 @@ public enum StressOnsetDetector {
         }
     }
 
+    // MARK: - The breathe CUE (the Live Activity's # marker, 260830)
+
+    /// The instantaneous autonomic read behind the card's `#` marker. Unlike the nudge — an EDGE
+    /// event with sustain, rate limits, quiet hours, and a haptic — the cue is a LEVEL: "is the body
+    /// in a non-metabolic HRV dip right now?" It shares the nudge's physiology verbatim (fast RMSSD
+    /// vs the slow EMA baseline at `dropRatio`, the resting-HR band + motion exercise gate) and none
+    /// of its event machinery, so the marker can stay up for the whole dip and clear the moment the
+    /// autonomic state recovers.
+    public enum BreatheCue: String, Equatable, Sendable {
+        /// Fast RMSSD at/above the threshold, or the elevation is metabolic (exercise/motion) — the
+        /// heart is doing what the body asked of it.
+        case calm
+        /// A non-metabolic HRV dip while at rest: the fight-or-flight read — show the marker.
+        case breathe
+        /// Too few clean beats, or no baseline yet — abstain, never guess.
+        case unknown
+    }
+
+    /// Evaluate the cue and advance the shared slow-baseline state. Runs UNCONDITIONALLY per tick
+    /// (unlike `evaluate`, which the master toggle gates), so the EMA baseline is owned here; when
+    /// the nudge feature is also enabled, `evaluate` advances the same EMA a second time per tick —
+    /// a bounded, documented interaction (the baseline adapts somewhat faster), acceptable because
+    /// the two share every threshold and the nudge is default-OFF. Only `baselineRMSSD` and
+    /// `wasBelow` are touched; the nudge's edge/rate-limit clocks are left alone.
+    public static func breatheCue(rrBuffer: [Int],
+                                  currentHR: Double?,
+                                  recentMotionG: Double?,
+                                  state: State) -> (cue: BreatheCue, nextState: State) {
+        let cleanAll = HRVAnalyzer.cleanRR(rrBuffer.map { Double($0) })
+        let fastWindow = cleanAll.count > fastWindowBeats
+            ? Array(cleanAll.suffix(fastWindowBeats))
+            : cleanAll
+        guard fastWindow.count >= minBeats, let fast = HRVAnalyzer.rmssdRaw(fastWindow), fast > 0 else {
+            return (.unknown, state)
+        }
+        var next = state
+        next.baselineRMSSD = state.baselineRMSSD == 0
+            ? fast
+            : state.baselineRMSSD * baselineEmaAlpha + fast * (1.0 - baselineEmaAlpha)
+        // A just-seeded baseline equals the fast value by construction — nothing to compare yet.
+        guard state.baselineRMSSD > 0 else { return (.unknown, next) }
+        let isBelow = fast < next.baselineRMSSD * dropRatio
+        next.wasBelow = isBelow
+        guard isBelow else { return (.calm, next) }
+        // The exercise gate, level-form: an out-of-band or unknown HR, or recent motion, makes the
+        // dip metabolic — the heart is WORKING, not stressed. Calm (no marker), not unknown: the
+        // judgement was made, and "exercising" must never render as "go breathe".
+        let hrInBand: Bool = {
+            guard let hr = currentHR else { return false }
+            return hr >= restingHRLow && hr <= restingHRHigh
+        }()
+        let moving = (recentMotionG ?? 0) >= motionGateG
+        return (hrInBand && !moving ? .breathe : .calm, next)
+    }
+
     // MARK: - The detector
 
     /// Evaluate the live window and decide whether to fire a JITAI nudge.
