@@ -136,7 +136,7 @@ struct LiveTargets: Equatable {
     // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
     // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
     // maintainer replaced the threshold entirely with the live autonomic breathe cue (`AppModel.
-    // breatheCue` → the card's # marker), which is an instant HRV read, not a number to cross.
+    // breatheCue` → the card's red HR digits), which is an instant HRV read, not a number to cross.
     /// Today's EXERCISE calories so far — the whole-day HR estimate minus the resting metabolism the
     /// day has accrued (the raw `activeKcalEst` credits resting burn for every worn second, which is
     /// why it reads ~1,400 by evening having done nothing). What the card's Cal numerator shows.
@@ -1260,6 +1260,39 @@ final class Repository: ObservableObject {
             lists.append((try? await store.rrIntervals(deviceId: id, from: from, to: to, limit: limit)) ?? [])
         }
         return Self.mergeRRByIdentity(lists)
+    }
+
+    /// Mean HR over the freshest offload burst — the "avg HR" the NOOP Targets widget and the Today
+    /// targets strip show when the strap is NOT live-streaming (the maintainer's default daytime mode:
+    /// Live Activity off, continuous HRV overnight-only, data arriving as ~15-minute offload bursts).
+    ///
+    /// Anchored at the NEWEST persisted sample rather than at `now`: a publish can run minutes after
+    /// the burst landed (a foreground open, a delayed rescore), and a now-anchored window would then
+    /// be partly or wholly empty — averaging the last 15 minutes OF DATA always describes the burst.
+    /// A freshest sample older than `staleAfter` (2 h) returns nil instead: with no timestamp on the
+    /// glance, presenting a stale average as "current HR" would be a claim the data can't back.
+    func burstAvgHr(now: Date = Date()) async -> Int? {
+        let to = Int(now.timeIntervalSince1970)
+        // One bounded read: the staleness horizon capped at 8k samples (≥2 h of 1 Hz data) — the
+        // freshest-anchored window is then resolved in memory by the pure helper.
+        let horizon = await hrSamples(from: to - Self.burstAvgStaleAfterSec, to: to)
+        return Self.burstAvg(samples: horizon)
+    }
+
+    /// The `burstAvgHr` window: 15 minutes, matching the normal offload cadence
+    /// (`BLEManager.backfillIntervalSeconds` = 900) so each value summarizes one burst.
+    static let burstAvgWindowSec = 900
+    /// How old the freshest sample may be before the average abstains (nil).
+    static let burstAvgStaleAfterSec = 7_200
+
+    /// Pure core of `burstAvgHr` — static so StrandTests can pin it over literal samples. `samples`
+    /// must be ascending by `ts` (the `hrSamples` contract); rows older than the window below the
+    /// freshest sample are ignored.
+    static func burstAvg(samples: [HRSample]) -> Int? {
+        guard let freshest = samples.last else { return nil }
+        let windowed = samples.filter { $0.ts > freshest.ts - burstAvgWindowSec }
+        guard !windowed.isEmpty else { return nil }
+        return Int((Double(windowed.reduce(0) { $0 + $1.bpm }) / Double(windowed.count)).rounded())
     }
 
     /// Logical day-start of the most recent day the active device has HR data for, or nil when the store is

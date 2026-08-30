@@ -2244,6 +2244,12 @@ struct TodayView: View {
             // both states, so a glance still reads today's verdict; the detail body reveals on tap.
             synthesisCollapsible(d: d, score: score)
 
+            // 260830: today's three target numbers, big and readable BEFORE the narrative that
+            // explains them — the targets analogue of the hero's Charge · Effort · Rest. Liquid twin:
+            // the same strip inside LiquidTodayView's synthesis card; keep the two in step.
+            DailyTargetsStrip()
+                .padding(.horizontal, 2)
+
             // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
             // classic/liquid divergence as a bug). Always shown — the S4 collapse is gone. When the
             // coach has written TODAY's synthesis, its prose replaces the rule-based horizons (it

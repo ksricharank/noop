@@ -1068,6 +1068,10 @@ struct LiquidTodayView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
+                        // 260830: today's three target numbers, big and readable BEFORE the narrative
+                        // that explains them — the targets analogue of Charge · Effort · Rest above.
+                        // Classic twin: the same strip in TodayView.synthesisSection; keep in step.
+                        DailyTargetsStrip()
                         // The coach-written synthesis, when the provider has answered TODAY, replaces
                         // the rule-based summary + horizons (its prose covers the same horizons).
                         // Unconfigured / no consent / not-yet-answered / stale-day all fall back to
