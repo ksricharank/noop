@@ -8,8 +8,8 @@ struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
             // Lock Screen / banner presentation: three EQUAL stat columns, one per pillar —
-            // HR n/ceiling (breathing & heart rate), Cal n/target (activity & exercise), and Sleep
-            // hours needed tonight (rest & sleep) — one shared type size, no oversized hero number.
+            // HR with its live/breathe marks (breathing & heart rate), Cal now/target (activity &
+            // exercise), and Sleep hours needed tonight (rest & sleep) — one shared type size.
             // Charge left the banner deliberately: the targets already encode it (they are derived
             // from its band), and it still reads in the expanded Dynamic Island. Effort and Rest
             // live in the coach synthesis now, not on the card.
@@ -23,11 +23,9 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
-                // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
-                // is the plain settled number. The denominator is the calm ceiling — over it the
-                // value tints red: the meditate cue.
-                bannerStat(label: "HR", value: hrText(context.state, withCeiling: true),
-                           tint: elevatedTint(context.state))
+                // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen
+                // value is the plain settled number; the # marker is the live "go breathe" read.
+                bannerStat(label: "HR", value: hrText(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
                 Spacer()
@@ -40,7 +38,7 @@ struct NOOPLiveActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     // Same not-connected cue as the banner's icon: grey heart while the link is down.
-                    Label(hrText(context.state, withCeiling: true), systemImage: "heart.fill")
+                    Label(hrText(context.state), systemImage: "heart.fill")
                         .foregroundStyle(context.state.bonded
                                          ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 }
@@ -66,10 +64,9 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                // No ceiling in the compact slot — "~72/85" does not fit; the denominator reads in
-                // the expanded island and on the banner.
-                Text(hrText(context.state, withCeiling: false))
-                    .foregroundStyle(elevatedTint(context.state) ?? Color.primary)
+                // The compact slot carries the FULL marked reading ("~78#") by explicit design —
+                // the breathe cue must reach the island even when it is small.
+                Text(hrText(context.state))
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
                 // — it is the only presentation the user sees then, so it has to carry the number. A bare
@@ -104,27 +101,20 @@ struct NOOPLiveActivity: Widget {
 }
 
 /// The HR display string: a LIVE beat carries the tilde ("~72" — still moving), a window average /
-/// frozen value is the plain settled number. `live` is nil on activities written by older builds —
-/// treated as not-live, so an inherited card never claims liveness it can't back. With
-/// `withCeiling`, the calm ceiling rides as the denominator ("~72/85") — the tilde belongs to the
-/// reading, never the target. File-scope for the same reason as `bannerStat`. The `minimal` slot
-/// deliberately uses NEITHER: it clips rather than shrinks, and the extra glyphs would cost the
-/// third digit of a workout HR.
-private func hrText(_ state: NOOPActivityAttributes.ContentState, withCeiling: Bool) -> String {
+/// frozen value is the plain settled number, and the `#` marker rides after the digits when the
+/// body is in a non-metabolic HRV dip right now — "go breathe" ("~78#"). The marker is a LEVEL from
+/// the live autonomic read (fast RMSSD vs the rolling baseline, exercise-gated), not a threshold on
+/// the number it follows — a fixed ceiling denominator lived here for one build and was retired as
+/// too crude ("always 96? come on"). `live`/`breathe` are nil on activities written by older builds
+/// — treated as not-live / no-claim, so an inherited card never asserts what it can't back.
+/// File-scope for the same reason as `bannerStat`. The `minimal` slot deliberately uses none of
+/// this: it clips rather than shrinks, and the extra glyphs would cost the third digit of a workout HR.
+private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
     guard let bpm = state.bpm else { return "–" }
     let reading = state.live == true ? "~\(bpm)" : "\(bpm)"
-    guard withCeiling, let ceiling = state.hrCeiling else { return reading }
-    return "\(reading)/\(ceiling)"
+    return state.breathe == true ? "\(reading)#" : reading
 }
 
-/// Red when the reading sits ABOVE the calm ceiling — the meditate/calm-down cue; nil (no tint)
-/// otherwise, including when no ceiling is known yet. Honest to a fault during exercise: a workout
-/// legitimately exceeds the ceiling and reads red — the ceiling is a rest-state line, and the card
-/// has no workout signal to suppress on, so the tint simply says "your heart is above calm" either way.
-private func elevatedTint(_ state: NOOPActivityAttributes.ContentState) -> Color? {
-    guard let bpm = state.bpm, let ceiling = state.hrCeiling, bpm > ceiling else { return nil }
-    return StrandPalette.statusCritical
-}
 
 /// The Cal column: active calories so far over today's target ("820/2100"). Either side degrades
 /// alone — no target yet (thin history) shows just the count; no count yet (today's row hasn't
@@ -156,14 +146,14 @@ private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
 /// read as "the number doesn't line up with its label". `fixedSize` stops either line truncating so the
 /// pairing is never clipped at narrow widths.
 @ViewBuilder
-private func bannerStat(label: String, value: String, tint: Color? = nil) -> some View {
+private func bannerStat(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
         // .title3 (one step up from .headline): the three values are the banner's whole payload and
         // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
-        // `tint` overrides for a state worth flagging (HR above the calm ceiling).
-        Text(value).font(.title3).fontWeight(.semibold)
-            .foregroundStyle(tint ?? StrandPalette.textPrimary)
+        // Deliberately NO tint anywhere in the row — the # glyph alone carries the breathe cue
+        // (the maintainer's call: "let's skip the tint").
+        Text(value).font(.title3).fontWeight(.semibold).foregroundStyle(StrandPalette.textPrimary)
     }
     .multilineTextAlignment(.center)
     .fixedSize()
