@@ -21,10 +21,25 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var effortDisplay: String?
     /// True when `effortDisplay` is on WHOOP's 0–21 axis; false/nil means 0–100. Accessibility only.
     public var effortWhoop: Bool?
+    // The daily-targets glance trio (260830) — the fields behind the NOOP Targets widget, built for
+    // running WITHOUT the Live Activity: the strap streams only overnight, and daytime data arrives
+    // as ~15-minute offload bursts, so these are burst-cadence values, not live ones. Same optional
+    // + nil-default decode-compatibility rule as `effort` above.
+    /// Mean HR over the freshest offload burst (the last 15 minutes of persisted samples, anchored
+    /// at the newest sample so a delayed publish still describes the burst, not an empty window).
+    public var avgHr: Int?
+    /// Today's EXERCISE calories so far (resting metabolism excluded — `LiveTargets.exerciseKcalToday`).
+    public var kcal: Int?
+    /// Today's exercise-calorie target (the prescribed session priced via Keytel). Nil on a REST day.
+    public var kcalTarget: Int?
+    /// Minutes of sleep to target tonight (`LiveTargets.sleepNeedTonightMin`).
+    public var sleepNeedMin: Int?
 
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
-                effortDisplay: String? = nil, effortWhoop: Bool? = nil) {
+                effortDisplay: String? = nil, effortWhoop: Bool? = nil,
+                avgHr: Int? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
+                sleepNeedMin: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -36,6 +51,36 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.restingHr = restingHr
         self.effortDisplay = effortDisplay
         self.effortWhoop = effortWhoop
+        self.avgHr = avgHr
+        self.kcal = kcal
+        self.kcalTarget = kcalTarget
+        self.sleepNeedMin = sleepNeedMin
+    }
+
+    // MARK: - Targets-trio display strings
+
+    // Formatting lives HERE (StrandiOSShared, compiled into both the app and the widget extension)
+    // rather than file-private in the widget, so StrandTests can pin it — the widget extension has no
+    // test target of its own. Deliberately the same vocabulary as the Live Activity card
+    // (NOOPLiveActivity.calText/sleepText): a person running both surfaces should never see the same
+    // value spelled two ways.
+
+    /// The Cal glance: exercise calories so far over today's target ("820/2100"). Either side degrades
+    /// alone — no target (REST day / no charge) shows just the count; no count yet shows "0/2100",
+    /// which early morning honestly is. Nil = neither side known.
+    public var calDisplay: String? {
+        switch (kcal.map(String.init), kcalTarget.map(String.init)) {
+        case let (c?, t?): return "\(c)/\(t)"
+        case let (c?, nil): return c
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Tonight's sleep target as "8h05" (minutes zero-padded so the glyph count is stable).
+    public var sleepDisplay: String? {
+        guard let need = sleepNeedMin, need > 0 else { return nil }
+        return String(format: "%dh%02d", need / 60, need % 60)
     }
 
     /// App Group suite the app and widget both use. Injected from the `APP_GROUP_ID` build setting
@@ -96,7 +141,8 @@ public struct WidgetSnapshot: Codable, Equatable {
         // three-ring Home Screen layouts (and the large grid) preview with filled arcs, not dashes.
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: Date(),
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
-                       effortDisplay: "38", effortWhoop: false)
+                       effortDisplay: "38", effortWhoop: false,
+                       avgHr: 64, kcal: 180, kcalTarget: 450, sleepNeedMin: 495)
     }
 
     /// Honest runtime state when the app has not published a readable snapshot yet. Unlike
@@ -139,6 +185,10 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.restingHr != next.restingHr
             || previous.effortDisplay != next.effortDisplay
             || previous.effortWhoop != next.effortWhoop
+            || previous.avgHr != next.avgHr
+            || previous.kcal != next.kcal
+            || previous.kcalTarget != next.kcalTarget
+            || previous.sleepNeedMin != next.sleepNeedMin
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,
