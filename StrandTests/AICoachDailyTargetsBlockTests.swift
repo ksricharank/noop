@@ -79,6 +79,24 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("charge not scored yet"), block)
     }
 
+    /// The ceiling line names its REAL basis: the daytime-beat percentile when the histogram spoke,
+    /// the RHR fallback (named as such) when it did not — a diagnostic may only assert what it can
+    /// attribute, and these are different claims about the same number.
+    func testCeilingNamesItsRealBasis() {
+        let hist = LiveTargets(hrCeilingBpm: 92, hrCeilingFromDaytimeBeats: true, kcalToday: nil,
+                               kcalTargetKcal: nil, kcalBaseline: nil, sleepNeedTonightMin: nil,
+                               effortTarget: nil)
+        let block = AICoachEngine.dailyTargetsBlock(
+            targets: hist, charge: nil, effortToday: nil, currentBpm: nil,
+            midsleepSec: nil, typicalSleepHours: nil)
+        XCTAssertTrue(block.contains("85th percentile"), block)
+        XCTAssertFalse(block.contains("fallback"), block)
+        let cold = AICoachEngine.dailyTargetsBlock(
+            targets: targets(), charge: nil, effortToday: nil, currentBpm: nil,
+            midsleepSec: nil, typicalSleepHours: nil)
+        XCTAssertTrue(cold.contains("fallback"), cold)
+    }
+
     // MARK: - The bedtime line
 
     /// Midsleep 03:30 on a typical 7 h night puts the learned wake at 07:00; a 8h30 target tonight

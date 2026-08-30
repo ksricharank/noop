@@ -123,17 +123,40 @@ final class DailyTargetsTests: XCTestCase {
 
     // MARK: - Tonight's sleep need
 
-    /// Need + half the outstanding debt, capped at 90 min — a fortnight's ledger is never scheduled
-    /// into one night.
-    func testSleepNeedRepaysACappedShareOfDebt() {
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -60), 510)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -2000), 570)
+    /// Tonight's need composes the body's day: base (p75 of the user's nights) + the charge band's
+    /// ask + last night's Rest + the capped junior debt term — the drivers that CHANGE nightly, by
+    /// design (v1's debt-capped constant read the same maxed number for weeks).
+    func testSleepNeedComposesChargeRestAndJuniorDebt() {
+        let steady = Array(repeating: 480.0, count: 10)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: steady, charge: 20, restScore: 40, debtBalanceMin: -200),
+            480 + 40 + 30 + 45)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: steady, charge: 50, restScore: 60, debtBalanceMin: 0), 500)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: steady, charge: 80, restScore: 90, debtBalanceMin: 0), 465)
     }
 
-    /// A surplus never discounts the night below baseline (sleep is not bankable ahead), and a debt
-    /// inside the ledger's own deadband is noise, not a prescription.
-    func testSleepNeedNeverDropsBelowBaseline() {
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: 300), 480)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -20), 480)
+    /// The user's stated bounds hold at both ends: a chronic short sleeper's base floors at 7 h, and
+    /// a long sleeper with every adjustment stacked still caps at 10 h.
+    func testSleepNeedClampsToTheStatedBounds() {
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: Array(repeating: 330, count: 10),
+            charge: 80, restScore: nil, debtBalanceMin: 0), 420)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: Array(repeating: 590, count: 10),
+            charge: 10, restScore: 30, debtBalanceMin: -400), 600)
+    }
+
+    /// A surplus never discounts below the base (sleep is not bankable ahead), an in-deadband debt is
+    /// noise, and a cold start (too few nights) uses the 8 h default base rather than guessing.
+    func testSleepNeedSurplusDeadbandAndColdStart() {
+        let steady = Array(repeating: 480.0, count: 10)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: steady, charge: 80, restScore: 60, debtBalanceMin: 300), 480)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: steady, charge: 80, restScore: 60, debtBalanceMin: -20), 480)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
+            nightlyMinutes: [480, 500], charge: nil, restScore: nil, debtBalanceMin: 0), 480)
     }
 }

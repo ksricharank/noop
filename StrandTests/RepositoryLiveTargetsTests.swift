@@ -75,14 +75,29 @@ final class RepositoryLiveTargetsTests: XCTestCase {
                        DailyTargets.calorieTargetKcal(effortTarget: effortTarget, fit: fit))
     }
 
-    /// A short-sleeping week accrues ledger debt, and tonight's need carries the capped repayment.
-    func testSleepDebtRaisesTonightsNeed() {
+    /// A short-sleeping fortnight: the base floors at the user's stated 7 h, and the debt (measured
+    /// against the debt surfaces' 8 h-floored reference) contributes only its capped junior term —
+    /// charge and rest, absent here, are the drivers that would move it night to night.
+    func testSleepDebtIsTheJuniorTerm() {
         var days: [DailyMetric] = []
         for i in 1...14 {
             days.append(metric(day: String(format: "2026-08-%02d", i), sleepMin: 360))   // 6 h nights
         }
         let t = Repository.liveTargets(days: days, charge: nil, restScore: nil, todayKey: "2026-08-15")
-        // Need floors at the 8 h adult target; 14 nights × 2 h short = far past the 90 min cap.
-        XCTAssertEqual(t.sleepNeedTonightMin, 480 + 90)
+        XCTAssertEqual(t.sleepNeedTonightMin, 420 + 45)
+    }
+
+    /// The daytime-beat ceiling outranks the RHR fallback when supplied, and the flag records the
+    /// basis for the coach.
+    func testDaytimeCeilingOutranksTheFallback() {
+        let days = (1...10).map { metric(day: String(format: "2026-08-%02d", $0)) }
+        let t = Repository.liveTargets(days: days, charge: nil, restScore: nil,
+                                       daytimeCeiling: 92, todayKey: "2026-08-15")
+        XCTAssertEqual(t.hrCeilingBpm, 92)
+        XCTAssertTrue(t.hrCeilingFromDaytimeBeats)
+        let fallback = Repository.liveTargets(days: days, charge: nil, restScore: nil,
+                                              todayKey: "2026-08-15")
+        XCTAssertEqual(fallback.hrCeilingBpm, 60 + DailyTargets.calmMarginBpm)
+        XCTAssertFalse(fallback.hrCeilingFromDaytimeBeats)
     }
 }

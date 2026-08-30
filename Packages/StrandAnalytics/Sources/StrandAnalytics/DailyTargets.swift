@@ -197,27 +197,58 @@ public enum DailyTargets {
 
     // MARK: - Tonight's sleep need
 
-    /// At most this much of the rolling debt is scheduled for repayment in one night. Sleeping 11 h
-    /// to clear a fortnight's ledger in one go is neither realistic nor healthy advice; ~1.5 h extra
-    /// is the accepted ceiling for useful same-night catch-up.
-    public static let debtRepayCapMin = 90.0
-    /// Share of the outstanding debt asked of tonight (the rest amortizes over coming nights).
-    public static let debtRepayShare = 0.5
-    /// Debts inside the ledger's own on-target deadband are noise, not a prescription.
+    // HISTORY (260830): v1 was "personalized need + half the debt capped at 90 min". On this user's
+    // deep ledger the cap bound every single night, so the card read the same maxed number for weeks
+    // — a constant is not a prescription. Rebuilt by explicit request ("based on my rest and charge
+    // score, not just my sleep debt — personalize the number for each night; floor at 7, cap at 10"):
+    // charge and rest change daily, so they now carry the night-to-night variation and the debt term
+    // is deliberately the smallest.
+
+    /// The final target's bounds (the user's stated contract): never below 7 h, never above 10 h.
+    public static let sleepFloorMin = 420.0
+    public static let sleepCapMin = 600.0
+    /// The BASE (typical need before tonight's adjustments): the 75th percentile of the user's own
+    /// recent nights — their less-restricted nights, the same upper-quartile idea as
+    /// `Rest.personalizedNeedHours` — clamped so adjustments keep headroom under the cap. Fewer than
+    /// `calorieMinDays` usable nights → the 8 h default.
+    public static let sleepBaseCapMin = 570.0
+    /// Charge adjustment: a body that scored mid-recovery asks a little more of tonight, a poor one
+    /// more still. A green day adds nothing — recovery is not a reason to sleep less.
+    public static let sleepChargeAdjMaintainMin = 20.0
+    public static let sleepChargeAdjRecoverMin = 40.0
+    /// Rest adjustment: a poor LAST night (Rest < `poorRestScore`) asks tonight to make some back;
+    /// an excellent one (≥ `greatRestScore`) relaxes tonight slightly.
+    public static let sleepRestAdjPoorMin = 30.0
+    public static let sleepRestAdjGreatMin = -15.0
+    /// The debt term, now the junior partner: a quarter of the outstanding ledger, capped, and
+    /// silent inside the ledger's own on-target deadband. A surplus never discounts the night —
+    /// sleep is not bankable ahead.
+    public static let sleepDebtShare = 0.25
+    public static let sleepDebtCapMin = 45.0
     public static let debtDeadbandMin = SleepDebt.onTargetBandMin
 
-    /// Minutes of sleep to target TONIGHT (the night that spans into tomorrow morning): the personal
-    /// need plus a capped share of the outstanding rolling debt. A surplus never reduces the need
-    /// below baseline — banking sleep ahead is not physiologically bankable, so the credit side of
-    /// the ledger only ever zeroes the repayment, never discounts the night.
-    ///
-    /// - Parameters:
-    ///   - needMin: personal nightly need in minutes (`Rest.personalizedNeedHours` × 60).
-    ///   - debtBalanceMin: the rolling ledger's signed balance (`SleepDebtLedger.balanceMin`,
-    ///     negative = net debt).
-    public static func sleepNeedTonightMin(needMin: Double, debtBalanceMin: Double) -> Int {
+    /// Minutes of sleep to target TONIGHT (the night that spans into tomorrow morning), from the
+    /// body's day: the typical-need base, adjusted by today's charge band and last night's Rest
+    /// score, plus the capped junior debt term — clamped to the user's stated 7–10 h bounds.
+    public static func sleepNeedTonightMin(nightlyMinutes: [Double],
+                                           charge: Int?,
+                                           restScore: Int?,
+                                           debtBalanceMin: Double) -> Int {
+        let nights = nightlyMinutes.filter { $0 > 0 }
+        let base = min(max(
+            (nights.count >= calorieMinDays ? percentile(nights, 0.75) : nil) ?? 480,
+            sleepFloorMin), sleepBaseCapMin)
+        var need = base
+        if let charge {
+            if charge <= recoverChargeCeiling { need += sleepChargeAdjRecoverMin }
+            else if charge < pushChargeFloor { need += sleepChargeAdjMaintainMin }
+        }
+        if let rest = restScore {
+            if rest < poorRestScore { need += sleepRestAdjPoorMin }
+            else if rest >= greatRestScore { need += sleepRestAdjGreatMin }
+        }
         let debt = max(0, -debtBalanceMin)
-        let repay = debt <= debtDeadbandMin ? 0 : min(debtRepayCapMin, debt * debtRepayShare)
-        return Int((needMin + repay).rounded())
+        if debt > debtDeadbandMin { need += min(sleepDebtCapMin, debt * sleepDebtShare) }
+        return Int(min(max(need, sleepFloorMin), sleepCapMin).rounded())
     }
 }
