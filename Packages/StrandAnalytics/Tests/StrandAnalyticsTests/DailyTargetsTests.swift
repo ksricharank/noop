@@ -71,6 +71,34 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertNil(DailyTargets.effortTarget(charge: 80, recentEffort: [10, 20]))
     }
 
+    // MARK: - The kcal-per-effort fit (the weight-loss calorie target)
+
+    /// A clean linear history is recovered exactly, and the target prices the effort target on that
+    /// line: baseline + slope × target, rounded like every calorie figure.
+    func testFitRecoversTheLineAndPricesTheTarget() {
+        let history: [(effort: Double, kcal: Double)] = (0...9).map {
+            (effort: Double($0), kcal: 1400 + 22 * Double($0))
+        }
+        let fit = DailyTargets.effortCalorieFit(history: history)
+        XCTAssertEqual(fit?.interceptKcal ?? 0, 1400, accuracy: 0.001)
+        XCTAssertEqual(fit?.kcalPerEffortPoint ?? 0, 22, accuracy: 0.001)
+        // 1400 + 22 × 10 = 1620 → nearest 25 = 1625.
+        XCTAssertEqual(DailyTargets.calorieTargetKcal(effortTarget: 10, fit: fit!), 1625)
+    }
+
+    /// The fit refuses what it cannot support: too few paired days, a flat week (no effort
+    /// variance), or a nonsense negative slope — each falls back to the percentile target instead
+    /// of pricing a target on noise.
+    func testFitRefusesUnsupportableHistory() {
+        XCTAssertNil(DailyTargets.effortCalorieFit(history: [(1, 500), (2, 550), (3, 600)]))
+        XCTAssertNil(DailyTargets.effortCalorieFit(
+            history: Array(repeating: (effort: 5.0, kcal: 600.0), count: 8)))
+        let inverted: [(effort: Double, kcal: Double)] = (0...9).map {
+            (effort: Double($0), kcal: 1000 - 20 * Double($0))
+        }
+        XCTAssertNil(DailyTargets.effortCalorieFit(history: inverted))
+    }
+
     // MARK: - Tonight's sleep need
 
     /// Need + half the outstanding debt, capped at 90 min — a fortnight's ledger is never scheduled
