@@ -98,6 +98,13 @@ extension WidgetSnapshot {
         // would decode the App Group blob twice on any publish that could not score, and this file
         // already went to the trouble of removing one such decode from the live path.
         let storedStress: WidgetSnapshot? = stress == nil ? load() : nil
+        // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
+        // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
+        // refresh or day roll), plus the freshest offload burst's mean HR. This full publish runs
+        // post-offload even in the BACKGROUND (#980), which is exactly the ~15-minute burst cadence
+        // the targets widget is built around — no extra trigger needed.
+        let targets = model.repo.cachedLiveTargets(now: now)
+        let avgHr = await model.repo.burstAvgHr(now: now)
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
@@ -114,7 +121,11 @@ extension WidgetSnapshot {
             // nil when the curve could not be scored at all, which must not blank a widget that already
             // has one: carry the stored values forward instead of publishing an absence.
             stressSeries: stressPoints ?? storedStress?.stressSeries,
-            stressDay: stress?.day ?? storedStress?.stressDay
+            stressDay: stress?.day ?? storedStress?.stressDay,
+            avgHr: avgHr,
+            kcal: targets.exerciseKcalToday,
+            kcalTarget: targets.kcalTargetKcal,
+            sleepNeedMin: targets.sleepNeedTonightMin
         )
         saveAndReloadIfChanged(snap)
     }
