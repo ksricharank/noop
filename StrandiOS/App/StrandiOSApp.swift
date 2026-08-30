@@ -108,7 +108,9 @@ struct StrandiOSApp: App {
         // start the same doomed pass again. This processing task is where that work is escalated to; it is
         // the long, deferrable kind rather than the metered refresh kind the two schedulers above use.
         // Registered before launch finishes and permitted in project.yml, or iOS never delivers it.
-        RescoreBackgroundScheduler.register(perform: { [weak model] in
+        RescoreBackgroundScheduler.register(log: { [weak model] line in
+            model?.live.append(log: line)
+        }, perform: { [weak model] in
             await model?.runDeferredRescoreIfOwed()
         }, onExpire: { [weak model] in
             model?.live.append(log: "re-score: background processing time expired before the pass finished (#1538)")
