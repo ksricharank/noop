@@ -41,6 +41,27 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         XCTAssertEqual(t.sleepNeedTonightMin, 480)
     }
 
+    /// Days carrying BOTH effort and kcal switch the calorie target to the fit path: the effort
+    /// target priced in the user's own calories, with the baseline carried for the coach to explain.
+    /// The 260829 motivating case: at effort 0 the count sits near baseline and the gap IS the
+    /// exercise still owed — not a percentile a sedentary day drifts into.
+    func testPairedHistorySwitchesToTheFitTarget() {
+        var days: [DailyMetric] = []
+        for i in 0...13 {
+            days.append(metric(day: String(format: "2026-08-%02d", i + 1),
+                               strain: Double(i), kcal: 1400 + 22 * Double(i)))   // effort 0…13
+        }
+        let t = Repository.liveTargets(days: days, charge: 50, todayKey: "2026-08-15")
+        XCTAssertEqual(t.kcalBaseline, 1400)
+        // Maintain band → effort target = median of 0…13 = 6.5 → 6 or 7 by rounding; the target is
+        // 1400 + 22 × effortTarget rounded to 25. Pin the exact chain rather than re-deriving:
+        let effortTarget = DailyTargets.effortTarget(charge: 50, recentEffort: (0...13).map(Double.init))
+        XCTAssertEqual(t.effortTarget, effortTarget)
+        let fit = DailyTargets.EffortCalorieFit(interceptKcal: 1400, kcalPerEffortPoint: 22)
+        XCTAssertEqual(t.kcalTargetKcal,
+                       DailyTargets.calorieTargetKcal(effortTarget: effortTarget!, fit: fit))
+    }
+
     /// A short-sleeping week accrues ledger debt, and tonight's need carries the capped repayment.
     func testSleepDebtRaisesTonightsNeed() {
         var days: [DailyMetric] = []

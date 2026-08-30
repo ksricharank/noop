@@ -485,15 +485,18 @@ final class AICoachEngine: ObservableObject {
     /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen as exactly three short lines, in this order, each starting with its bold label:
-    **Rest & sleep** — what to do right now to rest properly today, and tonight's plan: cite the \
-    precise target bedtime and sleep target from TODAY'S TARGETS.
-    **Breathing & heart** — whether I look calm or elevated right now against the calm ceiling; if \
-    elevated, prescribe a specific short breathing or meditation break.
-    **Activity & exercise** — today's effort and calorie targets versus where I am now, and the \
-    specific session (or rest) that closes the gap.
-    Cite my actual numbers from the data; never invent targets that differ from TODAY'S TARGETS. \
-    No greeting, no headings beyond the three bold labels.
+    Today screen as exactly three markdown bullets, mirroring my Lock-Screen card in this order:
+    - **Heart** — my heart rate right now against the calm ceiling: explain what has LED to it, \
+    then the step to actively take (if elevated, a specific short breathing or meditation break).
+    - **Activity** — my calories and effort so far against today's targets: explain what produced \
+    those numbers, then the concrete session (or rest) that closes the gap.
+    - **Rest & sleep** — what last night and today's load mean for resting properly today, then \
+    tonight's plan: cite the precise target bedtime and sleep target from TODAY'S TARGETS.
+    In each bullet, explain what led to the numbers BEFORE prescribing, and bring in another metric \
+    from my data only when it strictly serves that bullet's story (for example an elevated skin \
+    temperature explaining poor rest, or a low HRV explaining a recovery day — illustrative, not \
+    required). Cite my actual numbers; never invent targets that differ from TODAY'S TARGETS. \
+    No greeting, nothing outside the three bullets.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
@@ -1376,7 +1379,17 @@ final class AICoachEngine: ObservableObject {
         } else { band = "maintain" }
         let bandNote = charge == nil ? " — charge not scored yet, so the neutral band" : ""
         if let target = targets.kcalTargetKcal {
-            lines.append("Active-calorie target: \(target) kcal (a \(band) day\(bandNote)); so far today: "
+            // Fit-based targets carry their decomposition so the coach can EXPLAIN the number —
+            // "baseline + the effort target's exercise" — rather than present it bare; the
+            // percentile fallback names its band instead.
+            let basis: String
+            if let base = targets.kcalBaseline, let effortTarget = targets.effortTarget {
+                basis = "≈ the \(base) kcal zero-effort baseline plus the \(effortTarget)-point "
+                        + "effort target priced at the user's own kcal-per-effort-point"
+            } else {
+                basis = "a \(band) day\(bandNote)"
+            }
+            lines.append("Active-calorie target: \(target) kcal (\(basis)); so far today: "
                          + "\(targets.kcalToday.map(String.init) ?? "0") kcal.")
         }
         if let effortTarget = targets.effortTarget {
