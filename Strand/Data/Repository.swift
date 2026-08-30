@@ -135,6 +135,10 @@ struct SleepDeletionSnapshot: Equatable {
 struct LiveTargets: Equatable {
     /// The calm heart-rate ceiling (bpm) — the "go breathe" line the card's HR denominator shows.
     var hrCeilingBpm: Int?
+    /// Whether the ceiling came from the user's own daytime-beat histogram (the 85th percentile of
+    /// the last week — `DaytimeHrHistogram`) rather than the cold-start RHR+margin fallback. Carried
+    /// so the coach names the real basis.
+    var hrCeilingFromDaytimeBeats: Bool = false
     /// Today's active calories so far (today's `activeKcalEst`, updated as syncs land). Nil until
     /// today's row exists — early morning legitimately reads 0 once it does.
     var kcalToday: Int?
@@ -569,7 +573,7 @@ final class Repository: ObservableObject {
     /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
     /// static), `todayKey` the future-clock-safe today key (the later of logical/local, as everywhere).
     static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
-                            todayKey: String) -> LiveTargets {
+                            daytimeCeiling: Int? = nil, todayKey: String) -> LiveTargets {
         let recentRhr = Array(days.suffix(10).compactMap(\.restingHr).suffix(7))
         let recent = days.filter { $0.day < todayKey }.suffix(14)
         let kcalHistory = Array(recent.compactMap(\.activeKcalEst))
@@ -602,19 +606,25 @@ final class Repository: ObservableObject {
         } else {
             kcalTarget = DailyTargets.calorieTargetKcal(charge: charge, recentActiveKcal: kcalHistory)
         }
-        // The SAME need + ledger every debt surface reads (SleepModel.debtNeedMin / the coach context):
-        // the population-anchored upper-quartile need, and the plain 14-night rolling balance.
-        let needMin = AnalyticsEngine.Rest.personalizedNeedHours(
-            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
+        // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
+        // the coach context): the population-anchored upper-quartile need. The TARGET's own base is
+        // computed inside sleepNeedTonightMin from the nightly series (p75, 7 h floor) — tonight's
+        // number is charge/rest-personalized by design (260830), and the debt is its junior term.
+        let nightlyMinutes = days.compactMap(\.totalSleepMin)
+        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
+            nightlyHours: nightlyMinutes.map { $0 / 60.0 },
             age: nil) * 60.0
         let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
-                                      needHours: needMin / 60.0)
+                                      needHours: ledgerNeedMin / 60.0)
         return LiveTargets(
-            hrCeilingBpm: DailyTargets.calmCeilingBpm(recentRestingHr: recentRhr),
+            hrCeilingBpm: daytimeCeiling ?? DailyTargets.calmCeilingBpm(recentRestingHr: recentRhr),
+            hrCeilingFromDaytimeBeats: daytimeCeiling != nil,
             kcalToday: days.last(where: { $0.day == todayKey })?.activeKcalEst.map { Int($0.rounded()) },
             kcalTargetKcal: kcalTarget,
             kcalBaseline: (effortTarget != nil ? fit : nil).map { Int($0.interceptKcal.rounded()) },
-            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(needMin: needMin,
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(nightlyMinutes: nightlyMinutes,
+                                                                  charge: charge,
+                                                                  restScore: restScore,
                                                                   debtBalanceMin: ledger.balanceMin),
             effortTarget: effortTarget)
     }
@@ -633,6 +643,7 @@ final class Repository: ObservableObject {
             return Self.liveTargets(days: days,
                                     charge: anchor?.recovery.map { Int($0.rounded()) },
                                     restScore: anchor.flatMap { restScore(for: $0) },
+                                    daytimeCeiling: DaytimeHrHistogram.calmCeiling(now: now),
                                     todayKey: max(logicalKey, localKey))
         }
     }
