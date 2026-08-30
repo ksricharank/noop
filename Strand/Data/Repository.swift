@@ -126,6 +126,27 @@ struct SleepDeletionSnapshot: Equatable {
     var sleepState: [Int]?
 }
 
+/// The deterministic daily targets the three-pillar Live Activity card prints and the coach
+/// synthesis cites — one bundle so the two surfaces can never disagree. Every field derives from
+/// `Repository.days` via the constant-explicit `DailyTargets` rules (see that type for the
+/// formulas); the optionals stay nil on thin history rather than guessing (the card then drops the
+/// denominator). Top-level rather than nested in `Repository` so it carries no MainActor isolation —
+/// the coach's `nonisolated` formatters and the widget-facing controller both hold plain values.
+struct LiveTargets: Equatable {
+    /// The calm heart-rate ceiling (bpm) — the "go breathe" line the card's HR denominator shows.
+    var hrCeilingBpm: Int?
+    /// Today's active calories so far (today's `activeKcalEst`, updated as syncs land). Nil until
+    /// today's row exists — early morning legitimately reads 0 once it does.
+    var kcalToday: Int?
+    /// Today's active-calorie target from the charge band over the last 14 days.
+    var kcalTargetKcal: Int?
+    /// Minutes of sleep to target tonight (personal need + capped debt repayment).
+    var sleepNeedTonightMin: Int?
+    /// Today's effort target on the app's 0–100 axis — the synthesis' number; the card carries
+    /// calories instead (the user's chosen pillar surface for activity).
+    var effortTarget: Int?
+}
+
 /// Read model over the on-device WhoopStore. Opens its own handle (WAL + busy-timeout makes the
 /// two-handle BLEManager+Repository pattern safe) and publishes the dashboard caches the screens bind to.
 @MainActor
@@ -582,6 +603,46 @@ final class Repository: ObservableObject {
     func restScore(for day: DailyMetric) -> Int? {
         let v = importedSleep[day.day]?.performancePct ?? AnalyticsEngine.Rest.composite(daily: day)
         return v.map { Int($0.rounded()) }
+    }
+
+    /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
+    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `todayKey`
+    /// the future-clock-safe today key (the later of logical/local, as everywhere else).
+    static func liveTargets(days: [DailyMetric], charge: Int?, todayKey: String) -> LiveTargets {
+        let recentRhr = Array(days.suffix(10).compactMap(\.restingHr).suffix(7))
+        let kcalHistory = Array(days.filter { $0.day < todayKey }.suffix(14).compactMap(\.activeKcalEst))
+        let effortHistory = Array(days.filter { $0.day < todayKey }.suffix(14).compactMap(\.strain))
+        // The SAME need + ledger every debt surface reads (SleepModel.debtNeedMin / the coach context):
+        // the population-anchored upper-quartile need, and the plain 14-night rolling balance.
+        let needMin = AnalyticsEngine.Rest.personalizedNeedHours(
+            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
+            age: nil) * 60.0
+        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
+                                      needHours: needMin / 60.0)
+        return LiveTargets(
+            hrCeilingBpm: DailyTargets.calmCeilingBpm(recentRestingHr: recentRhr),
+            kcalToday: days.last(where: { $0.day == todayKey })?.activeKcalEst.map { Int($0.rounded()) },
+            kcalTargetKcal: DailyTargets.calorieTargetKcal(charge: charge, recentActiveKcal: kcalHistory),
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(needMin: needMin,
+                                                                  debtBalanceMin: ledger.balanceMin),
+            effortTarget: DailyTargets.effortTarget(charge: charge, recentEffort: effortHistory))
+    }
+
+    /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
+    private var liveTargetsMemo = LiveTargetsMemo()
+
+    /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
+    /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
+    /// the charge band, keeping the card and the targets on one day).
+    func cachedLiveTargets(now: Date = Date()) -> LiveTargets {
+        let logicalKey = Self.logicalDayKey(now)
+        let localKey = Self.localDayKey(now)
+        return liveTargetsMemo.resolve(seq: refreshSeq, logicalKey: logicalKey, localKey: localKey) {
+            let anchor = cachedWidgetAnchor(now: now)
+            return Self.liveTargets(days: days,
+                                    charge: anchor?.recovery.map { Int($0.rounded()) },
+                                    todayKey: max(logicalKey, localKey))
+        }
     }
 
     /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):

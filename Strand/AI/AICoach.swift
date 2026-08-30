@@ -482,13 +482,22 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
-    /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
-    /// instructions own the voice and priorities, and this only names the surface and its shape.
-    /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
+    /// The built-in instruction for the Today synthesis turn. The coach's own instructions still own
+    /// the voice; this names the surface and its SHAPE — three pillars, one line each, citing the
+    /// deterministic targets from the TODAY'S TARGETS block (the same numbers the Lock-Screen card
+    /// prints) so the synthesis and the card can never disagree. Exposed like `defaultSystemPrompt`
+    /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
-    No headings, no lists, no greeting.
+    Today screen as exactly three short lines, in this order, each starting with its bold label:
+    **Rest & sleep** — what to do right now to rest properly today, and tonight's plan: cite the \
+    precise target bedtime and sleep target from TODAY'S TARGETS.
+    **Breathing & heart** — whether I look calm or elevated right now against the calm ceiling; if \
+    elevated, prescribe a specific short breathing or meditation break.
+    **Activity & exercise** — today's effort and calorie targets versus where I am now, and the \
+    specific session (or rest) that closes the gap.
+    Cite my actual numbers from the data; never invent targets that differ from TODAY'S TARGETS. \
+    No greeting, no headings beyond the three bold labels.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
@@ -995,6 +1004,24 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
+        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so the
+        // synthesis and the card can never disagree about today's prescription. The "right now" HR is a
+        // two-minute mean over already-persisted samples (summary-only, same egress posture as the rest).
+        let targets = repo.cachedLiveTargets()
+        let anchor = repo.cachedWidgetAnchor()
+        let nowSec = Int(Date().timeIntervalSince1970)
+        let recentHr = await repo.hrSamples(from: nowSec - 120, to: nowSec, limit: 200)
+        let currentBpm: Int? = recentHr.isEmpty ? nil
+            : Int((Double(recentHr.reduce(0) { $0 + $1.bpm }) / Double(recentHr.count)).rounded())
+        let targetsBlock = Self.dailyTargetsBlock(
+            targets: targets,
+            charge: anchor?.recovery.map { Int($0.rounded()) },
+            effortToday: anchor?.strain.map { Int($0.rounded()) },
+            currentBpm: currentBpm,
+            midsleepSec: await repo.habitualMidsleepSec(),
+            typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }))
+        if !targetsBlock.isEmpty { ctx += "\n\n" + targetsBlock }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
@@ -1378,6 +1405,81 @@ final class AICoachEngine: ObservableObject {
         guard !lines.isEmpty else { return "" }
         return (["DERIVED TRENDS (computed on-device from the days above — deterministic, not model estimates):"]
                 + lines).joined(separator: "\n")
+    }
+
+    /// The THREE-PILLAR targets block: the same deterministic numbers the Live Activity card prints
+    /// (`LiveTargets` / `DailyTargets`), stated to the coach so the synthesis cites the
+    /// figures the user is already looking at instead of inventing parallel ones. Pure and
+    /// independently nil-guarded like `derivedTrendsBlock`: a cold-start field is simply absent,
+    /// never fabricated. Returns "" when nothing qualifies.
+    nonisolated static func dailyTargetsBlock(targets: LiveTargets,
+                                              charge: Int?,
+                                              effortToday: Int?,
+                                              currentBpm: Int?,
+                                              midsleepSec: Int?,
+                                              typicalSleepHours: Double?) -> String {
+        var lines: [String] = []
+
+        // Pillar 2 — breathing & heart rate: the calm ceiling, and where the heart sits right now.
+        if let ceiling = targets.hrCeilingBpm {
+            var line = "Calm heart-rate ceiling: \(ceiling) bpm (recent nightly resting-HR median + "
+                       + "\(DailyTargets.calmMarginBpm); above it AT REST = elevated)."
+            if let bpm = currentBpm {
+                line += bpm > ceiling
+                    ? " Right now: \(bpm) bpm — ELEVATED at rest; a breathing or meditation break is the prescription."
+                    : " Right now: \(bpm) bpm — within the calm range."
+            }
+            lines.append(line)
+        }
+
+        // Pillar 3 — activity & exercise: the charge band's calorie + effort targets vs today so far.
+        let band: String
+        if let charge {
+            band = charge >= DailyTargets.pushChargeFloor ? "push"
+                 : (charge <= DailyTargets.recoverChargeCeiling ? "recover" : "maintain")
+        } else { band = "maintain" }
+        let bandNote = charge == nil ? " — charge not scored yet, so the neutral band" : ""
+        if let target = targets.kcalTargetKcal {
+            lines.append("Active-calorie target: \(target) kcal (a \(band) day\(bandNote)); so far today: "
+                         + "\(targets.kcalToday.map(String.init) ?? "0") kcal.")
+        }
+        if let effortTarget = targets.effortTarget {
+            lines.append("Effort target (0-100): \(effortTarget) (same \(band) band); so far today: "
+                         + "\(effortToday.map(String.init) ?? "0").")
+        }
+
+        // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
+        if let need = targets.sleepNeedTonightMin {
+            lines.append(sleepPlanLine(needTonightMin: need, midsleepSec: midsleepSec,
+                                       typicalSleepHours: typicalSleepHours))
+        }
+
+        guard !lines.isEmpty else { return "" }
+        return (["TODAY'S TARGETS (deterministic, computed on-device from the user's own history — the "
+                 + "SAME numbers the Lock-Screen card shows; cite these, do not invent alternatives):"]
+                + lines.map { "  • " + $0 }).joined(separator: "\n")
+    }
+
+    /// Tonight's sleep prescription as one sentence: the target duration, plus the precise "asleep by"
+    /// time derived from the learned sleep model (#547 — habitual wake = midsleep + half the typical
+    /// night, the same circular arithmetic as `BatteryEstimator.bedtimeAlert`). Cold-start (no learned
+    /// midsleep or duration yet) states only the duration — a fixed-clock bedtime would be wrong for
+    /// exactly the shift/late sleepers the learner exists for.
+    nonisolated static func sleepPlanLine(needTonightMin: Int, midsleepSec: Int?,
+                                          typicalSleepHours: Double?) -> String {
+        let target = String(format: "%dh%02d", needTonightMin / 60, needTonightMin % 60)
+        guard let midsleep = midsleepSec, (0..<86_400).contains(midsleep),
+              let typical = typicalSleepHours, typical > 0 else {
+            return "Sleep tonight: target \(target) asleep."
+        }
+        func hhmm(_ secOfDay: Int) -> String {
+            let s = ((secOfDay % 86_400) + 86_400) % 86_400
+            return String(format: "%02d:%02d", s / 3600, (s % 3600) / 60)
+        }
+        let wakeSec = midsleep + Int((typical * 1800).rounded())
+        let bedSec = wakeSec - needTonightMin * 60
+        return "Sleep tonight: target \(target) asleep — aim to be asleep by \(hhmm(bedSec)) "
+               + "against the learned habitual wake of about \(hhmm(wakeSec))."
     }
 
     // MARK: Formatting helpers
