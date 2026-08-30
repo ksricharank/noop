@@ -138,8 +138,14 @@ struct LiveTargets: Equatable {
     /// Today's active calories so far (today's `activeKcalEst`, updated as syncs land). Nil until
     /// today's row exists — early morning legitimately reads 0 once it does.
     var kcalToday: Int?
-    /// Today's active-calorie target from the charge band over the last 14 days.
+    /// Today's active-calorie target: the effort target priced in the user's own calories
+    /// (baseline burn + kcal-per-effort-point × effort target, `DailyTargets.effortCalorieFit`),
+    /// falling back to the charge-band percentile while the history is too thin or flat to fit.
     var kcalTargetKcal: Int?
+    /// The fit's baseline burn (typical zero-effort day, kcal) — nil when the percentile fallback
+    /// set the target. Carried so the coach can EXPLAIN the target ("~1 450 baseline + the effort
+    /// target's exercise") instead of presenting a bare number.
+    var kcalBaseline: Int?
     /// Minutes of sleep to target tonight (personal need + capped debt repayment).
     var sleepNeedTonightMin: Int?
     /// Today's effort target on the app's 0–100 axis — the synthesis' number; the card carries
@@ -610,8 +616,24 @@ final class Repository: ObservableObject {
     /// the future-clock-safe today key (the later of logical/local, as everywhere else).
     static func liveTargets(days: [DailyMetric], charge: Int?, todayKey: String) -> LiveTargets {
         let recentRhr = Array(days.suffix(10).compactMap(\.restingHr).suffix(7))
-        let kcalHistory = Array(days.filter { $0.day < todayKey }.suffix(14).compactMap(\.activeKcalEst))
-        let effortHistory = Array(days.filter { $0.day < todayKey }.suffix(14).compactMap(\.strain))
+        let recent = days.filter { $0.day < todayKey }.suffix(14)
+        let kcalHistory = Array(recent.compactMap(\.activeKcalEst))
+        let effortHistory = Array(recent.compactMap(\.strain))
+        // The user's own kcal-per-effort line, over days carrying BOTH series. The effort target is
+        // computed first because the calorie target is that target priced in calories (weight-loss
+        // contract: the Cal gap on the card is the exercise still owed, not a percentile a sedentary
+        // day drifts into) — percentile fallback when the fit or the effort target is unavailable.
+        let effortTarget = DailyTargets.effortTarget(charge: charge, recentEffort: effortHistory)
+        let fit = DailyTargets.effortCalorieFit(history: recent.compactMap { d in
+            guard let effort = d.strain, let kcal = d.activeKcalEst else { return nil }
+            return (effort: effort, kcal: kcal)
+        })
+        let kcalTarget: Int?
+        if let effortTarget, let fit {
+            kcalTarget = DailyTargets.calorieTargetKcal(effortTarget: effortTarget, fit: fit)
+        } else {
+            kcalTarget = DailyTargets.calorieTargetKcal(charge: charge, recentActiveKcal: kcalHistory)
+        }
         // The SAME need + ledger every debt surface reads (SleepModel.debtNeedMin / the coach context):
         // the population-anchored upper-quartile need, and the plain 14-night rolling balance.
         let needMin = AnalyticsEngine.Rest.personalizedNeedHours(
@@ -622,10 +644,11 @@ final class Repository: ObservableObject {
         return LiveTargets(
             hrCeilingBpm: DailyTargets.calmCeilingBpm(recentRestingHr: recentRhr),
             kcalToday: days.last(where: { $0.day == todayKey })?.activeKcalEst.map { Int($0.rounded()) },
-            kcalTargetKcal: DailyTargets.calorieTargetKcal(charge: charge, recentActiveKcal: kcalHistory),
+            kcalTargetKcal: kcalTarget,
+            kcalBaseline: (effortTarget != nil ? fit : nil).map { Int($0.interceptKcal.rounded()) },
             sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(needMin: needMin,
                                                                   debtBalanceMin: ledger.balanceMin),
-            effortTarget: DailyTargets.effortTarget(charge: charge, recentEffort: effortHistory))
+            effortTarget: effortTarget)
     }
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
