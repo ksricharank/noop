@@ -148,8 +148,10 @@ struct LiveTargets: Equatable {
     var kcalBaseline: Int?
     /// Minutes of sleep to target tonight (personal need + capped debt repayment).
     var sleepNeedTonightMin: Int?
-    /// Today's effort target on the app's 0–100 axis — the synthesis' number; the card carries
-    /// calories instead (the user's chosen pillar surface for activity).
+    /// Today's effort target on the STORED 0–100 axis, READINESS-derived (the #43 charge band
+    /// positioned by the multi-signal readiness read + last night's Rest — never by history). The
+    /// synthesis' number, displayed on the user's chosen effort scale; the card carries the
+    /// calories it prices instead (the user's chosen pillar surface for activity).
     var effortTarget: Int?
 }
 
@@ -563,18 +565,33 @@ final class Repository: ObservableObject {
     }
 
     /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
-    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `todayKey`
-    /// the future-clock-safe today key (the later of logical/local, as everywhere else).
-    static func liveTargets(days: [DailyMetric], charge: Int?, todayKey: String) -> LiveTargets {
+    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `restScore`
+    /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
+    /// static), `todayKey` the future-clock-safe today key (the later of logical/local, as everywhere).
+    static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
+                            todayKey: String) -> LiveTargets {
         let recentRhr = Array(days.suffix(10).compactMap(\.restingHr).suffix(7))
         let recent = days.filter { $0.day < todayKey }.suffix(14)
         let kcalHistory = Array(recent.compactMap(\.activeKcalEst))
-        let effortHistory = Array(recent.compactMap(\.strain))
-        // The user's own kcal-per-effort line, over days carrying BOTH series. The effort target is
-        // computed first because the calorie target is that target priced in calories (weight-loss
-        // contract: the Cal gap on the card is the exercise still owed, not a percentile a sedentary
-        // day drifts into) — percentile fallback when the fit or the effort target is unavailable.
-        let effortTarget = DailyTargets.effortTarget(charge: charge, recentEffort: effortHistory)
+        // The effort target is READINESS-driven, never history-driven (the user's explicit contract):
+        // today's charge picks the approved #43 optimal-strain band, and the multi-signal readiness
+        // read (HRV/RHR/respiration vs personal baselines + training load) with last night's Rest
+        // positions the target inside (or below) it. Converted from the 21-axis band to the stored
+        // 0–100 axis with the shipped display factor so the kcal fit prices it on the same axis the
+        // history was recorded on. Nil charge ⇒ no band ⇒ no target — never guessed.
+        let effortTarget: Int? = CoupledView.optimalStrainRange(recovery: charge.map(Double.init))
+            .map { band in
+                let t21 = DailyTargets.effortTarget21(
+                    band: band,
+                    readiness: ReadinessEngine.evaluate(days: days).level,
+                    restScore: restScore)
+                return Int((t21 / UnitFormatter.effortScaleFactor).rounded())
+            }
+        // The user's own kcal-per-effort line, over days carrying BOTH series. The calorie target is
+        // the effort target priced in calories (weight-loss contract: the Cal gap on the card is the
+        // exercise still owed) — percentile fallback when the fit or the target is unavailable. The
+        // fit extrapolates deliberately: a readiness target can sit above every effort in a sedentary
+        // fortnight, and following history instead is exactly the trap this replaced.
         let fit = DailyTargets.effortCalorieFit(history: recent.compactMap { d in
             guard let effort = d.strain, let kcal = d.activeKcalEst else { return nil }
             return (effort: effort, kcal: kcal)
@@ -615,6 +632,7 @@ final class Repository: ObservableObject {
             let anchor = cachedWidgetAnchor(now: now)
             return Self.liveTargets(days: days,
                                     charge: anchor?.recovery.map { Int($0.rounded()) },
+                                    restScore: anchor.flatMap { restScore(for: $0) },
                                     todayKey: max(logicalKey, localKey))
         }
     }

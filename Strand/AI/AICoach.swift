@@ -993,7 +993,9 @@ final class AICoachEngine: ObservableObject {
             currentBpm: currentBpm,
             midsleepSec: await repo.habitualMidsleepSec(),
             typicalSleepHours: BatteryEstimator.typicalSleepHours(
-                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }))
+                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
+            effortScale: EffortScale(rawValue: UserDefaults.standard.string(
+                forKey: UnitPrefs.effortScaleKey) ?? "") ?? .hundred)
         if !targetsBlock.isEmpty { ctx += "\n\n" + targetsBlock }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
@@ -1356,7 +1358,8 @@ final class AICoachEngine: ObservableObject {
                                               effortToday: Int?,
                                               currentBpm: Int?,
                                               midsleepSec: Int?,
-                                              typicalSleepHours: Double?) -> String {
+                                              typicalSleepHours: Double?,
+                                              effortScale: EffortScale = .hundred) -> String {
         var lines: [String] = []
 
         // Pillar 2 — breathing & heart rate: the calm ceiling, and where the heart sits right now.
@@ -1371,30 +1374,40 @@ final class AICoachEngine: ObservableObject {
             lines.append(line)
         }
 
-        // Pillar 3 — activity & exercise: the charge band's calorie + effort targets vs today so far.
+        // Pillar 3 — activity & exercise: the readiness-derived effort target and the calorie target
+        // it prices, vs today so far. Effort figures render on the USER'S chosen display scale —
+        // they said "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under
+        // the same label reads as a different (and absurdly large) prescription.
         let band: String
         if let charge {
             band = charge >= DailyTargets.pushChargeFloor ? "push"
                  : (charge <= DailyTargets.recoverChargeCeiling ? "recover" : "maintain")
         } else { band = "maintain" }
         let bandNote = charge == nil ? " — charge not scored yet, so the neutral band" : ""
+        let scaleMax = UnitFormatter.effortScaleMax(effortScale)
+        let effortTargetText = targets.effortTarget.map {
+            UnitFormatter.effortDisplay(Double($0), scale: effortScale)
+        }
         if let target = targets.kcalTargetKcal {
             // Fit-based targets carry their decomposition so the coach can EXPLAIN the number —
             // "baseline + the effort target's exercise" — rather than present it bare; the
             // percentile fallback names its band instead.
             let basis: String
-            if let base = targets.kcalBaseline, let effortTarget = targets.effortTarget {
-                basis = "≈ the \(base) kcal zero-effort baseline plus the \(effortTarget)-point "
-                        + "effort target priced at the user's own kcal-per-effort-point"
+            if let base = targets.kcalBaseline, let targetText = effortTargetText {
+                basis = "≈ the \(base) kcal zero-effort baseline plus the readiness-derived effort "
+                        + "target of \(targetText) priced at the user's own kcal-per-effort-point"
             } else {
                 basis = "a \(band) day\(bandNote)"
             }
             lines.append("Active-calorie target: \(target) kcal (\(basis)); so far today: "
                          + "\(targets.kcalToday.map(String.init) ?? "0") kcal.")
         }
-        if let effortTarget = targets.effortTarget {
-            lines.append("Effort target (0-100): \(effortTarget) (same \(band) band); so far today: "
-                         + "\(effortToday.map(String.init) ?? "0").")
+        if let targetText = effortTargetText {
+            let todayText = UnitFormatter.effortDisplay(Double(effortToday ?? 0), scale: effortScale)
+            lines.append("Effort target: \(targetText) of \(scaleMax) — set by the body's READINESS "
+                         + "(the charge band positions the range; HRV/RHR/load readiness and last "
+                         + "night's Rest set where in it), never by past habits; so far today: "
+                         + "\(todayText).")
         }
 
         // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
