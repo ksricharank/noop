@@ -490,8 +490,13 @@ final class AICoachEngine: ObservableObject {
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
     Today screen as exactly three markdown bullets, mirroring my Lock-Screen card in this order:
-    - **Heart** — my heart rate right now against the calm ceiling: explain what has LED to it, \
-    then the step to actively take (if elevated, a specific short breathing or meditation break).
+    - **Heart** — my live autonomic read, stated in TODAY'S TARGETS as exactly one of: calm (my \
+    heart-rate variability is in its normal range, or a high heart rate is just exercise), \
+    STRESSED (my beat-to-beat variability has dipped well below my own rolling baseline while I \
+    am at rest — a fight-or-flight signature, shown on my Lock-Screen card as a # after the heart \
+    rate), or not judgeable (too few clean beats — make no claim). Explain what has LED to that \
+    read, then the step to actively take; when it is STRESSED, prescribe a specific short \
+    breathing or meditation exercise (name the technique and duration).
     - **Activity** — my calories and effort so far against today's targets: explain what produced \
     those numbers, then the concrete session (or rest) that closes the gap.
     - **Rest & sleep** — what last night and today's load mean for resting properly today, then \
