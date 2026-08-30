@@ -43,6 +43,12 @@ enum RescoreBackgroundScheduler {
     /// Seconds the last COMPLETED pass took. Only ever written by a pass that reached the end.
     static let lastPassSecondsKey = "noop.rescoreLastPassSeconds"
 
+    /// When the last LOCKED background-processing settle COMPLETED (epoch seconds), feeding the
+    /// settle-side pacing (`RescoreBackgroundPolicy.settleDecision`). Stamped only after a pass ran to
+    /// the end, so a killed one leaves no stamp and the next task retries freely. Survives process
+    /// death for the same reason the debt does — the treadmill this paces spans many process lifetimes.
+    static let lastLockedSettleAtKey = "noop.rescoreLastLockedSettleAt"
+
     /// Identifies the MOST RECENT debt, so a pass can tell its own from someone else's (#1681).
     ///
     /// A token rather than a counter, deliberately. A counter needs read-modify-write, and two triggers
@@ -64,6 +70,19 @@ enum RescoreBackgroundScheduler {
         guard UserDefaults.standard.object(forKey: lastPassSecondsKey) != nil else { return nil }
         let value = UserDefaults.standard.double(forKey: lastPassSecondsKey)
         return value.isFinite && value > 0 ? value : nil
+    }
+
+    /// See `lastLockedSettleAtKey`. Nil until a locked settle has ever completed, or when the stored
+    /// value is unreadable — both mean "unknown" to the pacing rule, which runs.
+    static var lastLockedSettleAt: Date? {
+        guard UserDefaults.standard.object(forKey: lastLockedSettleAtKey) != nil else { return nil }
+        let value = UserDefaults.standard.double(forKey: lastLockedSettleAtKey)
+        return value.isFinite && value > 0 ? Date(timeIntervalSince1970: value) : nil
+    }
+
+    /// Stamp that a LOCKED background settle ran to completion just now — see `lastLockedSettleAtKey`.
+    static func markLockedSettleCompleted(now: Date = Date()) {
+        UserDefaults.standard.set(now.timeIntervalSince1970, forKey: lastLockedSettleAtKey)
     }
 
     /// Mark a re-score as owed with attempt evidence behind it. Called by `IntelligenceEngine` once a
@@ -182,6 +201,26 @@ enum RescoreBackgroundScheduler {
                 ?? ContinuousHrvSchedule.defaultEndMinutes)
     }
 
+    /// Seconds from `minuteOfDay` until the sleep window's `endMinute`, plus a small buffer so the
+    /// re-armed task lands clearly OUTSIDE the window rather than racing its edge. Pure — the wrap-around
+    /// (an 22:00–07:00 window queried at 23:30) is exactly the arithmetic worth pinning in a test.
+    static func secondsUntilWindowEnd(minuteOfDay: Int, endMinute: Int,
+                                      bufferSeconds: Double = 300) -> Double {
+        let remaining = ((endMinute - minuteOfDay) % 1440 + 1440) % 1440
+        return Double(remaining * 60) + bufferSeconds
+    }
+
+    /// `secondsUntilWindowEnd` against the live clock and stored window — nil when the clock is not
+    /// inside the window at all (there is no edge to wait for).
+    static var secondsUntilSleepWindowEnd: Double? {
+        guard isInSleepWindow else { return nil }
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let end = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        return secondsUntilWindowEnd(minuteOfDay: minuteOfDay, endMinute: end)
+    }
+
     /// Decide, then either run `work` under an execution assertion or leave it for `BGProcessingTask`.
     ///
     /// `log` goes to the strap log, always — both the decision and its reason. #1538 cost three nights
@@ -281,12 +320,39 @@ enum RescoreBackgroundScheduler {
     /// Register the handler. MUST be called from `StrandiOSApp.init()` before launch finishes, and the
     /// identifier MUST be listed in `BGTaskSchedulerPermittedIdentifiers`, or iOS never delivers the task.
     /// Safe to leave uncalled: `schedule()` fails gracefully and the foreground path still scores.
-    static func register(perform operation: @escaping @MainActor () async -> Void) {
+    /// `log` reaches the strap log (rare-event: it speaks only when a wake is skipped, which is exactly
+    /// the decision that must not be silent — the treadmill this gate stops was 38 unexplained passes).
+    static func register(log: @escaping @MainActor (String) -> Void = { _ in },
+                         perform operation: @escaping @MainActor () async -> Void) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskIdentifier, using: nil) { task in
             let completion = TaskCompletionGuard(task: task)
             let worker = Task { @MainActor in
+                // The settle-side convergence gate (260829): under a +N locked sync, a locked settle can
+                // NEVER clear the debt — new data lands mid-pass, the token supersedes (#1681), the next
+                // deferral re-arms this task — so unconditional runs became a treadmill of I/O-throttled
+                // passes nobody could see. Decide first; a skipped wake costs one log line.
+                let lockedAtStart = isDeviceLocked
+                if isRescoreOwed {
+                    let decision = RescoreBackgroundPolicy.settleDecision(
+                        isLocked: lockedAtStart,
+                        inSleepWindow: isInSleepWindow,
+                        secondsSinceLastLockedSettle: lastLockedSettleAt.map {
+                            Date().timeIntervalSince($0)
+                        },
+                        secondsUntilSleepWindowEnd: secondsUntilSleepWindowEnd)
+                    if case .skip(let reason, let retryAfter) = decision {
+                        log("re-score: background settle skipped — \(reason)")
+                        schedule(earliestIn: retryAfter)
+                        // Skipping IS the intended behaviour here, not a failure iOS should penalise.
+                        completion.finish(success: true)
+                        return
+                    }
+                }
                 await operation()
                 guard !Task.isCancelled else { return }
+                // Only a pass that RAN TO COMPLETION here paces the next locked settle; a killed one
+                // leaves no stamp, so the next task retries freely (the #1538 escalation is preserved).
+                if lockedAtStart, isDeviceLocked { markLockedSettleCompleted() }
                 // Re-arm only while work remains. A processing task is single-shot, and re-submitting
                 // unconditionally would ask iOS for a wake on every install forever, including the ones
                 // that never have anything to do.
@@ -306,7 +372,12 @@ enum RescoreBackgroundScheduler {
 
     /// Keep exactly one pending request, so calling this from several places is idempotent and also
     /// repairs a request the system discarded.
-    static func schedule() {
+    ///
+    /// `earliestIn` asks iOS not to fire before that many seconds from now. When it is nil, the pacing
+    /// falls back to whatever the last completed LOCKED settle implies: the offload deferral path calls
+    /// this every few minutes under a +N locked sync, and since each call is cancel-and-resubmit, a bare
+    /// request here would erase the spacing the settle gate just re-armed — the treadmill by another door.
+    static func schedule(earliestIn: TimeInterval? = nil) {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
         let request = BGProcessingTaskRequest(identifier: taskIdentifier)
         // Neither is required. Network is irrelevant to an offline app, and demanding external power
@@ -314,6 +385,16 @@ enum RescoreBackgroundScheduler {
         // likely to be wearing the strap continuously.
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
+        var delay = earliestIn
+        if delay == nil, let last = lastLockedSettleAt {
+            let since = Date().timeIntervalSince(last)
+            if since >= 0, since < RescoreBackgroundPolicy.lockedSettleSpacingSeconds {
+                delay = RescoreBackgroundPolicy.lockedSettleSpacingSeconds - since
+            }
+        }
+        if let delay, delay > 0 {
+            request.earliestBeginDate = Date().addingTimeInterval(delay)
+        }
         try? BGTaskScheduler.shared.submit(request)
     }
 
@@ -362,6 +443,6 @@ enum RescoreBackgroundScheduler {
     }
     #else
     /// macOS has no background-task scheduler and no suspension deadline — nothing to schedule.
-    static func schedule() {}
+    static func schedule(earliestIn: TimeInterval? = nil) {}
     #endif
 }
