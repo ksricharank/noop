@@ -497,8 +497,8 @@ final class AICoachEngine: ObservableObject {
     - **Heart** — my live autonomic read, stated in TODAY'S TARGETS as exactly one of: calm (my \
     heart-rate variability is in its normal range, or a high heart rate is just exercise), \
     STRESSED (my beat-to-beat variability has dipped well below my own rolling baseline while I \
-    am at rest — a fight-or-flight signature, shown on my Lock-Screen card as a # after the heart \
-    rate), or not judgeable (too few clean beats — make no claim). Explain what has LED to that \
+    am at rest — a fight-or-flight signature, shown on my Lock-Screen card by the heart-rate \
+    number turning RED), or not judgeable (too few clean beats — make no claim). Explain what has LED to that \
     read, then the step to actively take; when it is STRESSED, prescribe a specific short \
     breathing or meditation exercise (name the technique and duration).
     - **Activity** — my calories and effort so far against today's targets: explain what produced \
@@ -1446,7 +1446,7 @@ final class AICoachEngine: ObservableObject {
             switch breatheNow {
             case .some(true):
                 line += "STRESSED — beat-to-beat variability has dipped well below the rolling "
-                        + "baseline while at rest; the card is showing the # breathe marker, and a "
+                        + "baseline while at rest; the card is showing the heart rate in red, and a "
                         + "short breathing or meditation break is the prescription."
             case .some(false):
                 line += "calm (variability in its normal range, or the elevation is exercise doing "
