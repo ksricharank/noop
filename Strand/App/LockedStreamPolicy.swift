@@ -61,19 +61,15 @@ enum LockedStreamPolicy {
         !(dutyCycle && locked)
     }
 
-    /// Whether a link drop should HOLD the current Live Activity rather than end it. True exactly
-    /// while the duty cycle owns a locked phone: the link there is idle BY DESIGN (0x2A37
-    /// unsubscribed, TOGGLE 0), so a timeout drop is routine and the standing reconnect restores it
-    /// shortly. Ending the activity for such a drop killed the Lock Screen a few minutes into every
-    /// locked span — and the end was one-way, because iOS forbids starting a Live Activity from the
-    /// background, so nothing could bring it back before the next app open (260828-0731: locked
-    /// 07:17:33, "connection timed out" 07:20:55, island gone). The frozen window average stays
-    /// honest meanwhile — it never claimed liveness, and its staleDate greys it if no successor
-    /// arrives. Unlocked (or duty cycle off), a drop still ends the activity immediately: a frozen
-    /// number presented as live is the #911 bug this rule must not reintroduce.
-    static func holdOnDisconnect(dutyCycle: Bool, locked: Bool) -> Bool {
-        dutyCycle && locked
-    }
+    // HISTORY: `holdOnDisconnect(dutyCycle:locked:)` lived here until 260829. It held the card
+    // through a link drop only while the -1 duty cycle had the phone locked (where the link is idle
+    // BY DESIGN and a timeout drop is routine), and every other drop still ended the card — which is
+    // exactly how taking the strap off to charge, or a transient pocket-drop on a +N cadence, killed
+    // the island one-way (iOS forbids background starts, so nothing could bring it back before the
+    // next app open). The hold is now unconditional and lives where the decision belongs:
+    // `LiveActivityPresentationPolicy.decide` answers a drop with `holdIfShowing`, and the drop edge
+    // itself repaints the card as not-live + not-connected (`LiveActivityController.noteDisconnected`)
+    // so the held number never claims a liveness it lost — the #911 worry the old end answered.
 
     /// The locked Lock-Screen average window. `-1` (auto) ties it to the offload cadence that
     /// produces the data — 15 minutes on the normal cadence (`BLEManager.backfillIntervalSeconds`
