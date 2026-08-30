@@ -51,6 +51,70 @@ enum RescoreBackgroundPolicy {
     /// mid-write is the one outcome worth spending real caution to avoid.
     static let backgroundBudgetSeconds: Double = 20
 
+    /// Minimum spacing between LOCKED `BGProcessingTask` settles, in seconds.
+    ///
+    /// The 260829 logs showed why one is needed: with the phone locked and a +N locked sync landing new
+    /// rows every ~5 minutes, EVERY settle completes into "debt NOT settled" (#1681 — a newer mark always
+    /// arrives mid-pass), every deferral re-arms the processing task, and the task fires roughly every
+    /// half hour. 38 full passes in one day, ~2 hours of I/O-throttled wall time (one pass ran 54
+    /// minutes), all of it invisible — a locked phone shows nobody the result. The passes DO persist
+    /// scores, so one locked settle is worth having (it is what paints the home-screen widget after the
+    /// sleep window ends before the first unlock); a treadmill of them is pure heat. Three hours keeps
+    /// the morning paint and caps the waste at a few passes a day; the next unlock still settles
+    /// immediately through the foreground path, which this spacing never touches.
+    static let lockedSettleSpacingSeconds: Double = 3 * 3600
+
+    /// What a fired background-processing settle should do (`RescoreBackgroundScheduler.register`).
+    ///
+    /// Distinct from `Decision`, which paces the TRIGGER side (a completed offload deciding whether to
+    /// run or defer). This paces the SETTLE side — the processing task that the deferrals escalate to —
+    /// which previously ran unconditionally and was the door the treadmill walked through.
+    enum SettleDecision: Equatable {
+        /// Run the deferred pass now.
+        case run
+        /// Skip this wake; re-arm the task no earlier than `retryAfterSeconds` from now (nil = the
+        /// scheduler's default pacing). The reason is logged verbatim to the strap log.
+        case skip(reason: String, retryAfterSeconds: Double?)
+    }
+
+    /// Decide whether a fired background settle should actually run the pass.
+    ///
+    /// - An UNLOCKED settle always runs: it is the original #1538 escalation (a heavy pass that a
+    ///   bluetooth-central wake could not finish gets minutes here), and unlocked means the result can
+    ///   be seen.
+    /// - Inside the sleep window it never runs — same reasoning as `Decision.deferUntilSleepWindowEnds`:
+    ///   a processing task favours idle, and idle on a phone worn to bed is mid-night. The task that
+    ///   fires anyway (one scheduled before the window opened) re-arms for just past the window's end.
+    /// - Locked outside the window, it runs at most once per `spacingSeconds`: locked passes are
+    ///   I/O-throttled and unseen, and under a +N locked sync cadence they can never settle the debt
+    ///   (new data always lands mid-pass), so each extra one is waste. The one it does allow is the
+    ///   morning widget paint.
+    ///
+    /// `secondsSinceLastLockedSettle` nil (no locked settle has ever completed) or unreadable
+    /// (non-finite / negative, e.g. a clock change) means "unknown", and unknown runs — refusing to
+    /// score on a value we cannot read would be the worse failure, same rule as the measured-cost gate.
+    static func settleDecision(isLocked: Bool,
+                               inSleepWindow: Bool,
+                               secondsSinceLastLockedSettle: Double?,
+                               secondsUntilSleepWindowEnd: Double?,
+                               spacingSeconds: Double = lockedSettleSpacingSeconds) -> SettleDecision {
+        guard isLocked else { return .run }
+        if inSleepWindow {
+            return .skip(
+                reason: "inside the sleep window — the first post-window settle (or the next unlock) runs it",
+                retryAfterSeconds: secondsUntilSleepWindowEnd)
+        }
+        if let since = secondsSinceLastLockedSettle, since.isFinite, since >= 0,
+           since < spacingSeconds {
+            return .skip(
+                reason: "a locked settle already ran \(Int((since / 60).rounded()))m ago — locked passes "
+                        + "are I/O-throttled and unseen, so they run at most every "
+                        + "\(Int(spacingSeconds / 60))m (the next unlock settles immediately)",
+                retryAfterSeconds: spacingSeconds - since)
+        }
+        return .run
+    }
+
     /// - Parameters:
     ///   - isBackground: whether the app is currently backgrounded. A foregrounded app is never deferred:
     ///     the user is looking at the screen, there is no suspension deadline, and the existing behaviour

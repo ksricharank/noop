@@ -15,6 +15,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
     private var savedDeferralOnly: Any?
     private var savedSeconds: Any?
     private var savedToken: Any?
+    private var savedLockedSettle: Any?
 
     override func setUp() {
         super.setUp()
@@ -25,10 +26,13 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
             forKey: RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         savedSeconds = UserDefaults.standard.object(forKey: RescoreBackgroundScheduler.lastPassSecondsKey)
         savedToken = UserDefaults.standard.object(forKey: RescoreBackgroundScheduler.owedTokenKey)
+        savedLockedSettle = UserDefaults.standard.object(
+            forKey: RescoreBackgroundScheduler.lastLockedSettleAtKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.lastPassSecondsKey)
         UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.owedTokenKey)
+        UserDefaults.standard.removeObject(forKey: RescoreBackgroundScheduler.lastLockedSettleAtKey)
     }
 
     override func tearDown() {
@@ -36,6 +40,7 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
         restore(savedDeferralOnly, RescoreBackgroundScheduler.owedByWindowDeferralOnlyKey)
         restore(savedSeconds, RescoreBackgroundScheduler.lastPassSecondsKey)
         restore(savedToken, RescoreBackgroundScheduler.owedTokenKey)
+        restore(savedLockedSettle, RescoreBackgroundScheduler.lastLockedSettleAtKey)
         super.tearDown()
     }
 
@@ -311,6 +316,32 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
         XCTAssertFalse(RescoreBackgroundScheduler.isRescoreOwed)
         XCTAssertEqual(logged.count, 1)
         XCTAssertTrue(logged[0].contains("skipped"), logged[0])
+    }
+
+    // MARK: - The locked-settle pacing stamp (the 260829 treadmill)
+
+    /// The stamp survives a round trip and only a readable value counts — the accessor's nil is what
+    /// lets the settle gate run when the history is unknown, so garbage must read as nil, not as "just
+    /// settled" (which would silence the very pass the debt is waiting on).
+    func testTheLockedSettleStampRoundTrips() {
+        XCTAssertNil(RescoreBackgroundScheduler.lastLockedSettleAt)
+        let now = Date()
+        RescoreBackgroundScheduler.markLockedSettleCompleted(now: now)
+        XCTAssertEqual(RescoreBackgroundScheduler.lastLockedSettleAt?.timeIntervalSince1970 ?? 0,
+                       now.timeIntervalSince1970, accuracy: 0.001)
+        UserDefaults.standard.set(-5.0, forKey: RescoreBackgroundScheduler.lastLockedSettleAtKey)
+        XCTAssertNil(RescoreBackgroundScheduler.lastLockedSettleAt)
+    }
+
+    /// The re-armed task must land past the window's END, including across midnight — an 22:00–07:00
+    /// window probed at 23:30 has 7.5 h left, not −16.5 h. The buffer keeps it off the exact edge.
+    func testSecondsUntilWindowEndWrapsMidnight() {
+        XCTAssertEqual(RescoreBackgroundScheduler.secondsUntilWindowEnd(
+            minuteOfDay: 23 * 60 + 30, endMinute: 7 * 60, bufferSeconds: 300),
+            7.5 * 3600 + 300)
+        XCTAssertEqual(RescoreBackgroundScheduler.secondsUntilWindowEnd(
+            minuteOfDay: 6 * 60, endMinute: 7 * 60, bufferSeconds: 300),
+            3600 + 300)
     }
 }
 
