@@ -3,10 +3,12 @@ import WhoopStore
 import StrandAnalytics
 @testable import Strand
 
-/// `Repository.liveTargets` — the derivation that feeds the three-pillar Live Activity card and the
-/// coach's TODAY'S TARGETS block from the same day rows. Pinned over fixtures because the wiring
-/// (which rows feed which rule, today excluded from its own target history, need + ledger agreeing
-/// with the debt surfaces) is exactly what a refactor would silently bend.
+/// `Repository.liveTargets` — the wiring that feeds the three-pillar Live Activity card and the
+/// coach's TODAY'S TARGETS block from the same rows. Pinned over fixtures because the wiring is
+/// exactly what a refactor would silently bend: which row supplies the resting HR, which supplies
+/// today's effort and calories, and that the readiness-dependent values flow through the SAME chain
+/// the implementation uses (the readiness level over fixtures is the engine's business, not this
+/// test's).
 @MainActor
 final class RepositoryLiveTargetsTests: XCTestCase {
 
@@ -19,85 +21,61 @@ final class RepositoryLiveTargetsTests: XCTestCase {
                     activeKcalEst: kcal)
     }
 
-    /// A steady fortnight: the ceiling is the RHR median + margin, the calorie target reads the
-    /// history EXCLUDING today (today's partial row must not skew its own target), today's kcal rides
-    /// separately, and a no-debt sleeper's tonight-need is the plain 8 h baseline.
-    func testTargetsDeriveFromTheRows() {
+    /// The full wiring over a steady fortnight plus today's partial row: the ceiling is Karvonen
+    /// over the LATEST resting HR, the session/effort/kcal targets flow through the readiness
+    /// chain, exercise calories subtract the resting accrual, and the sleep need composes from the
+    /// same charge/rest/readiness inputs.
+    func testTargetsDeriveFromTheBodyState() {
         var days: [DailyMetric] = []
         for i in 1...14 {
-            days.append(metric(day: String(format: "2026-08-%02d", i),
-                               rhr: 60, kcal: Double(400 + i * 25)))   // 425…750, ascending
+            days.append(metric(day: String(format: "2026-08-%02d", i), rhr: 60,
+                               strain: 10, kcal: 900))
         }
-        // Today: a partial row — 120 kcal so far, an absurdly high kcal that would skew p75 if the
-        // exclusion broke.
-        days.append(metric(day: "2026-08-15", sleepMin: nil, rhr: nil, kcal: 120))
+        // Today: a partial row — some strain and calories banked, no RHR yet.
+        days.append(metric(day: "2026-08-15", sleepMin: nil, rhr: nil, strain: 12, kcal: 700))
+        let profile = UserProfile()   // 70 kg / 170 cm / 30 y — the estimator suite's standard
+        let halfDay = 43_200
 
-        let t = Repository.liveTargets(days: days, charge: 80, restScore: nil, todayKey: "2026-08-15")
-        XCTAssertEqual(t.hrCeilingBpm, 60 + DailyTargets.calmMarginBpm)
-        XCTAssertEqual(t.kcalToday, 120)
-        // No strain history → no kcal fit → the percentile fallback:
-        // p75 of 425…750 (14 values, step 25): pos 9.75 → 668.75 → rounded to 25 = 675.
-        XCTAssertEqual(t.kcalTargetKcal, 675)
-        // 8 h nights against the 8 h adult-target need: no debt, so tonight is the plain need.
-        XCTAssertEqual(t.sleepNeedTonightMin, 480)
-        // The effort target is readiness-driven off the charge-80 band (14–18 of 21) — pinned by the
-        // same chain the implementation uses, since the readiness level over fixtures is the
-        // engine's business, not this test's.
-        let expected21 = DailyTargets.effortTarget21(
-            band: CoupledView.optimalStrainRange(recovery: 80)!,
-            readiness: ReadinessEngine.evaluate(days: days).level,
-            restScore: nil)
-        XCTAssertEqual(t.effortTarget, Int((expected21 / UnitFormatter.effortScaleFactor).rounded()))
+        let t = Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                       profile: profile, secondsSinceMidnight: halfDay,
+                                       todayKey: "2026-08-15")
+
+        // Karvonen over the latest measured RHR (day 14's 60 — today has none): 60 + 0.3×127 = 98.
+        XCTAssertEqual(t.hrCeilingBpm, DailyTargets.calmCeilingBpm(restingHr: 60, age: 30))
+
+        // The session chain, pinned via the same calls the implementation makes.
+        let readiness = ReadinessEngine.evaluate(days: days).level
+        let session = DailyTargets.sessionPrescription(charge: 80, readiness: readiness, restScore: 81)
+        XCTAssertEqual(t.restDay, session == nil)
+        XCTAssertEqual(t.sessionMinutes, session?.minutes)
+        XCTAssertEqual(t.effortTarget,
+                       DailyTargets.effortTargetStored(currentEffortStored: 12, session: session))
+        XCTAssertEqual(t.kcalTargetKcal, session.map {
+            DailyTargets.sessionKcal(session: $0, profile: profile, restingHr: 60)
+        })
+
+        // Exercise calories: today's 700 minus half a day of resting accrual, floored at 0.
+        XCTAssertEqual(t.exerciseKcalToday,
+                       DailyTargets.exerciseKcalToday(dayKcalEstimate: 700, profile: profile,
+                                                      secondsSinceMidnight: halfDay))
+
+        // Sleep composes through the same chain (8 h nights → no ledger debt beyond the deadband).
+        XCTAssertEqual(t.sleepNeedTonightMin,
+                       DailyTargets.sleepNeedTonightMin(age: 30, charge: 80, restScore: 81,
+                                                        readiness: readiness, debtBalanceMin: 0))
     }
 
-    /// Days carrying BOTH effort and kcal switch the calorie target to the fit path: the
-    /// readiness-derived effort target priced in the user's own calories, with the baseline carried
-    /// for the coach to explain. The fit deliberately EXTRAPOLATES past the observed efforts — a
-    /// readiness target leading a sedentary history is the point (the 260829 "close to target at
-    /// effort 0" complaint), so the expected value here sits far above every history day.
-    func testPairedHistorySwitchesToTheFitTarget() {
-        var days: [DailyMetric] = []
-        for i in 0...13 {
-            days.append(metric(day: String(format: "2026-08-%02d", i + 1),
-                               strain: Double(i), kcal: 1400 + 22 * Double(i)))   // effort 0…13
-        }
-        let t = Repository.liveTargets(days: days, charge: 50, restScore: nil, todayKey: "2026-08-15")
-        XCTAssertEqual(t.kcalBaseline, 1400)
-        let expected21 = DailyTargets.effortTarget21(
-            band: CoupledView.optimalStrainRange(recovery: 50)!,   // 10–14 of 21
-            readiness: ReadinessEngine.evaluate(days: days).level,
-            restScore: nil)
-        let effortTarget = Int((expected21 / UnitFormatter.effortScaleFactor).rounded())
-        XCTAssertEqual(t.effortTarget, effortTarget)
-        XCTAssertGreaterThan(effortTarget, 13, "the readiness target must lead the sedentary history")
-        let fit = DailyTargets.EffortCalorieFit(interceptKcal: 1400, kcalPerEffortPoint: 22)
-        XCTAssertEqual(t.kcalTargetKcal,
-                       DailyTargets.calorieTargetKcal(effortTarget: effortTarget, fit: fit))
-    }
-
-    /// A short-sleeping fortnight: the base floors at the user's stated 7 h, and the debt (measured
-    /// against the debt surfaces' 8 h-floored reference) contributes only its capped junior term —
-    /// charge and rest, absent here, are the drivers that would move it night to night.
-    func testSleepDebtIsTheJuniorTerm() {
-        var days: [DailyMetric] = []
-        for i in 1...14 {
-            days.append(metric(day: String(format: "2026-08-%02d", i), sleepMin: 360))   // 6 h nights
-        }
-        let t = Repository.liveTargets(days: days, charge: nil, restScore: nil, todayKey: "2026-08-15")
-        XCTAssertEqual(t.sleepNeedTonightMin, 420 + 45)
-    }
-
-    /// The daytime-beat ceiling outranks the RHR fallback when supplied, and the flag records the
-    /// basis for the coach.
-    func testDaytimeCeilingOutranksTheFallback() {
+    /// No charge (calibrating install): the session defaults to the maintain base rather than
+    /// vanishing, and the ceiling still reads — the two do not share failure modes.
+    func testUnknownChargeKeepsANeutralSession() {
         let days = (1...10).map { metric(day: String(format: "2026-08-%02d", $0)) }
         let t = Repository.liveTargets(days: days, charge: nil, restScore: nil,
-                                       daytimeCeiling: 92, todayKey: "2026-08-15")
-        XCTAssertEqual(t.hrCeilingBpm, 92)
-        XCTAssertTrue(t.hrCeilingFromDaytimeBeats)
-        let fallback = Repository.liveTargets(days: days, charge: nil, restScore: nil,
-                                              todayKey: "2026-08-15")
-        XCTAssertEqual(fallback.hrCeilingBpm, 60 + DailyTargets.calmMarginBpm)
-        XCTAssertFalse(fallback.hrCeilingFromDaytimeBeats)
+                                       profile: UserProfile(), secondsSinceMidnight: 3600,
+                                       todayKey: "2026-08-15")
+        XCTAssertEqual(t.hrCeilingBpm, DailyTargets.calmCeilingBpm(restingHr: 60, age: 30))
+        let readiness = ReadinessEngine.evaluate(days: days).level
+        XCTAssertEqual(t.sessionMinutes,
+                       DailyTargets.sessionPrescription(charge: nil, readiness: readiness,
+                                                        restScore: nil)?.minutes)
     }
 }
