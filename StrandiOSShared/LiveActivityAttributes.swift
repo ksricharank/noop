@@ -26,9 +26,14 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         // The three-pillar targets (deterministic, `DailyTargets` — the same numbers the coach
         // synthesis cites). All optional with nil defaults for the same decode-compatibility reason
         // as `effort`: nil simply drops the denominator / column on the card.
-        /// The calm heart-rate ceiling (bpm) — the HR column's denominator; over it at rest is the
-        /// meditate cue (the widget tints the value).
+        /// HISTORY: briefly the HR column's denominator (a calm ceiling). Retired 260830 — the
+        /// maintainer replaced the threshold with the live autonomic read (`breathe`) — but the
+        /// field stays declared so activities written by the 268/269 builds still decode.
         public var hrCeiling: Int?
+        /// The breathe marker: true = a non-metabolic HRV dip right now (fast RMSSD well below the
+        /// rolling baseline while at rest) — the widget appends `#` to the HR and tints it. False =
+        /// calm; nil (also the older-build decode default) = not judgeable — no marker, no claim.
+        public var breathe: Bool?
         /// Active calories so far today.
         public var kcal: Int?
         /// Today's active-calorie target — the Cal column's denominator.
@@ -37,7 +42,7 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         public var sleepNeedMin: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
-                    live: Bool? = nil, hrCeiling: Int? = nil, kcal: Int? = nil,
+                    live: Bool? = nil, breathe: Bool? = nil, kcal: Int? = nil,
                     kcalTarget: Int? = nil, sleepNeedMin: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
@@ -45,7 +50,8 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.effort = effort
             self.rest = rest
             self.live = live
-            self.hrCeiling = hrCeiling
+            self.hrCeiling = nil
+            self.breathe = breathe
             self.kcal = kcal
             self.kcalTarget = kcalTarget
             self.sleepNeedMin = sleepNeedMin

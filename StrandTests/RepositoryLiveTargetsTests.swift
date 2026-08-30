@@ -40,9 +40,6 @@ final class RepositoryLiveTargetsTests: XCTestCase {
                                        profile: profile, secondsSinceMidnight: halfDay,
                                        todayKey: "2026-08-15")
 
-        // Karvonen over the latest measured RHR (day 14's 60 — today has none): 60 + 0.3×127 = 98.
-        XCTAssertEqual(t.hrCeilingBpm, DailyTargets.calmCeilingBpm(restingHr: 60, age: 30))
-
         // The session chain, pinned via the same calls the implementation makes.
         let readiness = ReadinessEngine.evaluate(days: days).level
         let session = DailyTargets.sessionPrescription(charge: 80, readiness: readiness, restScore: 81)
@@ -66,13 +63,12 @@ final class RepositoryLiveTargetsTests: XCTestCase {
     }
 
     /// No charge (calibrating install): the session defaults to the maintain base rather than
-    /// vanishing, and the ceiling still reads — the two do not share failure modes.
+    /// vanishing.
     func testUnknownChargeKeepsANeutralSession() {
         let days = (1...10).map { metric(day: String(format: "2026-08-%02d", $0)) }
         let t = Repository.liveTargets(days: days, charge: nil, restScore: nil,
                                        profile: UserProfile(), secondsSinceMidnight: 3600,
                                        todayKey: "2026-08-15")
-        XCTAssertEqual(t.hrCeilingBpm, DailyTargets.calmCeilingBpm(restingHr: 60, age: 30))
         let readiness = ReadinessEngine.evaluate(days: days).level
         XCTAssertEqual(t.sessionMinutes,
                        DailyTargets.sessionPrescription(charge: nil, readiness: readiness,
