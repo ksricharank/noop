@@ -201,32 +201,24 @@ struct StrandiOSApp: App {
                         rest: day.flatMap { model.repo.restScore(for: $0) }
                     )
                 }
-                // End the Live Activity the moment the link drops, even if no further HR tick arrives.
+                // Repaint the Live Activity on connection edges, even when no HR tick arrives to
+                // carry them. A DROP never ends the card any more (260829): the end was one-way —
+                // iOS forbids background starts — so charging the strap, or a transient timeout with
+                // the phone locked in a pocket, killed the island until the next app open. The drop
+                // edge paints the not-connected cue instead (holding the last values, plain); the
+                // reconnect edge repaints through the normal update path, whose `bondedEdge` bypasses
+                // the locked spacing so the cue clears immediately.
                 .onReceive(model.live.$connected) { isConnected in
-                    // …EXCEPT while the duty cycle has the phone locked: the link is silenced by
-                    // design there and can time out, and this immediate end was one-way — live ticks
-                    // are gated off while locked and iOS forbids background starts, so the island
-                    // stayed dead until the next app open (260828-0731, locked 07:17:33 → drop
-                    // 07:20:55 → island gone). Hold the frozen average; the reconnect's next sync
-                    // repaints it, and the foreground kick below ends it properly if the strap is
-                    // genuinely gone. This call-site gate is the ONLY disconnect path while locked:
-                    // no BLE link means no live ticks can reach `update` with connected=false.
-                    if !isConnected {
-                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-                        if LockedStreamPolicy.holdOnDisconnect(
-                            dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
-                            locked: DeviceLockState.isLocked(
-                                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
-                            model.live.append(log: "Duty cycle: link dropped while locked — holding the Lock-Screen average (standing reconnect will repaint)")
-                            return
-                        }
+                    guard isConnected else {
+                        liveActivity.noteDisconnected()
+                        return
                     }
                     // #911: same shared anchor as the heartRate site above, so the Live Activity, the
                     // widget, the watch and Today never disagree about which day they describe. Memoized
                     // (shares the heartRate site's cache; recomputes only on a data refresh or day-roll).
                     let day = model.repo.cachedWidgetAnchor()
                     liveActivity.update(
-                        bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
+                        bpm: model.bpm ?? model.live.heartRate,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
                         effort: day?.strain.map { Int($0.rounded()) },
