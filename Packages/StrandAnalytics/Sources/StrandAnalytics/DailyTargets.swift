@@ -74,14 +74,65 @@ public enum DailyTargets {
     /// underlying HR-only estimate does not have.
     public static let calorieRoundKcal = 25.0
 
-    /// Today's ACTIVE-calorie target (kcal) from the charge band over the user's recent daily
-    /// estimates (typically the last 14 days of `activeKcalEst`). Nil until `calorieMinDays` usable
-    /// days exist. Deterministic on purpose: the Live Activity cannot ask a model, and the synthesis
-    /// cites the same number the card shows.
+    /// FALLBACK calorie target: the charge band's percentile over the user's recent daily estimates
+    /// (typically the last 14 days of `activeKcalEst`). Nil until `calorieMinDays` usable days exist.
+    ///
+    /// Fallback rather than primary since 260829: a percentile of a mostly-sedentary history is
+    /// reachable by simply existing — the whole-day HR estimate is dominated by baseline daily
+    /// living, so "close to target on an effort-0 day" was the norm, which is useless as a
+    /// weight-loss stretch goal. The primary target is `calorieTargetKcal(effortTarget:fit:)`,
+    /// which prices the EFFORT target in calories; this percentile stands in only while the
+    /// history is too thin or too flat to fit.
     public static func calorieTargetKcal(charge: Int?, recentActiveKcal: [Double]) -> Int? {
         let usable = recentActiveKcal.filter { $0 > 0 }
         guard usable.count >= calorieMinDays else { return nil }
         guard let raw = percentile(usable, targetPercentile(charge: charge)) else { return nil }
+        return Int((raw / calorieRoundKcal).rounded() * calorieRoundKcal)
+    }
+
+    /// The user's own calories-per-effort-point line: a least-squares fit of daily active kcal
+    /// against daily effort over recent history, `kcal ≈ intercept + slope × effort`. The intercept
+    /// is their typical zero-effort day (the baseline burn of existing); the slope is what one
+    /// effort point costs THEM in calories — both personal, both explainable in one sentence.
+    public struct EffortCalorieFit: Equatable {
+        /// Typical whole-day active kcal at zero effort — the baseline burn.
+        public let interceptKcal: Double
+        /// Additional kcal per effort point.
+        public let kcalPerEffortPoint: Double
+        public init(interceptKcal: Double, kcalPerEffortPoint: Double) {
+            self.interceptKcal = interceptKcal
+            self.kcalPerEffortPoint = kcalPerEffortPoint
+        }
+    }
+
+    /// Minimum (effort, kcal) days before the fit is trusted — same cold-start honesty as the rest.
+    public static let effortFitMinDays = 5
+
+    /// Fit the calories-per-effort line, or nil when the history cannot support one: too few paired
+    /// days, no variance in effort (a flat week fits nothing), or a non-positive slope (noise saying
+    /// "more effort burns fewer calories" is not a line worth pricing a target on).
+    public static func effortCalorieFit(history: [(effort: Double, kcal: Double)]) -> EffortCalorieFit? {
+        let pts = history.filter { $0.kcal > 0 && $0.effort >= 0 }
+        guard pts.count >= effortFitMinDays else { return nil }
+        let n = Double(pts.count)
+        let meanX = pts.reduce(0) { $0 + $1.effort } / n
+        let meanY = pts.reduce(0) { $0 + $1.kcal } / n
+        let sxx = pts.reduce(0) { $0 + ($1.effort - meanX) * ($1.effort - meanX) }
+        guard sxx > 0 else { return nil }
+        let sxy = pts.reduce(0) { $0 + ($1.effort - meanX) * ($1.kcal - meanY) }
+        let slope = sxy / sxx
+        guard slope > 0 else { return nil }
+        let intercept = meanY - slope * meanX
+        guard intercept >= 0 else { return nil }
+        return EffortCalorieFit(interceptKcal: intercept, kcalPerEffortPoint: slope)
+    }
+
+    /// PRIMARY calorie target: the effort target priced in the user's own calories — baseline burn
+    /// plus what the target's effort points cost them. This is the "rely on strain, converted to
+    /// calories" contract: on an effort-0 day the count sits near the baseline and the visible gap
+    /// IS the exercise still owed, instead of a percentile a sedentary day drifts into anyway.
+    public static func calorieTargetKcal(effortTarget: Int, fit: EffortCalorieFit) -> Int {
+        let raw = fit.interceptKcal + fit.kcalPerEffortPoint * Double(effortTarget)
         return Int((raw / calorieRoundKcal).rounded() * calorieRoundKcal)
     }
 
