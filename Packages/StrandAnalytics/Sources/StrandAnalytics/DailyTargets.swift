@@ -136,14 +136,63 @@ public enum DailyTargets {
         return Int((raw / calorieRoundKcal).rounded() * calorieRoundKcal)
     }
 
-    // MARK: - Effort target (the synthesis' number; the card carries calories instead)
+    // MARK: - Effort target (readiness-driven; the synthesis' number, and what prices the calories)
 
-    /// Today's effort target (the app's 0–100 axis) from the same charge band over recent daily
-    /// effort scores. Same minimum-history rule as calories; rounded to a whole point.
-    public static func effortTarget(charge: Int?, recentEffort: [Double]) -> Int? {
-        let usable = recentEffort.filter { $0 > 0 }
-        guard usable.count >= calorieMinDays else { return nil }
-        return percentile(usable, targetPercentile(charge: charge)).map { Int($0.rounded()) }
+    // HISTORY (260829, same night it shipped): the first effort target was a percentile of the
+    // user's own recent effort history — which made the whole activity pillar self-referential: a
+    // sedentary fortnight could never ask for more than a sedentary fortnight. The target is now
+    // READINESS-driven, by explicit request ("determined by the readiness of my body ... not my
+    // history"): today's charge picks the approved #43 optimal-strain band, and the body's other
+    // signals position the target inside (or below) it. History plays no part.
+
+    /// A rundown body is prescribed BELOW the charge band by this many 21-axis points — several
+    /// recovery signals down outranks a charge score that hasn't caught up yet.
+    public static let rundownBelowBand21 = 3.0
+    /// The absolute floor for a prescribed target (21-axis): below this, "target" stops meaning
+    /// anything — rest is the prescription and the synthesis says so.
+    public static let effortFloor21 = 2.0
+    /// Primed stops one point short of the band's top: the top is the band's own ceiling for a
+    /// perfect day, not a standing prescription.
+    public static let primedHeadroom21 = 1.0
+    /// A Rest score below this drags the target one notch down (poor sleep is a readiness fact the
+    /// morning charge can understate); at or above `greatRestScore` it lifts one notch.
+    public static let poorRestScore = 50
+    public static let greatRestScore = 85
+
+    /// Today's effort target on the 0–21 coupled axis, from the body's state alone.
+    ///
+    /// - `band`: the approved #43 recovery→optimal-strain band (14–18 / 10–14 / 4–10 of 21) for
+    ///   today's charge — the caller resolves it (`CoupledView.optimalStrainRange`) so this stays
+    ///   one source of truth away from drift. Nil charge ⇒ no band ⇒ the caller passes nothing and
+    ///   there is no target (never guess).
+    /// - `readiness`: the multi-signal `ReadinessEngine` level (HRV / resting HR / respiration vs
+    ///   personal baselines, plus acute:chronic load and monotony) — it positions the target on a
+    ///   four-notch ladder: rundown = below the band, strained = the band's low, balanced (and
+    ///   insufficient, where the signals can't speak) = the midpoint, primed = just under the top.
+    /// - `restScore`: last night's Rest (0–100) shifts the ladder one notch down when poor, one up
+    ///   when excellent — sleep is the readiness input the other signals see only indirectly.
+    public static func effortTarget21(band: ClosedRange<Int>,
+                                      readiness: ReadinessEngine.Level,
+                                      restScore: Int?) -> Double {
+        let low = Double(band.lowerBound), high = Double(band.upperBound)
+        let ladder: [Double] = [
+            max(low - rundownBelowBand21, effortFloor21),   // 0: rundown — below the band
+            low,                                            // 1: strained — the band's floor
+            (low + high) / 2,                               // 2: balanced / insufficient — midpoint
+            high - primedHeadroom21,                        // 3: primed — just under the top
+        ]
+        var notch: Int
+        switch readiness {
+        case .rundown: notch = 0
+        case .strained: notch = 1
+        case .balanced, .insufficient: notch = 2
+        case .primed: notch = 3
+        }
+        if let rest = restScore {
+            if rest < poorRestScore { notch = max(notch - 1, 0) }
+            else if rest >= greatRestScore { notch = min(notch + 1, 3) }
+        }
+        return ladder[notch]
     }
 
     // MARK: - Tonight's sleep need
