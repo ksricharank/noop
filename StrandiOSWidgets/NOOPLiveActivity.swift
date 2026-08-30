@@ -12,9 +12,14 @@ struct NOOPLiveActivity: Widget {
             // others (the old caption-title + 26 pt bpm read as "live beat" even when the locked
             // duty cycle is showing a window average; equal columns read as the summary they are).
             HStack(spacing: 14) {
+                // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
+                // down (charging, out of range — the card now holds its last values through a drop
+                // instead of vanishing), red while connected. The numbers stay primary either way;
+                // they are real, just frozen — and `live == false` already strips the tilde.
                 Image(systemName: "waveform.path.ecg")
                     .font(.title2)
-                    .foregroundStyle(StrandPalette.statusCritical)
+                    .foregroundStyle(context.state.bonded
+                                     ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
                 // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
                 // is the plain settled number. Deliberately this way round: when the phone locks and
@@ -37,8 +42,10 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
+                    // Same not-connected cue as the banner's icon: grey heart while the link is down.
                     Label(hrText(context.state), systemImage: "heart.fill")
-                        .foregroundStyle(StrandPalette.statusCritical)
+                        .foregroundStyle(context.state.bonded
+                                         ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
@@ -58,7 +65,12 @@ struct NOOPLiveActivity: Widget {
                     Text(context.attributes.title).font(.caption).foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                // Grey heart = link down (the compact face of the same cue). Deliberately NOT applied
+                // to the minimal slot below: demoted next to another app's activity, the red tint is
+                // the only thing identifying the number as ours.
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(context.state.bonded
+                                     ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
                 Text(hrText(context.state))
             } minimal: {
