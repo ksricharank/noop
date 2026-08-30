@@ -133,9 +133,10 @@ struct SleepDeletionSnapshot: Equatable {
 /// denominator). Top-level rather than nested in `Repository` so it carries no MainActor isolation —
 /// the coach's `nonisolated` formatters and the widget-facing controller both hold plain values.
 struct LiveTargets: Equatable {
-    /// The calm heart-rate ceiling (bpm) — the "go breathe" line the card's HR denominator shows:
-    /// last night's resting HR + 30% of today's heart-rate reserve (Karvonen; Tanaka HRmax).
-    var hrCeilingBpm: Int?
+    // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
+    // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
+    // maintainer replaced the threshold entirely with the live autonomic breathe cue (`AppModel.
+    // breatheCue` → the card's # marker), which is an instant HRV read, not a number to cross.
     /// Today's EXERCISE calories so far — the whole-day HR estimate minus the resting metabolism the
     /// day has accrued (the raw `activeKcalEst` credits resting burn for every worn second, which is
     /// why it reads ~1,400 by evening having done nothing). What the card's Cal numerator shows.
@@ -650,7 +651,6 @@ final class Repository: ObservableObject {
         let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
                                       needHours: ledgerNeedMin / 60.0)
         return LiveTargets(
-            hrCeilingBpm: DailyTargets.calmCeilingBpm(restingHr: latestRhr, age: profile.age),
             exerciseKcalToday: DailyTargets.exerciseKcalToday(
                 dayKcalEstimate: todayRow?.activeKcalEst, profile: profile,
                 secondsSinceMidnight: secondsSinceMidnight),

@@ -25,30 +25,14 @@ public enum DailyTargets {
         return 208.0 - 0.7 * a
     }
 
-    // MARK: - Calm heart-rate ceiling (the "go breathe" line)
-
-    // HISTORY: v1 (260829) was "recent nightly RHR median + 25" — the +25 was an invented constant,
-    // rejected. v2 (260830, hours old) was the 85th percentile of the last week's daytime beats —
-    // self-calibrating but still "what it has been the last few days", rejected under the doctrine.
-    // v3 is instant physiology: the top of the REST zone on today's own heart-rate reserve.
-
-    /// The ceiling sits at this fraction of heart-rate reserve above today's resting HR — the
-    /// established Karvonen boundary under which activity reads as rest/very-light. At rest ABOVE
-    /// it, the heart is working like light exercise with no exercise present: the meditate cue.
-    public static let calmCeilingHrrFraction = 0.30
-    /// Sanity clamp — a corrupted RHR or age must not produce a 40 or a 180.
-    public static let calmCeilingRange = 70...115
-
-    /// The calm ceiling (bpm): last night's resting HR + 30% of today's heart-rate reserve
-    /// (Karvonen, Tanaka HRmax). Both inputs are the body's current state — the overnight RHR is
-    /// the freshest resting measurement there is — and neither is a trailing-window habit. Nil only
-    /// when no resting HR has ever been measured.
-    public static func calmCeilingBpm(restingHr: Int?, age: Double?) -> Int? {
-        guard let rhr = restingHr, rhr > 0 else { return nil }
-        let ceiling = Double(rhr) + calmCeilingHrrFraction * (hrMax(age: age) - Double(rhr))
-        return min(max(Int(ceiling.rounded()), calmCeilingRange.lowerBound),
-                   calmCeilingRange.upperBound)
-    }
+    // HISTORY — the calm heart-rate ceiling (260829–30, retired the same night): three attempts at
+    // a "go breathe" THRESHOLD lived here — nightly-RHR median + 25 (invented constant), the 85th
+    // percentile of a week's daytime beats (still trailing history), and Karvonen 30%-of-reserve
+    // (honest physiology, but a near-constant the maintainer rightly called too crude: "always 96?
+    // come on"). All three answered the wrong question. The breathe verdict is not a number to
+    // cross — it is the live autonomic STATE, and it now comes from
+    // `StressOnsetDetector.breatheCue` (fast RMSSD vs the rolling baseline, exercise-gated): the
+    // card's # marker, changing minute to minute, with no denominator at all.
 
     // MARK: - The charge bands (the #43 recovery bands, shared by the session and sleep asks)
 

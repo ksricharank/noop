@@ -406,6 +406,10 @@ final class AICoachEngine: ObservableObject {
     }
 
     private let repo: Repository
+    /// The live autonomic read (`AppModel.breatheCue` — the card's # marker), lent by the app layer
+    /// so the synthesis states the SAME verdict the card is showing. Nil closure (tests, macOS
+    /// wiring gaps) or nil value both read as "not judgeable" — no claim either way.
+    var currentBreathe: (() -> Bool?)?
     private let session: URLSession
 
     private static let providerKey = "ai.provider"
@@ -1021,6 +1025,7 @@ final class AICoachEngine: ObservableObject {
             charge: anchor?.recovery.map { Int($0.rounded()) },
             effortToday: anchor?.strain.map { Int($0.rounded()) },
             currentBpm: currentBpm,
+            breatheNow: currentBreathe?() ?? nil,
             midsleepSec: await repo.habitualMidsleepSec(),
             typicalSleepHours: BatteryEstimator.typicalSleepHours(
                 nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
@@ -1421,19 +1426,28 @@ final class AICoachEngine: ObservableObject {
                                               charge: Int?,
                                               effortToday: Int?,
                                               currentBpm: Int?,
+                                              breatheNow: Bool?,
                                               midsleepSec: Int?,
                                               typicalSleepHours: Double?,
                                               effortScale: EffortScale = .hundred) -> String {
         var lines: [String] = []
 
-        // Pillar 2 — breathing & heart rate: the calm ceiling, and where the heart sits right now.
-        if let ceiling = targets.hrCeilingBpm {
-            var line = "Calm heart-rate ceiling: \(ceiling) bpm (last night's resting HR + 30% of "
-                       + "today's heart-rate reserve — Karvonen; above it AT REST = elevated)."
-            if let bpm = currentBpm {
-                line += bpm > ceiling
-                    ? " Right now: \(bpm) bpm — ELEVATED at rest; a breathing or meditation break is the prescription."
-                    : " Right now: \(bpm) bpm — within the calm range."
+        // Pillar 2 — breathing & heart rate: the live autonomic read behind the card's # marker.
+        // No ceiling, no threshold (both retired 260830): the verdict is the body's own — fast
+        // RMSSD against the rolling baseline, exercise-gated — and a minute it cannot judge is said
+        // plainly, never guessed.
+        if let bpm = currentBpm {
+            var line = "Heart right now: \(bpm) bpm; autonomic read: "
+            switch breatheNow {
+            case .some(true):
+                line += "STRESSED — beat-to-beat variability has dipped well below the rolling "
+                        + "baseline while at rest; the card is showing the # breathe marker, and a "
+                        + "short breathing or meditation break is the prescription."
+            case .some(false):
+                line += "calm (variability in its normal range, or the elevation is exercise doing "
+                        + "its job)."
+            case .none:
+                line += "not judgeable this minute (too few clean beats) — no claim either way."
             }
             lines.append(line)
         }

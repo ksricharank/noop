@@ -7,25 +7,6 @@ import XCTest
 /// here (see the HISTORY notes in `DailyTargets`).
 final class DailyTargetsTests: XCTestCase {
 
-    // MARK: - Calm ceiling (Karvonen)
-
-    /// Last night's RHR + 30% of the Tanaka heart-rate reserve: rhr 60 at age 30 → HRmax 187 →
-    /// 60 + 0.3 × 127 = 98. No invented margin — both numbers are published physiology over
-    /// today's measurement.
-    func testCeilingIsThirtyPercentOfReserveAboveRest() {
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 60, age: 30), 98)
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 60, age: nil), 98)   // unknown age → 30
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 50, age: 50), 87)    // HRmax 173
-    }
-
-    /// No resting HR has ever been measured → no ceiling (never guessed); corrupted inputs clamp.
-    func testCeilingRefusesAndClamps() {
-        XCTAssertNil(DailyTargets.calmCeilingBpm(restingHr: nil, age: 30))
-        XCTAssertNil(DailyTargets.calmCeilingBpm(restingHr: 0, age: 30))
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 110, age: 20), 115)  // cap
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 5, age: 90), 70)     // floor
-    }
-
     // MARK: - The prescribed session
 
     /// Charge picks the base minutes, readiness the notch: a balanced green day is the full 45 min
