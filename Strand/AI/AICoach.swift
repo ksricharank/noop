@@ -1428,8 +1428,11 @@ final class AICoachEngine: ObservableObject {
 
         // Pillar 2 — breathing & heart rate: the calm ceiling, and where the heart sits right now.
         if let ceiling = targets.hrCeilingBpm {
-            var line = "Calm heart-rate ceiling: \(ceiling) bpm (recent nightly resting-HR median + "
-                       + "\(DailyTargets.calmMarginBpm); above it AT REST = elevated)."
+            let ceilingBasis = targets.hrCeilingFromDaytimeBeats
+                ? "the 85th percentile of the user's own last-week daytime heart rate"
+                : "cold-start fallback: recent nightly resting-HR median + \(DailyTargets.calmMarginBpm)"
+            var line = "Calm heart-rate ceiling: \(ceiling) bpm (\(ceilingBasis); above it AT REST "
+                       + "= elevated)."
             if let bpm = currentBpm {
                 line += bpm > ceiling
                     ? " Right now: \(bpm) bpm — ELEVATED at rest; a breathing or meditation break is the prescription."

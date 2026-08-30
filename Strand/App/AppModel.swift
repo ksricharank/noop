@@ -744,6 +744,12 @@ final class AppModel: ObservableObject {
             if live.heartRate == nil && live.rr.isEmpty { resetSmoothing() }
             return
         }
+        // Calm-ceiling histogram (260830): bank the accepted beat while outside the sleep window —
+        // the ceiling is the 85th percentile of these daytime beats (DaytimeHrHistogram); night beats
+        // would drag it toward nightly RHR and make daytime desk life read as "elevated".
+        if !RescoreBackgroundScheduler.isInSleepWindow {
+            DaytimeHrHistogram.record(bpm: Int(inst.rounded()))
+        }
         let now = Date()
         hrWindow.append((now, inst))
         hrWindow.removeAll { now.timeIntervalSince($0.t) > 10 }   // ~10s window
