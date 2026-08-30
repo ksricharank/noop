@@ -74,6 +74,19 @@ FEATURES=(
   "feature/dynamic-ui-bug-fix"
   "feature/dynamic-island-minimal-hr"
   "feature/synthesis-horizons"
+  # ── 260829 trio — STACK-DEPENDENT, TEMPORARY HOMES ─────────────────────────────────────────
+  # All three are based on the release-10614-2 ASSEMBLY (not upstream/main): they edit
+  # LiveActivityController / the widget / the presentation policy, which three earlier branches
+  # already fight over, and re-fighting those merges for one night was not worth it.
+  # three-pillar-card additionally stacks ON island-disconnect-hold (both edit the controller
+  # and widget). CONSEQUENCES: (a) release 10.6.0.14.5 was built by EXTENDING release-10614-2
+  # (see docs/releases/fork/v10.6.0.14.5.md), not by this script; (b) after any upstream sync
+  # these three MUST be re-homed before this script can stack them cleanly. The planned v15
+  # refactor (fold the fork's features into a simpler list) is where that happens — do not
+  # upstream-sync before it without re-homing these.
+  "feature/rescore-lock-convergence"
+  "feature/island-disconnect-hold"
+  "feature/three-pillar-card"
   "feature/release-by-default"
 )
 
