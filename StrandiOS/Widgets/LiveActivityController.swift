@@ -192,7 +192,7 @@ final class LiveActivityController {
                                                             bonded: connected, effort: effort, rest: rest,
                                                             live: !locked,
                                                             hrCeiling: targets?.hrCeilingBpm,
-                                                            kcal: targets?.kcalToday,
+                                                            kcal: targets?.exerciseKcalToday,
                                                             kcalTarget: targets?.kcalTargetKcal,
                                                             sleepNeedMin: targets?.sleepNeedTonightMin)
             // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
@@ -208,7 +208,7 @@ final class LiveActivityController {
                                                             bonded: connected, effort: effort, rest: rest,
                                                             live: !locked,
                                                             hrCeiling: targets?.hrCeilingBpm,
-                                                            kcal: targets?.kcalToday,
+                                                            kcal: targets?.exerciseKcalToday,
                                                             kcalTarget: targets?.kcalTargetKcal,
                                                             sleepNeedMin: targets?.sleepNeedTonightMin)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
@@ -294,7 +294,7 @@ final class LiveActivityController {
                                                         bonded: connected, effort: effort, rest: rest,
                                                         live: false,
                                                         hrCeiling: targets?.hrCeilingBpm,
-                                                        kcal: targets?.kcalToday,
+                                                        kcal: targets?.exerciseKcalToday,
                                                         kcalTarget: targets?.kcalTargetKcal,
                                                         sleepNeedMin: targets?.sleepNeedTonightMin)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
