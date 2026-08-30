@@ -5,14 +5,6 @@ import StrandDesign
 
 /// Live Activity for an active live-HR session — shown on the Lock Screen and in the Dynamic Island.
 struct NOOPLiveActivity: Widget {
-    /// The heart rate to draw: none once iOS has marked the banner stale. Each push is fresh for 30 s
-    /// (`LiveActivityController.staleAfter`) and NOOP re-pushes a steady number well inside that, so a stale banner
-    /// means the readings stopped — the strap off the wrist, or out of reach — even while NOOP itself is asleep and
-    /// cannot say so: iOS redraws the banner at the stale date on its own.
-    static func shownBpm(_ context: ActivityViewContext<NOOPActivityAttributes>) -> Int? {
-        context.isStale ? nil : context.state.bpm
-    }
-
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
             // Lock Screen / banner presentation: four EQUAL stat columns — HR, Charge, Effort,
@@ -20,15 +12,20 @@ struct NOOPLiveActivity: Widget {
             // others (the old caption-title + 26 pt bpm read as "live beat" even when the locked
             // duty cycle is showing a window average; equal columns read as the summary they are).
             HStack(spacing: 14) {
+                // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
+                // down (charging, out of range — the card now holds its last values through a drop
+                // instead of vanishing), red while connected. The numbers stay primary either way;
+                // they are real, just frozen — and `live == false` already strips the tilde.
                 Image(systemName: "waveform.path.ecg")
                     .font(.title2)
-                    .foregroundStyle(StrandPalette.statusCritical)
+                    .foregroundStyle(context.state.bonded
+                                     ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
                 // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
                 // is the plain settled number. Deliberately this way round: when the phone locks and
                 // pushes stop reaching the card, whatever is on it is by definition not live — the
                 // plain form it is left holding stays honest without needing a repaint.
-                bannerStat(label: "HR", value: hrText(context))
+                bannerStat(label: "HR", value: hrText(context.state))
                 Spacer()
                 bannerStat(label: "Charge",
                            value: context.state.recovery.map(String.init) ?? "–")
@@ -45,8 +42,10 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(hrText(context), systemImage: "heart.fill")
-                        .foregroundStyle(StrandPalette.statusCritical)
+                    // Same not-connected cue as the banner's icon: grey heart while the link is down.
+                    Label(hrText(context.state), systemImage: "heart.fill")
+                        .foregroundStyle(context.state.bonded
+                                         ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
@@ -66,9 +65,14 @@ struct NOOPLiveActivity: Widget {
                     Text(context.attributes.title).font(.caption).foregroundStyle(.secondary)
                 }
             } compactLeading: {
-                Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
+                // Grey heart = link down (the compact face of the same cue). Deliberately NOT applied
+                // to the minimal slot below: demoted next to another app's activity, the red tint is
+                // the only thing identifying the number as ours.
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(context.state.bonded
+                                     ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                Text(hrText(context))
+                Text(hrText(context.state))
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
                 // — it is the only presentation the user sees then, so it has to carry the number. A bare
@@ -110,17 +114,6 @@ struct NOOPLiveActivity: Widget {
 private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
     guard let bpm = state.bpm else { return "–" }
     return state.live == true ? "~\(bpm)" : "\(bpm)"
-}
-
-/// The HR column’s text: stale-aware through `NOOPLiveActivity.shownBpm` (iOS’s stale date is what
-/// clears a number nothing can repaint), with the fork’s liveness mark on top. The tilde marks a LIVE
-/// beat ("~72", still moving); a window average / frozen value is the plain settled number — and a
-/// state without the flag (an inherited card) is treated as not-live, so it never claims liveness it
-/// can’t back. File-scope for the same reason as `bannerStat`. The `minimal` slot deliberately does
-/// NOT use this: it clips rather than shrinks, and the tilde would cost the third digit of a workout HR.
-private func hrText(_ context: ActivityViewContext<NOOPActivityAttributes>) -> String {
-    guard let bpm = NOOPLiveActivity.shownBpm(context) else { return "–" }
-    return context.state.live == true ? "~\(bpm)" : "\(bpm)"
 }
 
 /// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`

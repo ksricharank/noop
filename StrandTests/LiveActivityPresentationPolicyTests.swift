@@ -62,13 +62,15 @@ final class LiveActivityPresentationPolicyTests: XCTestCase {
                       "the explicit opt-out should be reported ahead of the window; got: \(reason)")
     }
 
-    /// A dropped live link ends the activity — `bonded` stays true across disconnects, and keying off it
-    /// is what once left a frozen, fabricated HR on the Lock Screen after the strap went out of range.
-    func testDisconnectSuppresses() {
+    /// A dropped live link HOLDS the activity rather than ending it (260829). The end was one-way —
+    /// iOS forbids background starts — so charging the strap or a locked pocket-drop killed the island
+    /// until the next app open. Honesty about the frozen number (#911, the reason this used to
+    /// suppress) is carried by the drop-edge repaint instead: not-live, not-connected cue.
+    func testDisconnectHoldsRatherThanSuppresses() {
         let decision = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: false, connected: false, hasBPM: true)
-        guard case .suppress(let reason) = decision else {
-            return XCTFail("expected suppression when disconnected, got \(decision)")
+        guard case .holdIfShowing(let reason) = decision else {
+            return XCTFail("expected a hold when disconnected, got \(decision)")
         }
         XCTAssertTrue(reason.contains("not connected"), "got: \(reason)")
     }
@@ -84,16 +86,31 @@ final class LiveActivityPresentationPolicyTests: XCTestCase {
         }
     }
 
-    /// But a missing sample never overrides a real teardown reason: inside the window, or disconnected,
-    /// the activity still comes down rather than lingering on the last value.
-    func testWindowAndDisconnectOutrankAMissingSample() {
+    /// A missing sample never overrides a real teardown reason: inside the window the activity still
+    /// comes down. A dropped link is no longer a teardown reason — it holds, sample or not, and the
+    /// reason names the link so the two hold flavours stay distinguishable in the log.
+    func testTheWindowOutranksAMissingSampleAndADropStillHolds() {
         guard case .suppress = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: true, connected: true, hasBPM: false) else {
             return XCTFail("sleep window must suppress even with no sample")
         }
-        guard case .suppress = LiveActivityPresentationPolicy.decide(
+        guard case .holdIfShowing(let reason) = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: false, connected: false, hasBPM: false) else {
-            return XCTFail("a dropped link must suppress even with no sample")
+            return XCTFail("a dropped link must hold even with no sample")
+        }
+        XCTAssertTrue(reason.contains("not connected"), "got: \(reason)")
+    }
+
+    /// The toggle and the window still outrank a drop — an opted-out or sleeping card comes down even
+    /// while the link is down, or the hold would pin a card the user asked to remove.
+    func testTeardownReasonsOutrankTheDropHold() {
+        guard case .suppress = LiveActivityPresentationPolicy.decide(
+            enabledByUser: false, inSleepWindow: false, connected: false, hasBPM: true) else {
+            return XCTFail("the opt-out must suppress even while disconnected")
+        }
+        guard case .suppress = LiveActivityPresentationPolicy.decide(
+            enabledByUser: true, inSleepWindow: true, connected: false, hasBPM: true) else {
+            return XCTFail("the sleep window must suppress even while disconnected")
         }
     }
 }

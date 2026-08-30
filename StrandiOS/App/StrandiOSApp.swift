@@ -277,6 +277,30 @@ struct StrandiOSApp: App {
                     // about the session pushes through `pushLiftActivity` below, carrying the current number.
                     liftActivity.updateHeartRate(model.live.connected ? (model.bpm ?? hr) : nil)
                 }
+                // Repaint the Live Activity on connection edges, even when no HR tick arrives to
+                // carry them. A DROP never ends the card any more (260829): the end was one-way —
+                // iOS forbids background starts — so charging the strap, or a transient timeout with
+                // the phone locked in a pocket, killed the island until the next app open. The drop
+                // edge paints the not-connected cue instead (holding the last values, plain); the
+                // reconnect edge repaints through the normal update path, whose `bondedEdge` bypasses
+                // the locked spacing so the cue clears immediately.
+                .onReceive(model.live.$connected) { isConnected in
+                    guard isConnected else {
+                        liveActivity.noteDisconnected()
+                        return
+                    }
+                    // #911: same shared anchor as the heartRate site above, so the Live Activity, the
+                    // widget, the watch and Today never disagree about which day they describe. Memoized
+                    // (shares the heartRate site's cache; recomputes only on a data refresh or day-roll).
+                    let day = model.repo.cachedWidgetAnchor()
+                    liveActivity.update(
+                        bpm: model.bpm ?? model.live.heartRate,
+                        recovery: day?.recovery.map { Int($0.rounded()) },
+                        connected: isConnected && !liftSession.isActive && !model.live.backfilling,
+                        effort: day?.strain.map { Int($0.rounded()) },
+                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                    )
+                }
                 // The gym session's own banner follows each change to the session once it has landed —
                 // a stage, typed numbers, a rest's end — and the heart rate above; the controller decides
                 // what is worth pushing, and the banner's clocks tick on their own. A strap step is pushed
