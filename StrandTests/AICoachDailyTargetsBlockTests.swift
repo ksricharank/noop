@@ -9,12 +9,15 @@ import XCTest
 final class AICoachDailyTargetsBlockTests: XCTestCase {
 
     private func targets(ceiling: Int? = 85, kcalToday: Int? = 320, kcalTarget: Int? = 700,
-                         sleepNeed: Int? = 510, effortTarget: Int? = 62) -> LiveTargets {
+                         kcalBaseline: Int? = nil, sleepNeed: Int? = 510,
+                         effortTarget: Int? = 62) -> LiveTargets {
         LiveTargets(hrCeilingBpm: ceiling, kcalToday: kcalToday, kcalTargetKcal: kcalTarget,
-                               sleepNeedTonightMin: sleepNeed, effortTarget: effortTarget)
+                    kcalBaseline: kcalBaseline, sleepNeedTonightMin: sleepNeed,
+                    effortTarget: effortTarget)
     }
 
-    /// The full block names all three pillars' numbers and the band that set the activity targets.
+    /// The full block names all three pillars' numbers and the band that set the activity targets
+    /// (percentile fallback here — no fit baseline supplied).
     func testBlockCarriesAllThreePillars() {
         let block = AICoachEngine.dailyTargetsBlock(
             targets: targets(), charge: 81, effortToday: 34, currentBpm: 72,
@@ -25,6 +28,20 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("so far today: 320"), block)
         XCTAssertTrue(block.contains("Effort target (0-100): 62"), block)
         XCTAssertTrue(block.contains("target 8h30 asleep"), block)
+    }
+
+    /// A fit-based calorie target carries its decomposition — the coach must be able to EXPLAIN the
+    /// number as baseline + the effort target's exercise, not present it bare (the 260829 "how am I
+    /// close to target at effort 0" question is exactly what this line answers).
+    func testFitBasedCalorieTargetExplainsItself() {
+        let block = AICoachEngine.dailyTargetsBlock(
+            targets: targets(kcalTarget: 1650, kcalBaseline: 1450, effortTarget: 10),
+            charge: 50, effortToday: 0, currentBpm: nil,
+            midsleepSec: nil, typicalSleepHours: nil)
+        XCTAssertTrue(block.contains("1650 kcal"), block)
+        XCTAssertTrue(block.contains("1450 kcal zero-effort baseline"), block)
+        XCTAssertTrue(block.contains("10-point effort target"), block)
+        XCTAssertFalse(block.contains("maintain day"), "a fit-based target must not also claim a band basis")
     }
 
     /// Over the ceiling reads as ELEVATED with the breathing prescription — the pillar-2 cue.
@@ -41,7 +58,7 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
     /// neutral band rather than guessing an aggressive one.
     func testColdStartEmitsNothing() {
         let empty = LiveTargets(hrCeilingBpm: nil, kcalToday: nil, kcalTargetKcal: nil,
-                                           sleepNeedTonightMin: nil, effortTarget: nil)
+                                kcalBaseline: nil, sleepNeedTonightMin: nil, effortTarget: nil)
         XCTAssertEqual(AICoachEngine.dailyTargetsBlock(
             targets: empty, charge: nil, effortToday: nil, currentBpm: nil,
             midsleepSec: nil, typicalSleepHours: nil), "")
