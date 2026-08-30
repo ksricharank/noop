@@ -1,162 +1,151 @@
 import XCTest
 @testable import StrandAnalytics
 
-/// The deterministic daily targets behind the three-pillar Live Activity card. Pinned because the
-/// card prints these numbers with no surrounding prose — `72/85` has to mean the same thing next
-/// month — and because the synthesis cites the same figures: the two surfaces disagreeing would be
-/// the parity bug this type exists to prevent.
+/// The body-state daily targets behind the three-pillar Live Activity card. Pinned because the card
+/// prints these numbers with no surrounding prose, the synthesis cites the same figures, and the
+/// doctrine they encode — instant physiology, never habit — died three formula revisions to get
+/// here (see the HISTORY notes in `DailyTargets`).
 final class DailyTargetsTests: XCTestCase {
 
-    // MARK: - Calm ceiling
+    // MARK: - Calm ceiling (Karvonen)
 
-    /// Median of the recent nightly RHRs + the stated margin. Median, not mean: one feverish night
-    /// must not move the "go breathe" line.
-    func testCalmCeilingIsMedianPlusMargin() {
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(recentRestingHr: [59, 60, 66, 65, 72]), 65 + 25)
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(recentRestingHr: [60, 61, 62]), 61 + 25)
+    /// Last night's RHR + 30% of the Tanaka heart-rate reserve: rhr 60 at age 30 → HRmax 187 →
+    /// 60 + 0.3 × 127 = 98. No invented margin — both numbers are published physiology over
+    /// today's measurement.
+    func testCeilingIsThirtyPercentOfReserveAboveRest() {
+        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 60, age: 30), 98)
+        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 60, age: nil), 98)   // unknown age → 30
+        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 50, age: 50), 87)    // HRmax 173
     }
 
-    /// Cold start is honest: fewer than the minimum nights → no ceiling, never a guessed one. Zeros
-    /// (no-data nights) do not count toward the minimum.
-    func testCalmCeilingNeedsHistory() {
-        XCTAssertNil(DailyTargets.calmCeilingBpm(recentRestingHr: []))
-        XCTAssertNil(DailyTargets.calmCeilingBpm(recentRestingHr: [60, 62]))
-        XCTAssertNil(DailyTargets.calmCeilingBpm(recentRestingHr: [60, 62, 0]))
+    /// No resting HR has ever been measured → no ceiling (never guessed); corrupted inputs clamp.
+    func testCeilingRefusesAndClamps() {
+        XCTAssertNil(DailyTargets.calmCeilingBpm(restingHr: nil, age: 30))
+        XCTAssertNil(DailyTargets.calmCeilingBpm(restingHr: 0, age: 30))
+        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 110, age: 20), 115)  // cap
+        XCTAssertEqual(DailyTargets.calmCeilingBpm(restingHr: 5, age: 90), 70)     // floor
     }
 
-    /// The clamp holds at both ends — a 38-RHR athlete does not get a 63 ceiling that flags desk
-    /// life, and corrupted highs cannot push "calm" past 110.
-    func testCalmCeilingClamps() {
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(recentRestingHr: [38, 39, 40]), 70)
-        XCTAssertEqual(DailyTargets.calmCeilingBpm(recentRestingHr: [120, 130, 140]), 110)
+    // MARK: - The prescribed session
+
+    /// Charge picks the base minutes, readiness the notch: a balanced green day is the full 45 min
+    /// at zone-2; primed lifts to 60 min at zone-3; strained halves; rundown prescribes REST (nil).
+    func testSessionLadder() {
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .balanced, restScore: nil),
+                       .init(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2))
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: nil),
+                       .init(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3))
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .strained, restScore: nil),
+                       .init(minutes: 15, hrrFraction: 0.65, edwardsZoneWeight: 2))
+        XCTAssertNil(DailyTargets.sessionPrescription(charge: 81, readiness: .rundown, restScore: nil))
+        // Unknown charge reads as maintain; insufficient readiness as balanced — neutral, never bold.
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: nil, readiness: .insufficient, restScore: nil),
+                       .init(minutes: 30, hrrFraction: 0.65, edwardsZoneWeight: 2))
     }
 
-    // MARK: - The charge bands
-
-    /// The bands mirror the coach prompt verbatim: 67+ pushes at p75, 34–66 maintains at the median,
-    /// ≤33 recovers at p25, and an unscored morning reads as maintain — neutral, never aggressive.
-    func testBandsMatchTheCoachPrescription() {
-        XCTAssertEqual(DailyTargets.targetPercentile(charge: 67), 0.75)
-        XCTAssertEqual(DailyTargets.targetPercentile(charge: 66), 0.5)
-        XCTAssertEqual(DailyTargets.targetPercentile(charge: 34), 0.5)
-        XCTAssertEqual(DailyTargets.targetPercentile(charge: 33), 0.25)
-        XCTAssertEqual(DailyTargets.targetPercentile(charge: nil), 0.5)
+    /// Last night's Rest shifts the ladder one notch either way — a poor night can turn a strained
+    /// read into a rest day, and the shifts clamp at the ladder's ends.
+    func testRestShiftsTheSessionNotch() {
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .balanced, restScore: 40),
+                       .init(minutes: 15, hrrFraction: 0.65, edwardsZoneWeight: 2))
+        XCTAssertNil(DailyTargets.sessionPrescription(charge: 50, readiness: .strained, restScore: 40))
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .balanced, restScore: 90),
+                       .init(minutes: 40, hrrFraction: 0.75, edwardsZoneWeight: 3))
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: 90),
+                       .init(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3))
     }
 
-    // MARK: - Calorie target
-
-    /// A push day targets the user's own bigger recent days (p75 of their history), rounded to the
-    /// stated granularity — the estimate is HR-only, and 1,187 would claim precision it lacks.
-    func testCalorieTargetByBandAndRounding() {
-        let history: [Double] = [400, 500, 600, 700, 800]   // p75 = 700, median = 600, p25 = 500
-        XCTAssertEqual(DailyTargets.calorieTargetKcal(charge: 80, recentActiveKcal: history), 700)
-        XCTAssertEqual(DailyTargets.calorieTargetKcal(charge: 50, recentActiveKcal: history), 600)
-        XCTAssertEqual(DailyTargets.calorieTargetKcal(charge: 20, recentActiveKcal: history), 500)
-        // Interpolated percentile rounds to 25 kcal: p75 of [400,500,610,700] = 632.5 → 625.
-        XCTAssertEqual(DailyTargets.calorieTargetKcal(charge: 80,
-                                                      recentActiveKcal: [400, 500, 610, 700]), 625)
+    /// The session HR is plain Karvonen at the prescription's %HRR: rhr 60, age 30, zone-2 mid →
+    /// 60 + 0.65 × 127 ≈ 143.
+    func testSessionHrIsKarvonen() {
+        let z2 = DailyTargets.SessionPrescription(minutes: 30, hrrFraction: 0.65, edwardsZoneWeight: 2)
+        XCTAssertEqual(DailyTargets.sessionHrBpm(session: z2, restingHr: 60, age: 30), 143)
     }
 
-    /// Same cold-start honesty as the ceiling: no target until enough usable days, zero-days dropped.
-    func testCalorieTargetNeedsHistory() {
-        XCTAssertNil(DailyTargets.calorieTargetKcal(charge: 80, recentActiveKcal: [500, 600]))
-        XCTAssertNil(DailyTargets.calorieTargetKcal(charge: 80, recentActiveKcal: [500, 600, 0]))
+    // MARK: - Effort target (the session through the app's own strain curve)
+
+    /// A 45-minute zone-2 session from effort 0 is 90 Edwards TRIMP → 100·ln(91)/ln(7201) ≈ 51
+    /// stored ≈ 10.7 of 21 — the arithmetic that lands exactly on the maintainer's "optimal effort
+    /// is around 10", where the abandoned #43 band (14–18) implied multi-hour asks.
+    func testEffortTargetIsTodayPlusTheSession() {
+        let z2 = DailyTargets.SessionPrescription(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2)
+        XCTAssertEqual(DailyTargets.effortTargetStored(currentEffortStored: 0, session: z2), 51)
+        XCTAssertEqual(DailyTargets.effortTargetStored(currentEffortStored: nil, session: z2), 51)
+        // The log curve compounds honestly: the same session on top of an already-scored day adds
+        // less than its from-zero worth, and never less than the day already holds.
+        let onTop = DailyTargets.effortTargetStored(currentEffortStored: 51, session: z2)
+        XCTAssertGreaterThan(onTop, 51)
+        XCTAssertLessThan(onTop, 102)
     }
 
-    // MARK: - Effort target (readiness ladder)
-
-    /// The ladder over the maintain band (10–14 of 21): rundown prescribes BELOW the band, strained
-    /// its floor, balanced (and insufficient) the midpoint, primed just under the top. History plays
-    /// no part — the target is the body's state, by explicit design.
-    func testEffortLadderOverTheMaintainBand() {
-        let band = 10...14
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .rundown, restScore: nil), 7)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .strained, restScore: nil), 10)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: nil), 12)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .insufficient, restScore: nil), 12)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .primed, restScore: nil), 13)
+    /// A rest day holds: the target IS today's effort, never an ask to add more.
+    func testRestDayHoldsTheCurrentEffort() {
+        XCTAssertEqual(DailyTargets.effortTargetStored(currentEffortStored: 37.4, session: nil), 37)
+        XCTAssertEqual(DailyTargets.effortTargetStored(currentEffortStored: nil, session: nil), 0)
     }
 
-    /// Rest shifts the ladder one notch: a poor night drags a balanced read to the band floor, an
-    /// excellent one lifts it toward primed — and the shifts clamp at the ladder's ends.
-    func testRestShiftsTheLadderOneNotch() {
-        let band = 10...14
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: 40), 10)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .balanced, restScore: 90), 13)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .rundown, restScore: 40), 7)
-        XCTAssertEqual(DailyTargets.effortTarget21(band: band, readiness: .primed, restScore: 90), 13)
+    // MARK: - Calories (the session through the app's own Keytel model)
+
+    /// The session kcal is sane for a standard profile (a 45-min zone-2 bout lands in the hundreds,
+    /// not the thousands the abandoned regression produced), rounds to 25, and scales with duration.
+    func testSessionKcalIsSaneRoundedAndMonotonic() {
+        let z2 = DailyTargets.SessionPrescription(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2)
+        let kcal = DailyTargets.sessionKcal(session: z2, profile: UserProfile(), restingHr: 60)
+        XCTAssertGreaterThan(kcal, 100, "a 45-min moderate bout burns real calories")
+        XCTAssertLessThan(kcal, 900, "…but never a four-digit ask")
+        XCTAssertEqual(kcal % 25, 0)
+        let z2short = DailyTargets.SessionPrescription(minutes: 15, hrrFraction: 0.65, edwardsZoneWeight: 2)
+        XCTAssertLessThan(DailyTargets.sessionKcal(session: z2short, profile: UserProfile(), restingHr: 60),
+                          kcal)
     }
 
-    /// The recover band's below-band notch floors at the stated minimum — a prescription of 1 of 21
-    /// would just be noise dressed as a target.
-    func testTheBelowBandNotchFloors() {
-        XCTAssertEqual(DailyTargets.effortTarget21(band: 4...10, readiness: .rundown, restScore: nil), 2)
+    /// Exercise calories = the whole-day estimate minus the resting metabolism the day has accrued —
+    /// pinned against the SAME resting rate the estimator uses, so the subtraction can never drift
+    /// from what `estimateDayCalories` credited in the first place. A sedentary half-day nets ~0.
+    func testExerciseKcalSubtractsRestingAccrual() {
+        let profile = UserProfile()
+        let rate = Calories.restingKcalPerS(Calories.resolveCoeffs(profile.sex),
+                                            weightKg: profile.weightKg,
+                                            heightCm: profile.heightCm, age: profile.age)
+        let halfDay = 43_200
+        let sedentary = rate * Double(halfDay)   // what merely existing accrued by noon
+        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: sedentary, profile: profile,
+                                                      secondsSinceMidnight: halfDay), 0)
+        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: sedentary + 312,
+                                                      profile: profile,
+                                                      secondsSinceMidnight: halfDay), 312)
+        XCTAssertNil(DailyTargets.exerciseKcalToday(dayKcalEstimate: nil, profile: profile,
+                                                    secondsSinceMidnight: halfDay))
+        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: 100, profile: profile,
+                                                      secondsSinceMidnight: 86_400), 0,
+                       "the subtraction floors at zero, never a negative burn")
     }
 
-    // MARK: - The kcal-per-effort fit (the weight-loss calorie target)
+    // MARK: - Tonight's sleep need (population base + the body's day)
 
-    /// A clean linear history is recovered exactly, and the target prices the effort target on that
-    /// line: baseline + slope × target, rounded like every calorie figure.
-    func testFitRecoversTheLineAndPricesTheTarget() {
-        let history: [(effort: Double, kcal: Double)] = (0...9).map {
-            (effort: Double($0), kcal: 1400 + 22 * Double($0))
-        }
-        let fit = DailyTargets.effortCalorieFit(history: history)
-        XCTAssertEqual(fit?.interceptKcal ?? 0, 1400, accuracy: 0.001)
-        XCTAssertEqual(fit?.kcalPerEffortPoint ?? 0, 22, accuracy: 0.001)
-        // 1400 + 22 × 10 = 1620 → nearest 25 = 1625.
-        XCTAssertEqual(DailyTargets.calorieTargetKcal(effortTarget: 10, fit: fit!), 1625)
+    /// The composition: the 8 h adult population base, plus the charge band's ask, last night's
+    /// Rest, the readiness read, and the capped junior debt term.
+    func testSleepNeedComposesTheBodysDay() {
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 81,
+                                                        readiness: .balanced, debtBalanceMin: -400),
+                       480 + 45)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 50, restScore: 60,
+                                                        readiness: .strained, debtBalanceMin: -20),
+                       480 + 20 + 15)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 90,
+                                                        readiness: .primed, debtBalanceMin: 0),
+                       480 - 15 - 15)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: nil, charge: nil, restScore: nil,
+                                                        readiness: .insufficient, debtBalanceMin: 0),
+                       480)
     }
 
-    /// The fit refuses what it cannot support: too few paired days, a flat week (no effort
-    /// variance), or a nonsense negative slope — each falls back to the percentile target instead
-    /// of pricing a target on noise.
-    func testFitRefusesUnsupportableHistory() {
-        XCTAssertNil(DailyTargets.effortCalorieFit(history: [(1, 500), (2, 550), (3, 600)]))
-        XCTAssertNil(DailyTargets.effortCalorieFit(
-            history: Array(repeating: (effort: 5.0, kcal: 600.0), count: 8)))
-        let inverted: [(effort: Double, kcal: Double)] = (0...9).map {
-            (effort: Double($0), kcal: 1000 - 20 * Double($0))
-        }
-        XCTAssertNil(DailyTargets.effortCalorieFit(history: inverted))
-    }
-
-    // MARK: - Tonight's sleep need
-
-    /// Tonight's need composes the body's day: base (p75 of the user's nights) + the charge band's
-    /// ask + last night's Rest + the capped junior debt term — the drivers that CHANGE nightly, by
-    /// design (v1's debt-capped constant read the same maxed number for weeks).
-    func testSleepNeedComposesChargeRestAndJuniorDebt() {
-        let steady = Array(repeating: 480.0, count: 10)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: steady, charge: 20, restScore: 40, debtBalanceMin: -200),
-            480 + 40 + 30 + 45)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: steady, charge: 50, restScore: 60, debtBalanceMin: 0), 500)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: steady, charge: 80, restScore: 90, debtBalanceMin: 0), 465)
-    }
-
-    /// The user's stated bounds hold at both ends: a chronic short sleeper's base floors at 7 h, and
-    /// a long sleeper with every adjustment stacked still caps at 10 h.
+    /// The stated 7–10 h bounds hold when everything stacks one way.
     func testSleepNeedClampsToTheStatedBounds() {
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: Array(repeating: 330, count: 10),
-            charge: 80, restScore: nil, debtBalanceMin: 0), 420)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: Array(repeating: 590, count: 10),
-            charge: 10, restScore: 30, debtBalanceMin: -400), 600)
-    }
-
-    /// A surplus never discounts below the base (sleep is not bankable ahead), an in-deadband debt is
-    /// noise, and a cold start (too few nights) uses the 8 h default base rather than guessing.
-    func testSleepNeedSurplusDeadbandAndColdStart() {
-        let steady = Array(repeating: 480.0, count: 10)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: steady, charge: 80, restScore: 60, debtBalanceMin: 300), 480)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: steady, charge: 80, restScore: 60, debtBalanceMin: -20), 480)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(
-            nightlyMinutes: [480, 500], charge: nil, restScore: nil, debtBalanceMin: 0), 480)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 20, restScore: 40,
+                                                        readiness: .rundown, debtBalanceMin: -400),
+                       600)
+        XCTAssertGreaterThanOrEqual(DailyTargets.sleepNeedTonightMin(
+            age: 35, charge: 81, restScore: 90, readiness: .primed, debtBalanceMin: 300), 420)
     }
 }
