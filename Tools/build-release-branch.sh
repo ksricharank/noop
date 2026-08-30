@@ -87,6 +87,11 @@ FEATURES=(
   "feature/rescore-lock-convergence"
   "feature/island-disconnect-hold"
   "feature/three-pillar-card"
+  # targets-widgets (260830) stacks ON three-pillar-card (it reads LiveTargets /
+  # cachedLiveTargets / the burst-average vocabulary that branch introduced), so it joins the
+  # same re-homing obligation above: after any upstream sync, re-home it together with (and
+  # after) three-pillar-card.
+  "feature/targets-widgets"
   "feature/release-by-default"
 )
 
