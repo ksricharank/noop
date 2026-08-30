@@ -232,6 +232,14 @@ final class AppModel: ObservableObject {
         // inert (one UserDefaults bool read) when the mode is off. `live` is captured strongly, as above.
         self.repo.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
         self.gpsRecorder.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
+        // The daily-targets bundle prices its session and exercise calories through the Keytel model,
+        // which needs the user's profile; the Repository doesn't own one, so it borrows this closure
+        // (the healthWriteBack idiom). Captured strongly like the sinks above — the store outlives
+        // the scene. Falls back to the estimator suite's standard profile when never set (tests).
+        self.repo.liveTargetsProfile = { [profile] in
+            UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
+                        age: Double(profile.age), sex: profile.sex)
+        }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
@@ -743,12 +751,6 @@ final class AppModel: ObservableObject {
             // with the link still up (heartRate or rr still present) keeps the last median.
             if live.heartRate == nil && live.rr.isEmpty { resetSmoothing() }
             return
-        }
-        // Calm-ceiling histogram (260830): bank the accepted beat while outside the sleep window —
-        // the ceiling is the 85th percentile of these daytime beats (DaytimeHrHistogram); night beats
-        // would drag it toward nightly RHR and make daytime desk life read as "elevated".
-        if !RescoreBackgroundScheduler.isInSleepWindow {
-            DaytimeHrHistogram.record(bpm: Int(inst.rounded()))
         }
         let now = Date()
         hrWindow.append((now, inst))
