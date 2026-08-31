@@ -32,6 +32,10 @@ final class BehaviorStore: ObservableObject {
     @Published var stressCheckIn: Bool { didSet { d.set(stressCheckIn, forKey: K.stressCheckIn) } }
     @Published var stressAutoNudge: Bool { didSet { d.set(stressAutoNudge, forKey: K.stressAutoNudge) } }
     @Published var stressQuietHours: Bool { didSet { d.set(stressQuietHours, forKey: K.stressQuietHours) } }
+    /// Screen notification alongside the auto-nudge's buzz (260830). Default TRUE — unlike the
+    /// master/auto toggles it is not a new behaviour, only the visible half of one the user already
+    /// opted into twice (check-ins + auto-nudge); a buzz with no words was the complaint.
+    @Published var stressNotify: Bool { didSet { d.set(stressNotify, forKey: K.stressNotify) } }
     @Published var stressUseResonancePace: Bool { didSet { d.set(stressUseResonancePace, forKey: K.stressUseResonance) } }
 
     // MARK: Smart alarm
@@ -69,6 +73,7 @@ final class BehaviorStore: ObservableObject {
         static let stressCheckIn = "biofeedback.stressCheckIn"
         static let stressAutoNudge = "biofeedback.stressAutoNudge"
         static let stressQuietHours = "biofeedback.stressQuietHours"
+        static let stressNotify = "biofeedback.stressNotify"
         static let stressUseResonance = "biofeedback.stressUseResonancePace"
         static let alarmOn = "behavior.smartAlarmEnabled"
         static let alarmTime = "behavior.smartAlarmMinutes"
@@ -92,6 +97,7 @@ final class BehaviorStore: ObservableObject {
         stressCheckIn = d.object(forKey: K.stressCheckIn) as? Bool ?? false
         stressAutoNudge = d.object(forKey: K.stressAutoNudge) as? Bool ?? false
         stressQuietHours = d.object(forKey: K.stressQuietHours) as? Bool ?? true
+        stressNotify = d.object(forKey: K.stressNotify) as? Bool ?? true
         stressUseResonancePace = d.object(forKey: K.stressUseResonance) as? Bool ?? true
         smartAlarmEnabled = d.object(forKey: K.alarmOn) as? Bool ?? false
         smartAlarmMinutes = d.object(forKey: K.alarmTime) as? Int ?? 7 * 60       // 07:00
