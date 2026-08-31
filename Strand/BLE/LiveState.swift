@@ -806,6 +806,11 @@ public final class LiveState: ObservableObject {
         let healthLines = HealthSyncStats.summaryLines()
         if !healthLines.isEmpty { header += healthLines.joined(separator: "\n") + "\n" }
         #endif
+        // Battery attribution (same shape as the Health line): per-channel BLE wake counts, the
+        // process's CPU bill, and — on iOS — MetricKit's own daily numbers. Silent when the strap
+        // never connected this session.
+        let batteryLines = BatteryDiag.summaryLines()
+        if !batteryLines.isEmpty { header += batteryLines.joined(separator: "\n") + "\n" }
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
         // for a re-added or second strap. Same redactor, so one export cannot be safe while the other leaks.
