@@ -2,61 +2,55 @@ import XCTest
 import StrandAnalytics
 @testable import Strand
 
-/// The three-pillar targets block (`AICoachEngine.dailyTargetsBlock`) and the bedtime line behind it.
+/// The daily-targets block (`AICoachEngine.dailyTargetsBlock`) and the bedtime line behind it.
 /// Pinned because the block's whole contract is agreement: it must state the SAME numbers the
-/// Lock-Screen card prints — and name the real basis for each (Karvonen for the ceiling, the
-/// prescribed session for the activity pair) — so a formatter drift silently re-opens the "the card
-/// and the coach disagree" bug class.
+/// Lock-Screen card prints — Effort now/target on the user's scale, TOTAL calories now/target, the
+/// prescribed session, tonight's sleep plan — so a formatter drift silently re-opens the "the card
+/// and the coach disagree" bug class. (A Heart line with a live autonomic verdict lived here for one
+/// build, 270–271, and left with the card's HR column.)
 @MainActor
 final class AICoachDailyTargetsBlockTests: XCTestCase {
 
-    private func targets(exerciseKcal: Int? = 120, kcalTarget: Int? = 450,
+    private func targets(kcalToday: Int? = 1830, kcalTarget: Int? = 2650,
                          sessionMinutes: Int? = 45, sessionHr: Int? = 143, restDay: Bool = false,
-                         sleepNeed: Int? = 510, effortTarget: Int? = 51) -> LiveTargets {
-        LiveTargets(exerciseKcalToday: exerciseKcal,
+                         sleepNeed: Int? = 510, effortToday: Int? = 12,
+                         effortTarget: Int? = 51) -> LiveTargets {
+        LiveTargets(kcalToday: kcalToday,
                     kcalTargetKcal: kcalTarget, sessionMinutes: sessionMinutes,
                     sessionHrBpm: sessionHr, restDay: restDay,
-                    sleepNeedTonightMin: sleepNeed, effortTarget: effortTarget)
+                    sleepNeedTonightMin: sleepNeed, effortTodayStored: effortToday,
+                    effortTarget: effortTarget)
     }
 
-    /// The full block names all three pillars: the live autonomic read (the card's # marker), the
-    /// prescribed session with its effort and exercise-calorie targets, and tonight's sleep plan.
-    func testBlockCarriesAllThreePillars() {
+    /// The full block carries the activity pair (session, effort n/t, TOTAL calories n/t) and
+    /// tonight's sleep plan — the same numbers the card prints.
+    func testBlockCarriesTheTargets() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: 81, effortToday: 12, currentBpm: 72, breatheNow: false,
+            targets: targets(), charge: 81,
             midsleepSec: 12_600, typicalSleepHours: 7)
-        XCTAssertTrue(block.contains("Heart right now: 72 bpm"), block)
-        XCTAssertTrue(block.contains("calm"), block)
         XCTAssertTrue(block.contains("45 min at ~143 bpm"), block)
         XCTAssertTrue(block.contains("effort 51.0 of 100"), block)
-        XCTAssertTrue(block.contains("450 kcal"), block)
-        XCTAssertTrue(block.contains("so far today: 120 kcal"), block)
+        XCTAssertTrue(block.contains("so far today: 12.0"), block)
+        XCTAssertTrue(block.contains("Total-calorie target: 2650 kcal"), block)
+        XCTAssertTrue(block.contains("total burned so far: 1830 kcal"), block)
         XCTAssertTrue(block.contains("target 8h30 asleep"), block)
+        // The retired Heart line must not linger: the bullet reads trends from the wider context.
+        XCTAssertFalse(block.contains("Heart right now"), block)
+        XCTAssertFalse(block.contains("autonomic read"), block)
     }
 
-    /// The stressed verdict names the # marker and the breathing prescription — and an unjudgeable
-    /// minute is stated as such, never guessed either way.
-    func testAutonomicVerdictsAreNamed() {
-        let stressed = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: 50, effortToday: nil, currentBpm: 84, breatheNow: true,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(stressed.contains("STRESSED"), stressed)
-        XCTAssertTrue(stressed.contains("heart rate in red"), stressed)
-        let unknown = AICoachEngine.dailyTargetsBlock(
-            targets: targets(), charge: 50, effortToday: nil, currentBpm: 84, breatheNow: nil,
-            midsleepSec: nil, typicalSleepHours: nil)
-        XCTAssertTrue(unknown.contains("not judgeable"), unknown)
-    }
-
-    /// A REST day says rest — no session, no calorie ask, and the effort target reads as a hold.
+    /// A REST day says rest — no session, the effort target reads as a hold, and the calorie target
+    /// is stated as the resting day alone.
     func testRestDaySaysRest() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(kcalTarget: nil, sessionMinutes: nil, sessionHr: nil,
+            targets: targets(kcalTarget: 1975, sessionMinutes: nil, sessionHr: nil,
                              restDay: true, effortTarget: 12),
-            charge: 40, effortToday: 12, currentBpm: nil, breatheNow: nil,
+            charge: 40,
             midsleepSec: nil, typicalSleepHours: nil)
         XCTAssertTrue(block.contains("REST"), block)
         XCTAssertTrue(block.contains("hold near 12.0"), block)
+        XCTAssertTrue(block.contains("Total-calorie target: 1975 kcal"), block)
+        XCTAssertTrue(block.contains("resting day alone"), block)
         XCTAssertFalse(block.contains("prescribed session"), block)
     }
 
@@ -64,19 +58,19 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
     /// means the 0–21 axis, and a 0–100 figure under the same label reads as a different number.
     func testEffortRendersOnTheWhoopScaleWhenChosen() {
         let block = AICoachEngine.dailyTargetsBlock(
-            targets: targets(effortTarget: 51), charge: 81, effortToday: 10, currentBpm: nil,
-            breatheNow: nil, midsleepSec: nil, typicalSleepHours: nil, effortScale: .whoop)
+            targets: targets(effortToday: 10, effortTarget: 51), charge: 81,
+            midsleepSec: nil, typicalSleepHours: nil, effortScale: .whoop)
         XCTAssertTrue(block.contains("effort 10.7 of 21"), block)
         XCTAssertTrue(block.contains("so far today: 2.1"), block)
     }
 
     /// Cold start is honest: nothing computed → no block at all.
     func testColdStartEmitsNothing() {
-        let empty = LiveTargets(exerciseKcalToday: nil, kcalTargetKcal: nil,
+        let empty = LiveTargets(kcalToday: nil, kcalTargetKcal: nil,
                                 sessionMinutes: nil, sessionHrBpm: nil, restDay: false,
-                                sleepNeedTonightMin: nil, effortTarget: nil)
+                                sleepNeedTonightMin: nil, effortTodayStored: nil, effortTarget: nil)
         XCTAssertEqual(AICoachEngine.dailyTargetsBlock(
-            targets: empty, charge: nil, effortToday: nil, currentBpm: nil, breatheNow: nil,
+            targets: empty, charge: nil,
             midsleepSec: nil, typicalSleepHours: nil), "")
     }
 

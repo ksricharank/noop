@@ -25,12 +25,19 @@ public struct WidgetSnapshot: Codable, Equatable {
     // running WITHOUT the Live Activity: the strap streams only overnight, and daytime data arrives
     // as ~15-minute offload bursts, so these are burst-cadence values, not live ones. Same optional
     // + nil-default decode-compatibility rule as `effort` above.
-    /// Mean HR over the freshest offload burst (the last 15 minutes of persisted samples, anchored
-    /// at the newest sample so a delayed publish still describes the burst, not an empty window).
-    public var avgHr: Int?
-    /// Today's EXERCISE calories so far (resting metabolism excluded — `LiveTargets.exerciseKcalToday`).
+    // HISTORY: an `avgHr` field (mean HR over the freshest burst) led this block for one build
+    // (10.6.0.14.9). Removed 260830 same-day by maintainer instruction — HR left the targets
+    // surfaces entirely; the Effort n/t pair below took its column. A 14.9 snapshot's stray key
+    // simply isn't decoded.
+    /// Today's effort TARGET, pre-formatted on the user's chosen scale at publish time (same reason
+    /// as `effortDisplay` above: the extension can't read the scale preference). The Effort column's
+    /// denominator; `effortDisplay` is its numerator.
+    public var effortTargetDisplay: String?
+    /// Today's TOTAL calories so far (the raw whole-day HR estimate, resting metabolism included —
+    /// `LiveTargets.kcalToday`).
     public var kcal: Int?
-    /// Today's exercise-calorie target (the prescribed session priced via Keytel). Nil on a REST day.
+    /// Today's TOTAL-calorie target (a full resting day + the prescribed session via Keytel —
+    /// `LiveTargets.kcalTargetKcal`). A REST day's target is the resting day alone.
     public var kcalTarget: Int?
     /// Minutes of sleep to target tonight (`LiveTargets.sleepNeedTonightMin`).
     public var sleepNeedMin: Int?
@@ -38,7 +45,7 @@ public struct WidgetSnapshot: Codable, Equatable {
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
                 effortDisplay: String? = nil, effortWhoop: Bool? = nil,
-                avgHr: Int? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
+                effortTargetDisplay: String? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
                 sleepNeedMin: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
@@ -51,7 +58,7 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.restingHr = restingHr
         self.effortDisplay = effortDisplay
         self.effortWhoop = effortWhoop
-        self.avgHr = avgHr
+        self.effortTargetDisplay = effortTargetDisplay
         self.kcal = kcal
         self.kcalTarget = kcalTarget
         self.sleepNeedMin = sleepNeedMin
@@ -65,9 +72,21 @@ public struct WidgetSnapshot: Codable, Equatable {
     // (NOOPLiveActivity.calText/sleepText): a person running both surfaces should never see the same
     // value spelled two ways.
 
-    /// The Cal glance: exercise calories so far over today's target ("820/2100"). Either side degrades
-    /// alone — no target (REST day / no charge) shows just the count; no count yet shows "0/2100",
-    /// which early morning honestly is. Nil = neither side known.
+    /// The Effort glance: today's effort over its target, both pre-formatted on the user's scale
+    /// ("3.2/10.7"). Either side degrades alone — no target shows just today's number; no number yet
+    /// shows "0/10.7", which a fresh day honestly is. Nil = neither side known.
+    public var effortNT: String? {
+        switch (effortDisplay, effortTargetDisplay) {
+        case let (n?, t?): return "\(n)/\(t)"
+        case let (n?, nil): return n
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
+    }
+
+    /// The Cal glance: TOTAL calories so far over today's total target ("1830/2650"). Either side
+    /// degrades alone — no target shows just the count; no count yet shows "0/2650", which right
+    /// after midnight honestly is. Nil = neither side known.
     public var calDisplay: String? {
         switch (kcal.map(String.init), kcalTarget.map(String.init)) {
         case let (c?, t?): return "\(c)/\(t)"
@@ -142,7 +161,7 @@ public struct WidgetSnapshot: Codable, Equatable {
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: Date(),
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
-                       avgHr: 64, kcal: 180, kcalTarget: 450, sleepNeedMin: 495)
+                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495)
     }
 
     /// Honest runtime state when the app has not published a readable snapshot yet. Unlike
@@ -185,7 +204,7 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.restingHr != next.restingHr
             || previous.effortDisplay != next.effortDisplay
             || previous.effortWhoop != next.effortWhoop
-            || previous.avgHr != next.avgHr
+            || previous.effortTargetDisplay != next.effortTargetDisplay
             || previous.kcal != next.kcal
             || previous.kcalTarget != next.kcalTarget
             || previous.sleepNeedMin != next.sleepNeedMin

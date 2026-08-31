@@ -135,14 +135,16 @@ struct SleepDeletionSnapshot: Equatable {
 struct LiveTargets: Equatable {
     // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
     // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
-    // maintainer replaced the threshold entirely with the live autonomic breathe cue (`AppModel.
-    // breatheCue` → the card's red HR digits), which is an instant HRV read, not a number to cross.
-    /// Today's EXERCISE calories so far — the whole-day HR estimate minus the resting metabolism the
-    /// day has accrued (the raw `activeKcalEst` credits resting burn for every worn second, which is
-    /// why it reads ~1,400 by evening having done nothing). What the card's Cal numerator shows.
-    var exerciseKcalToday: Int?
-    /// The prescribed session priced in calories (Keytel at the session's Karvonen HR) — the Cal
-    /// denominator. Nil on a REST day (the prescription is no session) and when charge is unknown.
+    // maintainer replaced the threshold with the live autonomic breathe cue (red HR digits on the
+    // card). Later the same day the card dropped HR entirely (Effort n/t took the column) and the
+    // cue moved to the stress check-in's buzz + notification; `exerciseKcalToday` (the day estimate
+    // minus the resting accrual) went with it — the Cal glance is TOTAL calories now.
+    /// Today's TOTAL calories so far — the raw whole-day HR estimate (`activeKcalEst`), resting
+    /// metabolism included for every worn second. What the card's Cal numerator shows.
+    var kcalToday: Int?
+    /// Today's TOTAL-calorie target: a full day of resting metabolism plus the prescribed session
+    /// through the app's own Keytel model (`DailyTargets.dayKcalTarget`). A REST day's target is
+    /// honestly the resting day alone.
     var kcalTargetKcal: Int?
     /// The prescribed session itself, for the coach to narrate ("30 min at ~121 bpm"). Nil = rest day.
     var sessionMinutes: Int?
@@ -153,9 +155,12 @@ struct LiveTargets: Equatable {
     /// Minutes of sleep to target tonight (population base for the user's age, adjusted by today's
     /// charge, last night's Rest, the readiness read, and the junior debt term; clamped 7–10 h).
     var sleepNeedTonightMin: Int?
+    /// Today's effort so far on the STORED 0–100 axis — the Effort column's numerator, carried here
+    /// so every surface (widget, card, strip, coach) reads the same value the target was priced from.
+    var effortTodayStored: Int?
     /// Today's effort target on the STORED 0–100 axis: today's effort plus exactly the prescribed
-    /// session through the app's own strain curve. The synthesis' number, displayed on the user's
-    /// chosen effort scale; the card carries the calories it prices instead.
+    /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
+    /// the Effort column's denominator.
     var effortTarget: Int?
 }
 
@@ -620,15 +625,14 @@ final class Repository: ObservableObject {
     /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
     /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `restScore`
     /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
-    /// static), `profile` the user's body metrics for the Keytel/Karvonen math,
-    /// `secondsSinceMidnight` today's elapsed wall clock (for the resting-burn subtraction), and
-    /// `todayKey` the future-clock-safe today key (the later of logical/local, as everywhere).
+    /// static), `profile` the user's body metrics for the Keytel/Karvonen math, and `todayKey` the
+    /// future-clock-safe today key (the later of logical/local, as everywhere).
     ///
     /// Everything here is body-state, never habit (the maintainer's doctrine — see `DailyTargets`'
     /// header): the only trailing-window reads are the multi-signal readiness baselines and the
     /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
     static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
-                            profile: UserProfile, secondsSinceMidnight: Int,
+                            profile: UserProfile,
                             todayKey: String) -> LiveTargets {
         let readiness = ReadinessEngine.evaluate(days: days).level
         // The freshest resting measurement there is — last night's RHR, the body's current idle.
@@ -651,12 +655,11 @@ final class Repository: ObservableObject {
         let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
                                       needHours: ledgerNeedMin / 60.0)
         return LiveTargets(
-            exerciseKcalToday: DailyTargets.exerciseKcalToday(
-                dayKcalEstimate: todayRow?.activeKcalEst, profile: profile,
-                secondsSinceMidnight: secondsSinceMidnight),
-            kcalTargetKcal: session.map {
-                DailyTargets.sessionKcal(session: $0, profile: profile, restingHr: latestRhr)
-            },
+            // TOTAL calories, both sides (260830): the raw whole-day estimate vs a full resting day
+            // plus the priced session — the mainstream-tracker framing, by maintainer instruction.
+            kcalToday: todayRow?.activeKcalEst.map { Int($0.rounded()) },
+            kcalTargetKcal: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
             sessionMinutes: session?.minutes,
             sessionHrBpm: session.map {
                 DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
@@ -667,6 +670,7 @@ final class Repository: ObservableObject {
                                                                   restScore: restScore,
                                                                   readiness: readiness,
                                                                   debtBalanceMin: ledger.balanceMin),
+            effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
             effortTarget: effortTarget)
     }
 
@@ -686,12 +690,10 @@ final class Repository: ObservableObject {
         let localKey = Self.localDayKey(now)
         return liveTargetsMemo.resolve(seq: refreshSeq, logicalKey: logicalKey, localKey: localKey) {
             let anchor = cachedWidgetAnchor(now: now)
-            let secondsSinceMidnight = Int(now.timeIntervalSince(Calendar.current.startOfDay(for: now)))
             return Self.liveTargets(days: days,
                                     charge: anchor?.recovery.map { Int($0.rounded()) },
                                     restScore: anchor.flatMap { restScore(for: $0) },
                                     profile: liveTargetsProfile?() ?? UserProfile(),
-                                    secondsSinceMidnight: secondsSinceMidnight,
                                     todayKey: max(logicalKey, localKey))
         }
     }
@@ -1262,38 +1264,10 @@ final class Repository: ObservableObject {
         return Self.mergeRRByIdentity(lists)
     }
 
-    /// Mean HR over the freshest offload burst — the "avg HR" the NOOP Targets widget and the Today
-    /// targets strip show when the strap is NOT live-streaming (the maintainer's default daytime mode:
-    /// Live Activity off, continuous HRV overnight-only, data arriving as ~15-minute offload bursts).
-    ///
-    /// Anchored at the NEWEST persisted sample rather than at `now`: a publish can run minutes after
-    /// the burst landed (a foreground open, a delayed rescore), and a now-anchored window would then
-    /// be partly or wholly empty — averaging the last 15 minutes OF DATA always describes the burst.
-    /// A freshest sample older than `staleAfter` (2 h) returns nil instead: with no timestamp on the
-    /// glance, presenting a stale average as "current HR" would be a claim the data can't back.
-    func burstAvgHr(now: Date = Date()) async -> Int? {
-        let to = Int(now.timeIntervalSince1970)
-        // One bounded read: the staleness horizon capped at 8k samples (≥2 h of 1 Hz data) — the
-        // freshest-anchored window is then resolved in memory by the pure helper.
-        let horizon = await hrSamples(from: to - Self.burstAvgStaleAfterSec, to: to)
-        return Self.burstAvg(samples: horizon)
-    }
-
-    /// The `burstAvgHr` window: 15 minutes, matching the normal offload cadence
-    /// (`BLEManager.backfillIntervalSeconds` = 900) so each value summarizes one burst.
-    static let burstAvgWindowSec = 900
-    /// How old the freshest sample may be before the average abstains (nil).
-    static let burstAvgStaleAfterSec = 7_200
-
-    /// Pure core of `burstAvgHr` — static so StrandTests can pin it over literal samples. `samples`
-    /// must be ascending by `ts` (the `hrSamples` contract); rows older than the window below the
-    /// freshest sample are ignored.
-    static func burstAvg(samples: [HRSample]) -> Int? {
-        guard let freshest = samples.last else { return nil }
-        let windowed = samples.filter { $0.ts > freshest.ts - burstAvgWindowSec }
-        guard !windowed.isEmpty else { return nil }
-        return Int((Double(windowed.reduce(0) { $0 + $1.bpm }) / Double(windowed.count)).rounded())
-    }
+    // HISTORY: `burstAvgHr` (mean HR over the freshest offload burst, anchored at the newest sample,
+    // 2 h staleness abstain) lived here for one build (10.6.0.14.9) as the targets widget's HR cell.
+    // Removed 260830 same-day by maintainer instruction: HR left the targets surfaces entirely —
+    // Effort n/t took the column — and nothing read the average any more.
 
     /// Logical day-start of the most recent day the active device has HR data for, or nil when the store is
     /// empty. Lets the Deep Timeline open on a day that actually has data instead of a possibly-empty today

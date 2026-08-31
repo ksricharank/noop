@@ -30,9 +30,10 @@ public enum DailyTargets {
     // percentile of a week's daytime beats (still trailing history), and Karvonen 30%-of-reserve
     // (honest physiology, but a near-constant the maintainer rightly called too crude: "always 96?
     // come on"). All three answered the wrong question. The breathe verdict is not a number to
-    // cross — it is the live autonomic STATE, and it now comes from
-    // `StressOnsetDetector.breatheCue` (fast RMSSD vs the rolling baseline, exercise-gated): the
-    // card's # marker, changing minute to minute, with no denominator at all.
+    // cross — it is the live autonomic STATE (fast RMSSD vs the rolling baseline, exercise-gated).
+    // A level-form read of it drove the card's red HR digits (and briefly a # marker) for one build;
+    // since 260830 it reaches the user as `StressOnsetDetector.evaluate`'s event — the stress
+    // check-in's strap buzz + screen notification — and the card carries no HR at all.
 
     // MARK: - The charge bands (the #43 recovery bands, shared by the session and sleep asks)
 
@@ -163,23 +164,32 @@ public enum DailyTargets {
         return max(50, Int((raw / calorieRoundKcal).rounded() * calorieRoundKcal))
     }
 
-    /// Today's EXERCISE calories so far: the whole-day HR estimate minus the resting metabolism the
-    /// day has accrued (the day estimator credits resting burn for every worn second — see
-    /// `Calories.estimateDayCalories` — which is why the raw figure reads ~1,400 by evening having
-    /// done nothing; that inflation is exactly what made the v2 target look "crazy"). Assumes
-    /// near-continuous wear (this strap's reality); a large wear gap undercounts the subtraction
-    /// and so OVERSTATES exercise slightly — the conservative direction for a gap is stated, not
-    /// hidden. Floored at 0.
-    public static func exerciseKcalToday(dayKcalEstimate: Double?, profile: UserProfile,
-                                         secondsSinceMidnight: Int) -> Int? {
-        guard let dayKcalEstimate else { return nil }
+    // HISTORY: `exerciseKcalToday` (the day estimate minus the resting accrual so far) lived here
+    // for one build (10.6.0.14.8–.14.9) — the Cal glance then showed EXERCISE-only calories. Retired
+    // 260830 by maintainer instruction: the glance now shows TOTAL calories against a total-day
+    // target (`dayKcalTarget` below), which matches how every mainstream tracker frames the number
+    // and removes the mid-day subtraction entirely — the raw day estimate IS the numerator.
+
+    /// Today's TOTAL-calorie target: a full day of resting metabolism plus the prescribed session
+    /// priced through the app's own Keytel model. On a REST day (nil session) the target is honestly
+    /// the resting day alone — reaching it means "you existed", which is exactly what rest asks.
+    /// Rounded to `calorieRoundKcal` like `sessionKcal`, so the glance never implies false precision.
+    ///
+    /// The numerator this is compared against is the raw whole-day HR estimate
+    /// (`Calories.estimateDayCalories`), which credits resting burn only for WORN seconds — so a
+    /// long unworn gap undercounts the numerator against this target. Stated, not hidden: the strap
+    /// is worn near-continuously on this install.
+    public static func dayKcalTarget(session: SessionPrescription?, profile: UserProfile,
+                                     restingHr: Int?) -> Int {
         let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
         let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
         let age = profile.age > 0 ? profile.age : 30.0
         let restingRate = Calories.restingKcalPerS(Calories.resolveCoeffs(profile.sex),
                                                    weightKg: weightKg, heightCm: heightCm, age: age)
-        let restingAccrued = restingRate * Double(max(secondsSinceMidnight, 0))
-        return Int(max(0, dayKcalEstimate - restingAccrued).rounded())
+        let restingDay = restingRate * 86_400.0
+        let sessionPart = session.map { Double(sessionKcal(session: $0, profile: profile,
+                                                           restingHr: restingHr)) } ?? 0
+        return Int(((restingDay + sessionPart) / calorieRoundKcal).rounded() * calorieRoundKcal)
     }
 
     // MARK: - Tonight's sleep need
