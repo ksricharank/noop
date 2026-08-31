@@ -85,11 +85,11 @@ struct DailyTargetsStrip: View {
     }
 
     /// One big labelled value, equal-width — the "score" presentation the hero trio established:
-    /// caption label over a large rounded number. Back to the full 24pt now the 2×2 grid gives each
-    /// pair half a row; `minimumScaleFactor` still carries the widest case. A dash stays tertiary so
-    /// missing data never wears a domain colour.
+    /// caption label over a large rounded number, CENTRED in its half of the row (260830 review:
+    /// left-aligned cells read as a ragged column; centring puts the numbers where the eye lands).
+    /// A dash stays tertiary so missing data never wears a domain colour.
     private func targetCell(_ label: String, value: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .center, spacing: 2) {
             Text(label)
                 .font(StrandFont.overline)
                 .tracking(1.2)
@@ -101,7 +101,7 @@ struct DailyTargetsStrip: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
         .accessibilityValue(Text(value))

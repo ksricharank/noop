@@ -215,6 +215,9 @@ final class AppModel: ObservableObject {
     private var smartAlarmRearmTimer: Timer?
 
     init() {
+        // FORK (260830): first-run Today layout — Synthesis-first with the hero hidden (its numbers
+        // repeat in Key Metrics). A one-time seed; every user customisation thereafter wins.
+        TodayLayoutPrefs.seedForkDefaultsIfNeverCustomised()
         let live = LiveState()
         self.live = live
         // SEED every subsystem with the same id (`deviceId`, "my-whoop" at launch). The store/registry
