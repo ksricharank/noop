@@ -144,18 +144,14 @@ final class WidgetSnapshotTests: XCTestCase {
         snap.effortTargetDisplay = nil
         XCTAssertNil(snap.effortNT)
 
-        // Steps render in thousands ("6.2k/8k") with the same degrade rules; sub-1k stays raw and a
-        // trailing ".0" is dropped.
+        // Steps render as FULL counts ("6214/8000" — the "6.2k/8k" abbreviation shipped one build
+        // and was reversed on sight) with the same degrade rules.
         snap = renderedSnapshot()
-        XCTAssertEqual(snap.stepsDisplay, "6.2k/8k")
-        snap.steps = 650
-        XCTAssertEqual(snap.stepsDisplay, "650/8k")
+        XCTAssertEqual(snap.stepsDisplay, "6214/8000")
         snap.steps = nil
-        XCTAssertEqual(snap.stepsDisplay, "0/8k")
+        XCTAssertEqual(snap.stepsDisplay, "0/8000")
         snap.stepsTarget = nil
         XCTAssertNil(snap.stepsDisplay)
-        XCTAssertEqual(WidgetSnapshot.stepsK(12_000), "12k")
-        XCTAssertEqual(WidgetSnapshot.stepsK(10_500), "10.5k")
 
         snap.sleepNeedMin = 510
         XCTAssertEqual(snap.sleepDisplay, "8h30")

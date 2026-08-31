@@ -108,24 +108,17 @@ public struct WidgetSnapshot: Codable, Equatable {
         return String(format: "%dh%02d", need / 60, need % 60)
     }
 
-    /// The Steps glance: today over target in thousands ("6.2k/8k") — step counts don't carry glance
-    /// meaning below the hundreds, and four raw-digit pairs would not fit a stat row. Same degrade
-    /// rules as the Cal pair; a fresh day reads "0/8k".
+    /// The Steps glance: today over target as FULL counts ("3205/8000") — a thousands abbreviation
+    /// ("3.2k/8k") shipped first and the maintainer reversed it on sight: the full number is what a
+    /// step count IS, and the 2×2 grids give it the room. Same degrade rules as the Cal pair; a
+    /// fresh day reads "0/8000".
     public var stepsDisplay: String? {
-        switch (steps.map(Self.stepsK), stepsTarget.map(Self.stepsK)) {
+        switch (steps.map(String.init), stepsTarget.map(String.init)) {
         case let (n?, t?): return "\(n)/\(t)"
         case let (n?, nil): return n
         case let (nil, t?): return "0/\(t)"
         case (nil, nil): return nil
         }
-    }
-
-    /// Thousands formatting for step counts: below 1,000 raw, else one decimal with a trailing ".0"
-    /// dropped ("650", "6.2k", "8k").
-    public static func stepsK(_ n: Int) -> String {
-        guard n >= 1_000 else { return "\(n)" }
-        let s = String(format: "%.1f", Double(n) / 1_000.0)
-        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
     }
 
     /// App Group suite the app and widget both use. Injected from the `APP_GROUP_ID` build setting

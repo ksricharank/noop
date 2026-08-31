@@ -76,16 +76,18 @@ struct NOOPTargetsView: View {
 
     /// 2×2 grid, no "NOOP" wordmark (260830 revision: four cells in one row crushed the Cal pair,
     /// and the label spent a whole line saying what the widget's placement already says). Rows match
-    /// the in-app strip: Steps · Cal on top, Effort · Sleep below.
+    /// the in-app strip — each LONG pair (Steps, Cal — full counts) shares its row with a short one
+    /// (Effort, Sleep) so the rows balance. 17pt BOLD values (up from 15 semibold) after the
+    /// maintainer's "very hard to read" screenshot review; the labels stay 9pt quiet.
     private var rectangular: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Steps", text: snap.stepsDisplay, size: 15, tint: StrandPalette.chargeColor)
-                targetCell("Cal", text: snap.calDisplay, size: 15, tint: StrandPalette.metricAmber)
+                targetCell("Steps", text: snap.stepsDisplay, size: 17, tint: StrandPalette.chargeColor)
+                targetCell("Effort", text: snap.effortNT, size: 17, tint: StrandPalette.effortColor)
             }
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Effort", text: snap.effortNT, size: 15, tint: StrandPalette.effortColor)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 15, tint: StrandPalette.metricCyan)
+                targetCell("Cal", text: snap.calDisplay, size: 17, tint: StrandPalette.metricAmber)
+                targetCell("Sleep", text: snap.sleepDisplay, size: 17, tint: StrandPalette.metricCyan)
             }
         }
     }
@@ -100,9 +102,9 @@ struct NOOPTargetsView: View {
             Spacer(minLength: 0)
             // One distinct data colour per metric (260830: a shared activity tint made Sleep's muted
             // restColor read as "off" beside three identical blues).
+            targetRow("Steps", value: stepsText, tint: StrandPalette.chargeColor)
             targetRow("Effort", value: effortText, tint: StrandPalette.effortColor)
             targetRow("Cal", value: calText, tint: StrandPalette.metricAmber)
-            targetRow("Steps", value: stepsText, tint: StrandPalette.chargeColor)
             targetRow("Sleep", value: sleepText, tint: StrandPalette.metricCyan)
             Spacer(minLength: 0)
         }
@@ -117,12 +119,12 @@ struct NOOPTargetsView: View {
             HStack(alignment: .top, spacing: 0) {
                 // Both activity-pillar values wear the Effort domain colour; size dropped one step
                 // from the HR era ("72" → "1830/2650") so the wide pairs fit without scale-crushing.
+                targetCell("Steps", text: snap.stepsDisplay, size: 20,
+                           tint: StrandPalette.chargeColor)
                 targetCell("Effort", text: snap.effortNT, size: 20,
                            tint: StrandPalette.effortColor)
                 targetCell("Cal", text: snap.calDisplay, size: 20,
                            tint: StrandPalette.metricAmber)
-                targetCell("Steps", text: snap.stepsDisplay, size: 20,
-                           tint: StrandPalette.chargeColor)
                 targetCell("Sleep", text: snap.sleepDisplay, size: 20,
                            tint: StrandPalette.metricCyan)
             }
@@ -158,7 +160,7 @@ struct NOOPTargetsView: View {
                             tint: Color = StrandPalette.textPrimary) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(text ?? "–")
-                .font(.system(size: size, weight: .semibold, design: .rounded))
+                .font(.system(size: size, weight: .bold, design: .rounded))
                 .foregroundStyle(text == nil ? StrandPalette.textTertiary : tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
