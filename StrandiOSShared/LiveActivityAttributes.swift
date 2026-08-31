@@ -30,19 +30,27 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         /// maintainer replaced the threshold with the live autonomic read (`breathe`) — but the
         /// field stays declared so activities written by the 268/269 builds still decode.
         public var hrCeiling: Int?
-        /// The breathe cue: true = a non-metabolic HRV dip right now (fast RMSSD well below the
-        /// rolling baseline while at rest) — the widget renders the HR digits in RED. False = calm;
-        /// nil (also the older-build decode default) = not judgeable — no cue, no claim.
+        /// HISTORY: the breathe cue (true = non-metabolic HRV dip → red HR digits) lived one build
+        /// (270–271) and was retired 260830 with the HR column itself — the cue moved to the stress
+        /// check-in's strap buzz + screen notification. Declared so 270/271 activities still decode.
         public var breathe: Bool?
-        /// Active calories so far today.
+        /// Today's effort, PRE-FORMATTED on the user's chosen scale by the controller (the widget
+        /// extension can't read the scale preference) — the Effort column's numerator, and the
+        /// compact/minimal slots' whole payload.
+        public var effortDisplay: String?
+        /// Today's effort target, same pre-formatted scale — the Effort column's denominator.
+        public var effortTargetDisplay: String?
+        /// TOTAL calories so far today (resting metabolism included).
         public var kcal: Int?
-        /// Today's active-calorie target — the Cal column's denominator.
+        /// Today's TOTAL-calorie target (a full resting day + the prescribed session) — the Cal
+        /// column's denominator.
         public var kcalTarget: Int?
         /// Minutes of sleep to target tonight — the Sleep column ("8h05").
         public var sleepNeedMin: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
-                    live: Bool? = nil, breathe: Bool? = nil, kcal: Int? = nil,
+                    live: Bool? = nil, effortDisplay: String? = nil,
+                    effortTargetDisplay: String? = nil, kcal: Int? = nil,
                     kcalTarget: Int? = nil, sleepNeedMin: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
@@ -51,7 +59,9 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.rest = rest
             self.live = live
             self.hrCeiling = nil
-            self.breathe = breathe
+            self.breathe = nil
+            self.effortDisplay = effortDisplay
+            self.effortTargetDisplay = effortTargetDisplay
             self.kcal = kcal
             self.kcalTarget = kcalTarget
             self.sleepNeedMin = sleepNeedMin
