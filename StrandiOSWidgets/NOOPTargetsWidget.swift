@@ -11,9 +11,9 @@ import StrandDesign
 /// check-in's buzz + notification.)
 ///
 /// Families and their intended slots:
-///   - `accessoryInline` (the Lock-Screen line ABOVE the clock): just "Cal 1830/2650" — the one-line
-///     slot cannot carry four stats, and Cal-only was the maintainer's explicit spec for it.
-///   - `accessoryRectangular` (below the clock): all four — Effort · Cal · Steps · Sleep.
+///   - `accessoryInline` (the Lock-Screen line ABOVE the clock): "Cal 1830/2650 · Steps 3k/8k" —
+///     the maintainer's two most actionable daytime pairs; Effort and Sleep are skipped by spec.
+///   - `accessoryRectangular` (below the clock): all four as a 2×2 grid, no wordmark.
 ///   - `systemSmall` / `systemMedium` (Home Screen): the four targets plus the strap battery in the
 ///     top-right corner — the targets analogue of `NOOPWidget`'s Charge · Effort · Rest rings.
 ///
@@ -59,9 +59,10 @@ struct NOOPTargetsView: View {
     var body: some View {
         switch family {
         case .accessoryInline:
-            // The slot above the Lock-Screen clock: one short line, Cal only (the user's pick for
-            // the day's most actionable number).
-            Text("Cal \(calText)")
+            // The slot above the Lock-Screen clock: one line, Cal + Steps (260830 revision — was
+            // Cal-only). Effort and Sleep are deliberately skipped: the maintainer's pick for the
+            // two most actionable daytime numbers, and the line has no room for four pairs anyway.
+            Text("Cal \(calText) · Steps \(stepsText)")
         case .accessoryRectangular:
             rectangular
         case .systemMedium:
@@ -73,18 +74,18 @@ struct NOOPTargetsView: View {
 
     // MARK: - Lock Screen rectangular (below the clock): all three, one row
 
+    /// 2×2 grid, no "NOOP" wordmark (260830 revision: four cells in one row crushed the Cal pair,
+    /// and the label spent a whole line saying what the widget's placement already says). Rows match
+    /// the in-app strip: Steps · Cal on top, Effort · Sleep below.
     private var rectangular: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("NOOP")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(StrandPalette.textSecondary)
-            // Four cells at 14pt (16 with three): the rectangular slot is ~157pt wide and "1830/2650"
-            // is the widest pair; minimumScaleFactor carries the worst case.
-            HStack(alignment: .top, spacing: 0) {
-                targetCell("Effort", text: snap.effortNT, size: 14)
-                targetCell("Cal", text: snap.calDisplay, size: 14)
-                targetCell("Steps", text: snap.stepsDisplay, size: 14)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 14)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .top, spacing: 6) {
+                targetCell("Steps", text: snap.stepsDisplay, size: 15, tint: StrandPalette.chargeColor)
+                targetCell("Cal", text: snap.calDisplay, size: 15, tint: StrandPalette.metricAmber)
+            }
+            HStack(alignment: .top, spacing: 6) {
+                targetCell("Effort", text: snap.effortNT, size: 15, tint: StrandPalette.effortColor)
+                targetCell("Sleep", text: snap.sleepDisplay, size: 15, tint: StrandPalette.metricCyan)
             }
         }
     }
@@ -97,10 +98,12 @@ struct NOOPTargetsView: View {
         VStack(alignment: .leading, spacing: 6) {
             header
             Spacer(minLength: 0)
+            // One distinct data colour per metric (260830: a shared activity tint made Sleep's muted
+            // restColor read as "off" beside three identical blues).
             targetRow("Effort", value: effortText, tint: StrandPalette.effortColor)
-            targetRow("Cal", value: calText, tint: StrandPalette.effortColor)
-            targetRow("Steps", value: stepsText, tint: StrandPalette.effortColor)
-            targetRow("Sleep", value: sleepText, tint: StrandPalette.restColor)
+            targetRow("Cal", value: calText, tint: StrandPalette.metricAmber)
+            targetRow("Steps", value: stepsText, tint: StrandPalette.chargeColor)
+            targetRow("Sleep", value: sleepText, tint: StrandPalette.metricCyan)
             Spacer(minLength: 0)
         }
         .padding(10)
@@ -117,11 +120,11 @@ struct NOOPTargetsView: View {
                 targetCell("Effort", text: snap.effortNT, size: 20,
                            tint: StrandPalette.effortColor)
                 targetCell("Cal", text: snap.calDisplay, size: 20,
-                           tint: StrandPalette.effortColor)
+                           tint: StrandPalette.metricAmber)
                 targetCell("Steps", text: snap.stepsDisplay, size: 20,
-                           tint: StrandPalette.effortColor)
+                           tint: StrandPalette.chargeColor)
                 targetCell("Sleep", text: snap.sleepDisplay, size: 20,
-                           tint: StrandPalette.restColor)
+                           tint: StrandPalette.metricCyan)
             }
             Spacer(minLength: 0)
         }
