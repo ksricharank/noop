@@ -489,24 +489,30 @@ final class AICoachEngine: ObservableObject {
     /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen as exactly three markdown bullets, in this order:
-    - **Heart** — the overall state of my heart: my latest resting heart rate and HRV against my \
-    own personal baselines (my data includes z-scores — |z| above 1 is a real deviation), the \
-    direction they have been moving across the recent day-lines, and any watchout that trend \
-    implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag strain, \
-    poor recovery, or oncoming illness). State the trend plainly, then what I should do about it \
-    overall — this bullet is about my heart's trajectory, not this minute's reading.
-    - **Activity** — my effort, my total calories AND my steps so far against today's targets in \
-    TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): explain what produced those \
-    numbers, then the concrete session (or rest) that closes the gap, and the walking left to do. \
-    Total calories include resting metabolism on both sides, so early-day numbers far below target \
-    are normal — say so rather than urging a sprint.
-    - **Rest & sleep** — what last night and today's load mean for resting properly today, then \
-    tonight's plan: cite the precise target bedtime and sleep target from TODAY'S TARGETS.
-    In each bullet, explain what led to the numbers BEFORE prescribing, and bring in another metric \
-    from my data only when it strictly serves that bullet's story (for example an elevated skin \
-    temperature explaining poor rest — illustrative, not required). Cite my actual numbers; never \
-    invent targets that differ from TODAY'S TARGETS. No greeting, nothing outside the three bullets.
+    Today screen as three short titled sections, in this order: **Heart**, **Activity**, \
+    **Rest & sleep**. Format, strictly: each section's bold title on its OWN line, then that \
+    section's text; a blank line between sections; NO bullet points or numbered lists anywhere. \
+    Keep every section to 2-4 SHORT sentences, one idea per sentence, and put every number you \
+    cite in **bold** so it can be picked out at a glance — the reader is scanning, not studying.
+    The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
+    HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
+    deviation), the direction they have been moving across the recent day-lines, and any watchout \
+    that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
+    strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
+    about it overall — this section is about my heart's trajectory, not this minute's reading.
+    The **Activity** section covers my effort, my total calories AND my steps so far against \
+    today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): what \
+    produced those numbers, then the concrete session (or rest) that closes the gap, and the \
+    walking left to do. Total calories include resting metabolism on both sides, so early-day \
+    numbers far below target are normal — say so rather than urging a sprint.
+    The **Rest & sleep** section covers what last night and today's load mean for resting \
+    properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
+    TODAY'S TARGETS.
+    In each section, explain what led to the numbers BEFORE prescribing, and bring in another \
+    metric from my data only when it strictly serves that section's story (for example an elevated \
+    skin temperature explaining poor rest — illustrative, not required). Cite my actual numbers; \
+    never invent targets that differ from TODAY'S TARGETS. No greeting, nothing outside the three \
+    sections.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
