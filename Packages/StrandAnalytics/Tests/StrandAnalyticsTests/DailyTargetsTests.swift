@@ -80,26 +80,29 @@ final class DailyTargetsTests: XCTestCase {
                           kcal)
     }
 
-    /// Exercise calories = the whole-day estimate minus the resting metabolism the day has accrued —
-    /// pinned against the SAME resting rate the estimator uses, so the subtraction can never drift
-    /// from what `estimateDayCalories` credited in the first place. A sedentary half-day nets ~0.
-    func testExerciseKcalSubtractsRestingAccrual() {
+    /// The TOTAL-day calorie target (260830: the Cal glance moved from exercise-only to total) =
+    /// a full day of the SAME resting rate the day estimator credits, plus the priced session —
+    /// pinned against that shared rate so the target can never drift from what the numerator's
+    /// estimator accrues. A rest day's target is the resting day alone.
+    func testDayKcalTargetIsRestingDayPlusSession() {
         let profile = UserProfile()
         let rate = Calories.restingKcalPerS(Calories.resolveCoeffs(profile.sex),
                                             weightKg: profile.weightKg,
                                             heightCm: profile.heightCm, age: profile.age)
-        let halfDay = 43_200
-        let sedentary = rate * Double(halfDay)   // what merely existing accrued by noon
-        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: sedentary, profile: profile,
-                                                      secondsSinceMidnight: halfDay), 0)
-        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: sedentary + 312,
-                                                      profile: profile,
-                                                      secondsSinceMidnight: halfDay), 312)
-        XCTAssertNil(DailyTargets.exerciseKcalToday(dayKcalEstimate: nil, profile: profile,
-                                                    secondsSinceMidnight: halfDay))
-        XCTAssertEqual(DailyTargets.exerciseKcalToday(dayKcalEstimate: 100, profile: profile,
-                                                      secondsSinceMidnight: 86_400), 0,
-                       "the subtraction floors at zero, never a negative burn")
+        let restingDay = rate * 86_400.0
+        let restTarget = DailyTargets.dayKcalTarget(session: nil, profile: profile, restingHr: 60)
+        XCTAssertEqual(restTarget % 25, 0)
+        XCTAssertEqual(Double(restTarget), restingDay, accuracy: 12.5,
+                       "a REST day's total target is the resting day, to rounding")
+        let z2 = DailyTargets.SessionPrescription(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2)
+        let sessionTarget = DailyTargets.dayKcalTarget(session: z2, profile: profile, restingHr: 60)
+        XCTAssertEqual(sessionTarget % 25, 0)
+        let sessionKcal = DailyTargets.sessionKcal(session: z2, profile: profile, restingHr: 60)
+        XCTAssertEqual(Double(sessionTarget), restingDay + Double(sessionKcal), accuracy: 25,
+                       "a session day adds exactly the priced session")
+        // Sanity: a real human's total-day target is four digits, not the session's hundreds.
+        XCTAssertGreaterThan(restTarget, 1_000)
+        XCTAssertLessThan(sessionTarget, 4_000)
     }
 
     // MARK: - Tonight's sleep need (population base + the body's day)
