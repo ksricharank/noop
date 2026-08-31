@@ -58,7 +58,7 @@ final class WidgetSnapshotTests: XCTestCase {
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: updated,
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
-                       avgHr: 64, kcal: 180, kcalTarget: 450, sleepNeedMin: 495)
+                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495)
     }
 
     func testRenderedContentFirstPublishAlwaysChanges() {
@@ -94,7 +94,8 @@ final class WidgetSnapshotTests: XCTestCase {
     func testRenderedContentDetectsTargetsTrioChange() {
         let previous = renderedSnapshot()
         for mutate: (inout WidgetSnapshot) -> Void in [
-            { $0.avgHr = 71 }, { $0.kcal = 240 }, { $0.kcalTarget = nil }, { $0.sleepNeedMin = 510 }
+            { $0.effortTargetDisplay = "62" }, { $0.kcal = 1900 }, { $0.kcalTarget = nil },
+            { $0.sleepNeedMin = 510 }
         ] {
             var next = previous
             mutate(&next)
@@ -106,14 +107,14 @@ final class WidgetSnapshotTests: XCTestCase {
     /// extension can update ahead of the app's first fresh publish.
     func testOlderSnapshotWithoutTargetsFieldsStillDecodes() throws {
         var old = renderedSnapshot()
-        old.avgHr = nil; old.kcal = nil; old.kcalTarget = nil; old.sleepNeedMin = nil
+        old.effortTargetDisplay = nil; old.kcal = nil; old.kcalTarget = nil; old.sleepNeedMin = nil
         let data = try JSONEncoder().encode(old)
         // Simulate the older writer by stripping the keys entirely, not just nulling them.
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        for key in ["avgHr", "kcal", "kcalTarget", "sleepNeedMin"] { json.removeValue(forKey: key) }
+        for key in ["effortTargetDisplay", "kcal", "kcalTarget", "sleepNeedMin"] { json.removeValue(forKey: key) }
         let stripped = try JSONSerialization.data(withJSONObject: json)
         let decoded = try JSONDecoder().decode(WidgetSnapshot.self, from: stripped)
-        XCTAssertNil(decoded.avgHr)
+        XCTAssertNil(decoded.effortTargetDisplay)
         XCTAssertNil(decoded.kcal)
         XCTAssertNil(decoded.kcalTarget)
         XCTAssertNil(decoded.sleepNeedMin)
@@ -125,15 +126,22 @@ final class WidgetSnapshotTests: XCTestCase {
     /// is zero); Sleep zero-pads minutes so the glyph count is stable across pushes.
     func testTargetsDisplayStrings() {
         var snap = renderedSnapshot()
-        XCTAssertEqual(snap.calDisplay, "180/450")
+        XCTAssertEqual(snap.calDisplay, "1830/2650")
+        XCTAssertEqual(snap.effortNT, "38/51")
         XCTAssertEqual(snap.sleepDisplay, "8h15")
 
         snap.kcal = nil
-        XCTAssertEqual(snap.calDisplay, "0/450")
-        snap.kcal = 180; snap.kcalTarget = nil
-        XCTAssertEqual(snap.calDisplay, "180")
+        XCTAssertEqual(snap.calDisplay, "0/2650")
+        snap.kcal = 1830; snap.kcalTarget = nil
+        XCTAssertEqual(snap.calDisplay, "1830")
         snap.kcal = nil
         XCTAssertNil(snap.calDisplay)
+
+        // The Effort pair degrades the same way, and a fresh day reads "0/target".
+        snap.effortDisplay = nil
+        XCTAssertEqual(snap.effortNT, "0/51")
+        snap.effortTargetDisplay = nil
+        XCTAssertNil(snap.effortNT)
 
         snap.sleepNeedMin = 510
         XCTAssertEqual(snap.sleepDisplay, "8h30")

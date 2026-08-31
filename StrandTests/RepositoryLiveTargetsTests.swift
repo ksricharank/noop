@@ -21,10 +21,10 @@ final class RepositoryLiveTargetsTests: XCTestCase {
                     activeKcalEst: kcal)
     }
 
-    /// The full wiring over a steady fortnight plus today's partial row: the ceiling is Karvonen
-    /// over the LATEST resting HR, the session/effort/kcal targets flow through the readiness
-    /// chain, exercise calories subtract the resting accrual, and the sleep need composes from the
-    /// same charge/rest/readiness inputs.
+    /// The full wiring over a steady fortnight plus today's partial row: the session/effort/kcal
+    /// targets flow through the readiness chain (resting HR from the latest scored row), the Cal
+    /// pair is TOTAL calories (raw day estimate vs resting day + session), and the sleep need
+    /// composes from the same charge/rest/readiness inputs.
     func testTargetsDeriveFromTheBodyState() {
         var days: [DailyMetric] = []
         for i in 1...14 {
@@ -34,10 +34,9 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         // Today: a partial row — some strain and calories banked, no RHR yet.
         days.append(metric(day: "2026-08-15", sleepMin: nil, rhr: nil, strain: 12, kcal: 700))
         let profile = UserProfile()   // 70 kg / 170 cm / 30 y — the estimator suite's standard
-        let halfDay = 43_200
 
         let t = Repository.liveTargets(days: days, charge: 80, restScore: 81,
-                                       profile: profile, secondsSinceMidnight: halfDay,
+                                       profile: profile,
                                        todayKey: "2026-08-15")
 
         // The session chain, pinned via the same calls the implementation makes.
@@ -47,14 +46,13 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         XCTAssertEqual(t.sessionMinutes, session?.minutes)
         XCTAssertEqual(t.effortTarget,
                        DailyTargets.effortTargetStored(currentEffortStored: 12, session: session))
-        XCTAssertEqual(t.kcalTargetKcal, session.map {
-            DailyTargets.sessionKcal(session: $0, profile: profile, restingHr: 60)
-        })
+        XCTAssertEqual(t.kcalTargetKcal,
+                       DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                  restingHr: 60))
 
-        // Exercise calories: today's 700 minus half a day of resting accrual, floored at 0.
-        XCTAssertEqual(t.exerciseKcalToday,
-                       DailyTargets.exerciseKcalToday(dayKcalEstimate: 700, profile: profile,
-                                                      secondsSinceMidnight: halfDay))
+        // TOTAL calories: today's raw day estimate, and today's effort carried for the n/t pair.
+        XCTAssertEqual(t.kcalToday, 700)
+        XCTAssertEqual(t.effortTodayStored, 12)
 
         // Sleep composes through the same chain (8 h nights → no ledger debt beyond the deadband).
         XCTAssertEqual(t.sleepNeedTonightMin,
@@ -67,7 +65,7 @@ final class RepositoryLiveTargetsTests: XCTestCase {
     func testUnknownChargeKeepsANeutralSession() {
         let days = (1...10).map { metric(day: String(format: "2026-08-%02d", $0)) }
         let t = Repository.liveTargets(days: days, charge: nil, restScore: nil,
-                                       profile: UserProfile(), secondsSinceMidnight: 3600,
+                                       profile: UserProfile(),
                                        todayKey: "2026-08-15")
         let readiness = ReadinessEngine.evaluate(days: days).level
         XCTAssertEqual(t.sessionMinutes,

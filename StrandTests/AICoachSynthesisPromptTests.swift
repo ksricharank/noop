@@ -97,13 +97,16 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("only when it strictly serves"))
         XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("No greeting"))
-        // The heart vocabulary is DEFINED for the model, not assumed (260830: "I don't think the
-        // LLM understands what elevated means"): each of the three verdict words is named and
-        // explained, and the red-digits cue is tied to STRESSED so the synthesis can reference the
-        // card.
-        XCTAssertTrue(d.contains("STRESSED"))
-        XCTAssertTrue(d.contains("not judgeable"))
-        XCTAssertTrue(d.contains("turning RED"))
+        // The Heart bullet is about the heart's TRAJECTORY (260830, second revision): overall state,
+        // trends vs personal baselines, watchouts — never a this-minute verdict. The live-read
+        // vocabulary (calm/STRESSED/not judgeable, the red digits) left with the card's HR column;
+        // the z-score framing is explained so the model can actually use the baseline lines.
+        XCTAssertTrue(d.contains("resting heart rate"))
+        XCTAssertTrue(d.contains("z-scores"))
+        XCTAssertTrue(d.contains("watchout"))
+        XCTAssertTrue(d.contains("total calories"))
+        XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
+        XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
         XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
         XCTAssertFalse(d.contains("elevated,"), "undefined 'elevated' phrasing must not return")
     }
