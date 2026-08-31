@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import ActivityKit
+import UIKit
 
 /// Starts, updates, and ends the live-HR Live Activity. The activity appears on the Lock Screen and
 /// in the Dynamic Island while the strap is bonded and streaming heart rate.
@@ -20,12 +21,20 @@ final class LiveActivityController {
     /// How long after the last push iOS may keep showing the activity as fresh. The activity is
     /// refreshed every ~2 s while streaming, so this never bites a live session; it auto-greys a
     /// frozen activity if the app is suspended/killed without an explicit end (a missed-tick safety net
-    /// on top of the connected-driven end below).
+    /// on top of the connected-driven end below). Locked-mode pushes are a minute apart, so their
+    /// staleDate adds that spacing on top — the freshness window must sit on the cadence, not race it.
     private static let staleAfter: TimeInterval = 120
+    /// Rolling last-minute of display-HR ticks, feeding the locked-mode average
+    /// (`LiveActivityHrPolicy.windowAverage`). Fed on every tick regardless of lock state, so the
+    /// first locked push already has a full window behind it.
+    private var hrSamples: [LiveActivityHrPolicy.Sample] = []
 
     /// Drive the activity from the latest live values. Lazily starts when the strap is CONNECTED (the
     /// live link, not the sticky "paired" flag) and a heart rate is present; ends the moment the link
-    /// drops. Throttled to ~once every 2 s so we stay well under the Live Activity update budget.
+    /// drops. Cadence is lock-aware (`LiveActivityHrPolicy`): ~once every 2 s while the phone is
+    /// unlocked (the Dynamic Island reads as live), once a minute with a one-minute HR average while
+    /// it is locked (nobody can watch beat-level movement there, and on an Always-On display every
+    /// push repaints the Lock Screen — the live cadence was a measurable all-day battery cost).
     func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
@@ -51,17 +60,40 @@ final class LiveActivityController {
             Task { await end() }
             return
         }
-        guard bpm != nil else { return }
+        guard let bpm else { return }
 
-        let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery, bonded: connected,
-                                                        effort: effort)
-        let staleDate = Date().addingTimeInterval(Self.staleAfter)
+        let now = Date()
+        // The locked cadence is user-tunable (Settings → Live Activity): N minutes between locked
+        // pushes, each showing the mean HR over that window; 0 disables the locked slowdown entirely
+        // (fully live, the pre-cadence behaviour). Read per tick so a Settings edit applies at once.
+        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
+        let lockedSpacing = TimeInterval(max(lockedMinutes, 1)) * 60
+        hrSamples = LiveActivityHrPolicy.appending(hrSamples, bpm: bpm, at: now, window: lockedSpacing)
+        // Locked = protected data (keychain/file keybag) unavailable. The keybag tracks the passcode
+        // lock, not the screen — but on current hardware/iOS it follows the physical lock near-instantly
+        // in both directions, so the cadence switches with the lock itself. Re-read per tick rather than
+        // observed: a tick is already the only moment a push can happen. `lockedMinutes == 0` opts out
+        // of lock-awareness altogether.
+        let locked = lockedMinutes > 0 && !UIApplication.shared.isProtectedDataAvailable
 
         if let activity {
-            guard Date().timeIntervalSince(lastPush) > 2 else { return }
-            lastPush = Date()
+            guard LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
+                                                  lockedSpacing: lockedSpacing) else { return }
+            lastPush = now
+            // Locked: show the window's average — steadier, and honest about its cadence. The
+            // instantaneous fallback only fires if the window is somehow empty (it can't be: the
+            // current tick was just appended above).
+            let shownBpm = locked
+                ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm)
+                : bpm
+            let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
+                                                            bonded: connected, effort: effort)
+            let staleDate = now.addingTimeInterval(Self.staleAfter + (locked ? lockedSpacing : 0))
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
+            let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
+                                                            bonded: connected, effort: effort)
+            let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Set the start gate SYNCHRONOUSLY before any await so a second `update` arriving on the
             // main actor while `Activity.request` is still in flight bails here instead of issuing a
             // second request. The 2-second throttle above only guards the update path.
