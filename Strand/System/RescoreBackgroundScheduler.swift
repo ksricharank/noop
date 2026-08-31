@@ -312,6 +312,29 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
+    /// Public assertion holder for OTHER short post-offload work (the 260831 background light pass):
+    /// same short-pass suspension protection as `withAssertion`, but the expiry deliberately does NOT
+    /// `schedule()` — a light pass leaves no debt behind by design (it recurs on the very next sync),
+    /// so asking iOS for a processing task on its behalf would conjure work the debt system never
+    /// recorded. `name` distinguishes the holders in the system's assertion accounting.
+    static func holdAssertion(name: String, log: @escaping (String) -> Void,
+                              work: () async -> Void) async {
+        #if os(iOS)
+        let assertion = BackgroundAssertion()
+        let taskID = UIApplication.shared.beginBackgroundTask(withName: name) {
+            MainActor.assumeIsolated {
+                log("\(name): background time expired before the work finished — it retries on the next trigger")
+                assertion.end()
+            }
+        }
+        assertion.store(taskID)
+        await work()
+        assertion.end()
+        #else
+        await work()
+        #endif
+    }
+
     // MARK: - iOS background-processing plumbing
 
     #if os(iOS)
