@@ -224,13 +224,26 @@ struct AutomationsView: View {
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys
                 // mirror BiofeedbackPrefs, which the central detector (AppModel.evaluateStress) reads.
                 ToggleRow(label: String(localized: "Stress check-ins (haptic)"),
-                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz and a dismissible card. Never an alarm, never a diagnosis."),
+                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz, a screen notification and a dismissible card. Never an alarm, never a diagnosis."),
                           isOn: $behavior.stressCheckIn)
                 if behavior.stressCheckIn {
                     rowDivider
                     ToggleRow(label: String(localized: "Auto-nudge"),
-                              help: String(localized: "Let the check-in fire on its own. Off keeps it manual: you start a breath from Breathe yourself."),
+                              help: String(localized: "Let the check-in fire on its own: the strap buzzes when a deep breath would help. Off keeps it manual: you start a breath from Breathe yourself. Live stream on = instant; with Continuous HRV set to overnight only, daytime dips are found on each strap sync and nudged up to ~15 minutes late."),
                               isOn: $behavior.stressAutoNudge)
+                        .onChangeCompat(of: behavior.stressAutoNudge) { on in
+                            // Ask at the moment of intent (the IllnessNotifier idiom): the screen
+                            // notification defaults on, so arming the auto-nudge is the first
+                            // moment it could need permission.
+                            if on, behavior.stressNotify { BreatheNotifier.requestAuthorization() }
+                        }
+                    rowDivider
+                    ToggleRow(label: String(localized: "Screen notification"),
+                              help: String(localized: "Alongside the buzz, show a notification telling you to take a deep breath."),
+                              isOn: $behavior.stressNotify)
+                        .onChangeCompat(of: behavior.stressNotify) { on in
+                            if on { BreatheNotifier.requestAuthorization() }
+                        }
                     rowDivider
                     ToggleRow(label: String(localized: "Respect quiet hours"),
                               help: String(localized: "Suppress auto-nudges overnight (10pm-7am)."),
