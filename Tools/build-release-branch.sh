@@ -45,6 +45,12 @@ FEATURES=(
   # line). Touches BLEManager's didUpdateValueFor and the LiveState header assembly - regions no
   # other branch edits.
   "feature/battery-instrumentation"
+  # Bond-loop pause self-healing (260831): keeps a parked connect outstanding within a bounded
+  # per-episode cycle budget so a transient overnight radio blip can't strand the link until a
+  # manual app open (the 4:30am 2.7h dead-air report). Touches BLEManager's pause/re-park sites
+  # (didDisconnect paused branch, didFailToConnect, the reset sites) — regions no other branch
+  # edits. Based on upstream/main; upstream-worthy (#1539 follow-up).
+  "feature/bond-loop-repark"
   "feature/lock-screen-hr-average"
   # DEPENDENT BRANCH: based on feature/lock-screen-hr-average, not on main. The duty cycle's -1
   # sentinel lives in that branch's Lock-Screen refresh setting and its Live Activity handling
