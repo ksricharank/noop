@@ -27,11 +27,11 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
+                bannerStat(label: "Steps", value: stepsText(context.state))
+                Spacer()
                 bannerStat(label: "Effort", value: effortNTText(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
-                Spacer()
-                bannerStat(label: "Steps", value: stepsText(context.state))
                 Spacer()
                 bannerStat(label: "Sleep", value: sleepText(context.state))
             }
@@ -139,10 +139,10 @@ private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
     return String(format: "%dh%02d", need / 60, need % 60)
 }
 
-/// The Steps column: today over target in thousands ("6.2k/8k") — the same `stepsK` vocabulary as
+/// The Steps column: today over target as FULL counts ("3205/8000") — the same vocabulary as
 /// `WidgetSnapshot.stepsDisplay`, so the card and the widgets never spell the pair two ways.
 private func stepsText(_ state: NOOPActivityAttributes.ContentState) -> String {
-    switch (state.steps.map(WidgetSnapshot.stepsK), state.stepsTarget.map(WidgetSnapshot.stepsK)) {
+    switch (state.steps.map(String.init), state.stepsTarget.map(String.init)) {
     case let (n?, t?): return "\(n)/\(t)"
     case let (n?, nil): return n
     case let (nil, t?): return "0/\(t)"

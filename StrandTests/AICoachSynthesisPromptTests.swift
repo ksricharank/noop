@@ -97,14 +97,21 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("only when it strictly serves"))
         XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("No greeting"))
-        // The Heart bullet is about the heart's TRAJECTORY (260830, second revision): overall state,
-        // trends vs personal baselines, watchouts — never a this-minute verdict. The live-read
-        // vocabulary (calm/STRESSED/not judgeable, the red digits) left with the card's HR column;
-        // the z-score framing is explained so the model can actually use the baseline lines.
+        // The Heart section is about the heart's TRAJECTORY (260830, second revision): overall
+        // state, trends vs personal baselines, watchouts — never a this-minute verdict. The
+        // live-read vocabulary (calm/STRESSED/not judgeable, the red digits) left with the card's
+        // HR column; the z-score framing is explained so the model can actually use the baselines.
         XCTAssertTrue(d.contains("resting heart rate"))
         XCTAssertTrue(d.contains("z-scores"))
         XCTAssertTrue(d.contains("watchout"))
         XCTAssertTrue(d.contains("total calories"))
+        // Third revision (260830 evening, "a wall of text"): titled SECTIONS, not bullets — the
+        // format rules are stated to the model, and the bullet form must not return.
+        XCTAssertTrue(d.contains("OWN line"))
+        XCTAssertTrue(d.contains("NO bullet points"))
+        XCTAssertTrue(d.contains("blank line between sections"))
+        XCTAssertTrue(d.contains("SHORT sentences"))
+        XCTAssertFalse(d.contains("markdown bullets"), "the retired bullet shape must not linger")
         XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
         XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
