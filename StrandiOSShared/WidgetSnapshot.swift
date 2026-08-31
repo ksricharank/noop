@@ -21,10 +21,36 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var effortDisplay: String?
     /// True when `effortDisplay` is on WHOOP's 0–21 axis; false/nil means 0–100. Accessibility only.
     public var effortWhoop: Bool?
+    // The daily-targets glance trio (260830) — the fields behind the NOOP Targets widget, built for
+    // running WITHOUT the Live Activity: the strap streams only overnight, and daytime data arrives
+    // as ~15-minute offload bursts, so these are burst-cadence values, not live ones. Same optional
+    // + nil-default decode-compatibility rule as `effort` above.
+    // HISTORY: an `avgHr` field (mean HR over the freshest burst) led this block for one build
+    // (10.6.0.14.9). Removed 260830 same-day by maintainer instruction — HR left the targets
+    // surfaces entirely; the Effort n/t pair below took its column. A 14.9 snapshot's stray key
+    // simply isn't decoded.
+    /// Today's effort TARGET, pre-formatted on the user's chosen scale at publish time (same reason
+    /// as `effortDisplay` above: the extension can't read the scale preference). The Effort column's
+    /// denominator; `effortDisplay` is its numerator.
+    public var effortTargetDisplay: String?
+    /// Today's TOTAL calories so far (the raw whole-day HR estimate, resting metabolism included —
+    /// `LiveTargets.kcalToday`).
+    public var kcal: Int?
+    /// Today's TOTAL-calorie target (a full resting day + the prescribed session via Keytel —
+    /// `LiveTargets.kcalTargetKcal`). A REST day's target is the resting day alone.
+    public var kcalTarget: Int?
+    /// Minutes of sleep to target tonight (`LiveTargets.sleepNeedTonightMin`).
+    public var sleepNeedMin: Int?
+    /// Today's steps so far (the calibrated daily count) and today's step target
+    /// (`LiveTargets.stepsToday` / `.stepsTarget`) — the Steps column's two sides.
+    public var steps: Int?
+    public var stepsTarget: Int?
 
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
-                effortDisplay: String? = nil, effortWhoop: Bool? = nil) {
+                effortDisplay: String? = nil, effortWhoop: Bool? = nil,
+                effortTargetDisplay: String? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
+                sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -36,6 +62,91 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.restingHr = restingHr
         self.effortDisplay = effortDisplay
         self.effortWhoop = effortWhoop
+        self.effortTargetDisplay = effortTargetDisplay
+        self.kcal = kcal
+        self.kcalTarget = kcalTarget
+        self.sleepNeedMin = sleepNeedMin
+        self.steps = steps
+        self.stepsTarget = stepsTarget
+    }
+
+    // MARK: - Targets-trio display strings
+
+    // Formatting lives HERE (StrandiOSShared, compiled into both the app and the widget extension)
+    // rather than file-private in the widget, so StrandTests can pin it — the widget extension has no
+    // test target of its own. Deliberately the same vocabulary as the Live Activity card
+    // (NOOPLiveActivity.calText/sleepText): a person running both surfaces should never see the same
+    // value spelled two ways.
+
+    /// The Effort glance: today's effort over its target, both pre-formatted on the user's scale
+    /// ("3.2/10.7"). Either side degrades alone — no target shows just today's number; no number yet
+    /// shows "0/10.7", which a fresh day honestly is. Nil = neither side known.
+    public var effortNT: String? {
+        switch (effortDisplay, effortTargetDisplay) {
+        case let (n?, t?): return "\(n)/\(t)"
+        case let (n?, nil): return n
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
+    }
+
+    /// The Cal glance: TOTAL calories so far over today's total target ("1830/2650"). Either side
+    /// degrades alone — no target shows just the count; no count yet shows "0/2650", which right
+    /// after midnight honestly is. Nil = neither side known.
+    public var calDisplay: String? {
+        switch (kcal.map(String.init), kcalTarget.map(String.init)) {
+        case let (c?, t?): return "\(c)/\(t)"
+        case let (c?, nil): return c
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Tonight's sleep target as "8h05" (minutes zero-padded so the glyph count is stable).
+    public var sleepDisplay: String? {
+        guard let need = sleepNeedMin, need > 0 else { return nil }
+        return String(format: "%dh%02d", need / 60, need % 60)
+    }
+
+    /// The Steps glance: today over target as FULL counts ("3205/8000") — the in-app strip and the
+    /// Live Activity banner have the width for the real number. Same degrade rules as the Cal pair;
+    /// a fresh day reads "0/8000".
+    public var stepsDisplay: String? {
+        pair(steps.map(String.init), stepsTarget.map(String.init))
+    }
+
+    // The WIDGET faces (260830, final slotting): abbreviated Steps and Cal — a Lock-Screen /
+    // Home-Screen cell simply has no room for two four-digit pairs, and the maintainer confirmed
+    // it after trying both ("otherwise there is no space"). The full-count displays above stay for
+    // the surfaces that fit them; both spell their pair through the same degrade rules.
+
+    /// Widget-face Steps pair, thousands-abbreviated ("3.2k/8k").
+    public var stepsAbbrev: String? {
+        pair(steps.map(Self.kAbbrev), stepsTarget.map(Self.kAbbrev))
+    }
+
+    /// Widget-face Cal pair, thousands-abbreviated ("1.2k/2.1k").
+    public var calAbbrev: String? {
+        pair(kcal.map(Self.kAbbrev), kcalTarget.map(Self.kAbbrev))
+    }
+
+    /// Thousands formatting: below 1,000 raw, else one decimal with a trailing ".0" dropped
+    /// ("650", "3.2k", "8k").
+    public static func kAbbrev(_ n: Int) -> String {
+        guard n >= 1_000 else { return "\(n)" }
+        let s = String(format: "%.1f", Double(n) / 1_000.0)
+        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
+    }
+
+    /// The shared now/target degrade rules: either side alone still renders, a missing numerator
+    /// with a live target reads "0/target", and nothing at all reads nil.
+    private func pair(_ n: String?, _ t: String?) -> String? {
+        switch (n, t) {
+        case let (n?, t?): return "\(n)/\(t)"
+        case let (n?, nil): return n
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
     }
 
     /// App Group suite the app and widget both use. Injected from the `APP_GROUP_ID` build setting
@@ -96,7 +207,9 @@ public struct WidgetSnapshot: Codable, Equatable {
         // three-ring Home Screen layouts (and the large grid) preview with filled arcs, not dashes.
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: Date(),
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
-                       effortDisplay: "38", effortWhoop: false)
+                       effortDisplay: "38", effortWhoop: false,
+                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495,
+                       steps: 6_214, stepsTarget: 8_000)
     }
 
     /// Honest runtime state when the app has not published a readable snapshot yet. Unlike
@@ -139,6 +252,19 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.restingHr != next.restingHr
             || previous.effortDisplay != next.effortDisplay
             || previous.effortWhoop != next.effortWhoop
+            || previous.effortTargetDisplay != next.effortTargetDisplay
+            // Cal / Steps / Sleep compare at DISPLAY granularity (260831): every snapshot-fed widget
+            // face renders the ABBREVIATED pairs ("4.1k/10k") and the "8h30" sleep string — the raw
+            // ints are not rendered anywhere the snapshot feeds. Comparing the raw ints requested a
+            // WidgetKit reload for changes no face could show (1712→1739 kcal renders identically),
+            // and with the background light pass moving these values every ~10-min sync that burned
+            // ~90+ reload requests/day against a background budget of roughly 40–70 — so iOS deferred
+            // exactly the repaints that DID matter. The displays quantize naturally (steps per 100,
+            // cal per 100 above 1k, sleep per minute), keeping requests well inside budget while
+            // never skipping a change a face would actually paint.
+            || previous.calAbbrev != next.calAbbrev
+            || previous.sleepDisplay != next.sleepDisplay
+            || previous.stepsAbbrev != next.stepsAbbrev
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,

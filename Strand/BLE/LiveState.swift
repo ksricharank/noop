@@ -805,6 +805,12 @@ public final class LiveState: ObservableObject {
         // someone with Health off or unauthorized is unchanged.
         let healthLines = HealthSyncStats.summaryLines()
         if !healthLines.isEmpty { header += healthLines.joined(separator: "\n") + "\n" }
+        // 260831: whether the widget snapshot actually published after each sync, with what values,
+        // and whether WidgetKit was asked to repaint — the evidence the frozen-widget report lacked
+        // (syncs were landing every ~10 min; nothing measured the publish half). Silent until a
+        // publish ever runs.
+        let widgetLines = WidgetPublishStats.summaryLines()
+        if !widgetLines.isEmpty { header += widgetLines.joined(separator: "\n") + "\n" }
         #endif
         // Battery attribution (same shape as the Health line): per-channel BLE wake counts, the
         // process's CPU bill, and — on iOS — MetricKit's own daily numbers. Silent when the strap

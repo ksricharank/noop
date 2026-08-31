@@ -402,10 +402,6 @@ final class AICoachEngine: ObservableObject {
     }
 
     private let repo: Repository
-    /// The live autonomic read (`AppModel.breatheCue` — the card's # marker), lent by the app layer
-    /// so the synthesis states the SAME verdict the card is showing. Nil closure (tests, macOS
-    /// wiring gaps) or nil value both read as "not judgeable" — no claim either way.
-    var currentBreathe: (() -> Bool?)?
     private let session: URLSession
 
     private static let providerKey = "ai.provider"
@@ -489,23 +485,34 @@ final class AICoachEngine: ObservableObject {
     /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen as exactly three markdown bullets, mirroring my Lock-Screen card in this order:
-    - **Heart** — my live autonomic read, stated in TODAY'S TARGETS as exactly one of: calm (my \
-    heart-rate variability is in its normal range, or a high heart rate is just exercise), \
-    STRESSED (my beat-to-beat variability has dipped well below my own rolling baseline while I \
-    am at rest — a fight-or-flight signature, shown on my Lock-Screen card by the heart-rate \
-    number turning RED), or not judgeable (too few clean beats — make no claim). Explain what has LED to that \
-    read, then the step to actively take; when it is STRESSED, prescribe a specific short \
-    breathing or meditation exercise (name the technique and duration).
-    - **Activity** — my calories and effort so far against today's targets: explain what produced \
-    those numbers, then the concrete session (or rest) that closes the gap.
-    - **Rest & sleep** — what last night and today's load mean for resting properly today, then \
-    tonight's plan: cite the precise target bedtime and sleep target from TODAY'S TARGETS.
-    In each bullet, explain what led to the numbers BEFORE prescribing, and bring in another metric \
-    from my data only when it strictly serves that bullet's story (for example an elevated skin \
-    temperature explaining poor rest, or a low HRV explaining a recovery day — illustrative, not \
-    required). Cite my actual numbers; never invent targets that differ from TODAY'S TARGETS. \
-    No greeting, nothing outside the three bullets.
+    Today screen as three titled sections, in this order: **Heart**, **Activity**, \
+    **Rest & sleep**. Format, strictly — the reader is scanning, not studying:
+    - Each section's bold title on its OWN line.
+    - Directly under the title, ONE bolded takeaway line of at most ten words — the verdict or \
+    instruction, readable on its own if I read nothing else.
+    - Then 2-4 sub-bullets. Each is a single short fragment (roughly twelve words or fewer), in \
+    the shape "Thing — fact or instruction", never a full flowing sentence.
+    - Every number you cite goes in **bold**. A blank line between sections. NOTHING outside this \
+    structure: no paragraphs, no prose between bullets.
+    The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
+    HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
+    deviation), the direction they have been moving across the recent day-lines, and any watchout \
+    that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
+    strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
+    about it overall — this section is about my heart's trajectory, not this minute's reading.
+    The **Activity** section covers my effort, my total calories AND my steps so far against \
+    today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): what \
+    produced those numbers, then the concrete session (or rest) that closes the gap, and the \
+    walking left to do. Total calories include resting metabolism on both sides, so early-day \
+    numbers far below target are normal — say so rather than urging a sprint.
+    The **Rest & sleep** section covers what last night and today's load mean for resting \
+    properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
+    TODAY'S TARGETS.
+    Within each section, order the sub-bullets so the ones explaining what led to the numbers come \
+    BEFORE prescribing ones, and bring in another metric from my data only when it strictly serves \
+    that section's story (for example an elevated skin temperature explaining poor rest — \
+    illustrative, not required). Cite my actual numbers; never invent targets that differ from \
+    TODAY'S TARGETS. No greeting, nothing outside the three sections.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
@@ -986,21 +993,15 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
-        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so the
-        // synthesis and the card can never disagree about today's prescription. The "right now" HR is a
-        // two-minute mean over already-persisted samples (summary-only, same egress posture as the rest).
+        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so
+        // the synthesis and the card can never disagree about today's prescription. (A "right now"
+        // HR + live autonomic verdict rode here for one build, 270–271 — retired 260830 with the
+        // card's HR column; the Heart bullet reads the day-lines and baseline z-scores instead.)
         let targets = repo.cachedLiveTargets()
         let anchor = repo.cachedWidgetAnchor()
-        let nowSec = Int(Date().timeIntervalSince1970)
-        let recentHr = await repo.hrSamples(from: nowSec - 120, to: nowSec, limit: 200)
-        let currentBpm: Int? = recentHr.isEmpty ? nil
-            : Int((Double(recentHr.reduce(0) { $0 + $1.bpm }) / Double(recentHr.count)).rounded())
         let targetsBlock = Self.dailyTargetsBlock(
             targets: targets,
             charge: anchor?.recovery.map { Int($0.rounded()) },
-            effortToday: anchor?.strain.map { Int($0.rounded()) },
-            currentBpm: currentBpm,
-            breatheNow: currentBreathe?() ?? nil,
             midsleepSec: await repo.habitualMidsleepSec(),
             typicalSleepHours: BatteryEstimator.typicalSleepHours(
                 nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
@@ -1365,47 +1366,48 @@ final class AICoachEngine: ObservableObject {
     /// never fabricated. Returns "" when nothing qualifies.
     nonisolated static func dailyTargetsBlock(targets: LiveTargets,
                                               charge: Int?,
-                                              effortToday: Int?,
-                                              currentBpm: Int?,
-                                              breatheNow: Bool?,
                                               midsleepSec: Int?,
                                               typicalSleepHours: Double?,
                                               effortScale: EffortScale = .hundred) -> String {
         var lines: [String] = []
 
-        // Pillar 2 — breathing & heart rate: the live autonomic read behind the card's # marker.
-        // No ceiling, no threshold (both retired 260830): the verdict is the body's own — fast
-        // RMSSD against the rolling baseline, exercise-gated — and a minute it cannot judge is said
-        // plainly, never guessed.
-        if let bpm = currentBpm {
-            var line = "Heart right now: \(bpm) bpm; autonomic read: "
-            switch breatheNow {
-            case .some(true):
-                line += "STRESSED — beat-to-beat variability has dipped well below the rolling "
-                        + "baseline while at rest; the card is showing the heart rate in red, and a "
-                        + "short breathing or meditation break is the prescription."
-            case .some(false):
-                line += "calm (variability in its normal range, or the elevation is exercise doing "
-                        + "its job)."
-            case .none:
-                line += "not judgeable this minute (too few clean beats) — no claim either way."
-            }
-            lines.append(line)
-        }
+        // (A Heart line — a "right now" bpm plus the live autonomic verdict — led this block for one
+        // build, 270–271. Retired 260830 with the card's HR column: the Heart bullet reads the
+        // overall state from the day-lines and baseline z-scores in the wider context instead, and
+        // the live dip reaches the user through the stress check-in's buzz + notification.)
 
-        // Pillar 3 — activity & exercise: the prescribed session and the effort/calorie targets
-        // priced FROM it, vs today so far. Effort figures render on the USER'S chosen display scale
-        // — they said "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under
-        // the same label reads as a different (and absurdly large) prescription.
+        // Activity & exercise: the prescribed session and the effort/calorie targets priced FROM
+        // it, vs today so far. Effort figures render on the USER'S chosen display scale — they said
+        // "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under the same
+        // label reads as a different (and absurdly large) prescription. Calories are TOTAL on both
+        // sides (260830): the whole-day estimate vs a full resting day plus the priced session.
         let scaleMax = UnitFormatter.effortScaleMax(effortScale)
         let effortTargetText = targets.effortTarget.map {
             UnitFormatter.effortDisplay(Double($0), scale: effortScale)
         }
-        let todayEffortText = UnitFormatter.effortDisplay(Double(effortToday ?? 0), scale: effortScale)
+        let todayEffortText = UnitFormatter.effortDisplay(Double(targets.effortTodayStored ?? 0),
+                                                          scale: effortScale)
+        let kcalSidesText: String? = targets.kcalTargetKcal.map { target in
+            "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
+            + "prescription through the app's own Keytel model); total burned so far: "
+            + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
+        }
+        let stepsSidesText: String? = targets.stepsTarget.map { target in
+            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+            + "readiness read — a separate ask from the session); steps so far: "
+            + "\(targets.stepsToday.map(String.init) ?? "0")."
+        }
         if targets.restDay {
-            lines.append("Today's prescription: REST — the body's readiness read says recover, so "
-                         + "there is no session and no calorie ask; the effort target is simply to "
-                         + "hold near \(effortTargetText ?? todayEffortText) of \(scaleMax).")
+            var line = "Today's prescription: REST — the body's readiness read says recover, so "
+                       + "there is no session; the effort target is simply to hold near "
+                       + "\(effortTargetText ?? todayEffortText) of \(scaleMax) "
+                       + "(so far today: \(todayEffortText))."
+            if let kcalSidesText {
+                line += " " + kcalSidesText + " On a rest day the target is the resting day alone —"
+                        + " reaching it asks nothing extra."
+            }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
         } else if let minutes = targets.sessionMinutes {
             let hrText = targets.sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
             var line = "Today's prescribed session: \(minutes) min\(hrText) (from today's charge "
@@ -1415,12 +1417,8 @@ final class AICoachEngine: ObservableObject {
                 line += " Completing it lands the day at effort \(targetText) of \(scaleMax) "
                         + "(so far today: \(todayEffortText))."
             }
-            if let kcal = targets.kcalTargetKcal {
-                line += " Exercise-calorie target: \(kcal) kcal (that session through the app's own "
-                        + "Keytel model); exercise calories so far today: "
-                        + "\(targets.exerciseKcalToday.map(String.init) ?? "0") kcal (above resting "
-                        + "burn — resting metabolism is deliberately excluded from both sides)."
-            }
+            if let kcalSidesText { line += " " + kcalSidesText }
+            if let stepsSidesText { line += " " + stepsSidesText }
             lines.append(line)
         }
 

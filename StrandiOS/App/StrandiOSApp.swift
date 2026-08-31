@@ -159,7 +159,6 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -184,7 +183,6 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -201,7 +199,12 @@ struct StrandiOSApp: App {
                     model.lockedActivityRefresh = { [weak model] in
                         guard let model else { return }
                         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-                        guard LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                        // With the Live Activity disabled there is nothing this repaint could reach —
+                        // the controller's own push guards would drop it — so skip the window query
+                        // too: in the island-less default mode (260830) the widget snapshot publish
+                        // is the post-offload surface, and this path should cost literally nothing.
+                        guard UnitPrefs.liveActivityEnabled(),
+                              LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
                               DeviceLockState.isLocked(
                                   protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
                         else { return }
@@ -225,7 +228,6 @@ struct StrandiOSApp: App {
                             effort: day?.strain.map { Int($0.rounded()) },
                             rest: nil,
                             connected: model.live.connected,
-                            breathe: nil,   // stream silenced while locked — no fresh R-R, no claim
                             targets: model.repo.cachedLiveTargets()
                         )
                     }
@@ -257,7 +259,6 @@ struct StrandiOSApp: App {
                         recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: anchorDay?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -373,7 +374,6 @@ struct StrandiOSApp: App {
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    breathe: model.breatheCue,
                     targets: model.repo.cachedLiveTargets()
                 )
                 model.drainPendingIntents()
