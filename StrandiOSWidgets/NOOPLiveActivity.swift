@@ -8,25 +8,24 @@ struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
             // Lock Screen / banner presentation: three EQUAL stat columns, one per pillar —
-            // HR with its live/breathe marks (breathing & heart rate), Cal now/target (activity &
-            // exercise), and Sleep hours needed tonight (rest & sleep) — one shared type size.
-            // Charge left the banner deliberately: the targets already encode it (they are derived
-            // from its band), and it still reads in the expanded Dynamic Island. Effort and Rest
-            // live in the coach synthesis now, not on the card.
+            // Effort now/target (activity), Cal now/target (TOTAL calories), and Sleep hours needed
+            // tonight (rest & sleep) — one shared type size.
+            // HISTORY: an HR column (live tilde + the red breathe-cue digits) led this row through
+            // 10.6.0.14.9 and was removed 260830 by maintainer instruction — the card carries the
+            // three TARGETS now; the HRV-dip "go breathe" read moved to the stress check-in's strap
+            // buzz + screen notification. Charge left the banner earlier the same day (the targets
+            // already encode it); it still reads in the expanded Dynamic Island.
             HStack(spacing: 14) {
                 // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
-                // down (charging, out of range — the card now holds its last values through a drop
+                // down (charging, out of range — the card holds its last values through a drop
                 // instead of vanishing), red while connected. The numbers stay primary either way;
-                // they are real, just frozen — and `live == false` already strips the tilde.
+                // they are real, just frozen.
                 Image(systemName: "waveform.path.ecg")
                     .font(.title2)
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
-                // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen
-                // value is the plain settled number; the RED value is the live "go breathe" read.
-                bannerStat(label: "HR", value: hrText(context.state),
-                           tint: breatheTint(context.state))
+                bannerStat(label: "Effort", value: effortNTText(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
                 Spacer()
@@ -38,17 +37,13 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    // Icon and digits are colored SEPARATELY: the heart carries the identity + the
-                    // not-connected cue (red = linked, grey = dropped), while the digits stay primary
-                    // and turn red only on the breathe cue — one red element is identity, two is the
-                    // alarm. (A single Label tinted the digits red permanently, which would have made
-                    // the cue invisible exactly here.)
+                    // The heart carries the identity + the not-connected cue (red = linked, grey =
+                    // dropped); the value beside it is the Effort pair, primary.
                     HStack(spacing: 4) {
                         Image(systemName: "heart.fill")
                             .foregroundStyle(context.state.bonded
                                              ? StrandPalette.statusCritical : StrandPalette.textSecondary)
-                        Text(hrText(context.state))
-                            .foregroundStyle(breatheTint(context.state) ?? Color.primary)
+                        Text(effortNTText(context.state))
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
@@ -73,33 +68,23 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                // The compact slot carries the full reading with the breathe cue by explicit
-                // design — the cue must reach the island even when it is small.
-                Text(hrText(context.state))
-                    .foregroundStyle(breatheTint(context.state) ?? Color.primary)
+                // The compact slot carries today's effort ALONE — the full "3.2/10.7" pair does not
+                // fit a compact trailing without clipping, and the number the user checks in passing
+                // is where the day stands, not the ask.
+                Text(effortNowText(context.state))
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
-                // — it is the only presentation the user sees then, so it has to carry the number. A bare
-                // heart icon here (the pre-fix content) told the user nothing they didn't already know:
-                // that NOOP was running. The heart rate IS the point of this activity.
-                //
-                // Only ONE of icon-or-number fits: the slot is a ~24pt circle. Stacking both drops the
-                // digits to roughly 7pt, which is unreadable at a glance and so defeats the fix. So the
-                // number wins outright and the red tint (the same statusCritical the rest of the widget
-                // uses) is what keeps it identifiable as ours next to another app's activity.
-                //
-                // With no reading, fall back to the heart rather than rendering a dash: an en-dash alone
-                // in the slot reads as a broken widget, while the heart honestly says "NOOP is here, no
-                // number yet". DEFENSIVE — `LiveActivityController.update` guards `bpm != nil` before it
-                // ever starts or pushes a state, so a nil should not reach here; it stays because the
-                // ContentState field is optional and a stale activity re-adopted across an app relaunch
-                // decodes whatever a previous build wrote.
-                if let bpm = context.state.bpm {
-                    Text("\(bpm)")
+                // — it is the only presentation the user sees then, so it has to carry a number. Only
+                // ONE of icon-or-number fits (the slot is a ~24pt circle), so today's effort wins and
+                // the red tint (the same statusCritical the rest of the widget uses) is what keeps it
+                // identifiable as ours next to another app's activity. With no reading yet, fall back
+                // to the heart rather than a dash: an en-dash alone reads as a broken widget, while
+                // the heart honestly says "NOOP is here, no number yet".
+                if let now = context.state.effortDisplay {
+                    Text(now)
                         .foregroundStyle(StrandPalette.statusCritical)
-                        // The slot clips rather than shrinks, so a 3-digit HR (a hard workout) would lose
-                        // a digit at the default size. Allow one step of shrink and pin to one line so
-                        // "142" stays "142" instead of silently becoming "14".
+                        // The slot clips rather than shrinks; allow one step of shrink and pin to one
+                        // line so a wide value stays whole instead of silently losing a digit.
                         .minimumScaleFactor(0.8)
                         .lineLimit(1)
                 } else {
@@ -110,31 +95,27 @@ struct NOOPLiveActivity: Widget {
     }
 }
 
-/// The HR display string: a LIVE beat carries the tilde ("~72" — still moving), a window average /
-/// frozen value is the plain settled number. `live` is nil on activities written by older builds —
-/// treated as not-live, so an inherited card never claims liveness it can't back. File-scope for
-/// the same reason as `bannerStat`.
-private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
-    guard let bpm = state.bpm else { return "–" }
-    return state.live == true ? "~\(bpm)" : "\(bpm)"
+/// The Effort display pair: today's effort over its target, both PRE-FORMATTED on the user's chosen
+/// scale by the controller (the extension can't read the scale preference). Either side degrades
+/// alone; a missing numerator with a live target reads "0/10.7", which a fresh day honestly is.
+/// File-scope for the same reason as `bannerStat`.
+private func effortNTText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    switch (state.effortDisplay, state.effortTargetDisplay) {
+    case let (n?, t?): return "\(n)/\(t)"
+    case let (n?, nil): return n
+    case let (nil, t?): return "0/\(t)"
+    case (nil, nil): return "–"
+    }
 }
 
-/// RED digits when the body is in a non-metabolic HRV dip right now — the live "go breathe" cue
-/// (a LEVEL from `StressOnsetDetector.breatheCue`: fast RMSSD vs the rolling baseline,
-/// exercise-gated). The tint replaced a trailing `#` glyph the same night it shipped (maintainer's
-/// call after seeing both: color, not punctuation). A fixed ceiling denominator lived here for one
-/// build before either and was retired as too crude ("always 96? come on"). nil = no tint — both
-/// calm and the abstain case: an unjudgeable minute must not look like a verdict. The `minimal`
-/// slot cannot carry the cue: its digits are permanently red for identity when demoted next to
-/// another app's activity.
-private func breatheTint(_ state: NOOPActivityAttributes.ContentState) -> Color? {
-    state.breathe == true ? StrandPalette.statusCritical : nil
+/// Today's effort alone, for the compact/minimal slots where the pair cannot fit.
+private func effortNowText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    state.effortDisplay ?? "–"
 }
 
-
-/// The Cal column: active calories so far over today's target ("820/2100"). Either side degrades
-/// alone — no target yet (thin history) shows just the count; no count yet (today's row hasn't
-/// landed) shows "0/2100", which early morning honestly is.
+/// The Cal column: TOTAL calories so far over today's total target ("1830/2650"). Either side
+/// degrades alone — no target yet shows just the count; no count yet shows "0/2650", which right
+/// after midnight honestly is.
 private func calText(_ state: NOOPActivityAttributes.ContentState) -> String {
     let count = state.kcal.map(String.init)
     let target = state.kcalTarget.map(String.init)
@@ -158,21 +139,22 @@ private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
 ///
 /// #759 - the label and value are CENTRE-aligned so each value sits directly under its own label. The
 /// old `.trailing` alignment right-pinned both to the column's edge: when the value was narrower than
-/// the label (e.g. "12" under "Effort") it drifted to the label's right edge instead of under it, which
-/// read as "the number doesn't line up with its label". `fixedSize` stops either line truncating so the
-/// pairing is never clipped at narrow widths.
+/// the label it drifted to the label's right edge instead of under it, which read as "the number
+/// doesn't line up with its label". `fixedSize` stops either line truncating so the pairing is never
+/// clipped at narrow widths.
 @ViewBuilder
-private func bannerStat(label: String, value: String, tint: Color? = nil) -> some View {
+private func bannerStat(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        // .title3 (one step up from .headline): the three values are the banner's whole payload and
-        // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
-        // `tint` carries the breathe cue on the HR value (red digits = "go breathe").
-        Text(value).font(.title3).fontWeight(.semibold)
-            .foregroundStyle(tint ?? StrandPalette.textPrimary)
+        // .headline (was .title3 in the HR era): the values are now n/t pairs ("1830/2650"), and
+        // three of those at .title3 overflow the banner's width — one step down keeps all three
+        // whole at a nightstand-readable size.
+        Text(value).font(.headline).fontWeight(.semibold)
+            .foregroundStyle(StrandPalette.textPrimary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
     }
     .multilineTextAlignment(.center)
-    .fixedSize()
 }
 
 /// Dynamic Island expanded-region stat column (label over value). File-scope for the same reason as

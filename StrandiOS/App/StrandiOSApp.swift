@@ -289,7 +289,6 @@ struct StrandiOSApp: App {
                         // While a sync runs its own activity is the useful banner; don't stack the HR one.
                         connected: model.live.connected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -314,7 +313,6 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -367,7 +365,6 @@ struct StrandiOSApp: App {
                             effort: day?.strain.map { Int($0.rounded()) },
                             rest: nil,
                             connected: model.live.connected,
-                            breathe: nil,   // stream silenced while locked — no fresh R-R, no claim
                             targets: model.repo.cachedLiveTargets()
                         )
                     }
@@ -399,7 +396,6 @@ struct StrandiOSApp: App {
                         recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: anchorDay?.strain.map { Int($0.rounded()) },
-                        breathe: model.breatheCue,
                         targets: model.repo.cachedLiveTargets()
                     )
                 }
@@ -512,7 +508,6 @@ struct StrandiOSApp: App {
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    breathe: model.breatheCue,
                     targets: model.repo.cachedLiveTargets()
                 )
                 model.drainPendingIntents(router: router)
