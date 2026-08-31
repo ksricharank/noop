@@ -485,11 +485,15 @@ final class AICoachEngine: ObservableObject {
     /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen as three short titled sections, in this order: **Heart**, **Activity**, \
-    **Rest & sleep**. Format, strictly: each section's bold title on its OWN line, then that \
-    section's text; a blank line between sections; NO bullet points or numbered lists anywhere. \
-    Keep every section to 2-4 SHORT sentences, one idea per sentence, and put every number you \
-    cite in **bold** so it can be picked out at a glance — the reader is scanning, not studying.
+    Today screen as three titled sections, in this order: **Heart**, **Activity**, \
+    **Rest & sleep**. Format, strictly — the reader is scanning, not studying:
+    - Each section's bold title on its OWN line.
+    - Directly under the title, ONE bolded takeaway line of at most ten words — the verdict or \
+    instruction, readable on its own if I read nothing else.
+    - Then 2-4 sub-bullets. Each is a single short fragment (roughly twelve words or fewer), in \
+    the shape "Thing — fact or instruction", never a full flowing sentence.
+    - Every number you cite goes in **bold**. A blank line between sections. NOTHING outside this \
+    structure: no paragraphs, no prose between bullets.
     The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
     HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
     deviation), the direction they have been moving across the recent day-lines, and any watchout \
@@ -504,11 +508,11 @@ final class AICoachEngine: ObservableObject {
     The **Rest & sleep** section covers what last night and today's load mean for resting \
     properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
     TODAY'S TARGETS.
-    In each section, explain what led to the numbers BEFORE prescribing, and bring in another \
-    metric from my data only when it strictly serves that section's story (for example an elevated \
-    skin temperature explaining poor rest — illustrative, not required). Cite my actual numbers; \
-    never invent targets that differ from TODAY'S TARGETS. No greeting, nothing outside the three \
-    sections.
+    Within each section, order the sub-bullets so the ones explaining what led to the numbers come \
+    BEFORE prescribing ones, and bring in another metric from my data only when it strictly serves \
+    that section's story (for example an elevated skin temperature explaining poor rest — \
+    illustrative, not required). Cite my actual numbers; never invent targets that differ from \
+    TODAY'S TARGETS. No greeting, nothing outside the three sections.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
