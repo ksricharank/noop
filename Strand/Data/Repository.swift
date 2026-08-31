@@ -155,6 +155,11 @@ struct LiveTargets: Equatable {
     /// Minutes of sleep to target tonight (population base for the user's age, adjusted by today's
     /// charge, last night's Rest, the readiness read, and the junior debt term; clamped 7–10 h).
     var sleepNeedTonightMin: Int?
+    /// Today's steps so far (the day row's calibrated count — @57 ticks ÷ the user's divisor).
+    var stepsToday: Int?
+    /// Today's step target (`DailyTargets.stepsTarget`: charge band base 6k/8k/10k, readiness
+    /// notches, clamp 4k–12k — population guideline numbers banded by TODAY's body, never history).
+    var stepsTarget: Int?
     /// Today's effort so far on the STORED 0–100 axis — the Effort column's numerator, carried here
     /// so every surface (widget, card, strip, coach) reads the same value the target was priced from.
     var effortTodayStored: Int?
@@ -621,6 +626,8 @@ final class Repository: ObservableObject {
                                                                   restScore: restScore,
                                                                   readiness: readiness,
                                                                   debtBalanceMin: ledger.balanceMin),
+            stepsToday: todayRow?.steps,
+            stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
             effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
             effortTarget: effortTarget)
     }

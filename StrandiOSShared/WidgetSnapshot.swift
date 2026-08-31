@@ -41,12 +41,16 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var kcalTarget: Int?
     /// Minutes of sleep to target tonight (`LiveTargets.sleepNeedTonightMin`).
     public var sleepNeedMin: Int?
+    /// Today's steps so far (the calibrated daily count) and today's step target
+    /// (`LiveTargets.stepsToday` / `.stepsTarget`) — the Steps column's two sides.
+    public var steps: Int?
+    public var stepsTarget: Int?
 
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
                 effortDisplay: String? = nil, effortWhoop: Bool? = nil,
                 effortTargetDisplay: String? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
-                sleepNeedMin: Int? = nil) {
+                sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -62,6 +66,8 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.kcal = kcal
         self.kcalTarget = kcalTarget
         self.sleepNeedMin = sleepNeedMin
+        self.steps = steps
+        self.stepsTarget = stepsTarget
     }
 
     // MARK: - Targets-trio display strings
@@ -100,6 +106,26 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var sleepDisplay: String? {
         guard let need = sleepNeedMin, need > 0 else { return nil }
         return String(format: "%dh%02d", need / 60, need % 60)
+    }
+
+    /// The Steps glance: today over target in thousands ("6.2k/8k") — step counts don't carry glance
+    /// meaning below the hundreds, and four raw-digit pairs would not fit a stat row. Same degrade
+    /// rules as the Cal pair; a fresh day reads "0/8k".
+    public var stepsDisplay: String? {
+        switch (steps.map(Self.stepsK), stepsTarget.map(Self.stepsK)) {
+        case let (n?, t?): return "\(n)/\(t)"
+        case let (n?, nil): return n
+        case let (nil, t?): return "0/\(t)"
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Thousands formatting for step counts: below 1,000 raw, else one decimal with a trailing ".0"
+    /// dropped ("650", "6.2k", "8k").
+    public static func stepsK(_ n: Int) -> String {
+        guard n >= 1_000 else { return "\(n)" }
+        let s = String(format: "%.1f", Double(n) / 1_000.0)
+        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
     }
 
     /// App Group suite the app and widget both use. Injected from the `APP_GROUP_ID` build setting
@@ -161,7 +187,8 @@ public struct WidgetSnapshot: Codable, Equatable {
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: Date(),
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
-                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495)
+                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495,
+                       steps: 6_214, stepsTarget: 8_000)
     }
 
     /// Honest runtime state when the app has not published a readable snapshot yet. Unlike
@@ -208,6 +235,8 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.kcal != next.kcal
             || previous.kcalTarget != next.kcalTarget
             || previous.sleepNeedMin != next.sleepNeedMin
+            || previous.steps != next.steps
+            || previous.stepsTarget != next.stepsTarget
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,
