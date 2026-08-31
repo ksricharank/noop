@@ -51,18 +51,21 @@ struct NOOPTargetsView: View {
 
     private var snap: WidgetSnapshot { entry.snapshot }
 
+    // Widget faces use the ABBREVIATED Cal/Steps pairs ("1.2k/2.1k", "3.2k/8k") — a widget cell has
+    // no room for two four-digit pairs; the in-app strip and the banner keep the full counts.
     private var effortText: String { snap.effortNT ?? "–" }
-    private var calText: String { snap.calDisplay ?? "–" }
-    private var stepsText: String { snap.stepsDisplay ?? "–" }
+    private var calText: String { snap.calAbbrev ?? "–" }
+    private var stepsText: String { snap.stepsAbbrev ?? "–" }
     private var sleepText: String { snap.sleepDisplay ?? "–" }
 
     var body: some View {
         switch family {
         case .accessoryInline:
             // The slot above the Lock-Screen clock: one line, Cal + Steps (260830 revision — was
-            // Cal-only). Effort and Sleep are deliberately skipped: the maintainer's pick for the
-            // two most actionable daytime numbers, and the line has no room for four pairs anyway.
-            Text("Cal \(calText) · Steps \(stepsText)")
+            // Cal-only), abbreviated and BOLD — the full counts were "hard to read across" one line.
+            // Effort and Sleep are deliberately skipped: the maintainer's pick for the two most
+            // actionable daytime numbers, and the line has no room for four pairs anyway.
+            Text("Cal \(calText) · Steps \(stepsText)").bold()
         case .accessoryRectangular:
             rectangular
         case .systemMedium:
@@ -84,13 +87,13 @@ struct NOOPTargetsView: View {
     private var rectangular: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Steps", text: snap.stepsDisplay, size: 21, labelSize: 8,
+                targetCell("Steps", text: snap.stepsAbbrev, size: 21, labelSize: 8,
                            tint: StrandPalette.chargeColor)
                 targetCell("Effort", text: snap.effortNT, size: 21, labelSize: 8,
                            tint: StrandPalette.effortColor)
             }
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Cal", text: snap.calDisplay, size: 21, labelSize: 8,
+                targetCell("Cal", text: snap.calAbbrev, size: 21, labelSize: 8,
                            tint: StrandPalette.metricAmber)
                 targetCell("Sleep", text: snap.sleepDisplay, size: 21, labelSize: 8,
                            tint: StrandPalette.metricCyan)
@@ -125,11 +128,11 @@ struct NOOPTargetsView: View {
             HStack(alignment: .top, spacing: 0) {
                 // Both activity-pillar values wear the Effort domain colour; size dropped one step
                 // from the HR era ("72" → "1830/2650") so the wide pairs fit without scale-crushing.
-                targetCell("Steps", text: snap.stepsDisplay, size: 20,
+                targetCell("Steps", text: snap.stepsAbbrev, size: 20,
                            tint: StrandPalette.chargeColor)
                 targetCell("Effort", text: snap.effortNT, size: 20,
                            tint: StrandPalette.effortColor)
-                targetCell("Cal", text: snap.calDisplay, size: 20,
+                targetCell("Cal", text: snap.calAbbrev, size: 20,
                            tint: StrandPalette.metricAmber)
                 targetCell("Sleep", text: snap.sleepDisplay, size: 20,
                            tint: StrandPalette.metricCyan)

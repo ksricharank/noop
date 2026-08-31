@@ -144,14 +144,23 @@ final class WidgetSnapshotTests: XCTestCase {
         snap.effortTargetDisplay = nil
         XCTAssertNil(snap.effortNT)
 
-        // Steps render as FULL counts ("6214/8000" — the "6.2k/8k" abbreviation shipped one build
-        // and was reversed on sight) with the same degrade rules.
+        // Steps render as FULL counts on the full-width surfaces (strip, banner) with the same
+        // degrade rules.
         snap = renderedSnapshot()
         XCTAssertEqual(snap.stepsDisplay, "6214/8000")
         snap.steps = nil
         XCTAssertEqual(snap.stepsDisplay, "0/8000")
         snap.stepsTarget = nil
         XCTAssertNil(snap.stepsDisplay)
+
+        // The WIDGET faces abbreviate Steps AND Cal (a widget cell has no room for two four-digit
+        // pairs); kAbbrev keeps sub-1k raw and drops a trailing ".0".
+        snap = renderedSnapshot()
+        XCTAssertEqual(snap.stepsAbbrev, "6.2k/8k")
+        XCTAssertEqual(snap.calAbbrev, "1.8k/2.6k")
+        XCTAssertEqual(WidgetSnapshot.kAbbrev(650), "650")
+        XCTAssertEqual(WidgetSnapshot.kAbbrev(12_000), "12k")
+        XCTAssertEqual(WidgetSnapshot.kAbbrev(10_500), "10.5k")
 
         snap.sleepNeedMin = 510
         XCTAssertEqual(snap.sleepDisplay, "8h30")
