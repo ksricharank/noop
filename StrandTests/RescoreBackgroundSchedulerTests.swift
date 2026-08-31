@@ -438,7 +438,6 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
             minuteOfDay: 6 * 60, endMinute: 7 * 60, bufferSeconds: 300),
             3600 + 300)
     }
-}
 
     func testThePassCostLineSeparatesASuspendedPassFromABusyOne() {
         // The field shape: 2 h 27 min of uptime for a pass that is ~2 min of CPU when run in the foreground.
