@@ -104,6 +104,26 @@ final class WidgetSnapshotTests: XCTestCase {
         }
     }
 
+    /// Reload thrift (260831): Cal/Steps dedup at DISPLAY granularity. A raw change no widget face
+    /// can render (1830→1839 kcal is "1.8k" either way; 6214→6260 steps is "6.2k" either way) must
+    /// NOT request a WidgetKit reload — with the background light pass moving raw values every
+    /// ~10-min sync, raw-int dedup burned the OS's background reload budget on invisible changes
+    /// and got the VISIBLE ones deferred. A change that crosses a display boundary still reloads
+    /// (covered by testRenderedContentDetectsTargetsTrioChange).
+    func testSubDisplayValueChangesDoNotReload() {
+        let previous = renderedSnapshot()
+        for mutate: (inout WidgetSnapshot) -> Void in [
+            { $0.kcal = 1_839 },      // "1.8k" → "1.8k"
+            { $0.steps = 6_249 },     // "6.2k" → "6.2k" (kAbbrev ROUNDS: 6_260 would be "6.3k")
+            { $0.kcalTarget = 2_649 } // "2.6k" → "2.6k"
+        ] {
+            var next = previous
+            mutate(&next)
+            XCTAssertFalse(WidgetSnapshot.renderedContentChanged(from: previous, to: next),
+                           "sub-display change must dedup")
+        }
+    }
+
     /// A snapshot written by an OLDER app build (no targets-trio keys) must still decode — the widget
     /// extension can update ahead of the app's first fresh publish.
     func testOlderSnapshotWithoutTargetsFieldsStillDecodes() throws {

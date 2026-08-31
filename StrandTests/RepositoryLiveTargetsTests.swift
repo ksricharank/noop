@@ -44,8 +44,11 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         let session = DailyTargets.sessionPrescription(charge: 80, readiness: readiness, restScore: 81)
         XCTAssertEqual(t.restDay, session == nil)
         XCTAssertEqual(t.sessionMinutes, session?.minutes)
+        // FROZEN (260831): the target is the session's worth alone — today's accrued 12 does NOT
+        // inflate it, so the denominator holds still all day like Cal/Steps/Sleep.
         XCTAssertEqual(t.effortTarget,
-                       DailyTargets.effortTargetStored(currentEffortStored: 12, session: session))
+                       session.map { _ in DailyTargets.effortTargetStored(currentEffortStored: nil,
+                                                                          session: session) })
         XCTAssertEqual(t.kcalTargetKcal,
                        DailyTargets.dayKcalTarget(session: session, profile: profile,
                                                   restingHr: 60))
@@ -71,5 +74,24 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         XCTAssertEqual(t.sessionMinutes,
                        DailyTargets.sessionPrescription(charge: nil, readiness: readiness,
                                                         restScore: nil)?.minutes)
+    }
+
+    /// The 260831 freeze's rest-day invariant: the effort target exists exactly when a session is
+    /// prescribed. A rest day (no session) has NO effort target — nil, so the displays degrade to
+    /// the bare numerator, never a broken-looking "8/0". Asserted as an invariant because forcing
+    /// ReadinessEngine into `.rundown` needs a contrived HRV history; the session-day half is pinned
+    /// concretely in testTargetsDeriveFromTheBodyState.
+    func testEffortTargetExistsExactlyWhenASessionDoes() {
+        var days = (1...14).map {
+            metric(day: String(format: "2026-08-%02d", $0), rhr: 60, strain: 10, kcal: 900)
+        }
+        days.append(metric(day: "2026-08-15", sleepMin: nil, rhr: nil, strain: 8, kcal: 500))
+        for (charge, rest) in [(10, 30), (80, 81), (nil, nil)] as [(Int?, Int?)] {
+            let t = Repository.liveTargets(days: days, charge: charge, restScore: rest,
+                                           profile: UserProfile(),
+                                           todayKey: "2026-08-15")
+            XCTAssertEqual(t.effortTarget == nil, t.restDay,
+                           "charge=\(String(describing: charge))")
+        }
     }
 }
