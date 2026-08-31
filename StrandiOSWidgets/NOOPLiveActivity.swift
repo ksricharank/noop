@@ -22,8 +22,10 @@ struct NOOPLiveActivity: Widget {
                 // down (charging, out of range — the card holds its last values through a drop
                 // instead of vanishing), red while connected. The numbers stay primary either way;
                 // they are real, just frozen.
+                // .body (was .title2): the icon is a cue, not a stat — its width now belongs to
+                // the four value columns, which run as large as the banner allows.
                 Image(systemName: "waveform.path.ecg")
-                    .font(.title2)
+                    .font(.body)
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
@@ -162,13 +164,14 @@ private func stepsText(_ state: NOOPActivityAttributes.ContentState) -> String {
 private func bannerStat(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        // .headline (was .title3 in the HR era): the values are now n/t pairs ("1830/2650"), and
-        // three of those at .title3 overflow the banner's width — one step down keeps all three
-        // whole at a nightstand-readable size.
-        Text(value).font(.headline).fontWeight(.semibold)
+        // .title3 BOLD ("as large as possible without spoiling the formatting", 260830 third
+        // review): four n/t pairs at this size nominally overrun a narrow banner, so the
+        // minimumScaleFactor floor is what guarantees the formatting — the wide pairs shrink to
+        // fit their column while the short ones (Effort, Sleep) keep the full size.
+        Text(value).font(.title3).fontWeight(.bold)
             .foregroundStyle(StrandPalette.textPrimary)
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .minimumScaleFactor(0.55)
     }
     .multilineTextAlignment(.center)
 }

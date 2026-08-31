@@ -77,17 +77,23 @@ struct NOOPTargetsView: View {
     /// 2×2 grid, no "NOOP" wordmark (260830 revision: four cells in one row crushed the Cal pair,
     /// and the label spent a whole line saying what the widget's placement already says). Rows match
     /// the in-app strip — each LONG pair (Steps, Cal — full counts) shares its row with a short one
-    /// (Effort, Sleep) so the rows balance. 17pt BOLD values (up from 15 semibold) after the
-    /// maintainer's "very hard to read" screenshot review; the labels stay 9pt quiet.
+    /// (Effort, Sleep) so the rows balance. Values are pushed to the slot's ceiling ("as large as
+    /// possible without spoiling the formatting", third screenshot review): 21pt BOLD with the
+    /// labels dropped to 8pt and every spacing at minimum — the ~72pt rectangular slot fits exactly
+    /// two 8+21 cells plus 2pt between rows; `minimumScaleFactor` absorbs the widest pairs.
     private var rectangular: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Steps", text: snap.stepsDisplay, size: 17, tint: StrandPalette.chargeColor)
-                targetCell("Effort", text: snap.effortNT, size: 17, tint: StrandPalette.effortColor)
+                targetCell("Steps", text: snap.stepsDisplay, size: 21, labelSize: 8,
+                           tint: StrandPalette.chargeColor)
+                targetCell("Effort", text: snap.effortNT, size: 21, labelSize: 8,
+                           tint: StrandPalette.effortColor)
             }
             HStack(alignment: .top, spacing: 6) {
-                targetCell("Cal", text: snap.calDisplay, size: 17, tint: StrandPalette.metricAmber)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 17, tint: StrandPalette.metricCyan)
+                targetCell("Cal", text: snap.calDisplay, size: 21, labelSize: 8,
+                           tint: StrandPalette.metricAmber)
+                targetCell("Sleep", text: snap.sleepDisplay, size: 21, labelSize: 8,
+                           tint: StrandPalette.metricCyan)
             }
         }
     }
@@ -156,16 +162,17 @@ struct NOOPTargetsView: View {
 
     /// One labelled value column (value over caption), equal-width. Tint applies to the value only
     /// when it exists — a dash stays tertiary so missing data never wears a domain colour.
-    private func targetCell(_ label: String, text: String?, size: CGFloat,
+    /// `labelSize` lets the space-starved rectangular slot trade caption points for value points.
+    private func targetCell(_ label: String, text: String?, size: CGFloat, labelSize: CGFloat = 9,
                             tint: Color = StrandPalette.textPrimary) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(text ?? "–")
                 .font(.system(size: size, weight: .bold, design: .rounded))
                 .foregroundStyle(text == nil ? StrandPalette.textTertiary : tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.5)
             Text(label)
-                .font(.system(size: 9))
+                .font(.system(size: labelSize))
                 .foregroundStyle(StrandPalette.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

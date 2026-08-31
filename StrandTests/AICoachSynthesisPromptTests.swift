@@ -105,13 +105,15 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("z-scores"))
         XCTAssertTrue(d.contains("watchout"))
         XCTAssertTrue(d.contains("total calories"))
-        // Third revision (260830 evening, "a wall of text"): titled SECTIONS, not bullets — the
-        // format rules are stated to the model, and the bullet form must not return.
+        // Fourth revision (260830 night — prose sections still read as "a wall of text"): each
+        // section is a bold title, ONE ten-word bolded takeaway line, then 2-4 fragment sub-bullets
+        // ("Thing — fact"), numbers bolded. The format rules are stated to the model verbatim.
         XCTAssertTrue(d.contains("OWN line"))
-        XCTAssertTrue(d.contains("NO bullet points"))
+        XCTAssertTrue(d.contains("takeaway line"))
+        XCTAssertTrue(d.contains("sub-bullets"))
+        XCTAssertTrue(d.contains("never a full flowing sentence"))
         XCTAssertTrue(d.contains("blank line between sections"))
-        XCTAssertTrue(d.contains("SHORT sentences"))
-        XCTAssertFalse(d.contains("markdown bullets"), "the retired bullet shape must not linger")
+        XCTAssertFalse(d.contains("markdown bullets"), "the retired everything-is-one-bullet shape must not linger")
         XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
         XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
