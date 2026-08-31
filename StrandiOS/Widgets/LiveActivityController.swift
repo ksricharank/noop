@@ -13,10 +13,16 @@ final class LiveActivityController {
     /// instantiating this system bridge per tick is needless allocation. ActivityKit's auth status
     /// only changes via Settings, so caching for the controller's lifetime is safe.
     private let authInfo = ActivityAuthorizationInfo()
-    /// Synchronous gate against concurrent `Activity.request` calls. The `else` branch below is
-    /// re-entered while the first request is still in flight (it hasn't assigned `self.activity`
-    /// yet), so without this guard two close-together HR samples could both fire `Activity.request`
-    /// and create duplicate Live Activities.
+    /// Monotonic counter identifying the current start/end epoch. `end()` captures the generation it
+    /// was enqueued for and no-ops if a newer start has happened since — see `endIfCurrent`.
+    private var generation = 0
+    /// Whether an `end()` is already queued for the CURRENT generation, so N consecutive ticks with
+    /// the toggle off (or the link down) enqueue one end instead of one per tick at ~1 Hz. Cleared
+    /// when that end runs, or when a start opens a new generation.
+    private var isEnding = false
+    /// Gate against concurrent `Activity.request` calls, held across the whole start window. The
+    /// request itself is synchronous, but `activity` is only assigned after it returns, so this also
+    /// keeps a start distinguishable from "no activity" for anything running in between.
     private var isStarting = false
     /// How long after the last push iOS may keep showing the activity as fresh. The activity is
     /// refreshed every ~2 s while streaming, so this never bites a live session; it auto-greys a
@@ -96,8 +102,13 @@ final class LiveActivityController {
 
         switch decision {
         case .suppress:
-            // Tear down only what is actually showing; `end()` on nothing is a wasted hop.
-            if activity != nil { Task { await end() } }
+            // Tear down through the generation gate, not a bare `Task { await end() }`. Suppression
+            // holds across EVERY ~1 Hz tick (toggle off, sleep window, link down), so the bare form
+            // enqueued one end per tick, and each ends every NOOP activity — including one a later
+            // tick had just restarted. `endIfCurrent` collapses that to one end per generation and
+            // drops it outright if a start has superseded it. It also checks whether anything is
+            // showing, making the `activity != nil` test it replaces redundant.
+            endIfCurrent()
             return
         case .holdIfShowing:
             // Leave a running activity exactly as it is — no push, no teardown.
@@ -187,6 +198,12 @@ final class LiveActivityController {
             // second request. The 2-second throttle above only guards the update path.
             guard !isStarting else { return }
             isStarting = true
+            // Open a new generation BEFORE requesting, so any `end()` already queued from a previous
+            // toggle-off / disconnect is stale by the time it runs and leaves this activity alone.
+            // Without this, the queued end iterated `Activity.activities` and killed the activity the
+            // user had just re-enabled — the "doesn't show up until I toggle a few times" bug.
+            generation &+= 1
+            isEnding = false
             do {
                 activity = try Activity.request(
                     attributes: NOOPActivityAttributes(title: String(localized: "HR")),
@@ -276,6 +293,27 @@ final class LiveActivityController {
             }
             isStarting = false
         }
+    }
+
+    /// Enqueue an end for the current generation, at most once per generation. A start bumps the
+    /// generation, which both invalidates any end still queued and re-arms this for the new activity.
+    private func endIfCurrent() {
+        guard !isEnding else { return }
+        guard activity != nil || !Activity<NOOPActivityAttributes>.activities.isEmpty else { return }
+        isEnding = true
+        let requested = generation
+        Task { await end(ifGeneration: requested) }
+    }
+
+    /// End every NOOP Live Activity unless a newer start has superseded this request.
+    private func end(ifGeneration requested: Int) async {
+        // A start that landed between this task being enqueued and it running bumped `generation`;
+        // the activity now showing is NOT the one this end was asked to remove, so drop the request.
+        // Clearing the flag unconditionally keeps a dropped end from wedging the gate: the start that
+        // superseded us also clears it, but a stale end must never leave `isEnding` latched true.
+        isEnding = false
+        guard requested == generation else { return }
+        await end()
     }
 
     func end() async {
