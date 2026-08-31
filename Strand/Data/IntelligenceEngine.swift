@@ -527,12 +527,28 @@ final class IntelligenceEngine: ObservableObject {
     /// Compute on-device scores for each of the last `maxDays` that actually has raw HR data.
     /// Personal baselines (HRV / resting HR) are folded from the imported history, so even the first
     /// live night can be scored against your norm.
-    func analyzeRecent(maxDays: Int = 21, force: Bool = true, skipIfUnchanged: Bool = false) async {
+    ///
+    /// `lightPass` (260831, the background today-only pass): the SAME pass with a small `maxDays`,
+    /// run inline after a background offload so today's accumulators (steps / kcal / strain — the
+    /// widget numerators) advance every sync instead of freezing until the next foreground full
+    /// pass. Values are byte-identical to a full pass for the days it scores (same code, baselines
+    /// fold from stored history regardless of the window; eviction is window-bounded). What it must
+    /// NOT do is impersonate a full pass, so it: never marks/settles the #1538/#1681 re-score debt
+    /// (a deferred FULL pass still runs at the next foreground / granted background task); never
+    /// banks its duration into `lastCompletedPassSeconds` (a 2-second light pass would teach
+    /// `RescoreBackgroundPolicy` that passes are cheap and un-defer the 21-day pass into a locked,
+    /// I/O-throttled background — the multi-minute passes in the 260831 log); and never advances
+    /// the #836 fingerprint watermark (it did not do the full-window reconciliation).
+    func analyzeRecent(maxDays: Int = 21, force: Bool = true, skipIfUnchanged: Bool = false,
+                       lightPass: Bool = false) async {
         // #899-A: a concurrent pass already holds the lock. A NON-forced idle tick is safe to drop (the
         // in-flight pass already covers the same window). But a FORCED call is a real update path (a
         // post-backfill rescore after a sync) , dropping it would leave a freshly-synced night unscored
         // until the next cycle. Re-arm instead: flag it so the running pass's `defer` re-invokes once.
-        guard !computing else { if force { pendingForcedRescore = true }; return }
+        // A LIGHT pass never re-arms: pendingForcedRescore would make the in-flight FULL pass spawn
+        // ANOTHER full 21-day pass on completion — in the background, the exact heavy work the light
+        // pass exists to avoid — to redo values the running pass is already about to write.
+        guard !computing else { if force && !lightPass { pendingForcedRescore = true }; return }
         guard let store = await repo.storeHandle() else { note = String(localized: "No on-device store yet."); return }
         guard let hrvCfg = Baselines.metricCfg["hrv"],
               let rhrCfg = Baselines.metricCfg["resting_hr"],
@@ -592,7 +608,7 @@ final class IntelligenceEngine: ObservableObject {
         // `newData=no` means the fingerprint already equals the watermark the last run advanced: a re-score
         // driven by the trigger, not by data (#1005 background battery). Diagnostic only; the pass runs
         // either way. Twin of the Android WhoopBleClient / AppViewModel attribution.
-        let trigger = !force ? "idle" : (skipIfUnchanged ? "post-offload" : "forced")
+        let trigger = lightPass ? "light-today" : (!force ? "idle" : (skipIfUnchanged ? "post-offload" : "forced"))
         let hadNew = wmKey.isEmpty || storedWatermark != wmKey
         diagnosticSink?("re-score: trigger=\(trigger) "
                         + "newData=\(hadNew ? "yes" : "no (nothing changed since last run)")", nil)
@@ -618,7 +634,10 @@ final class IntelligenceEngine: ObservableObject {
         // state that skipped the capture and just cleared, which is exactly where #1681 lived. The
         // Kotlin post-offload gate makes the same point in its own words: "captured before the run,
         // written only on success".
-        let owedToken = RescoreBackgroundScheduler.markRescoreOwed()
+        // A LIGHT pass never stamps the debt: it is not the pass the debt system is owed (see the
+        // `lightPass` doc above) — with no token it can never settle another trigger's debt either
+        // (`maySettleDebt` refuses nil), which is exactly the wanted behaviour.
+        let owedToken = lightPass ? nil : RescoreBackgroundScheduler.markRescoreOwed()
         // #899-A re-arm: clear the lock, then if a forced rescore was dropped while this pass held it,
         // run it ONCE. The flag is cleared BEFORE the re-invoke (a single re-arm), so a forced call landing
         // DURING the re-invoke re-arms it again but a quiet one does not , this can never recurse unbounded.
@@ -2424,6 +2443,15 @@ final class IntelligenceEngine: ObservableObject {
         // #836: record the raw-HR fingerprint this run scored against, so a later NON-forced tick can
         // short-circuit while it's unchanged. Written ONLY here at the end of a completed run (never on an
         // early guard-return), so an interrupted/failed run can't advance the watermark past unscored data.
+        // A LIGHT pass advances neither the watermark nor the debt/duration bookkeeping — see the
+        // `lightPass` doc on the signature. Its done-line is labelled so trigger→done pairing in a
+        // log never mistakes a 2-second today-only pass for a completed full window.
+        if lightPass {
+            let elapsed = Date().timeIntervalSince(reScoreStart)
+            diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
+                            + "\(Int(elapsed * 1000)) ms", nil)
+            return
+        }
         if !wmKey.isEmpty { UserDefaults.standard.set(wmKey, forKey: Self.analyzeWatermarkKey) }
         // #1538: clear the started-mark and bank how long a COMPLETED pass costs on this install. The
         // measurement is what lets `RescoreBackgroundPolicy` tell an install that finishes comfortably in a
