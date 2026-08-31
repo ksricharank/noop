@@ -42,6 +42,10 @@ extension WidgetSnapshot {
     @MainActor
     static func publish(from model: AppModel) async {
         await refreshWidgetPresence()
+        // 260831 instrumentation: begun/finished counted separately — a publish that enters here and
+        // never reaches the save decision is a hang or process death INSIDE this path, which the
+        // frozen-widget report could not distinguish from a publish that never ran at all.
+        WidgetPublishStats.recordFullBegun()
         let days = model.repo.days
         let now = Date()
         // The recovery-derived anchor: today's row when it's scored, else the freshest STRICTLY-PRIOR
@@ -140,7 +144,11 @@ extension WidgetSnapshot {
             steps: targets.stepsToday,
             stepsTarget: targets.stepsTarget
         )
-        saveAndReloadIfChanged(snap)
+        let reloaded = saveAndReloadIfChanged(snap)
+        WidgetPublishStats.recordFullFinished(
+            glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
+                + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-")",
+            reloadRequested: reloaded)
     }
 
     /// Publish fields that come directly from the live BLE state without re-reading the Rest metric
@@ -165,7 +173,7 @@ extension WidgetSnapshot {
         snap.batteryPct = Self.activeBatteryPct(from: model)
         snap.bonded = model.live.bonded
         snap.updated = now
-        saveAndReloadIfChanged(snap, previous: previous)
+        WidgetPublishStats.recordLive(reloadRequested: saveAndReloadIfChanged(snap, previous: previous))
     }
 
     /// Persist and ask WidgetKit for a new timeline only when a rendered field changed. The snapshot's
@@ -173,8 +181,12 @@ extension WidgetSnapshot {
     /// true no-op rather than an App-Group write plus an extension reload.
     /// `previous` lets the live fast path pass the snapshot it already loaded (it runs on the main actor,
     /// so that value is still current); the full publish path omits it and this loads once for the dedup.
+    /// Returns whether a WidgetKit reload was actually requested, so the callers' 260831
+    /// instrumentation can split reloads from dedup skips.
     @MainActor
-    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot, previous: WidgetSnapshot? = nil) {
+    @discardableResult
+    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot,
+                                               previous: WidgetSnapshot? = nil) -> Bool {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
             snap.save(previousSeries: previous?.hrSeries ?? [])
@@ -188,6 +200,7 @@ extension WidgetSnapshot {
             } else {
                 WidgetTelemetry.noteNoWidget()
             }
+            return true
         } else if WidgetSnapshot.traceNeedsPoint(previous: previous, bpm: snap.bpm, now: snap.updated) {
             // A steady heart changes nothing the header renders, so the branch above declines — but the
             // TRACE still wants this minute's point, or it stops advancing at rest and prunes to empty
@@ -206,6 +219,7 @@ extension WidgetSnapshot {
             // went anywhere as if they had.
             WidgetTelemetry.noteDeclined()
         }
+        return false
     }
 
     /// Ask WidgetKit whether any widget is actually installed, and remember the answer.
