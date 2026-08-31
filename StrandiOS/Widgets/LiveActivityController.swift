@@ -219,7 +219,9 @@ final class LiveActivityController {
                                                             effortTargetDisplay: effortPair.target,
                                                             kcal: targets?.kcalToday,
                                                             kcalTarget: targets?.kcalTargetKcal,
-                                                            sleepNeedMin: targets?.sleepNeedTonightMin)
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                            steps: targets?.stepsToday,
+                                                            stepsTarget: targets?.stepsTarget)
             // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
             // REMOVES a stale activity from both surfaces rather than greying it, and a locked span
             // can legitimately go quiet past any window we'd pick. Live pushes keep the short net —
@@ -237,7 +239,9 @@ final class LiveActivityController {
                                                             effortTargetDisplay: effortPair.target,
                                                             kcal: targets?.kcalToday,
                                                             kcalTarget: targets?.kcalTargetKcal,
-                                                            sleepNeedMin: targets?.sleepNeedTonightMin)
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                            steps: targets?.stepsToday,
+                                                            stepsTarget: targets?.stepsTarget)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Local Live Activities can only be STARTED while the app is foreground-active; a
             // background request throws every time. Skipping quietly matters beyond tidiness: after
@@ -325,7 +329,9 @@ final class LiveActivityController {
                                                         effortTargetDisplay: effortPair.target,
                                                         kcal: targets?.kcalToday,
                                                         kcalTarget: targets?.kcalTargetKcal,
-                                                        sleepNeedMin: targets?.sleepNeedTonightMin)
+                                                        sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                        steps: targets?.stepsToday,
+                                                        stepsTarget: targets?.stepsTarget)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
         // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
         // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island

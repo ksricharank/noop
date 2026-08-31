@@ -47,11 +47,15 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         public var kcalTarget: Int?
         /// Minutes of sleep to target tonight — the Sleep column ("8h05").
         public var sleepNeedMin: Int?
+        /// Today's steps and today's step target — the Steps column ("6.2k/8k").
+        public var steps: Int?
+        public var stepsTarget: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
                     live: Bool? = nil, effortDisplay: String? = nil,
                     effortTargetDisplay: String? = nil, kcal: Int? = nil,
-                    kcalTarget: Int? = nil, sleepNeedMin: Int? = nil) {
+                    kcalTarget: Int? = nil, sleepNeedMin: Int? = nil,
+                    steps: Int? = nil, stepsTarget: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
@@ -65,6 +69,8 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.kcal = kcal
             self.kcalTarget = kcalTarget
             self.sleepNeedMin = sleepNeedMin
+            self.steps = steps
+            self.stepsTarget = stepsTarget
         }
     }
 

@@ -192,6 +192,42 @@ public enum DailyTargets {
         return Int(((restingDay + sessionPart) / calorieRoundKcal).rounded() * calorieRoundKcal)
     }
 
+    // MARK: - Today's step target (all-day movement, priced by the same body-state bands)
+
+    /// Step bases by charge band (260830) — all-day gentle movement (NEAT), a separate ask from the
+    /// prescribed SESSION above: a recovery day still wants walking, just less of it. The bases are
+    /// deliberately round guideline-scale numbers (the 7–10k range population evidence actually
+    /// supports), banded by TODAY's charge — never by the user's own step history (the doctrine).
+    public static let stepsBaseRecoverPerDay = 6_000
+    public static let stepsBaseMaintainPerDay = 8_000
+    public static let stepsBasePushPerDay = 10_000
+    /// Readiness notches: a rundown read halves the walking ask toward the floor; strained trims it.
+    public static let stepsRundownAdj = -2_000
+    public static let stepsStrainedAdj = -1_000
+    /// The target's bounds: below 4k the ask stops being a target, above 12k it stops being NEAT.
+    public static let stepsFloorPerDay = 4_000
+    public static let stepsCapPerDay = 12_000
+
+    /// Today's step target: charge band sets the base (recover 6k / maintain 8k / push 10k; unknown
+    /// charge = maintain), the readiness read notches it down when the body says ease off, clamped
+    /// 4k–12k. Primed adds nothing — a green day already asks 10k, and steps are not where a primed
+    /// body's headroom should go (the session is).
+    public static func stepsTarget(charge: Int?, readiness: ReadinessEngine.Level) -> Int {
+        let base: Int
+        switch charge {
+        case .some(let c) where c >= pushChargeFloor: base = stepsBasePushPerDay
+        case .some(let c) where c <= recoverChargeCeiling: base = stepsBaseRecoverPerDay
+        default: base = stepsBaseMaintainPerDay
+        }
+        let notch: Int
+        switch readiness {
+        case .rundown: notch = stepsRundownAdj
+        case .strained: notch = stepsStrainedAdj
+        default: notch = 0
+        }
+        return min(max(base + notch, stepsFloorPerDay), stepsCapPerDay)
+    }
+
     // MARK: - Tonight's sleep need
 
     // HISTORY: v1 was "personalized need + half the debt capped at 90 min" — the cap bound every
