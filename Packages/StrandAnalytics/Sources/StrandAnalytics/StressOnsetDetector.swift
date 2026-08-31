@@ -178,6 +178,69 @@ public enum StressOnsetDetector {
     // through THIS detector's event form (`evaluate` → strap buzz + screen notification), which was
     // always the gated, rate-limited sibling. The EMA baseline is owned solely by `evaluate` again.
 
+    // MARK: - Offloaded-burst replay (the island-less mode's daytime detection, 260830)
+
+    /// The result of replaying an offloaded R-R window: when (if ever) a nudge fired inside it, the
+    /// RMSSD pair at that moment (for the card / log), and the advanced state to persist.
+    public struct RetroScan: Equatable, Sendable {
+        public let nudgeAtSec: Int?
+        public let fastRMSSD: Double?
+        public let baselineRMSSD: Double?
+        public let nextState: State
+    }
+
+    /// Replay a window of OFFLOADED beats through the live detector, beat by beat, exactly as the
+    /// ~1 Hz live loop would have seen them — same physiology, same edge/sustain/rate-limit/quiet-hours
+    /// gates (`evaluate` computes quiet hours from each beat's own historical timestamp), same
+    /// replay-safe state threading. Built for the island-less default mode (continuous HRV
+    /// overnight-only): with no daytime stream there are no live ticks, so each ~15-minute sync is
+    /// where a dip can first be SEEN — up to one sync late by construction. The caller bounds how
+    /// stale a detected dip may be before it is worth a buzz.
+    ///
+    /// `beats` must be ascending by `ts` (the store read's contract). The exercise gate runs on HR
+    /// derived from the beats themselves (median of the last `retroHRWindowBeats` R-R intervals) —
+    /// wrist motion is not threaded in, exactly like the live path (the resting-HR band is the
+    /// real-time gate there too). Returns the LATEST qualifying nudge in the window: if a stressful
+    /// stretch fired twice a sync apart, the fresher moment is the one worth telling the user about.
+    public static func replayOffloaded(beats: [(ts: Int, rrMs: Int)],
+                                       sessionActive: Bool,
+                                       state: State,
+                                       config: Config,
+                                       tzOffsetSec: Int) -> RetroScan {
+        var buf: [Int] = []
+        var st = state
+        var nudgeAt: Int?
+        var fastAtNudge: Double?
+        var baselineAtNudge: Double?
+        for beat in beats {
+            buf.append(beat.rrMs)
+            if buf.count > retroBufferBeats { buf.removeFirst(buf.count - retroBufferBeats) }
+            // Instantaneous HR from the beats themselves: median of the recent R-R window, so a
+            // single artifact beat cannot flip the exercise gate.
+            let recent = buf.suffix(retroHRWindowBeats).filter { $0 > 0 }
+            let hr: Double? = recent.count >= 5
+                ? 60_000.0 / Double(recent.sorted()[recent.count / 2])
+                : nil
+            let d = evaluate(rrBuffer: buf, currentHR: hr, recentMotionG: nil,
+                             sessionActive: sessionActive, state: st, config: config,
+                             nowSec: beat.ts, tzOffsetSec: tzOffsetSec)
+            st = d.nextState
+            if d.shouldNudge {
+                nudgeAt = beat.ts
+                fastAtNudge = d.fastRMSSD
+                baselineAtNudge = d.baselineRMSSD
+            }
+        }
+        return RetroScan(nudgeAtSec: nudgeAt, fastRMSSD: fastAtNudge,
+                         baselineRMSSD: baselineAtNudge, nextState: st)
+    }
+
+    /// The replay's rolling buffer size — identical to the live loop's 120-beat `rrBuf` cap, so the
+    /// fast window and clean-ability match what live evaluation would have computed.
+    public static let retroBufferBeats = 120
+    /// Beats in the median window the replay derives its exercise-gate HR from.
+    public static let retroHRWindowBeats = 15
+
     // MARK: - The detector
 
     /// Evaluate the live window and decide whether to fire a JITAI nudge.
