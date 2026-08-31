@@ -46,6 +46,11 @@ final class LiveActivityController {
     /// `lastPushWasLocked`: the first tick after a reconnect repaints immediately (clearing the
     /// not-connected cue) instead of waiting out the locked spacing with the grey cue still up.
     private var lastPushedBonded: Bool?
+    /// The breathe cue on the last push — the third edge detector: the red digits appearing or
+    /// clearing is the whole point of the cue, so it repaints immediately, locked or not, rather
+    /// than waiting out the locked spacing. Flips are rare by construction (the RMSSD dip has
+    /// EMA-baseline hysteresis), so the bypass costs nothing against the update budget.
+    private var lastPushedBreathe: Bool?
     /// When the CURRENT activity was requested — the system ends every Live Activity ~8 h after
     /// creation, so `update` renews the lease (end + fresh request) once an activity crosses this
     /// age and the app is foreground-active. Approximated with the adoption time for an activity
@@ -86,7 +91,8 @@ final class LiveActivityController {
     /// unlocked (the Dynamic Island reads as live), once a minute with a one-minute HR average while
     /// it is locked (nobody can watch beat-level movement there, and on an Always-On display every
     /// push repaints the Lock Screen — the live cadence was a measurable all-day battery cost).
-    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil) {
+    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil,
+                breathe: Bool? = nil, targets: LiveTargets? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
         // Re-adopt an activity that outlived a previous app session (ActivityKit keeps Live
@@ -176,7 +182,9 @@ final class LiveActivityController {
             // not-connected cue, the first tick of the restored link must clear it now, not a full
             // locked spacing later.
             let bondedEdge = connected != (lastPushedBonded ?? connected)
-            guard lockEdge || bondedEdge
+            // The breathe cue appearing or clearing pushes NOW — see `lastPushedBreathe`.
+            let breatheEdge = (breathe == true) != (lastPushedBreathe == true)
+            guard lockEdge || bondedEdge || breatheEdge
                 || LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
                                                    lockedSpacing: lockedSpacing) else { return }
             lastPush = now
@@ -189,7 +197,11 @@ final class LiveActivityController {
                 : bpm
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
                                                             bonded: connected, effort: effort, rest: rest,
-                                                            live: !locked)
+                                                            live: !locked,
+                                                            breathe: breathe,
+                                                            kcal: targets?.exerciseKcalToday,
+                                                            kcalTarget: targets?.kcalTargetKcal,
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin)
             // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
             // REMOVES a stale activity from both surfaces rather than greying it, and a locked span
             // can legitimately go quiet past any window we'd pick. Live pushes keep the short net —
@@ -197,11 +209,16 @@ final class LiveActivityController {
             let staleDate: Date? = locked ? nil : now.addingTimeInterval(Self.staleAfter)
             lastPushedState = state
             lastPushedBonded = connected
+            lastPushedBreathe = breathe
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                             bonded: connected, effort: effort, rest: rest,
-                                                            live: !locked)
+                                                            live: !locked,
+                                                            breathe: breathe,
+                                                            kcal: targets?.exerciseKcalToday,
+                                                            kcalTarget: targets?.kcalTargetKcal,
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Local Live Activities can only be STARTED while the app is foreground-active; a
             // background request throws every time. Skipping quietly matters beyond tidiness: after
@@ -230,6 +247,7 @@ final class LiveActivityController {
                 lastPushWasLocked = locked
                 lastPushedState = state
                 lastPushedBonded = connected
+                lastPushedBreathe = breathe
                 activityStartedAt = Date()
             } catch {
                 activity = nil
@@ -255,8 +273,11 @@ final class LiveActivityController {
         guard let activity, var state = lastPushedState, lastPushedBonded != false else { return }
         state.live = false
         state.bonded = false
+        // No link = no beats = no autonomic claim: the breathe cue clears with the connection.
+        state.breathe = nil
         lastPushedState = state
         lastPushedBonded = false
+        lastPushedBreathe = nil
         log?("Live Activity: link dropped — holding the card with a not-connected cue (the standing reconnect repaints it)")
         // No staleDate: a disconnected span can legitimately outlast any window (a strap charges for
         // an hour+), and iOS 26 REMOVES a stale activity rather than greying it.
@@ -271,7 +292,8 @@ final class LiveActivityController {
     /// below (iOS 26 removes, not greys, a stale activity). Deliberately does NOT touch `lastPush`:
     /// the live cadence's own throttle state belongs to live ticks, and an unlock moments after a
     /// data repaint should push live immediately.
-    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool) {
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool,
+                        breathe: Bool? = nil, targets: LiveTargets? = nil) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
         revalidateHandle()
         // A drop never ends the card (260829) — whatever the mode or lock state. It used to end here
@@ -282,7 +304,11 @@ final class LiveActivityController {
         guard let bpm else { return }
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                         bonded: connected, effort: effort, rest: rest,
-                                                        live: false)
+                                                        live: false,
+                                                        breathe: breathe,
+                                                        kcal: targets?.exerciseKcalToday,
+                                                        kcalTarget: targets?.kcalTargetKcal,
+                                                        sleepNeedMin: targets?.sleepNeedTonightMin)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
         // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
         // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island
@@ -298,6 +324,7 @@ final class LiveActivityController {
             lastPushWasLocked = true
             lastPushedState = state
             lastPushedBonded = connected
+            lastPushedBreathe = breathe
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             // Foreground-active only, same as the live path: a request from anywhere else throws.
@@ -326,6 +353,7 @@ final class LiveActivityController {
                 lastPushWasLocked = true
                 lastPushedState = state
                 lastPushedBonded = connected
+                lastPushedBreathe = breathe
                 activityStartedAt = Date()
             } catch {
                 activity = nil

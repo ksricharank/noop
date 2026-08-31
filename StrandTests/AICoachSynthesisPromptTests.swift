@@ -83,11 +83,28 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertEqual(engine.systemPrompt, AICoachEngine.defaultSystemPrompt)
     }
 
-    /// The default is the instruction the Today turn actually shipped with before it became editable.
+    /// The default names the surface and its three-bullet shape (260829): the card-mirroring labels
+    /// in their stated order, explain-before-prescribe, other metrics only when strictly relevant,
+    /// and the instruction to cite the deterministic TODAY'S TARGETS rather than invent parallel
+    /// numbers — the agreement contract with the Lock-Screen card.
     func testDefaultNamesTheSurfaceAndItsShape() {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
-        XCTAssertTrue(d.contains("paragraph"))
-        XCTAssertTrue(d.contains("No headings, no lists, no greeting."))
+        XCTAssertTrue(d.contains("**Heart**"))
+        XCTAssertTrue(d.contains("**Activity**"))
+        XCTAssertTrue(d.contains("**Rest & sleep**"))
+        XCTAssertTrue(d.contains("BEFORE prescribing"))
+        XCTAssertTrue(d.contains("only when it strictly serves"))
+        XCTAssertTrue(d.contains("TODAY'S TARGETS"))
+        XCTAssertTrue(d.contains("No greeting"))
+        // The heart vocabulary is DEFINED for the model, not assumed (260830: "I don't think the
+        // LLM understands what elevated means"): each of the three verdict words is named and
+        // explained, and the red-digits cue is tied to STRESSED so the synthesis can reference the
+        // card.
+        XCTAssertTrue(d.contains("STRESSED"))
+        XCTAssertTrue(d.contains("not judgeable"))
+        XCTAssertTrue(d.contains("turning RED"))
+        XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
+        XCTAssertFalse(d.contains("elevated,"), "undefined 'elevated' phrasing must not return")
     }
 }

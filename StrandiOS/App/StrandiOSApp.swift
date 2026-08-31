@@ -159,7 +159,8 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                        breathe: model.breatheCue,
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // Repaint the Live Activity on connection edges, even when no HR tick arrives to
@@ -183,7 +184,8 @@ struct StrandiOSApp: App {
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                        breathe: model.breatheCue,
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // Locked-stream duty cycle (Lock-Screen refresh = -1): while locked, live ticks are
@@ -221,8 +223,10 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
-                            rest: day.flatMap { model.repo.restScore(for: $0) },
-                            connected: model.live.connected
+                            rest: nil,
+                            connected: model.live.connected,
+                            breathe: nil,   // stream silenced while locked — no fresh R-R, no claim
+                            targets: model.repo.cachedLiveTargets()
                         )
                     }
                 }
@@ -238,14 +242,12 @@ struct StrandiOSApp: App {
                     DeviceLockState.noteWillLock()
                     Task { await model.lockedActivityRefresh?() }
                 }
-                // The UNLOCK edge: locked repaints are deliberately never-stale (iOS 26 REMOVES a
-                // stale activity from both surfaces rather than greying it), so the clock no longer
-                // retires a card whose strap has genuinely gone — this kick does, explicitly. Clear
-                // the latch first (idempotent; observer order with BLEManager's for the same note is
-                // unspecified), then push once with the CURRENT link state: connected → the card
-                // refreshes live a beat before the resubscribed stream's own ticks take over;
-                // disconnected → update() ends it properly (ends, unlike starts, work from the
-                // background). While still locked-held this can't fire — the note IS the unlock.
+                // The UNLOCK edge: clear the latch first (idempotent; observer order with
+                // BLEManager's for the same note is unspecified), then push once with the CURRENT
+                // link state: connected → the card refreshes live a beat before the resubscribed
+                // stream's own ticks take over; disconnected → the card HOLDS with its not-connected
+                // cue (260829 — a drop never ends it; only the toggle or the sleep window does).
+                // While still locked-held this can't fire — the note IS the unlock.
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
                     DeviceLockState.noteUnlocked()
@@ -255,7 +257,8 @@ struct StrandiOSApp: App {
                         recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: anchorDay?.strain.map { Int($0.rounded()) },
-                        rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                        breathe: model.breatheCue,
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
@@ -362,15 +365,16 @@ struct StrandiOSApp: App {
                 // disconnect, iOS's own lifetime cap — leaves the Lock Screen empty until a
                 // FOREGROUND push. This is that push: same values a live tick would carry, so the
                 // controller restarts the activity the moment the app opens instead of waiting on
-                // tick timing — or, if the strap is genuinely gone (and we're no longer holding a
-                // locked duty-cycle freeze), ends a held one properly.
+                // tick timing. (A disconnected strap no longer ends a held card here — 260829: the
+                // hold + not-connected cue persist until the toggle or the sleep window.)
                 let anchorDay = model.repo.cachedWidgetAnchor()
                 liveActivity.update(
                     bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                    breathe: model.breatheCue,
+                    targets: model.repo.cachedLiveTargets()
                 )
                 model.drainPendingIntents()
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant
