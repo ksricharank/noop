@@ -211,4 +211,70 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
             XCTFail("an in-window locked trigger must defer to the window's end, not to a background task")
         }
     }
+
+    // MARK: - The settle-side gate (the 260829 treadmill)
+
+    private func settle(locked: Bool = true,
+                        inWindow: Bool = false,
+                        sinceLast: Double? = nil,
+                        untilWindowEnd: Double? = nil,
+                        spacing: Double = RescoreBackgroundPolicy.lockedSettleSpacingSeconds)
+        -> RescoreBackgroundPolicy.SettleDecision {
+        RescoreBackgroundPolicy.settleDecision(isLocked: locked,
+                                               inSleepWindow: inWindow,
+                                               secondsSinceLastLockedSettle: sinceLast,
+                                               secondsUntilSleepWindowEnd: untilWindowEnd,
+                                               spacingSeconds: spacing)
+    }
+
+    private func isSkip(_ d: RescoreBackgroundPolicy.SettleDecision) -> Bool {
+        if case .skip = d { return true }
+        return false
+    }
+
+    /// An unlocked settle is the original #1538 escalation and always runs — the gate exists for the
+    /// locked treadmill, and must not slow the case the processing task was built for.
+    func testAnUnlockedSettleAlwaysRuns() {
+        XCTAssertEqual(settle(locked: false), .run)
+        XCTAssertEqual(settle(locked: false, sinceLast: 60), .run)
+    }
+
+    /// A settle fired inside the sleep window skips — a task scheduled before the window opened can
+    /// still fire mid-night — and carries the window's remaining seconds so the re-arm lands past its
+    /// end rather than probing every half hour until morning.
+    func testAnInWindowSettleSkipsUntilTheWindowEnds() {
+        let d = settle(inWindow: true, untilWindowEnd: 7200)
+        guard case .skip(_, let retry) = d else { return XCTFail("must skip inside the window") }
+        XCTAssertEqual(retry, 7200)
+    }
+
+    /// One locked settle per spacing window: 38 passes in the motivating day, each completing into
+    /// "debt NOT settled" because a +N locked sync landed new rows mid-pass. The first is worth having
+    /// (the morning widget paint); every repeat inside the spacing is waste and skips, with the
+    /// remaining spacing as the retry so the re-armed task does not probe early.
+    func testALockedSettleRunsAtMostOncePerSpacing() {
+        XCTAssertEqual(settle(sinceLast: nil), .run)
+        let d = settle(sinceLast: 1800, spacing: 10800)
+        guard case .skip(_, let retry) = d else { return XCTFail("a recent locked settle must skip") }
+        XCTAssertEqual(retry, 9000)
+        XCTAssertEqual(settle(sinceLast: 10800, spacing: 10800), .run)   // the boundary re-opens
+    }
+
+    /// An unreadable elapsed value (clock change, corrupted default) means "unknown", and unknown runs —
+    /// same direction as the measured-cost gate: refusing to score on a value we cannot read is the
+    /// worse failure.
+    func testAnUnreadableElapsedRunsRatherThanSkips() {
+        XCTAssertEqual(settle(sinceLast: -30), .run)
+        XCTAssertEqual(settle(sinceLast: .nan), .run)
+        XCTAssertEqual(settle(sinceLast: .infinity), .run)
+    }
+
+    /// The window rule outranks the spacing rule, so a mid-night settle names the window (and its end)
+    /// rather than a spacing that may expire while still inside it.
+    func testTheWindowOutranksTheSpacing() {
+        let d = settle(inWindow: true, sinceLast: 999_999, untilWindowEnd: 3600)
+        guard case .skip(let reason, let retry) = d else { return XCTFail("must skip") }
+        XCTAssertTrue(reason.contains("sleep window"))
+        XCTAssertEqual(retry, 3600)
+    }
 }

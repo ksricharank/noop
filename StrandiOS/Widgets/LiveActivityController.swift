@@ -84,8 +84,9 @@ final class LiveActivityController {
         // Re-adopt an activity that outlived a previous app session (ActivityKit keeps Live
         // Activities alive across relaunches; a fresh controller starts with `activity == nil` —
         // #336/#341), and drop a handle whose activity has since died. Both live in
-        // `revalidateHandle` — done per tick rather than in `init` because `Activity.activities`
-        // isn't reliably hydrated at the instant of process launch.
+        // `revalidateHandle` (a superset of the old inline `.active`-filtered adoption) — done per
+        // tick rather than in `init` because `Activity.activities` isn't reliably hydrated at the
+        // instant of process launch.
         revalidateHandle()
 
         // Should the activity be on screen at all? The rule itself lives in
@@ -244,7 +245,9 @@ final class LiveActivityController {
                     protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
                 return
             }
-            Task { await end() }
+            // Through the generation gate, not a bare end — same reasoning as the live path's
+            // suppress case (a bare end could tear down an activity a newer start just created).
+            endIfCurrent()
             return
         }
         guard let bpm else { return }
@@ -279,6 +282,10 @@ final class LiveActivityController {
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
             isStarting = true
+            // Same epoch bump as the live start: invalidate any end still queued from the previous
+            // generation, or it would tear down the activity this request is about to create.
+            generation &+= 1
+            isEnding = false
             do {
                 activity = try Activity.request(
                     attributes: NOOPActivityAttributes(title: String(localized: "HR")),
