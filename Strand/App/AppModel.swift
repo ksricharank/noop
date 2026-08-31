@@ -1023,6 +1023,13 @@ final class AppModel: ObservableObject {
         guard decision.shouldNudge else { return }
         if canBuzz { buzz(loops: UInt8(clamping: decision.buzzLoops)) }
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)
+        // 260830: the visible half of the nudge — a screen notification saying WHAT the buzz meant
+        // ("take a deep breath"). Rides the exact decision the buzz rode (already de-duped,
+        // rate-limited, quiet-hours- and exercise-gated by the detector); the sub-toggle only
+        // controls presentation. NOTE the physics this inherits: the detector needs live R-R, so
+        // with continuous HRV set to overnight-only there is NO daytime detection — this fires only
+        // while the stream is actually running.
+        if behavior.stressNotify { BreatheNotifier.post() }
         live.append(log: "Stress check-in , HRV dipped while still")
     }
 
