@@ -229,7 +229,7 @@ struct AutomationsView: View {
                 if behavior.stressCheckIn {
                     rowDivider
                     ToggleRow(label: String(localized: "Auto-nudge"),
-                              help: String(localized: "Let the check-in fire on its own: the strap buzzes when a deep breath would help. Off keeps it manual: you start a breath from Breathe yourself. Needs the live stream — with Continuous HRV set to overnight only, detection only runs at night."),
+                              help: String(localized: "Let the check-in fire on its own: the strap buzzes when a deep breath would help. Off keeps it manual: you start a breath from Breathe yourself. Live stream on = instant; with Continuous HRV set to overnight only, daytime dips are found on each strap sync and nudged up to ~15 minutes late."),
                               isOn: $behavior.stressAutoNudge)
                         .onChangeCompat(of: behavior.stressAutoNudge) { on in
                             // Ask at the moment of intent (the IllnessNotifier idiom): the screen
