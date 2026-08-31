@@ -21,11 +21,18 @@ struct DailyTargetsStrip: View {
 
     var body: some View {
         let targets = repo.cachedLiveTargets()
-        HStack(alignment: .top, spacing: 0) {
-            targetCell("Effort", value: effortText(targets), tint: StrandPalette.effortColor)
-            targetCell("Cal", value: calText(targets), tint: StrandPalette.effortColor)
-            targetCell("Steps", value: stepsText(targets), tint: StrandPalette.effortColor)
-            targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.restColor)
+        // 2×2 grid (260830 revision: four cells in one row collided at "1214/2075" widths) — Steps
+        // and Cal on top, Effort and Sleep below, per the maintainer's slotting. One distinct data
+        // colour per metric, the SAME mapping the widgets use, so the two surfaces read as one.
+        VStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                targetCell("Steps", value: stepsText(targets), tint: StrandPalette.chargeColor)
+                targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                targetCell("Effort", value: effortText(targets), tint: StrandPalette.effortColor)
+                targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.metricCyan)
+            }
         }
     }
 
@@ -83,9 +90,9 @@ struct DailyTargetsStrip: View {
     }
 
     /// One big labelled value, equal-width — the "score" presentation the hero trio established:
-    /// caption label over a large rounded number. Sized one step below the HR-era 24pt because the
-    /// n/t pairs are wide ("1830/2650"); `minimumScaleFactor` keeps the worst case whole. A dash
-    /// stays tertiary so missing data never wears a domain colour.
+    /// caption label over a large rounded number. Back to the full 24pt now the 2×2 grid gives each
+    /// pair half a row; `minimumScaleFactor` still carries the widest case. A dash stays tertiary so
+    /// missing data never wears a domain colour.
     private func targetCell(_ label: String, value: String, tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
@@ -93,7 +100,7 @@ struct DailyTargetsStrip: View {
                 .tracking(1.2)
                 .foregroundStyle(StrandPalette.textTertiary)
             Text(value)
-                .font(StrandFont.rounded(20, weight: .bold))
+                .font(StrandFont.rounded(24, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
                 .lineLimit(1)
