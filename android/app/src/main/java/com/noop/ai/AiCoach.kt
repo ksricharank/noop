@@ -22,6 +22,32 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
 /**
+ * A failure that one retry on a LIGHTER model can plausibly survive.
+ *
+ * A distinct type rather than a generic `Exception` so the retry can recognise it without matching on
+ * user-facing message text — which would work in English and silently stop retrying in every other
+ * language the app ships. Still an [Exception] carrying a ready user-facing message, so the
+ * ViewModel's existing error path shows it unchanged when the retry also fails.
+ *
+ * Nearly everything qualifies. Only an auth failure is terminal — a rejected key is rejected by every
+ * model, so retrying spends the single retry on a certainty. Timeouts, rate limits (metered PER MODEL
+ * here, so a heavy model can be exhausted while the lightest still has budget), overloaded backends
+ * (503) and malformed replies all fall back.
+ *
+ * Defined by exclusion on purpose: predicting the retry-worthy set failed twice — timeouts-only missed
+ * thinking models' empty replies, and adding rate limits still missed the 503s.
+ *
+ * Counterpart to Swift `AICoachError.deservesLighterModelRetry`.
+ */
+open class CoachRetryableException(message: String) : Exception(message)
+
+/**
+ * A request that ran out of time — client-side (a socket timeout) or reported by the provider as a
+ * gateway timeout (HTTP 504/524). A [CoachRetryableException], so it earns the lighter-model retry.
+ */
+class CoachTimeoutException(message: String) : CoachRetryableException(message)
+
+/**
  * The AI Coach.
  *
  * Privacy posture: this is the ONE networked feature in the app. Nothing leaves the device
@@ -54,9 +80,22 @@ class AiCoach(
      *  JOURNAL_DEVICE_ID); used for the opt-in on-device-signals context only. */
     private val journalDeviceId = "noop-journal"
 
+    /**
+     * How long one coach request may wait for the reply body.
+     *
+     * The old 60 s read timeout was the real reason a powerful model appeared to produce nothing: these
+     * requests are NON-STREAMING and capped at `max_tokens` 4096, so nothing arrives until the whole
+     * reply is written, and a reasoning-class model composing a long answer routinely passes 60 s. The
+     * request was killed mid-generation every time and surfaced as a failure rather than a slow success.
+     *
+     * 180 s covers a slow large model rather than being generous: the coach is an explicitly
+     * user-initiated action with a visible thinking state, so waiting is legible, and OkHttp's read
+     * timeout is a between-bytes stall budget, not a deadline on the answer's length. Byte-parity with
+     * Swift `AICoachEngine.requestTimeoutSeconds`.
+     */
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
@@ -129,6 +168,43 @@ class AiCoach(
         // the data context, so it is always kept; the middle is dropped, the recent tail retained.
         val grounded = trimmedHistory(groundedFull, MAX_HISTORY_TURNS)
 
+        // Dispatch, with ONE fallback retry on a timeout.
+        //
+        // A timed-out request is the one failure worth re-spending on automatically: the key is good,
+        // the endpoint is right, and the request simply did not finish in time — usually a large model
+        // asked for a long answer over a mobile link. Retrying on the provider's cheapest (and so
+        // fastest) model converts that into an answer often enough to be worth one extra request.
+        //
+        // Exactly one retry, and only on a timeout. Every other failure — rejected key, rate limit, a
+        // 4xx — would fail identically on a smaller model, so retrying would just double the latency of
+        // an error the user still has to read. Already on the cheapest model (or on CUSTOM, where there
+        // is no cheaper id to pick) the retry is SKIPPED rather than re-sending the identical request:
+        // repeating a call that just exhausted the full timeout budget on the same model mostly buys a
+        // second long wait before the same error, since the first attempt already proved the deadline
+        // is the binding constraint rather than luck.
+        //
+        // The retry never persists the fallback model — the user's chosen model stays theirs.
+        // Byte-parity with Swift `AICoachEngine.callProvider`.
+        try {
+            dispatch(provider, model, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
+        } catch (retryable: CoachRetryableException) {
+            val fallback = provider.cheapestModel
+            // Only worth a second request if it is a genuinely DIFFERENT, faster one.
+            if (fallback == null || fallback == model) throw retryable
+            dispatch(provider, fallback, key, grounded, systemPrompt, customBaseUrl, customAuthHeader)
+        }
+    }
+
+    /** Route one already-built request to the selected provider's client. */
+    private suspend fun dispatch(
+        provider: AiProvider,
+        model: String,
+        key: String?,
+        grounded: List<ChatMsg>,
+        systemPrompt: String,
+        customBaseUrl: String,
+        customAuthHeader: CustomAiAuthHeader,
+    ): String =
         when (provider) {
             AiProvider.OPENAI ->
                 callOpenAiCompatible(provider, provider.endpoint, model, key, grounded, systemPrompt)
@@ -147,7 +223,6 @@ class AiCoach(
                     customAuthHeader,
                 )
         }
-    }
 
     /**
      * Today's derived stress line for the consent-gated coach context. Reads R-R for the local day
@@ -660,7 +735,11 @@ class AiCoach(
         } catch (e: java.net.UnknownHostException) {
             throw Exception("No internet connection. The coach needs a connection to reach the provider.")
         } catch (e: java.net.SocketTimeoutException) {
-            throw Exception("The request timed out. Please check your connection and try again.")
+            // Its own type, not a generic Exception, so the one-shot fallback retry can recognise it
+            // without comparing user-facing message strings. Byte-parity with Swift `AICoachError.timedOut`.
+            throw CoachTimeoutException(
+                "The model took too long to answer. Try again, or pick a faster model."
+            )
         } catch (e: javax.net.ssl.SSLException) {
             throw Exception("A secure connection to the provider could not be established.")
         } catch (e: java.io.IOException) {
@@ -678,17 +757,41 @@ class AiCoach(
         }
     }
 
-    /** Map a non-2xx response to a clear, user-facing message (key, rate-limit, server). */
+    /** Map a non-2xx response to a clear, user-facing message (key, rate-limit, timeout, server). */
     private fun httpError(provider: AiProvider, code: Int, body: String): Exception {
         val detail = extractApiErrorMessage(body)
+
+        // A gateway / origin timeout: the request DID reach the provider, which then ran out of time on
+        // it. Same shape of failure as a client-side timeout from the caller's point of view, and worth
+        // the same one retry on a faster model — so it is reported as a timeout, not a generic 5xx.
+        // Checked before the `500..599` arm, which would otherwise swallow it. Parity with Swift.
+        if (code == 504 || code == 524) {
+            val base = "The model took too long to answer. Try again, or pick a faster model."
+            return CoachTimeoutException(if (detail != null) "$base ($detail)" else base)
+        }
+
+        // Only an AUTH failure is terminal: a rejected key is rejected by every model, so retrying
+        // would spend the user's one retry — and their latency — on a certainty. Everything else falls
+        // back to the lighter model.
+        //
+        // Defined by exclusion rather than by listing what to retry, because predicting the
+        // retry-worthy set failed twice: timeouts-only missed the empty replies thinking models
+        // produce, and adding rate limits still missed the 503 an overloaded Gemini returns. Rate
+        // limits in particular are metered PER MODEL here, so a heavy model can be exhausted while the
+        // lightest still has its own untouched budget. Parity with Swift
+        // `AICoachError.deservesLighterModelRetry`.
+        if (code == 401 || code == 403) {
+            val base = "Your ${provider.displayName} API key was rejected. Check the key and try again."
+            return Exception(if (detail != null) "$base ($detail)" else base)
+        }
+
         val base = when (code) {
-            401, 403 -> "Your ${provider.displayName} API key was rejected. Check the key and try again."
-            429 -> "${provider.displayName} rate limit reached (or quota exhausted). Wait a moment and retry."
-            in 500..599 -> "${provider.displayName} had a server error (HTTP $code). Please try again shortly."
+            429 -> "${provider.displayName} rate limit reached (or quota exhausted) for this model."
+            in 500..599 -> "${provider.displayName} is busy right now (HTTP $code)."
             400 -> "The request was rejected by ${provider.displayName} (HTTP 400)."
             else -> "${provider.displayName} returned an error (HTTP $code)."
         }
-        return Exception(if (detail != null) "$base ($detail)" else base)
+        return CoachRetryableException(if (detail != null) "$base ($detail)" else base)
     }
 
     /** Pull the provider's error message out of an error JSON body, if present. */
@@ -728,6 +831,13 @@ class AiCoach(
 
     companion object {
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        /**
+         * Read-timeout budget for one coach request, in seconds. Internal rather than private so the
+         * unit tests can assert it clears the old 60 s ceiling that caused the bug.
+         * Byte-parity with Swift `AICoachEngine.requestTimeoutSeconds`.
+         */
+        internal const val REQUEST_TIMEOUT_SECONDS: Long = 180
 
         /**
          * Normalise a user-entered Custom base URL: trim, drop a trailing slash, and tolerate a pasted
