@@ -150,4 +150,27 @@ final class BondLoopHardeningTests: XCTestCase {
             pausedForBondLoop: true, connected: false, intentionalDisconnect: true,
             secondsSincePauseTripped: nil))
     }
+
+    // MARK: bondLoopReparkBypassesFloor (the 260831 overnight-stranding budget)
+
+    /// The 260831 report: the pause tripped on a transient 4:30am blip, no park was ever armed (the
+    /// trip-site call runs before `connected` clears; the floored re-park declined), and with no park
+    /// outstanding no BLE event could wake the app — 2.7 h of dead air until a manual open. Within the
+    /// per-episode cycle budget the paused re-park must bypass the floor so a parked connect is ALWAYS
+    /// outstanding while the budget lasts; past it, the floored one-per-window behaviour returns so a
+    /// genuinely held strap stays bounded.
+    func testReparkBypassesFloorWithinBudgetOnly() {
+        XCTAssertTrue(BLEManager.bondLoopReparkBypassesFloor(cycles: 1))     // the trip's own disconnect
+        XCTAssertTrue(BLEManager.bondLoopReparkBypassesFloor(
+            cycles: BLEManager.bondLoopReparkCycleCap))                      // last budgeted cycle
+        XCTAssertFalse(BLEManager.bondLoopReparkBypassesFloor(
+            cycles: BLEManager.bondLoopReparkCycleCap + 1))                  // budget spent → floored
+    }
+
+    /// The budget must comfortably outlast a transient radio blip (the 260831 one flapped ~3 min at
+    /// ~10-20 s a cycle) while staying small enough that a WHOOP-app-held strap costs minutes, not a
+    /// night, of retrying per pause episode.
+    func testReparkBudgetSize() {
+        XCTAssertEqual(BLEManager.bondLoopReparkCycleCap, 30)
+    }
 }
