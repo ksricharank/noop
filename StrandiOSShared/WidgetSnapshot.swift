@@ -108,12 +108,40 @@ public struct WidgetSnapshot: Codable, Equatable {
         return String(format: "%dh%02d", need / 60, need % 60)
     }
 
-    /// The Steps glance: today over target as FULL counts ("3205/8000") — a thousands abbreviation
-    /// ("3.2k/8k") shipped first and the maintainer reversed it on sight: the full number is what a
-    /// step count IS, and the 2×2 grids give it the room. Same degrade rules as the Cal pair; a
-    /// fresh day reads "0/8000".
+    /// The Steps glance: today over target as FULL counts ("3205/8000") — the in-app strip and the
+    /// Live Activity banner have the width for the real number. Same degrade rules as the Cal pair;
+    /// a fresh day reads "0/8000".
     public var stepsDisplay: String? {
-        switch (steps.map(String.init), stepsTarget.map(String.init)) {
+        pair(steps.map(String.init), stepsTarget.map(String.init))
+    }
+
+    // The WIDGET faces (260830, final slotting): abbreviated Steps and Cal — a Lock-Screen /
+    // Home-Screen cell simply has no room for two four-digit pairs, and the maintainer confirmed
+    // it after trying both ("otherwise there is no space"). The full-count displays above stay for
+    // the surfaces that fit them; both spell their pair through the same degrade rules.
+
+    /// Widget-face Steps pair, thousands-abbreviated ("3.2k/8k").
+    public var stepsAbbrev: String? {
+        pair(steps.map(Self.kAbbrev), stepsTarget.map(Self.kAbbrev))
+    }
+
+    /// Widget-face Cal pair, thousands-abbreviated ("1.2k/2.1k").
+    public var calAbbrev: String? {
+        pair(kcal.map(Self.kAbbrev), kcalTarget.map(Self.kAbbrev))
+    }
+
+    /// Thousands formatting: below 1,000 raw, else one decimal with a trailing ".0" dropped
+    /// ("650", "3.2k", "8k").
+    public static func kAbbrev(_ n: Int) -> String {
+        guard n >= 1_000 else { return "\(n)" }
+        let s = String(format: "%.1f", Double(n) / 1_000.0)
+        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
+    }
+
+    /// The shared now/target degrade rules: either side alone still renders, a missing numerator
+    /// with a live target reads "0/target", and nothing at all reads nil.
+    private func pair(_ n: String?, _ t: String?) -> String? {
+        switch (n, t) {
         case let (n?, t?): return "\(n)/\(t)"
         case let (n?, nil): return n
         case let (nil, t?): return "0/\(t)"
