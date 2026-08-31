@@ -5,16 +5,17 @@ import StrandDesign
 /// The daily-targets glance (260830) — built for the maintainer's battery-first default mode: Live
 /// Activity OFF, continuous HRV overnight-only, daytime data arriving as ~15-minute offload bursts.
 /// With no island and no banner, these widgets ARE the daytime surface, carrying the same three
-/// numbers the Live Activity card shows: Effort now/target, TOTAL calories now/target, and tonight's
-/// sleep target. (A burst-average HR held the first column for one build — replaced same-day by
+/// numbers the Live Activity card shows: Effort now/target, TOTAL calories now/target, Steps
+/// now/target, and tonight's sleep target. (A burst-average HR held the first column for one build — replaced same-day by
 /// Effort n/t on maintainer instruction; the HRV-dip "go breathe" read moved to the stress
 /// check-in's buzz + notification.)
 ///
 /// Families and their intended slots:
-///   - `accessoryInline` (the Lock-Screen line ABOVE the clock): just "Cal 1830/2650".
-///   - `accessoryRectangular` (below the clock): all three — Effort · Cal · Sleep.
-///   - `systemSmall` / `systemMedium` (Home Screen): the trio plus the strap battery in the top-right
-///     corner — the targets analogue of `NOOPWidget`'s Charge · Effort · Rest rings.
+///   - `accessoryInline` (the Lock-Screen line ABOVE the clock): just "Cal 1830/2650" — the one-line
+///     slot cannot carry four stats, and Cal-only was the maintainer's explicit spec for it.
+///   - `accessoryRectangular` (below the clock): all four — Effort · Cal · Steps · Sleep.
+///   - `systemSmall` / `systemMedium` (Home Screen): the four targets plus the strap battery in the
+///     top-right corner — the targets analogue of `NOOPWidget`'s Charge · Effort · Rest rings.
 ///
 /// Values move at the burst cadence, not per beat: the app republishes the shared snapshot after each
 /// completed offload (#980, background included), and WidgetKit re-reads it on the 15-minute timeline
@@ -36,7 +37,7 @@ struct NOOPTargetsWidget: Widget {
             }
         }
         .configurationDisplayName("NOOP Targets")
-        .description("Effort and calories against today's targets, plus tonight's sleep target — updated with each strap sync, no Live Activity needed.")
+        .description("Effort, calories and steps against today's targets, plus tonight's sleep target — updated with each strap sync, no Live Activity needed.")
         .supportedFamilies([
             .systemSmall, .systemMedium,
             .accessoryInline, .accessoryRectangular
@@ -52,6 +53,7 @@ struct NOOPTargetsView: View {
 
     private var effortText: String { snap.effortNT ?? "–" }
     private var calText: String { snap.calDisplay ?? "–" }
+    private var stepsText: String { snap.stepsDisplay ?? "–" }
     private var sleepText: String { snap.sleepDisplay ?? "–" }
 
     var body: some View {
@@ -76,10 +78,13 @@ struct NOOPTargetsView: View {
             Text("NOOP")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(StrandPalette.textSecondary)
+            // Four cells at 14pt (16 with three): the rectangular slot is ~157pt wide and "1830/2650"
+            // is the widest pair; minimumScaleFactor carries the worst case.
             HStack(alignment: .top, spacing: 0) {
-                targetCell("Effort", text: snap.effortNT, size: 16)
-                targetCell("Cal", text: snap.calDisplay, size: 16)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 16)
+                targetCell("Effort", text: snap.effortNT, size: 14)
+                targetCell("Cal", text: snap.calDisplay, size: 14)
+                targetCell("Steps", text: snap.stepsDisplay, size: 14)
+                targetCell("Sleep", text: snap.sleepDisplay, size: 14)
             }
         }
     }
@@ -94,6 +99,7 @@ struct NOOPTargetsView: View {
             Spacer(minLength: 0)
             targetRow("Effort", value: effortText, tint: StrandPalette.effortColor)
             targetRow("Cal", value: calText, tint: StrandPalette.effortColor)
+            targetRow("Steps", value: stepsText, tint: StrandPalette.effortColor)
             targetRow("Sleep", value: sleepText, tint: StrandPalette.restColor)
             Spacer(minLength: 0)
         }
@@ -108,11 +114,13 @@ struct NOOPTargetsView: View {
             HStack(alignment: .top, spacing: 0) {
                 // Both activity-pillar values wear the Effort domain colour; size dropped one step
                 // from the HR era ("72" → "1830/2650") so the wide pairs fit without scale-crushing.
-                targetCell("Effort", text: snap.effortNT, size: 22,
+                targetCell("Effort", text: snap.effortNT, size: 20,
                            tint: StrandPalette.effortColor)
-                targetCell("Cal", text: snap.calDisplay, size: 22,
+                targetCell("Cal", text: snap.calDisplay, size: 20,
                            tint: StrandPalette.effortColor)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 22,
+                targetCell("Steps", text: snap.stepsDisplay, size: 20,
+                           tint: StrandPalette.effortColor)
+                targetCell("Sleep", text: snap.sleepDisplay, size: 20,
                            tint: StrandPalette.restColor)
             }
             Spacer(minLength: 0)

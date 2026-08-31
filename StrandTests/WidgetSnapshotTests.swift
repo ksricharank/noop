@@ -58,7 +58,8 @@ final class WidgetSnapshotTests: XCTestCase {
         WidgetSnapshot(recovery: 72, bpm: 58, batteryPct: 84, bonded: true, updated: updated,
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
-                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495)
+                       effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495,
+                       steps: 6_214, stepsTarget: 8_000)
     }
 
     func testRenderedContentFirstPublishAlwaysChanges() {
@@ -95,7 +96,7 @@ final class WidgetSnapshotTests: XCTestCase {
         let previous = renderedSnapshot()
         for mutate: (inout WidgetSnapshot) -> Void in [
             { $0.effortTargetDisplay = "62" }, { $0.kcal = 1900 }, { $0.kcalTarget = nil },
-            { $0.sleepNeedMin = 510 }
+            { $0.sleepNeedMin = 510 }, { $0.steps = 7_000 }, { $0.stepsTarget = 10_000 }
         ] {
             var next = previous
             mutate(&next)
@@ -142,6 +143,19 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertEqual(snap.effortNT, "0/51")
         snap.effortTargetDisplay = nil
         XCTAssertNil(snap.effortNT)
+
+        // Steps render in thousands ("6.2k/8k") with the same degrade rules; sub-1k stays raw and a
+        // trailing ".0" is dropped.
+        snap = renderedSnapshot()
+        XCTAssertEqual(snap.stepsDisplay, "6.2k/8k")
+        snap.steps = 650
+        XCTAssertEqual(snap.stepsDisplay, "650/8k")
+        snap.steps = nil
+        XCTAssertEqual(snap.stepsDisplay, "0/8k")
+        snap.stepsTarget = nil
+        XCTAssertNil(snap.stepsDisplay)
+        XCTAssertEqual(WidgetSnapshot.stepsK(12_000), "12k")
+        XCTAssertEqual(WidgetSnapshot.stepsK(10_500), "10.5k")
 
         snap.sleepNeedMin = 510
         XCTAssertEqual(snap.sleepDisplay, "8h30")
