@@ -24,21 +24,23 @@ struct DailyTargetsStrip: View {
         // 2×2 grid (260830 revision: four cells in one row collided at "1214/2075" widths) — Steps
         // and Cal on top, Effort and Sleep below, per the maintainer's slotting. One distinct data
         // colour per metric, the SAME mapping the widgets use, so the two surfaces read as one.
+        // Row pairing balances widths now steps are FULL counts: the two long pairs (Steps, Cal)
+        // each share a row with a short value (Effort, Sleep), so the rows come out even.
         VStack(spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 targetCell("Steps", value: stepsText(targets), tint: StrandPalette.chargeColor)
-                targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
+                targetCell("Effort", value: effortText(targets), tint: StrandPalette.effortColor)
             }
             HStack(alignment: .top, spacing: 12) {
-                targetCell("Effort", value: effortText(targets), tint: StrandPalette.effortColor)
+                targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
                 targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.metricCyan)
             }
         }
     }
 
-    /// "6.2k/8k" — thousands, mirrors `WidgetSnapshot.stepsDisplay` / the card's Steps column.
+    /// "3205/8000" — full counts, mirrors `WidgetSnapshot.stepsDisplay` / the card's Steps column.
     private func stepsText(_ t: LiveTargets) -> String {
-        switch (t.stepsToday.map(Self.stepsK), t.stepsTarget.map(Self.stepsK)) {
+        switch (t.stepsToday.map(String.init), t.stepsTarget.map(String.init)) {
         case let (n?, tt?): return "\(n)/\(tt)"
         case let (n?, nil): return n
         case let (nil, tt?): return "0/\(tt)"
@@ -46,13 +48,6 @@ struct DailyTargetsStrip: View {
         }
     }
 
-    /// Local twin of `WidgetSnapshot.stepsK` (that type lives in StrandiOSShared, which the macOS
-    /// app target does not compile) — keep the two in step; the snapshot's version is the pinned one.
-    static func stepsK(_ n: Int) -> String {
-        guard n >= 1_000 else { return "\(n)" }
-        let s = String(format: "%.1f", Double(n) / 1_000.0)
-        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
-    }
 
     /// "3.2/10.7" on the user's chosen scale — mirrors the card's Effort column: either side degrades
     /// alone, and a fresh day with a live target honestly reads "0/10.7".
