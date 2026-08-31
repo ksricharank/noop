@@ -19,13 +19,20 @@ enum BreatheNotifier {
     }
 
     /// Post the breathe prompt. Fires only from an auto-nudge the detector already gated.
-    static func post() {
+    /// `minutesAgo` marks a BURST-RETROSPECTIVE detection (the dip was found in just-synced data, up
+    /// to one sync cadence after it happened) — the copy then says so, because "take a deep breath"
+    /// must never imply a right-now reading the app didn't have.
+    static func post(minutesAgo: Int? = nil) {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized else { return }
             let content = UNMutableNotificationContent()
             content.title = String(localized: "Take a deep breath")
-            content.body = String(localized: "Your beat-to-beat variability dipped well below your own baseline while you were still — a one-minute guided breath is ready in NOOP.")
+            var body = String(localized: "Your beat-to-beat variability dipped well below your own baseline while you were still — a one-minute guided breath is ready in NOOP.")
+            if let minutesAgo, minutesAgo > 0 {
+                body += " " + String(localized: "Detected on your last strap sync, about \(minutesAgo) min ago.")
+            }
+            content.body = body
             content.sound = .default
             center.add(UNNotificationRequest(identifier: "stress-breathe",
                                              content: content, trigger: nil))
