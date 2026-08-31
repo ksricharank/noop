@@ -52,34 +52,39 @@ extension WidgetSnapshot {
         let effortScale = UnitPrefs.resolveEffortScale(
             UserDefaults.standard.string(forKey: UnitPrefs.effortScaleKey) ?? ""
         )
-        let strain = day?.strain
-        let effortDisplay: String? = strain.map { stored in
-            if effortScale == .whoop {
-                return String(format: "%.1f", UnitFormatter.effortValue(stored, scale: .whoop))
-            }
-            return "\(Int(stored.rounded()))"
-        }
         // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
         // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
         // refresh or day roll). This full publish runs post-offload even in the BACKGROUND (#980),
         // which is exactly the ~15-minute burst cadence the targets widget is built around — no
-        // extra trigger needed. The effort TARGET is pre-formatted here on the same scale as
-        // `effortDisplay` above, for the same App-Group reason.
+        // extra trigger needed.
         let targets = model.repo.cachedLiveTargets(now: now)
-        let effortTargetDisplay: String? = targets.effortTarget.map { stored in
+        // Effort NUMERATOR = the targets' own `effortTodayStored` (260831) — the row for the targets'
+        // todayKey, which rolls at LOCAL midnight — never the anchor row's strain. The anchor
+        // legitimately carries YESTERDAY's scored day until the new night lands, so right after
+        // midnight the widget read "5/46" (yesterday's effort over the target) while the in-app strip
+        // read "0/46"; every targets surface now formats the same value the Live Activity's
+        // `effortDisplays(targets:)` does. Nil (no row yet) stays nil — `effortNT` renders the honest
+        // fresh-day "0/<target>". Both sides pre-formatted here for the same App-Group reason as #313.
+        func effortFmt(_ stored: Int?) -> String? {
+            guard let stored else { return nil }
             if effortScale == .whoop {
                 return String(format: "%.1f", UnitFormatter.effortValue(Double(stored), scale: .whoop))
             }
             return "\(stored)"
         }
+        let effortDisplay = effortFmt(targets.effortTodayStored)
+        let effortTargetDisplay = effortFmt(targets.effortTarget)
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
             batteryPct: model.live.batteryPct.map { Int($0.rounded()) },
             bonded: model.live.bonded,
             updated: Date(),
-            // Stored 0–100 axis for ring fill; display string carries the #313 scale.
-            effort: strain.map { Int($0.rounded()) },
+            // Stored 0–100 axis for ring fill — the SAME today row as `effortDisplay` above, so the
+            // upstream ring face's fill and centre text can never describe different days. Effort is
+            // a today-accumulator (like steps/cal); only the scored-night fields (recovery/rest/HRV/
+            // resting HR) carry via the anchor.
+            effort: targets.effortTodayStored,
             rest: restScore.map { Int($0.rounded()) },
             hrv: day?.avgHrv.map { Int($0.rounded()) },
             restingHr: day?.restingHr,
