@@ -811,6 +811,9 @@ public final class LiveState: ObservableObject {
         // publish ever runs.
         let widgetLines = WidgetPublishStats.summaryLines()
         if !widgetLines.isEmpty { header += widgetLines.joined(separator: "\n") + "\n" }
+        // 260831: the retro stress scan's daily cost (runs every completed sync; was unmeasured).
+        let retroLines = RetroScanStats.summaryLines()
+        if !retroLines.isEmpty { header += retroLines.joined(separator: "\n") + "\n" }
         #endif
         // Battery attribution (same shape as the Health line): per-channel BLE wake counts, the
         // process's CPU bill, and — on iOS — MetricKit's own daily numbers. Silent when the strap

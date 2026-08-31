@@ -682,10 +682,6 @@ final class AppModel: ObservableObject {
             await intelligence.analyzeRecent(skipIfUnchanged: true)
         }
         await refreshV5Signals()
-        // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
-        // banked R-R becomes readable — replay it through the live detector so the island-less mode
-        // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
-        await scanOffloadedRRForStress()
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
         // bluetooth-central, so it stays alive to receive the offload). The only other widget-publish
@@ -693,7 +689,24 @@ final class AppModel: ObservableObject {
         // never rewrite the shared App-Group snapshot or call WidgetCenter.reloadAllTimelines — the
         // widget kept showing yesterday's numbers. Publishing here, on the real "new data landed"
         // signal, pushes the fresh snapshot to the home-screen widget without needing a foreground.
+        //
+        // ORDER (260831): the publish runs BEFORE the retro stress scan below, deliberately. Both ride
+        // this post-offload moment, but the publish is the user-visible surface and the scan is a nudge
+        // that tolerates a sync of lateness by design — so if iOS suspends or kills the process partway
+        // through this function, the widgets have already been fed. The frozen-widget report could not
+        // rule out the scan starving the publish; this ordering makes that starvation impossible
+        // regardless of what the scan costs.
         await WidgetSnapshot.publish(from: self)
+        #endif
+        // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
+        // banked R-R becomes readable — replay it through the live detector so the island-less mode
+        // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
+        // Instrumented (260831): an unmeasured every-sync background step is exactly the shape the
+        // battery-attribution doctrine says must carry a counter; RetroScanStats is one header line.
+        let scanStarted = Date()
+        await scanOffloadedRRForStress()
+        RetroScanStats.record(millis: Int(Date().timeIntervalSince(scanStarted) * 1000))
+        #if os(iOS)
         // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
         // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
         // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
