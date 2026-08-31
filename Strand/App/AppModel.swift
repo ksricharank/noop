@@ -682,6 +682,10 @@ final class AppModel: ObservableObject {
             await intelligence.analyzeRecent(skipIfUnchanged: true)
         }
         await refreshV5Signals()
+        // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
+        // banked R-R becomes readable — replay it through the live detector so the island-less mode
+        // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
+        await scanOffloadedRRForStress()
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
         // bluetooth-central, so it stays alive to receive the offload). The only other widget-publish
@@ -997,6 +1001,9 @@ final class AppModel: ObservableObject {
     private func evaluateStress() {
         let fresh = live.rr.filter { $0 > 300 && $0 < 2000 }   // plausible R-R (30–200 bpm)
         guard !fresh.isEmpty else { return }
+        // The retro scan's ownership signal: while live beats flow, the LIVE loop is the detector
+        // and the post-offload replay must stand down (see `scanOffloadedRRForStress`).
+        lastLiveRRAt = Date()
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
 
@@ -1036,6 +1043,67 @@ final class AppModel: ObservableObject {
     /// Whether the encrypted channel is up so a confirming buzz can actually fire (the command
     /// characteristic is gated on bond; an un-encrypted live-HR-only link can't buzz).
     private var canBuzz: Bool { live.bonded && live.encryptedBond }
+
+    // MARK: - Burst-retrospective stress detection (260830)
+
+    /// When live R-R last flowed — while it does, the live loop above is the detector and the
+    /// post-offload replay stands down (its window fast-forwards) so the two can never double-process
+    /// the same beats.
+    private var lastLiveRRAt: Date = .distantPast
+    /// Unix-seconds high-water mark of R-R already replayed (persisted so a relaunch can't re-scan).
+    private static let retroScanWatermarkKey = "stress.retroScanWatermarkTs"
+    /// A dip older than this at scan time gets no buzz — "go breathe" 45+ minutes late is noise, not
+    /// coaching. The state still advances, so the baseline keeps learning from every synced beat.
+    private static let retroMaxDipAgeSec = 45 * 60
+    /// The scan never reaches further back than this, whatever the watermark says (a phone that sat
+    /// off overnight must not replay eight hours on the first sync — the freshness bound would drop
+    /// every nudge from it anyway, and quiet hours already own the night).
+    private static let retroScanHorizonSec = 2 * 3600
+
+    /// Replay freshly OFFLOADED R-R through the stress detector — the island-less default mode's
+    /// daytime path (maintainer, 260830: with continuous HRV overnight-only there are no daytime
+    /// live ticks, so each ~15-minute sync is where a dip can first be seen). Runs once per completed
+    /// offload; the pure replay (`StressOnsetDetector.replayOffloaded`) applies the exact live gates
+    /// — edge, sustain, rate limit, exercise band, quiet hours computed at each beat's own historical
+    /// time — and the buzz/notification/card fire only when the detected moment is still fresh
+    /// (≤ 45 min). By construction the nudge arrives up to one sync cadence late; the notification
+    /// says so rather than implying "right now".
+    func scanOffloadedRRForStress() async {
+        let cfg = BiofeedbackPrefs.stressConfig()
+        guard cfg.enabled, cfg.autoNudge else { return }
+        let now = Int(Date().timeIntervalSince1970)
+        let d = UserDefaults.standard
+        // Live stream active (or just was): the live loop owns these beats. Fast-forward the
+        // watermark so the replay never re-processes what live evaluation already advanced the
+        // shared EMA/rate-limit state over.
+        guard Date().timeIntervalSince(lastLiveRRAt) > 300 else {
+            d.set(now, forKey: Self.retroScanWatermarkKey)
+            return
+        }
+        let watermark = d.object(forKey: Self.retroScanWatermarkKey) as? Int ?? 0
+        let from = max(watermark + 1, now - Self.retroScanHorizonSec)
+        guard from < now, let store = await repo.storeHandle() else { return }
+        let rows = (try? await store.rrIntervals(deviceId: repo.deviceId, from: from, to: now,
+                                                 limit: 20_000)) ?? []
+        d.set(now, forKey: Self.retroScanWatermarkKey)
+        guard rows.count >= StressOnsetDetector.minBeats else { return }
+        let scan = StressOnsetDetector.replayOffloaded(
+            beats: rows.map { (ts: $0.ts, rrMs: $0.rrMs) },
+            sessionActive: stressNudgeCenter.pending != nil,
+            state: stressState,
+            config: cfg,
+            tzOffsetSec: TimeZone.current.secondsFromGMT())
+        stressState = scan.nextState
+        BiofeedbackPrefs.saveStressState(scan.nextState)
+        guard let at = scan.nudgeAtSec, now - at <= Self.retroMaxDipAgeSec else { return }
+        let minutesAgo = max(0, (now - at) / 60)
+        if canBuzz { buzz(loops: UInt8(clamping: cfg.buzzLoops)) }
+        if behavior.stressNotify { BreatheNotifier.post(minutesAgo: minutesAgo) }
+        stressNudgeCenter.present(fastRMSSD: scan.fastRMSSD, baselineRMSSD: scan.baselineRMSSD)
+        // Rare-event evidence (the diagnostics doctrine): a retro nudge names its lateness, so a
+        // log reader can tell the sync-delayed path from the live one.
+        live.append(log: "Stress check-in (from sync) , HRV dipped while still ~\(minutesAgo) min ago")
+    }
 
     /// Start scanning for the strap. When no model is given, use the one the user
     /// picked (persisted under "selectedWhoopModel"), so every scan entry point ,
