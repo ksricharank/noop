@@ -681,6 +681,28 @@ final class AppModel: ObservableObject {
         await RescoreBackgroundScheduler.run(log: { [live] line in live.append(log: line) }) {
             await intelligence.analyzeRecent(skipIfUnchanged: true)
         }
+        // The background LIGHT pass (260831): when the full pass above was deferred (the debt is
+        // still owed), score just today + yesterday inline so the day's accumulators — steps /
+        // kcal / strain, the widget numerators — advance on THIS sync instead of freezing until
+        // the next app open. The 260831 log showed the failure exactly: offloads landing every
+        // ~10 min, 93/94 widget publishes completing, and 77 of them deduped as unchanged because
+        // the full pass (the only thing that writes the day row) was "deferred to a background
+        // task" 21 times while the completions clustered around app opens. A 2-day pass reads
+        // ~1/10th of the 21-day window, so it finishes inside a locked background window where
+        // the full pass measurably cannot (33 s → 83 min I/O-throttled in that log). It never
+        // touches the re-score debt, the pass-duration estimate, or the watermark (see the
+        // `lightPass` doc), so the deferred FULL pass still runs at the next foreground or
+        // granted background task — the maintainer's contract: numerators move all day, the
+        // full reconciliation happens at the morning open. Held under a background assertion so
+        // a suspension can't strand it halfway; a killed light pass simply retries next sync.
+        if RescoreBackgroundScheduler.isRescoreOwed {
+            await RescoreBackgroundScheduler.holdAssertion(
+                name: "noop.rescore.light",
+                log: { [live] line in live.append(log: line) }
+            ) {
+                await intelligence.analyzeRecent(maxDays: 2, lightPass: true)
+            }
+        }
         await refreshV5Signals()
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
