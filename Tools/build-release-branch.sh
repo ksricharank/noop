@@ -99,8 +99,14 @@ FEATURES=(
   # after any upstream sync, re-home it together with (and after) three-pillar-card.
   "feature/targets-widgets"
   # breathe-automation (260830) stacks ON targets-widgets (its AppModel hook lands where that
-  # branch removed the breathe-cue level read). Same re-homing chain, last in it.
+  # branch removed the breathe-cue level read). Same re-homing chain.
   "feature/breathe-automation"
+  # background-light-rescore (260831) stacks ON breathe-automation (it hooks the same
+  # refreshAfterCompletedBackfill region breathe's reorder owns, and extends analyzeRecent /
+  # RescoreBackgroundScheduler that locked-rescore-deferral shaped). FIVE-deep re-homing chain now —
+  # after any upstream sync, re-home the whole chain in order (three-pillar-card → targets-widgets →
+  # breathe-automation → background-light-rescore); the v15 refactor is where this flattens.
+  "feature/background-light-rescore"
   "feature/release-by-default"
 )
 
