@@ -105,6 +105,20 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertLessThan(sessionTarget, 4_000)
     }
 
+    /// The step target is bands + notches, never history: charge band sets 6/8/10k (unknown = 8k),
+    /// rundown −2k / strained −1k, clamped 4k–12k. Pinned across the ladder.
+    func testStepsTargetLadder() {
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .balanced), 10_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 50, readiness: .balanced), 8_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 20, readiness: .balanced), 6_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: nil, readiness: .insufficient), 8_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .strained), 9_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 20, readiness: .rundown), 4_000,
+                       "recover base minus the rundown notch pins to the floor")
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .primed), 10_000,
+                       "primed adds nothing — the session is where primed headroom goes")
+    }
+
     // MARK: - Tonight's sleep need (population base + the body's day)
 
     /// The composition: the 8 h adult population base, plus the charge band's ask, last night's

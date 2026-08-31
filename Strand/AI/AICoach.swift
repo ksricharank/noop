@@ -496,11 +496,11 @@ final class AICoachEngine: ObservableObject {
     implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag strain, \
     poor recovery, or oncoming illness). State the trend plainly, then what I should do about it \
     overall — this bullet is about my heart's trajectory, not this minute's reading.
-    - **Activity** — my effort AND my total calories so far against today's targets in TODAY'S \
-    TARGETS (both are shown as now/target on my Lock-Screen card): explain what produced those \
-    numbers, then the concrete session (or rest) that closes the gap. Total calories include \
-    resting metabolism on both sides, so early-day numbers far below target are normal — say so \
-    rather than urging a sprint.
+    - **Activity** — my effort, my total calories AND my steps so far against today's targets in \
+    TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): explain what produced those \
+    numbers, then the concrete session (or rest) that closes the gap, and the walking left to do. \
+    Total calories include resting metabolism on both sides, so early-day numbers far below target \
+    are normal — say so rather than urging a sprint.
     - **Rest & sleep** — what last night and today's load mean for resting properly today, then \
     tonight's plan: cite the precise target bedtime and sleep target from TODAY'S TARGETS.
     In each bullet, explain what led to the numbers BEFORE prescribing, and bring in another metric \
@@ -1446,6 +1446,11 @@ final class AICoachEngine: ObservableObject {
             + "prescription through the app's own Keytel model); total burned so far: "
             + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
         }
+        let stepsSidesText: String? = targets.stepsTarget.map { target in
+            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+            + "readiness read — a separate ask from the session); steps so far: "
+            + "\(targets.stepsToday.map(String.init) ?? "0")."
+        }
         if targets.restDay {
             var line = "Today's prescription: REST — the body's readiness read says recover, so "
                        + "there is no session; the effort target is simply to hold near "
@@ -1455,6 +1460,7 @@ final class AICoachEngine: ObservableObject {
                 line += " " + kcalSidesText + " On a rest day the target is the resting day alone —"
                         + " reaching it asks nothing extra."
             }
+            if let stepsSidesText { line += " " + stepsSidesText }
             lines.append(line)
         } else if let minutes = targets.sessionMinutes {
             let hrText = targets.sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
@@ -1466,6 +1472,7 @@ final class AICoachEngine: ObservableObject {
                         + "(so far today: \(todayEffortText))."
             }
             if let kcalSidesText { line += " " + kcalSidesText }
+            if let stepsSidesText { line += " " + stepsSidesText }
             lines.append(line)
         }
 

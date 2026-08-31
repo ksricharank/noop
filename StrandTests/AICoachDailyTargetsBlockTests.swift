@@ -13,12 +13,14 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
 
     private func targets(kcalToday: Int? = 1830, kcalTarget: Int? = 2650,
                          sessionMinutes: Int? = 45, sessionHr: Int? = 143, restDay: Bool = false,
-                         sleepNeed: Int? = 510, effortToday: Int? = 12,
+                         sleepNeed: Int? = 510, stepsToday: Int? = 6_214, stepsTarget: Int? = 8_000,
+                         effortToday: Int? = 12,
                          effortTarget: Int? = 51) -> LiveTargets {
         LiveTargets(kcalToday: kcalToday,
                     kcalTargetKcal: kcalTarget, sessionMinutes: sessionMinutes,
                     sessionHrBpm: sessionHr, restDay: restDay,
-                    sleepNeedTonightMin: sleepNeed, effortTodayStored: effortToday,
+                    sleepNeedTonightMin: sleepNeed, stepsToday: stepsToday,
+                    stepsTarget: stepsTarget, effortTodayStored: effortToday,
                     effortTarget: effortTarget)
     }
 
@@ -33,6 +35,8 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("so far today: 12.0"), block)
         XCTAssertTrue(block.contains("Total-calorie target: 2650 kcal"), block)
         XCTAssertTrue(block.contains("total burned so far: 1830 kcal"), block)
+        XCTAssertTrue(block.contains("Step target: 8000"), block)
+        XCTAssertTrue(block.contains("steps so far: 6214"), block)
         XCTAssertTrue(block.contains("target 8h30 asleep"), block)
         // The retired Heart line must not linger: the bullet reads trends from the wider context.
         XCTAssertFalse(block.contains("Heart right now"), block)
@@ -68,7 +72,8 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
     func testColdStartEmitsNothing() {
         let empty = LiveTargets(kcalToday: nil, kcalTargetKcal: nil,
                                 sessionMinutes: nil, sessionHrBpm: nil, restDay: false,
-                                sleepNeedTonightMin: nil, effortTodayStored: nil, effortTarget: nil)
+                                sleepNeedTonightMin: nil, stepsToday: nil, stepsTarget: nil,
+                                effortTodayStored: nil, effortTarget: nil)
         XCTAssertEqual(AICoachEngine.dailyTargetsBlock(
             targets: empty, charge: nil,
             midsleepSec: nil, typicalSleepHours: nil), "")
