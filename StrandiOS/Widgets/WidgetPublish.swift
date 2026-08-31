@@ -61,11 +61,17 @@ extension WidgetSnapshot {
         }
         // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
         // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
-        // refresh or day roll), plus the freshest offload burst's mean HR. This full publish runs
-        // post-offload even in the BACKGROUND (#980), which is exactly the ~15-minute burst cadence
-        // the targets widget is built around — no extra trigger needed.
+        // refresh or day roll). This full publish runs post-offload even in the BACKGROUND (#980),
+        // which is exactly the ~15-minute burst cadence the targets widget is built around — no
+        // extra trigger needed. The effort TARGET is pre-formatted here on the same scale as
+        // `effortDisplay` above, for the same App-Group reason.
         let targets = model.repo.cachedLiveTargets(now: now)
-        let avgHr = await model.repo.burstAvgHr(now: now)
+        let effortTargetDisplay: String? = targets.effortTarget.map { stored in
+            if effortScale == .whoop {
+                return String(format: "%.1f", UnitFormatter.effortValue(Double(stored), scale: .whoop))
+            }
+            return "\(stored)"
+        }
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
@@ -79,8 +85,8 @@ extension WidgetSnapshot {
             restingHr: day?.restingHr,
             effortDisplay: effortDisplay,
             effortWhoop: effortScale == .whoop,
-            avgHr: avgHr,
-            kcal: targets.exerciseKcalToday,
+            effortTargetDisplay: effortTargetDisplay,
+            kcal: targets.kcalToday,
             kcalTarget: targets.kcalTargetKcal,
             sleepNeedMin: targets.sleepNeedTonightMin
         )

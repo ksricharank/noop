@@ -161,11 +161,10 @@ final class AppModel: ObservableObject {
     // via BiofeedbackPrefs so a relaunch can't re-fire), carried verbatim between evaluations.
     private var rrBuf: [Int] = []
     private var stressState = BiofeedbackPrefs.loadStressState()
-    /// The live autonomic read behind the Live Activity's red-digits breathe cue (260830): true = a
-    /// non-metabolic HRV dip right now, false = calm (or the elevation is exercise), nil = not
-    /// judgeable this minute (thin beats, no baseline, or no live link) — the card then abstains.
-    /// Level, not edge: it stays up for the whole dip and clears when the autonomic state recovers.
-    @Published private(set) var breatheCue: Bool?
+    // HISTORY: a `breatheCue` level (`@Published Bool?` — the Live Activity's red-digits read, and
+    // before that its # marker) lived here for one build (270–271). Retired 260830 with the card's
+    // HR column: the HRV-dip signal reaches the user through the stress check-in's strap buzz +
+    // screen notification now (see `evaluateStress`), which the detector's EVENT form already gates.
 
     /// Import source currently writing to the local store, if any.
     @Published private var activeImportSource: DataSourceImportKind?
@@ -245,9 +244,6 @@ final class AppModel: ObservableObject {
             UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
                         age: Double(profile.age), sex: profile.sex)
         }
-        // The synthesis states the SAME live autonomic verdict the card's # marker shows — weak,
-        // since the coach outlives no one but must not retain its owner.
-        self.coach.currentBreathe = { [weak self] in self?.breatheCue }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
@@ -1039,23 +1035,10 @@ final class AppModel: ObservableObject {
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
 
-        // The breathe CUE (the Live Activity's # marker, 260830) runs UNCONDITIONALLY — it is a
-        // LEVEL read of the autonomic state (fast RMSSD vs the rolling baseline, exercise-gated),
-        // not the opt-in haptic nudge below, and it owns the shared EMA baseline's advancement (see
-        // `StressOnsetDetector.breatheCue` for the bounded double-advance when the nudge is also on).
-        // nil = not judgeable this minute (too few clean beats / no baseline) — the card abstains.
-        if live.bonded, live.worn {
-            let (cue, next) = StressOnsetDetector.breatheCue(
-                rrBuffer: rrBuf, currentHR: bpm.map(Double.init),
-                recentMotionG: nil,   // wrist gravity is offloaded + lags live; the HR band gates
-                state: stressState)
-            stressState = next
-            BiofeedbackPrefs.saveStressState(next)
-            let flag: Bool? = cue == .unknown ? nil : (cue == .breathe)
-            if breatheCue != flag { breatheCue = flag }
-        } else if breatheCue != nil {
-            breatheCue = nil   // no live link / not worn → no claim
-        }
+        // HISTORY: the breathe CUE (`StressOnsetDetector.breatheCue`, the Live Activity's red-digits
+        // level read) ran unconditionally here for one build (270–271) and owned the shared EMA
+        // baseline's advancement. Retired 260830 with the card's HR column — the nudge path below is
+        // the sole detector again and the sole owner of the baseline, exactly the pre-260830 shape.
 
         // Inert unless the master toggle is on; the engine owns every gate (auto-nudge, exercise gate,
         // quiet hours, rate limit, edge).
