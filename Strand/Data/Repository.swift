@@ -649,8 +649,17 @@ final class Repository: ObservableObject {
         // and the calorie target is the same session through the app's own Keytel model.
         let session = DailyTargets.sessionPrescription(charge: charge, readiness: readiness,
                                                        restScore: restScore)
-        let effortTarget = DailyTargets.effortTargetStored(currentEffortStored: todayRow?.strain,
-                                                           session: session)
+        // FROZEN effort target (260831, maintainer instruction: "freeze it"): the target is the
+        // prescribed session's worth alone (0 + session through the strain curve), NOT "effort so
+        // far + session". The riding form moved the goalpost all day — walk to 8 and the widget
+        // read "8/67" instead of "8/59" — while Cal/Steps/Sleep stayed fixed at their morning
+        // values. Now all four denominators hold still between morning scores; ambient movement
+        // counts TOWARD the day's one number instead of inflating it. A REST day has no session
+        // and therefore no effort target at all (nil — the displays degrade to the bare
+        // numerator), rather than the broken-looking "8/0".
+        let effortTarget: Int? = session.map { _ in
+            DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+        }
         // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
         // the coach context): the population-anchored upper-quartile need.
         let nightlyMinutes = days.compactMap(\.totalSleepMin)

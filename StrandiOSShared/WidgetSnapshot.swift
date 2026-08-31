@@ -253,11 +253,18 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.effortDisplay != next.effortDisplay
             || previous.effortWhoop != next.effortWhoop
             || previous.effortTargetDisplay != next.effortTargetDisplay
-            || previous.kcal != next.kcal
-            || previous.kcalTarget != next.kcalTarget
-            || previous.sleepNeedMin != next.sleepNeedMin
-            || previous.steps != next.steps
-            || previous.stepsTarget != next.stepsTarget
+            // Cal / Steps / Sleep compare at DISPLAY granularity (260831): every snapshot-fed widget
+            // face renders the ABBREVIATED pairs ("4.1k/10k") and the "8h30" sleep string — the raw
+            // ints are not rendered anywhere the snapshot feeds. Comparing the raw ints requested a
+            // WidgetKit reload for changes no face could show (1712→1739 kcal renders identically),
+            // and with the background light pass moving these values every ~10-min sync that burned
+            // ~90+ reload requests/day against a background budget of roughly 40–70 — so iOS deferred
+            // exactly the repaints that DID matter. The displays quantize naturally (steps per 100,
+            // cal per 100 above 1k, sleep per minute), keeping requests well inside budget while
+            // never skipping a change a face would actually paint.
+            || previous.calAbbrev != next.calAbbrev
+            || previous.sleepDisplay != next.sleepDisplay
+            || previous.stepsAbbrev != next.stepsAbbrev
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,
