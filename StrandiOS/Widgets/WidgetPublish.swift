@@ -21,6 +21,10 @@ extension WidgetSnapshot {
     /// the rollover yet always describes today.
     @MainActor
     static func publish(from model: AppModel) async {
+        // 260831 instrumentation: begun/finished counted separately — a publish that enters here and
+        // never reaches the save decision is a hang or process death INSIDE this path, which the
+        // frozen-widget report could not distinguish from a publish that never ran at all.
+        WidgetPublishStats.recordFullBegun()
         let days = model.repo.days
         let now = Date()
         // The recovery-derived anchor: today's row when it's scored, else the freshest STRICTLY-PRIOR
@@ -97,7 +101,11 @@ extension WidgetSnapshot {
             steps: targets.stepsToday,
             stepsTarget: targets.stepsTarget
         )
-        saveAndReloadIfChanged(snap)
+        let reloaded = saveAndReloadIfChanged(snap)
+        WidgetPublishStats.recordFullFinished(
+            glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
+                + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-")",
+            reloadRequested: reloaded)
     }
 
     /// Publish fields that come directly from the live BLE state without re-reading the Rest metric
@@ -122,7 +130,7 @@ extension WidgetSnapshot {
         snap.batteryPct = model.live.batteryPct.map { Int($0.rounded()) }
         snap.bonded = model.live.bonded
         snap.updated = now
-        saveAndReloadIfChanged(snap, previous: previous)
+        WidgetPublishStats.recordLive(reloadRequested: saveAndReloadIfChanged(snap, previous: previous))
     }
 
     /// Persist and ask WidgetKit for a new timeline only when a rendered field changed. The snapshot's
@@ -130,17 +138,23 @@ extension WidgetSnapshot {
     /// true no-op rather than an App-Group write plus an extension reload.
     /// `previous` lets the live fast path pass the snapshot it already loaded (it runs on the main actor,
     /// so that value is still current); the full publish path omits it and this loads once for the dedup.
+    /// Returns whether a WidgetKit reload was actually requested, so the callers' 260831
+    /// instrumentation can split reloads from dedup skips.
     @MainActor
-    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot, previous: WidgetSnapshot? = nil) {
+    @discardableResult
+    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot,
+                                               previous: WidgetSnapshot? = nil) -> Bool {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
             snap.save()
             WidgetCenter.shared.reloadAllTimelines()
+            return true
         } else if liveUpdateRequiresFullBuild(previous: previous, now: snap.updated) {
             // The rollover's visible values can legitimately match yesterday's. Persist the fresh day
             // stamp once without spending a redundant WidgetKit reload, so later live ticks stay fast.
             snap.save()
         }
+        return false
     }
 
     /// #114/#169: HR is the ONE high-frequency widget-publish trigger — `model.bpm` moves every few
