@@ -1,8 +1,9 @@
 import SwiftUI
 import StrandDesign
 
-/// The three daily-target numbers — Effort now/target, TOTAL calories now/target, tonight's sleep
-/// target — big and clear at the head of the Synthesis section, BEFORE the LLM narrative (260830,
+/// The daily-target numbers — Effort now/target, TOTAL calories now/target, Steps now/target,
+/// tonight's sleep target — big and clear at the head of the Synthesis section, BEFORE the LLM
+/// narrative (260830,
 /// the maintainer's ask: the numbers the narrative explains should be readable without reading it,
 /// the way Charge · Effort · Rest are above). An HR cell (live tilde / burst average) held the first
 /// column for one build and was replaced same-day by Effort n/t on maintainer instruction.
@@ -23,8 +24,27 @@ struct DailyTargetsStrip: View {
         HStack(alignment: .top, spacing: 0) {
             targetCell("Effort", value: effortText(targets), tint: StrandPalette.effortColor)
             targetCell("Cal", value: calText(targets), tint: StrandPalette.effortColor)
+            targetCell("Steps", value: stepsText(targets), tint: StrandPalette.effortColor)
             targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.restColor)
         }
+    }
+
+    /// "6.2k/8k" — thousands, mirrors `WidgetSnapshot.stepsDisplay` / the card's Steps column.
+    private func stepsText(_ t: LiveTargets) -> String {
+        switch (t.stepsToday.map(Self.stepsK), t.stepsTarget.map(Self.stepsK)) {
+        case let (n?, tt?): return "\(n)/\(tt)"
+        case let (n?, nil): return n
+        case let (nil, tt?): return "0/\(tt)"
+        case (nil, nil): return "–"
+        }
+    }
+
+    /// Local twin of `WidgetSnapshot.stepsK` (that type lives in StrandiOSShared, which the macOS
+    /// app target does not compile) — keep the two in step; the snapshot's version is the pinned one.
+    static func stepsK(_ n: Int) -> String {
+        guard n >= 1_000 else { return "\(n)" }
+        let s = String(format: "%.1f", Double(n) / 1_000.0)
+        return (s.hasSuffix(".0") ? String(s.dropLast(2)) : s) + "k"
     }
 
     /// "3.2/10.7" on the user's chosen scale — mirrors the card's Effort column: either side degrades

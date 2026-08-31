@@ -7,15 +7,17 @@ import StrandDesign
 struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation: three EQUAL stat columns, one per pillar —
-            // Effort now/target (activity), Cal now/target (TOTAL calories), and Sleep hours needed
-            // tonight (rest & sleep) — one shared type size.
+            // Lock Screen / banner presentation: four EQUAL stat columns — Effort now/target,
+            // Cal now/target (TOTAL calories), Steps now/target (thousands), and Sleep hours needed
+            // tonight — one shared type size.
             // HISTORY: an HR column (live tilde + the red breathe-cue digits) led this row through
             // 10.6.0.14.9 and was removed 260830 by maintainer instruction — the card carries the
             // three TARGETS now; the HRV-dip "go breathe" read moved to the stress check-in's strap
             // buzz + screen notification. Charge left the banner earlier the same day (the targets
             // already encode it); it still reads in the expanded Dynamic Island.
-            HStack(spacing: 14) {
+            // Spacing dropped 14 → 10 when Steps became the fourth column; the stats' own
+            // minimumScaleFactor absorbs the rest at narrow widths.
+            HStack(spacing: 10) {
                 // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
                 // down (charging, out of range — the card holds its last values through a drop
                 // instead of vanishing), red while connected. The numbers stay primary either way;
@@ -28,6 +30,8 @@ struct NOOPLiveActivity: Widget {
                 bannerStat(label: "Effort", value: effortNTText(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
+                Spacer()
+                bannerStat(label: "Steps", value: stepsText(context.state))
                 Spacer()
                 bannerStat(label: "Sleep", value: sleepText(context.state))
             }
@@ -47,8 +51,9 @@ struct NOOPLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge (its band set today's targets) + the same Cal/Sleep pillars the banner
-                    // carries, one size.
+                    // Charge (its band set today's targets) + the same Cal/Sleep pillars, one size.
+                    // Steps is deliberately BANNER-ONLY (260830, maintainer: "I don't need steps in
+                    // the island") — the island keeps its original three columns.
                     HStack(spacing: 10) {
                         if let r = context.state.recovery {
                             statColumn(label: "Charge", value: "\(r)")
@@ -132,6 +137,17 @@ private func calText(_ state: NOOPActivityAttributes.ContentState) -> String {
 private func sleepText(_ state: NOOPActivityAttributes.ContentState) -> String {
     guard let need = state.sleepNeedMin, need > 0 else { return "–" }
     return String(format: "%dh%02d", need / 60, need % 60)
+}
+
+/// The Steps column: today over target in thousands ("6.2k/8k") — the same `stepsK` vocabulary as
+/// `WidgetSnapshot.stepsDisplay`, so the card and the widgets never spell the pair two ways.
+private func stepsText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    switch (state.steps.map(WidgetSnapshot.stepsK), state.stepsTarget.map(WidgetSnapshot.stepsK)) {
+    case let (n?, t?): return "\(n)/\(t)"
+    case let (n?, nil): return n
+    case let (nil, t?): return "0/\(t)"
+    case (nil, nil): return "–"
+    }
 }
 
 /// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`

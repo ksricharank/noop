@@ -131,7 +131,9 @@ extension WidgetSnapshot {
             effortTargetDisplay: effortTargetDisplay,
             kcal: targets.kcalToday,
             kcalTarget: targets.kcalTargetKcal,
-            sleepNeedMin: targets.sleepNeedTonightMin
+            sleepNeedMin: targets.sleepNeedTonightMin,
+            steps: targets.stepsToday,
+            stepsTarget: targets.stepsTarget
         )
         saveAndReloadIfChanged(snap)
     }
