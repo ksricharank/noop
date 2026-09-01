@@ -167,6 +167,9 @@ struct LiveTargets: Equatable {
     /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
     /// the Effort column's denominator.
     var effortTarget: Int?
+    /// The four target derivations with today's actual inputs, one line each (`TargetsExplainer`),
+    /// for the optional "how these were set" disclosure under the targets strip (260901).
+    var explainLines: [String] = []
 }
 
 /// Read model over the on-device WhoopStore. Opens its own handle (WAL + busy-timeout makes the
@@ -689,7 +692,24 @@ final class Repository: ObservableObject {
             stepsToday: todayRow?.steps,
             stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
             effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
-            effortTarget: effortTarget)
+            effortTarget: effortTarget,
+            explainLines: TargetsExplainer.lines(
+                charge: charge, readiness: readiness, restScore: restScore,
+                session: session,
+                sessionHrBpm: session.map {
+                    DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+                },
+                effortTarget: effortTarget,
+                kcalTarget: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+                stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+                sleepNeedMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
+                                                               charge: charge,
+                                                               restScore: restScore,
+                                                               readiness: readiness,
+                                                               debtBalanceMin: ledger.balanceMin),
+                age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
+                debtBalanceMin: ledger.balanceMin))
     }
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
