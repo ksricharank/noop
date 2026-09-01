@@ -57,10 +57,12 @@ struct DailyTargetsStrip: View {
                     }
                     .buttonStyle(.plain)
                     if showDerivations {
-                        VStack(alignment: .leading, spacing: 5) {
-                            ForEach(targets.explainLines, id: \.self) { line in
-                                Text(line)
-                                    .font(StrandFont.caption)
+                        // One multi-line block per target, monospaced — the derivations read as
+                        // code (260901 iteration: "more formula and if/else logic, less narrative").
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(targets.explainLines, id: \.self) { block in
+                                Text(block)
+                                    .font(StrandFont.caption.monospaced())
                                     .foregroundStyle(StrandPalette.textTertiary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
