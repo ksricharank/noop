@@ -83,11 +83,40 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertEqual(engine.systemPrompt, AICoachEngine.defaultSystemPrompt)
     }
 
-    /// The default is the instruction the Today turn actually shipped with before it became editable.
+    /// The default names the surface and its three-bullet shape (260829): the card-mirroring labels
+    /// in their stated order, explain-before-prescribe, other metrics only when strictly relevant,
+    /// and the instruction to cite the deterministic TODAY'S TARGETS rather than invent parallel
+    /// numbers — the agreement contract with the Lock-Screen card.
     func testDefaultNamesTheSurfaceAndItsShape() {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
-        XCTAssertTrue(d.contains("paragraph"))
-        XCTAssertTrue(d.contains("No headings, no lists, no greeting."))
+        XCTAssertTrue(d.contains("**Heart**"))
+        XCTAssertTrue(d.contains("**Activity**"))
+        XCTAssertTrue(d.contains("**Rest & sleep**"))
+        XCTAssertTrue(d.contains("BEFORE prescribing"))
+        XCTAssertTrue(d.contains("only when it strictly serves"))
+        XCTAssertTrue(d.contains("TODAY'S TARGETS"))
+        XCTAssertTrue(d.contains("No greeting"))
+        // The Heart section is about the heart's TRAJECTORY (260830, second revision): overall
+        // state, trends vs personal baselines, watchouts — never a this-minute verdict. The
+        // live-read vocabulary (calm/STRESSED/not judgeable, the red digits) left with the card's
+        // HR column; the z-score framing is explained so the model can actually use the baselines.
+        XCTAssertTrue(d.contains("resting heart rate"))
+        XCTAssertTrue(d.contains("z-scores"))
+        XCTAssertTrue(d.contains("watchout"))
+        XCTAssertTrue(d.contains("total calories"))
+        // Fourth revision (260830 night — prose sections still read as "a wall of text"): each
+        // section is a bold title, ONE ten-word bolded takeaway line, then 2-4 fragment sub-bullets
+        // ("Thing — fact"), numbers bolded. The format rules are stated to the model verbatim.
+        XCTAssertTrue(d.contains("OWN line"))
+        XCTAssertTrue(d.contains("takeaway line"))
+        XCTAssertTrue(d.contains("sub-bullets"))
+        XCTAssertTrue(d.contains("never a full flowing sentence"))
+        XCTAssertTrue(d.contains("blank line between sections"))
+        XCTAssertFalse(d.contains("markdown bullets"), "the retired everything-is-one-bullet shape must not linger")
+        XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
+        XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
+        XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
+        XCTAssertFalse(d.contains("elevated,"), "undefined 'elevated' phrasing must not return")
     }
 }

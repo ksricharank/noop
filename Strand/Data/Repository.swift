@@ -126,6 +126,49 @@ struct SleepDeletionSnapshot: Equatable {
     var sleepState: [Int]?
 }
 
+/// The deterministic daily targets the three-pillar Live Activity card prints and the coach
+/// synthesis cites — one bundle so the two surfaces can never disagree. Every field derives from
+/// `Repository.days` via the constant-explicit `DailyTargets` rules (see that type for the
+/// formulas); the optionals stay nil on thin history rather than guessing (the card then drops the
+/// denominator). Top-level rather than nested in `Repository` so it carries no MainActor isolation —
+/// the coach's `nonisolated` formatters and the widget-facing controller both hold plain values.
+struct LiveTargets: Equatable {
+    // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
+    // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
+    // maintainer replaced the threshold with the live autonomic breathe cue (red HR digits on the
+    // card). Later the same day the card dropped HR entirely (Effort n/t took the column) and the
+    // cue moved to the stress check-in's buzz + notification; `exerciseKcalToday` (the day estimate
+    // minus the resting accrual) went with it — the Cal glance is TOTAL calories now.
+    /// Today's TOTAL calories so far — the raw whole-day HR estimate (`activeKcalEst`), resting
+    /// metabolism included for every worn second. What the card's Cal numerator shows.
+    var kcalToday: Int?
+    /// Today's TOTAL-calorie target: a full day of resting metabolism plus the prescribed session
+    /// through the app's own Keytel model (`DailyTargets.dayKcalTarget`). A REST day's target is
+    /// honestly the resting day alone.
+    var kcalTargetKcal: Int?
+    /// The prescribed session itself, for the coach to narrate ("30 min at ~121 bpm"). Nil = rest day.
+    var sessionMinutes: Int?
+    var sessionHrBpm: Int?
+    /// True when the body's state prescribed REST (rundown readiness / poor-rest notching): the
+    /// effort target then holds at today's current effort, and the coach should say rest, not push.
+    var restDay: Bool = false
+    /// Minutes of sleep to target tonight (population base for the user's age, adjusted by today's
+    /// charge, last night's Rest, the readiness read, and the junior debt term; clamped 7–10 h).
+    var sleepNeedTonightMin: Int?
+    /// Today's steps so far (the day row's calibrated count — @57 ticks ÷ the user's divisor).
+    var stepsToday: Int?
+    /// Today's step target (`DailyTargets.stepsTarget`: charge band base 6k/8k/10k, readiness
+    /// notches, clamp 4k–12k — population guideline numbers banded by TODAY's body, never history).
+    var stepsTarget: Int?
+    /// Today's effort so far on the STORED 0–100 axis — the Effort column's numerator, carried here
+    /// so every surface (widget, card, strip, coach) reads the same value the target was priced from.
+    var effortTodayStored: Int?
+    /// Today's effort target on the STORED 0–100 axis: today's effort plus exactly the prescribed
+    /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
+    /// the Effort column's denominator.
+    var effortTarget: Int?
+}
+
 /// Read model over the on-device WhoopStore. Opens its own handle (WAL + busy-timeout makes the
 /// two-handle BLEManager+Repository pattern safe) and publishes the dashboard caches the screens bind to.
 @MainActor
@@ -582,6 +625,95 @@ final class Repository: ObservableObject {
     func restScore(for day: DailyMetric) -> Int? {
         let v = importedSleep[day.day]?.performancePct ?? AnalyticsEngine.Rest.composite(daily: day)
         return v.map { Int($0.rounded()) }
+    }
+
+    /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
+    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `restScore`
+    /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
+    /// static), `profile` the user's body metrics for the Keytel/Karvonen math, and `todayKey` the
+    /// future-clock-safe today key (the later of logical/local, as everywhere).
+    ///
+    /// Everything here is body-state, never habit (the maintainer's doctrine — see `DailyTargets`'
+    /// header): the only trailing-window reads are the multi-signal readiness baselines and the
+    /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
+    static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
+                            profile: UserProfile,
+                            todayKey: String) -> LiveTargets {
+        let readiness = ReadinessEngine.evaluate(days: days).level
+        // The freshest resting measurement there is — last night's RHR, the body's current idle.
+        let latestRhr = days.last(where: { $0.restingHr != nil })?.restingHr
+        let age = profile.age > 0 ? profile.age : nil
+        let todayRow = days.last(where: { $0.day == todayKey })
+        // The prescribed session (nil = rest day), and the two targets priced FROM it: the effort
+        // target is today's effort plus exactly that session through the app's own strain curve,
+        // and the calorie target is the same session through the app's own Keytel model.
+        let session = DailyTargets.sessionPrescription(charge: charge, readiness: readiness,
+                                                       restScore: restScore)
+        // FROZEN effort target (260831, maintainer instruction: "freeze it"): the target is the
+        // prescribed session's worth alone (0 + session through the strain curve), NOT "effort so
+        // far + session". The riding form moved the goalpost all day — walk to 8 and the widget
+        // read "8/67" instead of "8/59" — while Cal/Steps/Sleep stayed fixed at their morning
+        // values. Now all four denominators hold still between morning scores; ambient movement
+        // counts TOWARD the day's one number instead of inflating it. A REST day's target is ZERO,
+        // not nil (260901, maintainer instruction): the displays keep the pair form — "0/0", then
+        // "x/0" as ambient strain accrues — so a rest day still shows whether any effort landed.
+        // The numerator is never clamped to the target on any surface: n > t is a legitimate state
+        // for all three pairs (an over-target day is information, not an error).
+        let effortTarget: Int? = session != nil
+            ? DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+            : 0
+        // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
+        // the coach context): the population-anchored upper-quartile need.
+        let nightlyMinutes = days.compactMap(\.totalSleepMin)
+        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
+            nightlyHours: nightlyMinutes.map { $0 / 60.0 },
+            age: nil) * 60.0
+        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
+                                      needHours: ledgerNeedMin / 60.0)
+        return LiveTargets(
+            // TOTAL calories, both sides (260830): the raw whole-day estimate vs a full resting day
+            // plus the priced session — the mainstream-tracker framing, by maintainer instruction.
+            kcalToday: todayRow?.activeKcalEst.map { Int($0.rounded()) },
+            kcalTargetKcal: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+            sessionMinutes: session?.minutes,
+            sessionHrBpm: session.map {
+                DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+            },
+            restDay: session == nil,
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
+                                                                  charge: charge,
+                                                                  restScore: restScore,
+                                                                  readiness: readiness,
+                                                                  debtBalanceMin: ledger.balanceMin),
+            stepsToday: todayRow?.steps,
+            stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+            effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
+            effortTarget: effortTarget)
+    }
+
+    /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
+    private var liveTargetsMemo = LiveTargetsMemo()
+
+    /// The user's body metrics for the targets' Keytel/Karvonen math, lent by the app layer
+    /// (AppModel owns the Profile; the healthWriteBack closure idiom). Nil in tests and before
+    /// wiring — the estimator suite's standard profile then stands in.
+    var liveTargetsProfile: (() -> UserProfile)?
+
+    /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
+    /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
+    /// the charge band, keeping the card and the targets on one day).
+    func cachedLiveTargets(now: Date = Date()) -> LiveTargets {
+        let logicalKey = Self.logicalDayKey(now)
+        let localKey = Self.localDayKey(now)
+        return liveTargetsMemo.resolve(seq: refreshSeq, logicalKey: logicalKey, localKey: localKey) {
+            let anchor = cachedWidgetAnchor(now: now)
+            return Self.liveTargets(days: days,
+                                    charge: anchor?.recovery.map { Int($0.rounded()) },
+                                    restScore: anchor.flatMap { restScore(for: $0) },
+                                    profile: liveTargetsProfile?() ?? UserProfile(),
+                                    todayKey: max(logicalKey, localKey))
+        }
     }
 
     /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):
@@ -1149,6 +1281,11 @@ final class Repository: ObservableObject {
         }
         return Self.mergeRRByIdentity(lists)
     }
+
+    // HISTORY: `burstAvgHr` (mean HR over the freshest offload burst, anchored at the newest sample,
+    // 2 h staleness abstain) lived here for one build (10.6.0.14.9) as the targets widget's HR cell.
+    // Removed 260830 same-day by maintainer instruction: HR left the targets surfaces entirely —
+    // Effort n/t took the column — and nothing read the average any more.
 
     /// Logical day-start of the most recent day the active device has HR data for, or nil when the store is
     /// empty. Lets the Deep Timeline open on a day that actually has data instead of a possibly-empty today

@@ -482,13 +482,41 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
-    /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
-    /// instructions own the voice and priorities, and this only names the surface and its shape.
-    /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
+    /// The built-in instruction for the Today synthesis turn. The coach's own instructions still own
+    /// the voice; this names the surface and its SHAPE — three pillars, one line each, citing the
+    /// deterministic targets from the TODAY'S TARGETS block (the same numbers the Lock-Screen card
+    /// prints) so the synthesis and the card can never disagree. Exposed like `defaultSystemPrompt`
+    /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
-    No headings, no lists, no greeting.
+    Today screen as three titled sections, in this order: **Heart**, **Activity**, \
+    **Rest & sleep**. Format, strictly — the reader is scanning, not studying:
+    - Each section's bold title on its OWN line.
+    - Directly under the title, ONE bolded takeaway line of at most ten words — the verdict or \
+    instruction, readable on its own if I read nothing else.
+    - Then 2-4 sub-bullets. Each is a single short fragment (roughly twelve words or fewer), in \
+    the shape "Thing — fact or instruction", never a full flowing sentence.
+    - Every number you cite goes in **bold**. A blank line between sections. NOTHING outside this \
+    structure: no paragraphs, no prose between bullets.
+    The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
+    HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
+    deviation), the direction they have been moving across the recent day-lines, and any watchout \
+    that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
+    strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
+    about it overall — this section is about my heart's trajectory, not this minute's reading.
+    The **Activity** section covers my effort, my total calories AND my steps so far against \
+    today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): what \
+    produced those numbers, then the concrete session (or rest) that closes the gap, and the \
+    walking left to do. Total calories include resting metabolism on both sides, so early-day \
+    numbers far below target are normal — say so rather than urging a sprint.
+    The **Rest & sleep** section covers what last night and today's load mean for resting \
+    properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
+    TODAY'S TARGETS.
+    Within each section, order the sub-bullets so the ones explaining what led to the numbers come \
+    BEFORE prescribing ones, and bring in another metric from my data only when it strictly serves \
+    that section's story (for example an elevated skin temperature explaining poor rest — \
+    illustrative, not required). Cite my actual numbers; never invent targets that differ from \
+    TODAY'S TARGETS. No greeting, nothing outside the three sections.
     """
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
@@ -995,6 +1023,21 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
+        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so
+        // the synthesis and the card can never disagree about today's prescription. (A "right now"
+        // HR + live autonomic verdict rode here for one build, 270–271 — retired 260830 with the
+        // card's HR column; the Heart bullet reads the day-lines and baseline z-scores instead.)
+        let targets = repo.cachedLiveTargets()
+        let anchor = repo.cachedWidgetAnchor()
+        let targetsBlock = Self.dailyTargetsBlock(
+            targets: targets,
+            charge: anchor?.recovery.map { Int($0.rounded()) },
+            midsleepSec: await repo.habitualMidsleepSec(),
+            typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
+            effortScale: EffortScale(rawValue: UserDefaults.standard.string(
+                forKey: UnitPrefs.effortScaleKey) ?? "") ?? .hundred)
+        if !targetsBlock.isEmpty { ctx += "\n\n" + targetsBlock }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
@@ -1378,6 +1421,103 @@ final class AICoachEngine: ObservableObject {
         guard !lines.isEmpty else { return "" }
         return (["DERIVED TRENDS (computed on-device from the days above — deterministic, not model estimates):"]
                 + lines).joined(separator: "\n")
+    }
+
+    /// The THREE-PILLAR targets block: the same deterministic numbers the Live Activity card prints
+    /// (`LiveTargets` / `DailyTargets`), stated to the coach so the synthesis cites the
+    /// figures the user is already looking at instead of inventing parallel ones. Pure and
+    /// independently nil-guarded like `derivedTrendsBlock`: a cold-start field is simply absent,
+    /// never fabricated. Returns "" when nothing qualifies.
+    nonisolated static func dailyTargetsBlock(targets: LiveTargets,
+                                              charge: Int?,
+                                              midsleepSec: Int?,
+                                              typicalSleepHours: Double?,
+                                              effortScale: EffortScale = .hundred) -> String {
+        var lines: [String] = []
+
+        // (A Heart line — a "right now" bpm plus the live autonomic verdict — led this block for one
+        // build, 270–271. Retired 260830 with the card's HR column: the Heart bullet reads the
+        // overall state from the day-lines and baseline z-scores in the wider context instead, and
+        // the live dip reaches the user through the stress check-in's buzz + notification.)
+
+        // Activity & exercise: the prescribed session and the effort/calorie targets priced FROM
+        // it, vs today so far. Effort figures render on the USER'S chosen display scale — they said
+        // "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under the same
+        // label reads as a different (and absurdly large) prescription. Calories are TOTAL on both
+        // sides (260830): the whole-day estimate vs a full resting day plus the priced session.
+        let scaleMax = UnitFormatter.effortScaleMax(effortScale)
+        let effortTargetText = targets.effortTarget.map {
+            UnitFormatter.effortDisplay(Double($0), scale: effortScale)
+        }
+        let todayEffortText = UnitFormatter.effortDisplay(Double(targets.effortTodayStored ?? 0),
+                                                          scale: effortScale)
+        let kcalSidesText: String? = targets.kcalTargetKcal.map { target in
+            "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
+            + "prescription through the app's own Keytel model); total burned so far: "
+            + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
+        }
+        let stepsSidesText: String? = targets.stepsTarget.map { target in
+            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+            + "readiness read — a separate ask from the session); steps so far: "
+            + "\(targets.stepsToday.map(String.init) ?? "0")."
+        }
+        if targets.restDay {
+            var line = "Today's prescription: REST — the body's readiness read says recover, so "
+                       + "there is no session; the effort target is simply to hold near "
+                       + "\(effortTargetText ?? todayEffortText) of \(scaleMax) "
+                       + "(so far today: \(todayEffortText))."
+            if let kcalSidesText {
+                line += " " + kcalSidesText + " On a rest day the target is the resting day alone —"
+                        + " reaching it asks nothing extra."
+            }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        } else if let minutes = targets.sessionMinutes {
+            let hrText = targets.sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
+            var line = "Today's prescribed session: \(minutes) min\(hrText) (from today's charge "
+                       + "band + the multi-signal readiness read + last night's Rest — the body's "
+                       + "state, never past habits)."
+            if let targetText = effortTargetText {
+                line += " Completing it lands the day at effort \(targetText) of \(scaleMax) "
+                        + "(so far today: \(todayEffortText))."
+            }
+            if let kcalSidesText { line += " " + kcalSidesText }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        }
+
+        // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
+        if let need = targets.sleepNeedTonightMin {
+            lines.append(sleepPlanLine(needTonightMin: need, midsleepSec: midsleepSec,
+                                       typicalSleepHours: typicalSleepHours))
+        }
+
+        guard !lines.isEmpty else { return "" }
+        return (["TODAY'S TARGETS (deterministic, computed on-device from the user's own history — the "
+                 + "SAME numbers the Lock-Screen card shows; cite these, do not invent alternatives):"]
+                + lines.map { "  • " + $0 }).joined(separator: "\n")
+    }
+
+    /// Tonight's sleep prescription as one sentence: the target duration, plus the precise "asleep by"
+    /// time derived from the learned sleep model (#547 — habitual wake = midsleep + half the typical
+    /// night, the same circular arithmetic as `BatteryEstimator.bedtimeAlert`). Cold-start (no learned
+    /// midsleep or duration yet) states only the duration — a fixed-clock bedtime would be wrong for
+    /// exactly the shift/late sleepers the learner exists for.
+    nonisolated static func sleepPlanLine(needTonightMin: Int, midsleepSec: Int?,
+                                          typicalSleepHours: Double?) -> String {
+        let target = String(format: "%dh%02d", needTonightMin / 60, needTonightMin % 60)
+        guard let midsleep = midsleepSec, (0..<86_400).contains(midsleep),
+              let typical = typicalSleepHours, typical > 0 else {
+            return "Sleep tonight: target \(target) asleep."
+        }
+        func hhmm(_ secOfDay: Int) -> String {
+            let s = ((secOfDay % 86_400) + 86_400) % 86_400
+            return String(format: "%02d:%02d", s / 3600, (s % 3600) / 60)
+        }
+        let wakeSec = midsleep + Int((typical * 1800).rounded())
+        let bedSec = wakeSec - needTonightMin * 60
+        return "Sleep tonight: target \(target) asleep — aim to be asleep by \(hhmm(bedSec)) "
+               + "against the learned habitual wake of about \(hhmm(wakeSec))."
     }
 
     // MARK: Formatting helpers
