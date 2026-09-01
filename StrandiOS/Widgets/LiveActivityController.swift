@@ -13,10 +13,16 @@ final class LiveActivityController {
     /// instantiating this system bridge per tick is needless allocation. ActivityKit's auth status
     /// only changes via Settings, so caching for the controller's lifetime is safe.
     private let authInfo = ActivityAuthorizationInfo()
-    /// Synchronous gate against concurrent `Activity.request` calls. The `else` branch below is
-    /// re-entered while the first request is still in flight (it hasn't assigned `self.activity`
-    /// yet), so without this guard two close-together HR samples could both fire `Activity.request`
-    /// and create duplicate Live Activities.
+    /// Monotonic counter identifying the current start/end epoch. `end()` captures the generation it
+    /// was enqueued for and no-ops if a newer start has happened since — see `endIfCurrent`.
+    private var generation = 0
+    /// Whether an `end()` is already queued for the CURRENT generation, so N consecutive ticks with
+    /// the toggle off (or the link down) enqueue one end instead of one per tick at ~1 Hz. Cleared
+    /// when that end runs, or when a start opens a new generation.
+    private var isEnding = false
+    /// Gate against concurrent `Activity.request` calls, held across the whole start window. The
+    /// request itself is synchronous, but `activity` is only assigned after it returns, so this also
+    /// keeps a start distinguishable from "no activity" for anything running in between.
     private var isStarting = false
     /// How long after the last push iOS may keep showing the activity as fresh. The activity is
     /// refreshed every ~2 s while streaming, so this never bites a live session; it auto-greys a
@@ -32,6 +38,35 @@ final class LiveActivityController {
     /// tick pushes the window average immediately instead of waiting out a whole `lockedSpacing`
     /// with the last live beat frozen on the card.
     private var lastPushWasLocked = false
+    /// The last state actually pushed to the card, whatever path pushed it. What `noteDisconnected`
+    /// repaints from: on a link drop there is no live tick to carry values, so the cue push re-sends
+    /// what the card is already showing with only the honesty bits changed (not live, not connected).
+    private var lastPushedState: NOOPActivityAttributes.ContentState?
+    /// Whether the last push carried `bonded == true` — the CONNECTION edge detector, twin of
+    /// `lastPushWasLocked`: the first tick after a reconnect repaints immediately (clearing the
+    /// not-connected cue) instead of waiting out the locked spacing with the grey cue still up.
+    private var lastPushedBonded: Bool?
+    // HISTORY: a `lastPushedBreathe` edge detector lived here for one build (270–271) so the red
+    // breathe-cue digits could bypass the locked spacing. Retired 260830 with the HR column itself —
+    // the cue moved to the stress check-in's strap buzz + screen notification.
+
+    /// Pre-format the Effort pair on the user's chosen display scale (the widget extension cannot
+    /// read the scale preference — same reason `WidgetSnapshot.effortDisplay` is pre-formatted).
+    /// The numerator is the targets' own `effortTodayStored` — the exact value the target was priced
+    /// from — never the anchor-day `effort` param, which can be YESTERDAY's carried row and would
+    /// show a stale day's effort as today's.
+    private func effortDisplays(targets: LiveTargets?) -> (now: String?, target: String?) {
+        let scale = UnitPrefs.resolveEffortScale(
+            UserDefaults.standard.string(forKey: UnitPrefs.effortScaleKey) ?? "")
+        func fmt(_ stored: Int?) -> String? {
+            guard let stored else { return nil }
+            if scale == .whoop {
+                return String(format: "%.1f", UnitFormatter.effortValue(Double(stored), scale: .whoop))
+            }
+            return "\(stored)"
+        }
+        return (fmt(targets?.effortTodayStored), fmt(targets?.effortTarget))
+    }
     /// When the CURRENT activity was requested — the system ends every Live Activity ~8 h after
     /// creation, so `update` renews the lease (end + fresh request) once an activity crosses this
     /// age and the app is foreground-active. Approximated with the adoption time for an activity
@@ -72,14 +107,16 @@ final class LiveActivityController {
     /// unlocked (the Dynamic Island reads as live), once a minute with a one-minute HR average while
     /// it is locked (nobody can watch beat-level movement there, and on an Always-On display every
     /// push repaints the Lock Screen — the live cadence was a measurable all-day battery cost).
-    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil) {
+    func update(bpm: Int?, recovery: Int?, connected: Bool, effort: Int? = nil, rest: Int? = nil,
+                targets: LiveTargets? = nil) {
         guard authInfo.areActivitiesEnabled else { return }
 
         // Re-adopt an activity that outlived a previous app session (ActivityKit keeps Live
         // Activities alive across relaunches; a fresh controller starts with `activity == nil` —
         // #336/#341), and drop a handle whose activity has since died. Both live in
-        // `revalidateHandle` — done per tick rather than in `init` because `Activity.activities`
-        // isn't reliably hydrated at the instant of process launch.
+        // `revalidateHandle` (a superset of the old inline `.active`-filtered adoption) — done per
+        // tick rather than in `init` because `Activity.activities` isn't reliably hydrated at the
+        // instant of process launch.
         revalidateHandle()
 
         // Should the activity be on screen at all? The rule itself lives in
@@ -96,8 +133,13 @@ final class LiveActivityController {
 
         switch decision {
         case .suppress:
-            // Tear down only what is actually showing; `end()` on nothing is a wasted hop.
-            if activity != nil { Task { await end() } }
+            // Tear down through the generation gate, not a bare `Task { await end() }`. Suppression
+            // holds across EVERY ~1 Hz tick (toggle off, sleep window, link down), so the bare form
+            // enqueued one end per tick, and each ends every NOOP activity — including one a later
+            // tick had just restarted. `endIfCurrent` collapses that to one end per generation and
+            // drops it outright if a start has superseded it. It also checks whether anything is
+            // showing, making the `activity != nil` test it replaces redundant.
+            endIfCurrent()
             return
         case .holdIfShowing:
             // Leave a running activity exactly as it is — no push, no teardown.
@@ -152,29 +194,54 @@ final class LiveActivityController {
             // the "captures the last HR value and freezes it" report on +5 (the -1 mode has its own
             // lock-edge repaint; this is the +N twin, driven by the ticks that keep flowing there).
             let lockEdge = locked && !lastPushWasLocked
-            guard lockEdge || LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
-                                                              lockedSpacing: lockedSpacing) else { return }
+            // The RECONNECT edge pushes immediately too: after `noteDisconnected` painted the
+            // not-connected cue, the first tick of the restored link must clear it now, not a full
+            // locked spacing later.
+            let bondedEdge = connected != (lastPushedBonded ?? connected)
+            guard lockEdge || bondedEdge
+                || LiveActivityHrPolicy.shouldPush(locked: locked, now: now, lastPush: lastPush,
+                                                   lockedSpacing: lockedSpacing) else { return }
             lastPush = now
             lastPushWasLocked = locked
             // Locked: show the window's average — steadier, and honest about its cadence. The
             // instantaneous fallback only fires if the window is somehow empty (it can't be: the
-            // current tick was just appended above).
+            // current tick was just appended above). `bpm` is no longer rendered by the widget
+            // (the Effort pair took the column, 260830) but stays populated: it is the decode
+            // continuity field for re-adopted activities and costs nothing.
             let shownBpm = locked
                 ? (LiveActivityHrPolicy.windowAverage(hrSamples, now: now, window: lockedSpacing) ?? bpm)
                 : bpm
+            let effortPair = effortDisplays(targets: targets)
             let state = NOOPActivityAttributes.ContentState(bpm: shownBpm, recovery: recovery,
                                                             bonded: connected, effort: effort, rest: rest,
-                                                            live: !locked)
+                                                            live: !locked,
+                                                            effortDisplay: effortPair.now,
+                                                            effortTargetDisplay: effortPair.target,
+                                                            kcal: targets?.kcalToday,
+                                                            kcalTarget: targets?.kcalTargetKcal,
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                            steps: targets?.stepsToday,
+                                                            stepsTarget: targets?.stepsTarget)
             // Locked pushes carry NO staleDate for the same reason updateFromData's don't: iOS 26
             // REMOVES a stale activity from both surfaces rather than greying it, and a locked span
             // can legitimately go quiet past any window we'd pick. Live pushes keep the short net —
             // they refresh every ~2 s, so it only ever catches a crashed app.
             let staleDate: Date? = locked ? nil : now.addingTimeInterval(Self.staleAfter)
+            lastPushedState = state
+            lastPushedBonded = connected
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
+            let effortPair = effortDisplays(targets: targets)
             let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                             bonded: connected, effort: effort, rest: rest,
-                                                            live: !locked)
+                                                            live: !locked,
+                                                            effortDisplay: effortPair.now,
+                                                            effortTargetDisplay: effortPair.target,
+                                                            kcal: targets?.kcalToday,
+                                                            kcalTarget: targets?.kcalTargetKcal,
+                                                            sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                            steps: targets?.stepsToday,
+                                                            stepsTarget: targets?.stepsTarget)
             let staleDate = now.addingTimeInterval(Self.staleAfter)
             // Local Live Activities can only be STARTED while the app is foreground-active; a
             // background request throws every time. Skipping quietly matters beyond tidiness: after
@@ -187,6 +254,12 @@ final class LiveActivityController {
             // second request. The 2-second throttle above only guards the update path.
             guard !isStarting else { return }
             isStarting = true
+            // Open a new generation BEFORE requesting, so any `end()` already queued from a previous
+            // toggle-off / disconnect is stale by the time it runs and leaves this activity alone.
+            // Without this, the queued end iterated `Activity.activities` and killed the activity the
+            // user had just re-enabled — the "doesn't show up until I toggle a few times" bug.
+            generation &+= 1
+            isEnding = false
             do {
                 activity = try Activity.request(
                     attributes: NOOPActivityAttributes(title: String(localized: "HR")),
@@ -195,6 +268,8 @@ final class LiveActivityController {
                 )
                 lastPush = Date()
                 lastPushWasLocked = locked
+                lastPushedState = state
+                lastPushedBonded = connected
                 activityStartedAt = Date()
             } catch {
                 activity = nil
@@ -202,6 +277,30 @@ final class LiveActivityController {
             }
             isStarting = false
         }
+    }
+
+    /// Repaint the card as NOT CONNECTED on the link-drop edge, holding the values it already shows.
+    ///
+    /// A drop never ENDS the card any more (260829): the end was one-way — iOS forbids background
+    /// starts — so charging the strap, or a transient timeout with the phone locked in a pocket,
+    /// killed the island until the next app open. There is no live tick to carry a repaint at the
+    /// moment of the drop, so this pushes the LAST pushed state with only the honesty bits changed:
+    /// `live` off (the plain number never claims a moving reading) and `bonded` off (the widget greys
+    /// its identity icons — the "not connected" cue). Idempotent per drop edge: once the cue is up,
+    /// further disconnect emissions have nothing to change. The reconnect edge is the live path's
+    /// `bondedEdge`, which repaints immediately.
+    func noteDisconnected() {
+        guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
+        revalidateHandle()
+        guard let activity, var state = lastPushedState, lastPushedBonded != false else { return }
+        state.live = false
+        state.bonded = false
+        lastPushedState = state
+        lastPushedBonded = false
+        log?("Live Activity: link dropped — holding the card with a not-connected cue (the standing reconnect repaints it)")
+        // No staleDate: a disconnected span can legitimately outlast any window (a strap charges for
+        // an hour+), and iOS 26 REMOVES a stale activity rather than greying it.
+        Task { await activity.update(ActivityContent(state: state, staleDate: nil)) }
     }
 
     /// Repaint the activity from PERSISTED data — the locked-phone path under the stream duty cycle
@@ -212,28 +311,27 @@ final class LiveActivityController {
     /// below (iOS 26 removes, not greys, a stale activity). Deliberately does NOT touch `lastPush`:
     /// the live cadence's own throttle state belongs to live ticks, and an unlock moments after a
     /// data repaint should push live immediately.
-    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool) {
+    func updateFromData(bpm: Int?, recovery: Int?, effort: Int?, rest: Int?, connected: Bool,
+                        targets: LiveTargets? = nil) {
         guard authInfo.areActivitiesEnabled, UnitPrefs.liveActivityEnabled() else { return }
         revalidateHandle()
-        if !connected {
-            // A drop while the duty cycle has the phone locked is routine — the link is idle BY
-            // DESIGN, and the standing reconnect restores it. Ending here was one-way (no background
-            // starts), so it left the Lock Screen empty until the next app open. Hold the frozen
-            // average instead; unlocked or duty-cycle-off drops still end immediately (#911).
-            let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-            if LockedStreamPolicy.holdOnDisconnect(
-                dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
-                locked: DeviceLockState.isLocked(
-                    protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
-                return
-            }
-            Task { await end() }
-            return
-        }
+        // A drop never ends the card (260829) — whatever the mode or lock state. It used to end here
+        // unless the -1 duty cycle had the phone locked, which is exactly how charging the strap
+        // killed the island one-way (no background starts). The not-connected cue is painted by
+        // `noteDisconnected` on the drop edge; this data path simply has nothing new to say.
+        guard connected else { return }
         guard let bpm else { return }
+        let effortPair = effortDisplays(targets: targets)
         let state = NOOPActivityAttributes.ContentState(bpm: bpm, recovery: recovery,
                                                         bonded: connected, effort: effort, rest: rest,
-                                                        live: false)
+                                                        live: false,
+                                                        effortDisplay: effortPair.now,
+                                                        effortTargetDisplay: effortPair.target,
+                                                        kcal: targets?.kcalToday,
+                                                        kcalTarget: targets?.kcalTargetKcal,
+                                                        sleepNeedMin: targets?.sleepNeedTonightMin,
+                                                        steps: targets?.stepsToday,
+                                                        stepsTarget: targets?.stepsTarget)
         // NO staleDate on locked repaints — deliberately never stale. The cadence-sized stale window
         // (~22 min) was meant to grey a card whose successor stopped coming, but iOS 26 does not
         // grey a stale Live Activity: it REMOVES it from the Lock Screen AND the Dynamic Island
@@ -247,6 +345,8 @@ final class LiveActivityController {
         let staleDate: Date? = nil
         if let activity {
             lastPushWasLocked = true
+            lastPushedState = state
+            lastPushedBonded = connected
             Task { await activity.update(ActivityContent(state: state, staleDate: staleDate)) }
         } else {
             // Foreground-active only, same as the live path: a request from anywhere else throws.
@@ -262,6 +362,10 @@ final class LiveActivityController {
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
             isStarting = true
+            // Same epoch bump as the live start: invalidate any end still queued from the previous
+            // generation, or it would tear down the activity this request is about to create.
+            generation &+= 1
+            isEnding = false
             do {
                 activity = try Activity.request(
                     attributes: NOOPActivityAttributes(title: String(localized: "HR")),
@@ -269,6 +373,8 @@ final class LiveActivityController {
                     pushType: nil
                 )
                 lastPushWasLocked = true
+                lastPushedState = state
+                lastPushedBonded = connected
                 activityStartedAt = Date()
             } catch {
                 activity = nil
@@ -276,6 +382,27 @@ final class LiveActivityController {
             }
             isStarting = false
         }
+    }
+
+    /// Enqueue an end for the current generation, at most once per generation. A start bumps the
+    /// generation, which both invalidates any end still queued and re-arms this for the new activity.
+    private func endIfCurrent() {
+        guard !isEnding else { return }
+        guard activity != nil || !Activity<NOOPActivityAttributes>.activities.isEmpty else { return }
+        isEnding = true
+        let requested = generation
+        Task { await end(ifGeneration: requested) }
+    }
+
+    /// End every NOOP Live Activity unless a newer start has superseded this request.
+    private func end(ifGeneration requested: Int) async {
+        // A start that landed between this task being enqueued and it running bumped `generation`;
+        // the activity now showing is NOT the one this end was asked to remove, so drop the request.
+        // Clearing the flag unconditionally keeps a dropped end from wedging the gate: the start that
+        // superseded us also clears it, but a stale end must never leave `isEnding` latched true.
+        isEnding = false
+        guard requested == generation else { return }
+        await end()
     }
 
     func end() async {
