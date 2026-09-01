@@ -686,12 +686,17 @@ final class AppModel: ObservableObject {
         // granted background task — the maintainer's contract: numerators move all day, the
         // full reconciliation happens at the morning open. Held under a background assertion so
         // a suspension can't strand it halfway; a killed light pass simply retries next sync.
-        // Sleep-window exclusion (260901): overnight syncs still land every ~10 min, but a light
-        // pass then re-scores numerators that cannot move for a screen nobody is watching — the
-        // rule and its arithmetic live on `lightPassWanted`. First post-window sync resumes.
+        // After-midnight exclusion (260901): overnight syncs still land every ~10 min, but a light
+        // pass then re-scores numerators that cannot move for a screen nobody is watching. Per the
+        // maintainer's spec the evening leg (22:00–24:00) still updates; the blackout is midnight →
+        // window end — the rule and its leg arithmetic live on `lightPassWanted`.
+        let nowComps = Calendar.current.dateComponents([.hour, .minute], from: Date())
         if RescoreBackgroundScheduler.lightPassWanted(
             owed: RescoreBackgroundScheduler.isRescoreOwed,
-            inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow) {
+            inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
+            minuteOfDay: (nowComps.hour ?? 0) * 60 + (nowComps.minute ?? 0),
+            windowEndMinute: UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+                ?? ContinuousHrvSchedule.defaultEndMinutes) {
             await RescoreBackgroundScheduler.holdAssertion(
                 name: "noop.rescore.light",
                 log: { [live] line in live.append(log: line) }

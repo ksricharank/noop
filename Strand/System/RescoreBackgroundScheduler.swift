@@ -203,15 +203,24 @@ enum RescoreBackgroundScheduler {
 
     /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.
     /// Owed is the precondition (no deferred full pass means the full pass itself ran and already
-    /// wrote today's rows). The sleep-window exclusion is the 260901 battery fix: overnight syncs
-    /// land every ~10 min while the user is asleep, and each light pass re-scored a day whose
-    /// numerators cannot move (steps/cal/effort are all flat in bed) for a screen nobody is
-    /// looking at — ~45 passes × 16–23 s of throttled background work per night for zero visible
-    /// change. The first post-window sync runs the light pass again, and the morning open runs the
-    /// full reconciliation, so nothing is lost — the widgets simply stay on the values they showed
-    /// at the window's start, which is what they would have displayed anyway.
-    static func lightPassWanted(owed: Bool, inSleepWindow: Bool) -> Bool {
-        owed && !inSleepWindow
+    /// wrote today's rows). The blackout is the 260901 battery fix, bounded by the maintainer's
+    /// spec: light passes keep running through the EVENING leg of the sleep window (22:00–24:00 —
+    /// the user is a night owl, the numerators still move, and the day rolls at local midnight on
+    /// every fork surface), and stop only for the AFTER-MIDNIGHT leg (00:00 → window end), where
+    /// each pass re-scored a day whose numerators cannot move (steps/cal/effort are all flat in
+    /// bed) for a screen nobody is looking at — dozens of 16–23 s throttled background passes per
+    /// night for zero visible change. The first post-window sync runs the light pass again, and
+    /// the morning open runs the full reconciliation, so nothing is lost.
+    ///
+    /// The leg test: inside the window, `minuteOfDay < windowEndMinute` is exactly "past midnight"
+    /// for a wrapped window (22:00–06:15: 23:30 → 1410 ≥ 375 runs; 01:00 → 60 < 375 skips), and
+    /// covers a whole non-wrapped window (01:00–06:00 lies entirely after midnight), which is the
+    /// wanted reading of "stop at 24:00" for every window shape.
+    static func lightPassWanted(owed: Bool, inSleepWindow: Bool, minuteOfDay: Int,
+                                windowEndMinute: Int) -> Bool {
+        guard owed else { return false }
+        guard inSleepWindow else { return true }
+        return minuteOfDay >= windowEndMinute
     }
 
     /// Seconds from `minuteOfDay` until the sleep window's `endMinute`, plus a small buffer so the
