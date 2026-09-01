@@ -362,6 +362,10 @@ final class LiveActivityController {
             // must not race two `Activity.request`s.
             guard !isStarting else { return }
             isStarting = true
+            // Same epoch bump as the live start: invalidate any end still queued from the previous
+            // generation, or it would tear down the activity this request is about to create.
+            generation &+= 1
+            isEnding = false
             do {
                 activity = try Activity.request(
                     attributes: NOOPActivityAttributes(title: String(localized: "HR")),
