@@ -156,12 +156,45 @@ public actor WhoopStore {
 
     @inline(__always)
     func syncRead<T>(_ block: (Database) throws -> T) throws -> T {
-        try dbWriter.read(block)
+        let t0 = Date()
+        defer {
+            perfSqlReadSeconds += Date().timeIntervalSince(t0)
+            perfSqlReadCount += 1
+        }
+        return try dbWriter.read(block)
     }
 
     @inline(__always)
     func syncWrite<T>(_ block: (Database) throws -> T) throws -> T {
-        try dbWriter.write(block)
+        let t0 = Date()
+        defer { perfSqlWriteSeconds += Date().timeIntervalSince(t0) }
+        return try dbWriter.write(block)
+    }
+
+    // MARK: - Read/write timing instrumentation
+    //
+    // Separates "time executing SQL" from "time a caller spent awaiting the store", so a strap log
+    // can tell WHERE a slow pass went. Every store call funnels through the two sync helpers above,
+    // and both run ON the actor's executor — so a caller's total await time is (queue wait to get
+    // onto the actor) + (SQL time measured here). The analytics pass stamps its own await total;
+    // subtracting this SQL figure yields the actor-wait, the number that decides whether the
+    // WhoopStore actor is serializing WAL-parallel reads behind bulk backfill writes (the #755 pool
+    // exists to prevent exactly that at the SQLite layer, but the actor above it was never measured).
+    // Plain actor state: both helpers only ever run on the executor, so the accumulation is ordered.
+    private var perfSqlReadSeconds = 0.0
+    private var perfSqlReadCount = 0
+    private var perfSqlWriteSeconds = 0.0
+
+    /// SQL time and read-call count accrued since the last `perfReset()`. Snapshot + reset are
+    /// separate so overlapping consumers can at worst double-report, never lose time.
+    public func perfSnapshot() -> (sqlReadSeconds: Double, sqlReadCount: Int, sqlWriteSeconds: Double) {
+        (perfSqlReadSeconds, perfSqlReadCount, perfSqlWriteSeconds)
+    }
+
+    public func perfReset() {
+        perfSqlReadSeconds = 0
+        perfSqlReadCount = 0
+        perfSqlWriteSeconds = 0
     }
 
     // MARK: - Maintenance

@@ -571,6 +571,19 @@ final class Repository: ObservableObject {
         ) { Repository.widgetAnchor(days: $0, logicalKey: $1, localKey: $2) }
     }
 
+    /// The Rest SCORE (0–100) for a day row — the same layering Today's Rest tile reads: an imported
+    /// export's verbatim `sleep_performance` wins (`importedSleep`, the cache SleepView prefers), and
+    /// the on-device Rest composite fills computed days. The fallback is byte-identical to the
+    /// engine-persisted computed series: IntelligenceEngine writes exactly
+    /// `AnalyticsEngine.Rest.composite(daily:)` with no extra terms. The Live Activity's "Rest" stat
+    /// reads THIS — it once showed resting HR under the same label, which could never match the Rest
+    /// score the app's Today tile shows (the 260828 "rest scores don't match" report). Synchronous
+    /// over already-cached state, so the ~1–3 Hz live tick closures can afford it.
+    func restScore(for day: DailyMetric) -> Int? {
+        let v = importedSleep[day.day]?.performancePct ?? AnalyticsEngine.Rest.composite(daily: day)
+        return v.map { Int($0.rounded()) }
+    }
+
     /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):
     /// the freshest strictly-prior day that recorded any of HRV / resting HR / respiratory, so the recovery
     /// VITALS keep reading through the post-04:00 window before tonight's sleep is scored, WITHOUT being

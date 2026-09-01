@@ -33,8 +33,21 @@ enum RescoreBackgroundScheduler {
     /// entire point — the process being killed is the event we are trying to observe, and it is not an
     /// event the killed process gets any chance to write down.
     static let owedKey = "noop.rescoreOwed"
+    /// The debt's KIND: true when the owed re-score exists ONLY because sleep-window deferrals recorded
+    /// it — no pass was ever attempted, so there is no evidence it cannot finish in the background, and
+    /// the first post-window trigger may simply run it. False (or absent) for a debt with attempt
+    /// evidence behind it — a pass that started and was killed, or one the measured rule escalated —
+    /// which keeps the #1538 behaviour: background triggers defer it to the processing task / foreground
+    /// rather than re-attempting a pass the phone has already proved it cannot finish there.
+    static let owedByWindowDeferralOnlyKey = "noop.rescoreOwedByWindowDeferralOnly"
     /// Seconds the last COMPLETED pass took. Only ever written by a pass that reached the end.
     static let lastPassSecondsKey = "noop.rescoreLastPassSeconds"
+
+    /// When the last LOCKED background-processing settle COMPLETED (epoch seconds), feeding the
+    /// settle-side pacing (`RescoreBackgroundPolicy.settleDecision`). Stamped only after a pass ran to
+    /// the end, so a killed one leaves no stamp and the next task retries freely. Survives process
+    /// death for the same reason the debt does — the treadmill this paces spans many process lifetimes.
+    static let lastLockedSettleAtKey = "noop.rescoreLastLockedSettleAt"
 
     /// Identifies the MOST RECENT debt, so a pass can tell its own from someone else's (#1681).
     ///
@@ -48,23 +61,60 @@ enum RescoreBackgroundScheduler {
 
     static var currentOwedToken: String? { UserDefaults.standard.string(forKey: owedTokenKey) }
 
+    /// See `owedByWindowDeferralOnlyKey`. Reads false whenever nothing is owed at all.
+    static var isOwedByWindowDeferralOnly: Bool {
+        isRescoreOwed && UserDefaults.standard.bool(forKey: owedByWindowDeferralOnlyKey)
+    }
+
     static var lastCompletedPassSeconds: Double? {
         guard UserDefaults.standard.object(forKey: lastPassSecondsKey) != nil else { return nil }
         let value = UserDefaults.standard.double(forKey: lastPassSecondsKey)
         return value.isFinite && value > 0 ? value : nil
     }
 
-    /// Mark a re-score as owed. Called by `IntelligenceEngine` once a pass is past every gate and is
-    /// definitely about to work — so that a kill leaves the debt behind — and by the deferral path, where
-    /// no pass is attempted at all but the work is just as outstanding.
-    /// Returns the token stamped on this debt. A pass keeps it and hands it back at completion; every
-    /// other caller (the deferral path) can ignore it, since it is not the one that will settle up.
+    /// See `lastLockedSettleAtKey`. Nil until a locked settle has ever completed, or when the stored
+    /// value is unreadable — both mean "unknown" to the pacing rule, which runs.
+    static var lastLockedSettleAt: Date? {
+        guard UserDefaults.standard.object(forKey: lastLockedSettleAtKey) != nil else { return nil }
+        let value = UserDefaults.standard.double(forKey: lastLockedSettleAtKey)
+        return value.isFinite && value > 0 ? Date(timeIntervalSince1970: value) : nil
+    }
+
+    /// Stamp that a LOCKED background settle ran to completion just now — see `lastLockedSettleAtKey`.
+    static func markLockedSettleCompleted(now: Date = Date()) {
+        UserDefaults.standard.set(now.timeIntervalSince1970, forKey: lastLockedSettleAtKey)
+    }
+
+    /// Mark a re-score as owed with attempt evidence behind it. Called by `IntelligenceEngine` once a
+    /// pass is past every gate and is definitely about to work — so that a kill leaves the debt behind —
+    /// and by the background-task deferral path (the measured rule already decided this pass cannot
+    /// finish in a plain background wake). Either way the debt is NOT window-deferral-only, so a later
+    /// background trigger defers it rather than re-attempting it.
+    /// Returns the token stamped on this debt (#1681). A pass keeps it and hands it back at completion;
+    /// every other caller (the deferral paths) can ignore it, since it is not the one that will settle up.
     @discardableResult
     static func markRescoreOwed() -> String {
         let token = UUID().uuidString
         UserDefaults.standard.set(true, forKey: owedKey)
+        UserDefaults.standard.set(false, forKey: owedByWindowDeferralOnlyKey)
         UserDefaults.standard.set(token, forKey: owedTokenKey)
         return token
+    }
+
+    /// Mark a re-score as owed by a SLEEP-WINDOW deferral: never attempted, safe for the first
+    /// post-window trigger to simply run. Never downgrades an existing attempt-evidence debt — if a
+    /// killed pass already left its mark, that stronger meaning survives any number of overnight
+    /// deferrals piling on top.
+    static func markRescoreDeferredForSleepWindow() {
+        if !isRescoreOwed {
+            UserDefaults.standard.set(true, forKey: owedByWindowDeferralOnlyKey)
+        }
+        UserDefaults.standard.set(true, forKey: owedKey)
+        // A deferral records NEW outstanding data, so it stamps a fresh token too (#1681): a pass that
+        // was already in flight when the window opened read its inputs before this data existed, and
+        // must not settle a debt recorded for data it never saw — the same mid-pass hole the token
+        // exists to close, arriving through the deferral door instead of a trigger.
+        UserDefaults.standard.set(UUID().uuidString, forKey: owedTokenKey)
     }
 
     /// May a pass holding [capturedToken] settle the debt?
@@ -99,6 +149,7 @@ enum RescoreBackgroundScheduler {
         let settled = maySettleDebt(capturedToken: owedToken, currentToken: currentOwedToken)
         if settled {
             UserDefaults.standard.set(false, forKey: owedKey)
+            UserDefaults.standard.set(false, forKey: owedByWindowDeferralOnlyKey)
         }
         if seconds.isFinite, seconds > 0 {
             UserDefaults.standard.set(seconds, forKey: lastPassSecondsKey)
@@ -121,6 +172,77 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
+    /// Whether the phone is locked (protected data unavailable) — the same read the Live Activity's
+    /// cadence and the stream duty cycle use; the keybag tracks the passcode lock and follows the
+    /// physical lock near-instantly both ways. Always false on macOS, like `isBackgrounded`.
+    static var isDeviceLocked: Bool {
+        #if os(iOS)
+        return !UIApplication.shared.isProtectedDataAvailable
+        #else
+        return false
+        #endif
+    }
+
+    /// Whether the local wall clock is inside the user's sleep window — the reused quiet-hours window
+    /// (`ContinuousHrvSchedule.quietStartKey`/`quietEndKey`, 22:00–07:00 by default, editable in
+    /// Settings on iOS and in Notification settings on macOS). Re-derived on every call, same as the
+    /// continuous-capture gate, so a Settings edit or the window rolling over applies to the very next
+    /// decision. Platform-agnostic on purpose — but macOS never reaches the policy's window rule anyway,
+    /// because `isBackgrounded` is hard-false there and foreground is never deferred.
+    static var isInSleepWindow: Bool {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let d = UserDefaults.standard
+        return ContinuousHrvSchedule.windowContains(
+            minuteOfDay,
+            startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int
+                ?? ContinuousHrvSchedule.defaultStartMinutes,
+            endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+                ?? ContinuousHrvSchedule.defaultEndMinutes)
+    }
+
+    /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.
+    /// Owed is the precondition (no deferred full pass means the full pass itself ran and already
+    /// wrote today's rows). The blackout is the 260901 battery fix, bounded by the maintainer's
+    /// spec: light passes keep running through the EVENING leg of the sleep window (22:00–24:00 —
+    /// the user is a night owl, the numerators still move, and the day rolls at local midnight on
+    /// every fork surface), and stop only for the AFTER-MIDNIGHT leg (00:00 → window end), where
+    /// each pass re-scored a day whose numerators cannot move (steps/cal/effort are all flat in
+    /// bed) for a screen nobody is looking at — dozens of 16–23 s throttled background passes per
+    /// night for zero visible change. The first post-window sync runs the light pass again, and
+    /// the morning open runs the full reconciliation, so nothing is lost.
+    ///
+    /// The leg test: inside the window, `minuteOfDay < windowEndMinute` is exactly "past midnight"
+    /// for a wrapped window (22:00–06:15: 23:30 → 1410 ≥ 375 runs; 01:00 → 60 < 375 skips), and
+    /// covers a whole non-wrapped window (01:00–06:00 lies entirely after midnight), which is the
+    /// wanted reading of "stop at 24:00" for every window shape.
+    static func lightPassWanted(owed: Bool, inSleepWindow: Bool, minuteOfDay: Int,
+                                windowEndMinute: Int) -> Bool {
+        guard owed else { return false }
+        guard inSleepWindow else { return true }
+        return minuteOfDay >= windowEndMinute
+    }
+
+    /// Seconds from `minuteOfDay` until the sleep window's `endMinute`, plus a small buffer so the
+    /// re-armed task lands clearly OUTSIDE the window rather than racing its edge. Pure — the wrap-around
+    /// (an 22:00–07:00 window queried at 23:30) is exactly the arithmetic worth pinning in a test.
+    static func secondsUntilWindowEnd(minuteOfDay: Int, endMinute: Int,
+                                      bufferSeconds: Double = 300) -> Double {
+        let remaining = ((endMinute - minuteOfDay) % 1440 + 1440) % 1440
+        return Double(remaining * 60) + bufferSeconds
+    }
+
+    /// `secondsUntilWindowEnd` against the live clock and stored window — nil when the clock is not
+    /// inside the window at all (there is no edge to wait for).
+    static var secondsUntilSleepWindowEnd: Double? {
+        guard isInSleepWindow else { return nil }
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let end = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        return secondsUntilWindowEnd(minuteOfDay: minuteOfDay, endMinute: end)
+    }
+
     /// Decide, then either run `work` under an execution assertion or leave it for `BGProcessingTask`.
     ///
     /// `log` goes to the strap log, always — both the decision and its reason. #1538 cost three nights
@@ -137,12 +259,17 @@ enum RescoreBackgroundScheduler {
     ///   which is the churn #1146 exists to avoid. A debt an earlier real pass already recorded is
     ///   untouched either way.
     static func run(isBackground: Bool? = nil,
+                    inSleepWindow: Bool? = nil,
+                    isLocked: Bool? = nil,
                     owesOnDefer: Bool = true,
                     log: @escaping (String) -> Void,
                     work: () async -> Void) async {
         let decision = RescoreBackgroundPolicy.decide(
             isBackground: isBackground ?? isBackgrounded,
+            inSleepWindow: inSleepWindow ?? isInSleepWindow,
             rescoreAlreadyOwed: isRescoreOwed,
+            owedByWindowDeferralOnly: isOwedByWindowDeferralOnly,
+            isDeviceLocked: isLocked ?? isDeviceLocked,
             lastCompletedPassSeconds: lastCompletedPassSeconds)
 
         switch decision {
@@ -160,6 +287,20 @@ enum RescoreBackgroundScheduler {
             markRescoreOwed()
             log("re-score: deferred to a background task — \(reason)")
             schedule()
+        case .deferUntilSleepWindowEnds(let reason):
+            guard owesOnDefer else {
+                log("re-score: backstop tick skipped during the sleep window — \(reason)")
+                return
+            }
+            // Same debt bookkeeping shape as the case above, but the DEFERRAL-ONLY mark and deliberately
+            // NO `schedule()`: a processing task favours idle, and idle on a phone worn to bed is
+            // mid-night — it would run the pass at 3 a.m. after all. The debt is settled by the first
+            // data-driven trigger after the window ends (the offload cadence keeps firing; post-window
+            // the policy lets a never-attempted debt simply run, locked or not) or the next foreground
+            // entry. Repeated in-window deferrals only re-set the same mark, so a whole night coalesces
+            // into one pass.
+            markRescoreDeferredForSleepWindow()
+            log("re-score: deferred to the end of the sleep window — \(reason)")
         case .run:
             await withAssertion(log: log, work: work)
         }
@@ -193,6 +334,29 @@ enum RescoreBackgroundScheduler {
         #endif
     }
 
+    /// Public assertion holder for OTHER short post-offload work (the 260831 background light pass):
+    /// same short-pass suspension protection as `withAssertion`, but the expiry deliberately does NOT
+    /// `schedule()` — a light pass leaves no debt behind by design (it recurs on the very next sync),
+    /// so asking iOS for a processing task on its behalf would conjure work the debt system never
+    /// recorded. `name` distinguishes the holders in the system's assertion accounting.
+    static func holdAssertion(name: String, log: @escaping (String) -> Void,
+                              work: () async -> Void) async {
+        #if os(iOS)
+        let assertion = BackgroundAssertion()
+        let taskID = UIApplication.shared.beginBackgroundTask(withName: name) {
+            MainActor.assumeIsolated {
+                log("\(name): background time expired before the work finished — it retries on the next trigger")
+                assertion.end()
+            }
+        }
+        assertion.store(taskID)
+        await work()
+        assertion.end()
+        #else
+        await work()
+        #endif
+    }
+
     // MARK: - iOS background-processing plumbing
 
     #if os(iOS)
@@ -201,12 +365,39 @@ enum RescoreBackgroundScheduler {
     /// Register the handler. MUST be called from `StrandiOSApp.init()` before launch finishes, and the
     /// identifier MUST be listed in `BGTaskSchedulerPermittedIdentifiers`, or iOS never delivers the task.
     /// Safe to leave uncalled: `schedule()` fails gracefully and the foreground path still scores.
-    static func register(perform operation: @escaping @MainActor () async -> Void) {
+    /// `log` reaches the strap log (rare-event: it speaks only when a wake is skipped, which is exactly
+    /// the decision that must not be silent — the treadmill this gate stops was 38 unexplained passes).
+    static func register(log: @escaping @MainActor (String) -> Void = { _ in },
+                         perform operation: @escaping @MainActor () async -> Void) {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: taskIdentifier, using: nil) { task in
             let completion = TaskCompletionGuard(task: task)
             let worker = Task { @MainActor in
+                // The settle-side convergence gate (260829): under a +N locked sync, a locked settle can
+                // NEVER clear the debt — new data lands mid-pass, the token supersedes (#1681), the next
+                // deferral re-arms this task — so unconditional runs became a treadmill of I/O-throttled
+                // passes nobody could see. Decide first; a skipped wake costs one log line.
+                let lockedAtStart = isDeviceLocked
+                if isRescoreOwed {
+                    let decision = RescoreBackgroundPolicy.settleDecision(
+                        isLocked: lockedAtStart,
+                        inSleepWindow: isInSleepWindow,
+                        secondsSinceLastLockedSettle: lastLockedSettleAt.map {
+                            Date().timeIntervalSince($0)
+                        },
+                        secondsUntilSleepWindowEnd: secondsUntilSleepWindowEnd)
+                    if case .skip(let reason, let retryAfter) = decision {
+                        log("re-score: background settle skipped — \(reason)")
+                        schedule(earliestIn: retryAfter)
+                        // Skipping IS the intended behaviour here, not a failure iOS should penalise.
+                        completion.finish(success: true)
+                        return
+                    }
+                }
                 await operation()
                 guard !Task.isCancelled else { return }
+                // Only a pass that RAN TO COMPLETION here paces the next locked settle; a killed one
+                // leaves no stamp, so the next task retries freely (the #1538 escalation is preserved).
+                if lockedAtStart, isDeviceLocked { markLockedSettleCompleted() }
                 // Re-arm only while work remains. A processing task is single-shot, and re-submitting
                 // unconditionally would ask iOS for a wake on every install forever, including the ones
                 // that never have anything to do.
@@ -226,7 +417,12 @@ enum RescoreBackgroundScheduler {
 
     /// Keep exactly one pending request, so calling this from several places is idempotent and also
     /// repairs a request the system discarded.
-    static func schedule() {
+    ///
+    /// `earliestIn` asks iOS not to fire before that many seconds from now. When it is nil, the pacing
+    /// falls back to whatever the last completed LOCKED settle implies: the offload deferral path calls
+    /// this every few minutes under a +N locked sync, and since each call is cancel-and-resubmit, a bare
+    /// request here would erase the spacing the settle gate just re-armed — the treadmill by another door.
+    static func schedule(earliestIn: TimeInterval? = nil) {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskIdentifier)
         let request = BGProcessingTaskRequest(identifier: taskIdentifier)
         // Neither is required. Network is irrelevant to an offline app, and demanding external power
@@ -234,6 +430,16 @@ enum RescoreBackgroundScheduler {
         // likely to be wearing the strap continuously.
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
+        var delay = earliestIn
+        if delay == nil, let last = lastLockedSettleAt {
+            let since = Date().timeIntervalSince(last)
+            if since >= 0, since < RescoreBackgroundPolicy.lockedSettleSpacingSeconds {
+                delay = RescoreBackgroundPolicy.lockedSettleSpacingSeconds - since
+            }
+        }
+        if let delay, delay > 0 {
+            request.earliestBeginDate = Date().addingTimeInterval(delay)
+        }
         try? BGTaskScheduler.shared.submit(request)
     }
 
@@ -282,6 +488,6 @@ enum RescoreBackgroundScheduler {
     }
     #else
     /// macOS has no background-task scheduler and no suspension deadline — nothing to schedule.
-    static func schedule() {}
+    static func schedule(earliestIn: TimeInterval? = nil) {}
     #endif
 }
