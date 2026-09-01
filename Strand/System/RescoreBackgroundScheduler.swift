@@ -201,6 +201,19 @@ enum RescoreBackgroundScheduler {
                 ?? ContinuousHrvSchedule.defaultEndMinutes)
     }
 
+    /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.
+    /// Owed is the precondition (no deferred full pass means the full pass itself ran and already
+    /// wrote today's rows). The sleep-window exclusion is the 260901 battery fix: overnight syncs
+    /// land every ~10 min while the user is asleep, and each light pass re-scored a day whose
+    /// numerators cannot move (steps/cal/effort are all flat in bed) for a screen nobody is
+    /// looking at — ~45 passes × 16–23 s of throttled background work per night for zero visible
+    /// change. The first post-window sync runs the light pass again, and the morning open runs the
+    /// full reconciliation, so nothing is lost — the widgets simply stay on the values they showed
+    /// at the window's start, which is what they would have displayed anyway.
+    static func lightPassWanted(owed: Bool, inSleepWindow: Bool) -> Bool {
+        owed && !inSleepWindow
+    }
+
     /// Seconds from `minuteOfDay` until the sleep window's `endMinute`, plus a small buffer so the
     /// re-armed task lands clearly OUTSIDE the window rather than racing its edge. Pure — the wrap-around
     /// (an 22:00–07:00 window queried at 23:30) is exactly the arithmetic worth pinning in a test.

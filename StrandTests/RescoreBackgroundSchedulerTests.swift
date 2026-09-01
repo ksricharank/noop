@@ -343,5 +343,17 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
             minuteOfDay: 6 * 60, endMinute: 7 * 60, bufferSeconds: 300),
             3600 + 300)
     }
-}
 
+    // 260901 light-pass battery fix: the post-offload light pass runs exactly when the full pass's
+    // debt is owed AND the clock is outside the sleep window. Overnight (in-window) syncs skip it —
+    // the numerators it would recompute are flat while the user sleeps, and the first post-window
+    // sync picks the work straight back up because the debt is untouched.
+    func testLightPassRunsOnlyWhenOwedAndOutsideTheSleepWindow() {
+        XCTAssertTrue(RescoreBackgroundScheduler.lightPassWanted(owed: true, inSleepWindow: false))
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: true, inSleepWindow: true),
+                       "an overnight sync must not burn a light pass on numerators that cannot move")
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: false, inSleepWindow: false),
+                       "no debt means the full pass already ran — the day rows are fresh")
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: false, inSleepWindow: true))
+    }
+}

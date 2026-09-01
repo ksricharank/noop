@@ -686,7 +686,12 @@ final class AppModel: ObservableObject {
         // granted background task — the maintainer's contract: numerators move all day, the
         // full reconciliation happens at the morning open. Held under a background assertion so
         // a suspension can't strand it halfway; a killed light pass simply retries next sync.
-        if RescoreBackgroundScheduler.isRescoreOwed {
+        // Sleep-window exclusion (260901): overnight syncs still land every ~10 min, but a light
+        // pass then re-scores numerators that cannot move for a screen nobody is watching — the
+        // rule and its arithmetic live on `lightPassWanted`. First post-window sync resumes.
+        if RescoreBackgroundScheduler.lightPassWanted(
+            owed: RescoreBackgroundScheduler.isRescoreOwed,
+            inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow) {
             await RescoreBackgroundScheduler.holdAssertion(
                 name: "noop.rescore.light",
                 log: { [live] line in live.append(log: line) }
