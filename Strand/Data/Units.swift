@@ -116,6 +116,21 @@ enum UnitPrefs {
             ? true : UserDefaults.standard.bool(forKey: liveActivityKey)
     }
 
+    /// How often the Live Activity refreshes while the phone is LOCKED, in minutes. The number shown
+    /// is a moving average of HR over that window; 0 means fully live (~2 s, no locked slowdown at
+    /// all) at the highest battery cost. ANY negative opts into the stream duty cycle instead: the
+    /// realtime BLE stream itself is silenced while the phone is locked outside the sleep window, and
+    /// the Lock Screen repaints from persisted data once per sync — -1 shows the average over the
+    /// sync cadence's own window (auto), any other negative is an explicit window in minutes
+    /// (-20 → a 20-minute average). Clamped to -240...60, default 1. Unlocked is always live.
+    /// Read by `LiveActivityController` on every tick and by `BLEManager`'s stream reconciler, so a
+    /// Settings edit applies immediately.
+    static let liveActivityLockedMinutesKey = "liveActivity.lockedRefreshMinutes"
+    static func liveActivityLockedMinutes() -> Int {
+        let stored = UserDefaults.standard.object(forKey: liveActivityLockedMinutesKey) as? Int ?? 1
+        return min(max(stored, -LockedStreamPolicy.windowMinutesRange.upperBound), 60)
+    }
+
     /// Resolve the stored raw values into a concrete temperature unit, applying the
     /// "match the system" default when no explicit override is set.
     static func resolveTemperature(system: UnitSystem, override raw: String) -> TemperatureUnit {

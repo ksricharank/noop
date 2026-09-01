@@ -611,6 +611,12 @@ final class AppModel: ObservableObject {
     /// A closure rather than a direct reference because `HealthKitBridge` owns iOS-only HealthKit state
     /// while this type is shared with macOS, and the bridge is a `@StateObject` the app scene owns.
     var healthWriteBack: (() async -> Void)?
+    /// Refresh the locked-phone Live Activity from just-persisted data, set by `StrandiOSApp`. The
+    /// locked-stream duty cycle (Lock-Screen refresh = -1) silences the live stream while locked, so
+    /// the Lock Screen is repainted here instead — once per completed offload, with the window-average
+    /// HR plus the last recorded recovery/effort. Same closure shape and lifetime reasoning as
+    /// `healthWriteBack` above; nil on macOS and in tests.
+    var lockedActivityRefresh: (() async -> Void)?
     #endif
 
     /// Settle a re-score that is owed (#1538) — one an earlier attempt started and was killed partway
@@ -623,8 +629,18 @@ final class AppModel: ObservableObject {
     /// Forced rather than `skipIfUnchanged`: an interrupted pass never advanced the watermark — by design,
     /// so that it cannot mark unscored data as scored — so gating on the fingerprint here would be asking
     /// a question whose answer is already known to be "yes, there is work".
+    /// True while a `runDeferredRescoreIfOwed` settle is already running — see the guard below.
+    private var settleInFlight = false
+
     func runDeferredRescoreIfOwed() async {
-        guard RescoreBackgroundScheduler.isRescoreOwed else { return }
+        guard RescoreBackgroundScheduler.isRescoreOwed, !settleInFlight else { return }
+        // Collapse concurrent settles into one: the settle entry points (BGProcessingTask, foreground
+        // entry) can fire within the same instant — the dogfooding log showed two simultaneous
+        // "resuming" passes (70 s and 85 s) inflating each other by contending. `analyzeRecent`'s own
+        // `computing` lock cannot dedupe this: the second forced call re-arms via pendingForcedRescore
+        // and runs a SECOND full pass the moment the first finishes. @MainActor, so the flag is race-free.
+        settleInFlight = true
+        defer { settleInFlight = false }
         live.append(log: "re-score: resuming a pass an earlier attempt could not finish (#1538)")
         await intelligence.analyzeRecent()
         #if os(iOS)
@@ -656,6 +672,38 @@ final class AppModel: ObservableObject {
         await RescoreBackgroundScheduler.run(log: { [live] line in live.append(log: line) }) {
             await intelligence.analyzeRecent(skipIfUnchanged: true)
         }
+        // The background LIGHT pass (260831): when the full pass above was deferred (the debt is
+        // still owed), score just today + yesterday inline so the day's accumulators — steps /
+        // kcal / strain, the widget numerators — advance on THIS sync instead of freezing until
+        // the next app open. The 260831 log showed the failure exactly: offloads landing every
+        // ~10 min, 93/94 widget publishes completing, and 77 of them deduped as unchanged because
+        // the full pass (the only thing that writes the day row) was "deferred to a background
+        // task" 21 times while the completions clustered around app opens. A 2-day pass reads
+        // ~1/10th of the 21-day window, so it finishes inside a locked background window where
+        // the full pass measurably cannot (33 s → 83 min I/O-throttled in that log). It never
+        // touches the re-score debt, the pass-duration estimate, or the watermark (see the
+        // `lightPass` doc), so the deferred FULL pass still runs at the next foreground or
+        // granted background task — the maintainer's contract: numerators move all day, the
+        // full reconciliation happens at the morning open. Held under a background assertion so
+        // a suspension can't strand it halfway; a killed light pass simply retries next sync.
+        // After-midnight exclusion (260901): overnight syncs still land every ~10 min, but a light
+        // pass then re-scores numerators that cannot move for a screen nobody is watching. Per the
+        // maintainer's spec the evening leg (22:00–24:00) still updates; the blackout is midnight →
+        // window end — the rule and its leg arithmetic live on `lightPassWanted`.
+        let nowComps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        if RescoreBackgroundScheduler.lightPassWanted(
+            owed: RescoreBackgroundScheduler.isRescoreOwed,
+            inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
+            minuteOfDay: (nowComps.hour ?? 0) * 60 + (nowComps.minute ?? 0),
+            windowEndMinute: UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+                ?? ContinuousHrvSchedule.defaultEndMinutes) {
+            await RescoreBackgroundScheduler.holdAssertion(
+                name: "noop.rescore.light",
+                log: { [live] line in live.append(log: line) }
+            ) {
+                await intelligence.analyzeRecent(maxDays: 2, lightPass: true)
+            }
+        }
         await refreshV5Signals()
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
@@ -670,6 +718,10 @@ final class AppModel: ObservableObject {
         // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
         // Set by StrandiOSApp; nil on macOS and in tests, where there is no bridge.
         await healthWriteBack?()
+        // Locked-stream duty cycle: this completed offload IS the "new data" moment the locked Lock
+        // Screen waits for — repaint it from the persisted rows (the closure gates itself on duty
+        // mode + locked, so this is a no-op everywhere else).
+        await lockedActivityRefresh?()
         #endif
     }
 
