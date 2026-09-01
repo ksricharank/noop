@@ -3,6 +3,7 @@ import StrandDesign
 import StrandAnalytics
 import WhoopStore
 import Foundation
+import MarkdownUI
 
 // MARK: - Control Center (the home dashboard), HomeDensity rewrite
 //
@@ -191,6 +192,16 @@ struct TodayView: View {
     /// classification and tint selection stable when the app language changes.
     private static let whoopBrandName = "WHOOP"
     @EnvironmentObject var repo: Repository
+    /// The coach engine, for the LLM-written Today synthesis (`synthesisText`). Publishes on
+    /// generation/config/chat changes only — never on the ~1 Hz HR tick — so observing it here does not
+    /// reintroduce the per-tick re-render the LiveState isolation above exists to prevent.
+    @EnvironmentObject var coach: AICoachEngine
+    /// For the unified Refresh control (manual sync kick + forced re-score). Neither publishes on the
+    /// HR tick: BLEManager publishes connect/discovery state, IntelligenceEngine pass start/end.
+    @EnvironmentObject var ble: BLEManager
+    @EnvironmentObject var intelligence: IntelligenceEngine
+    /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
+    @State private var refreshingAll = false
     // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
     // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
     // here would invalidate the ENTIRE Today `body` on every tick, re-evaluating the scene backdrop, the
@@ -477,10 +488,6 @@ struct TodayView: View {
     // with the ring. A calibrating night (empty drivers) taps through to the EXISTING calibration countdown.
     @State private var showChargeBreakdown = false
 
-    // S4: the Synthesis card collapses to a single one-liner that expands on tap. Default collapsed so the
-    // home screen stays tight; the live content (#506) is unchanged, only the chrome folds. @State (not
-    // persisted) so a relaunch starts collapsed again.
-    @State private var synthesisExpanded = false
 
     // S5: the Key Metrics grid caps at the first `metricsCollapsedCap` tiles behind a "Show all metrics"
     // expander, collapsing OVERFLOW only (never dropping or reordering a user-selected tile, #251). @State
@@ -2237,6 +2244,18 @@ struct TodayView: View {
             // both states, so a glance still reads today's verdict; the detail body reveals on tap.
             synthesisCollapsible(d: d, score: score)
 
+            // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
+            // classic/liquid divergence as a bug). Always shown — the S4 collapse is gone. When the
+            // coach has written TODAY's synthesis, its prose replaces the rule-based horizons (it
+            // covers the same timescales); every fallback case renders the rule-based read.
+            if let ai = coach.synthesisText,
+               AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
+                aiSynthesisCard(ai)
+            } else {
+                horizonRows
+            }
+            coachLink
+
             if let note = effortZeroNote {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: "info.circle")
@@ -2254,13 +2273,125 @@ struct TodayView: View {
         }
     }
 
-    /// S4: the Synthesis card, collapsed to a one-liner that expands on tap. Collapsed: the category +
-    /// status headline + a chevron. Expanded: the FULL `InsightCard` (status + detail), the existing locked
-    /// component, unchanged. The headline is the SAME `synthesisCardStatus` / calibration / DEBUG-frame copy
-    /// in both states (#506 content untouched), so only the chrome folds, never the read.
+    // MARK: Horizons (1h / 3h / 6h)
+
+    /// What to do next on three timescales, under the "how am I today" read. Rule-based via the pure
+    /// `HorizonPlanner`; see that type for why it is not LLM-backed and what it declines to claim.
+    /// Liquid twin: `LiquidTodayView.horizonRows` — keep the two in step.
+    @ViewBuilder private var horizonRows: some View {
+        let plans = HorizonPlanner.plan(HorizonPlanner.Input(
+            level: readiness.level,
+            strainSoFar: displayDay?.strain,
+            sleepMinutes: displayDay?.totalSleepMin.map { Int($0.rounded()) },
+            hour: Calendar.current.component(.hour, from: Date()),
+            bedtimeHour: LiquidTodayView.targetBedtimeHour()))
+        if !plans.isEmpty {
+            NoopCard(tint: StrandPalette.chargeColor) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("What's next").strandOverline()
+                    ForEach(plans) { plan in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(plan.horizon.rawValue)
+                                .font(StrandFont.caption.weight(.bold))
+                                .foregroundStyle(StrandPalette.chargeColor)
+                                // Fixed width so the labels form a column and the sentences align — the
+                                // three lines should read as one timeline, not three separate notes.
+                                .frame(width: 26, alignment: .leading)
+                            Text(LocalizedStringKey(plan.text))
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(LiquidTodayView.horizonAccessibilityLabel(plan))
+                    }
+                }
+            }
+        }
+    }
+
+    /// The coach-written Today synthesis, shown in place of the rule-based horizons when the provider
+    /// has answered today (`AICoachEngine.refreshSynthesis`, regenerated on every app open). Liquid
+    /// twin: the AI branch of `LiquidTodayView`'s expanded synthesis card — keep the two in step.
+    @ViewBuilder private func aiSynthesisCard(_ text: String) -> some View {
+        NoopCard(tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    Text("Written by your Coach").strandOverline()
+                    // Always names the model that wrote it. Showing it only for a fallback made the
+                    // label's ABSENCE mean "your chosen model", which nobody can read off the
+                    // screen. Twin of the same line in the other Today view; keep them in step.
+                    if let model = coach.synthesisModel {
+                        Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+                // LLM replies arrive as Markdown; plain Text showed literal asterisks. Rendered
+                // through the same MarkdownUI pipeline as the Coach chat, sized for this card
+                // (see Theme.strandSynthesis). Liquid twin: the AI branch of the synthesis card.
+                Markdown(text)
+                    .markdownTheme(.strandSynthesis)
+            }
+        }
+    }
+
+    /// A way into the Coach for the follow-ups this card raises. A LINK, not an embedded chat — see
+    /// `NavRouter.openCoach()` for why the engine is not reused inline. Leads with the on-demand
+    /// synthesis refresh, twin of the liquid `coachLink` — keep the two in step.
+    /// The unified on-demand refresh — sync kick, forced re-score, coach regeneration. Liquid twin:
+    /// `LiquidTodayView.refreshEverything` (see its doc for the sequencing rationale) — keep in step.
+    private func refreshEverything() async {
+        ble.syncNow()
+        await intelligence.analyzeRecent()
+        await coach.refreshSynthesis(force: true)
+    }
+
+    @ViewBuilder private var coachLink: some View {
+        HStack {
+            // One Refresh for everything — data fetch, re-score, coach paragraph — always visible
+            // (the coach step simply no-ops when unconfigured).
+            if refreshingAll || coach.synthesisRefreshing {
+                ProgressView().controlSize(.small)
+            } else {
+                Button {
+                    Task {
+                        refreshingAll = true
+                        await refreshEverything()
+                        refreshingAll = false
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise").font(StrandFont.caption)
+                        Text("Refresh").font(StrandFont.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(StrandPalette.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Refresh data, scores, and synthesis")
+            }
+            Spacer()
+            Button { router.openCoach() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                }
+                .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Opens the AI Coach chat"))
+        }
+        .padding(.horizontal, 2)
+    }
+
+    /// The Synthesis card, always the full `InsightCard` (status + detail). The S4 collapse-to-one-liner
+    /// chrome is gone: the card is the day's read — and now hosts the coach-written paragraph — so
+    /// hiding its content behind a "show" tap outlived its purpose. #506 content untouched.
     /// Plain (non-ViewBuilder) resolver for the Synthesis headline + detail. Kept OUT of the @ViewBuilder
     /// body below because an if/else of assignments inside a ViewBuilder is read as a Void "view" and fails
-    /// to compile. The copy is identical in the collapsed and expanded states (#506 content untouched).
+    /// to compile.
     private func synthesisCopy(d: DailyMetric?, score: Double?) -> (status: LocalizedStringKey, detail: LocalizedStringKey) {
         #if DEBUG
         if let f = DemoDayHarness.active {
@@ -2273,56 +2404,15 @@ struct TodayView: View {
 
     @ViewBuilder
     private func synthesisCollapsible(d: DailyMetric?, score: Double?) -> some View {
-        // Resolve the headline + detail once so the collapsed line and the expanded card never disagree.
         let copy = synthesisCopy(d: d, score: score)
-        let status = copy.status
-        let detail = copy.detail
-
-        if synthesisExpanded {
-            // Expanded: the full locked InsightCard, then a tap target to collapse it again.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = false }
-            } label: {
-                InsightCard(
-                    category: "Synthesis",
-                    status: status,
-                    detail: detail,
-                    statusColor: StrandPalette.textPrimary,
-                    tint: StrandPalette.chargeColor
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Collapse")
-        } else {
-            // Collapsed: a one-liner with the category overline, the status headline and a down-chevron.
-            Button {
-                withAnimation(StrandMotion.interactive) { synthesisExpanded = true }
-            } label: {
-                NoopCard(tint: StrandPalette.chargeColor) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Synthesis").strandOverline()
-                            Text(status)
-                                .font(StrandFont.headline)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.85)
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Synthesis. \(status)")
-            .accessibilityHint("Expand for the full read")
-        }
+        InsightCard(
+            category: "Synthesis",
+            status: copy.status,
+            detail: copy.detail,
+            statusColor: StrandPalette.textPrimary,
+            tint: StrandPalette.chargeColor
+        )
+        .accessibilityLabel("Synthesis. \(copy.status)")
     }
 
     /// S4 (#205): the one-word readiness pill on the hero (Push / Maintain / Rest). A small tinted capsule
