@@ -18,6 +18,8 @@ import StrandDesign
 struct DailyTargetsStrip: View {
     @EnvironmentObject private var repo: Repository
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
+    /// The "How these were set" disclosure — collapsed by default, session-local state.
+    @State private var showDerivations = false
 
     var body: some View {
         let targets = repo.cachedLiveTargets()
@@ -34,6 +36,39 @@ struct DailyTargetsStrip: View {
             HStack(alignment: .top, spacing: 12) {
                 targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
                 targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.metricCyan)
+            }
+            // Optional derivations (260901, maintainer's ask): the precise formula behind each of
+            // the four targets, with TODAY's inputs filled in — collapsed by default so the strip
+            // stays a glance; sits between the numbers and the LLM narrative that interprets them.
+            // The lines are built beside the pricing itself (`TargetsExplainer`, called inside
+            // `Repository.liveTargets`), so they can never describe different numbers.
+            if !targets.explainLines.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showDerivations.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: showDerivations ? "chevron.down" : "chevron.right")
+                                .font(StrandFont.caption)
+                            Text("How these were set")
+                                .font(StrandFont.caption)
+                        }
+                        .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    if showDerivations {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(targets.explainLines, id: \.self) { line in
+                                Text(line)
+                                    .font(StrandFont.caption)
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
