@@ -34,79 +34,46 @@ UPSTREAM="$UPSTREAM_REMOTE/main"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
-  # Touches HealthKitBridge/AppleHealthView/HealthSyncPolicy, which no other branch in this stack
-  # modifies, so it merges clean from anywhere in the order.
+  # ── v15 consolidation (260901) ──────────────────────────────────────────────────────────────
+  # The 16-branch v14 stack (five-deep re-homing chain, two stacked pairs, three assembly-based
+  # branches) was folded into the five features below; the v15 stack was verified TREE-IDENTICAL
+  # to release-10614-14 (the last v14 build installed on the phone) before the upstream rebase.
+  # The old branches survive on origin under their v14 names; the pre-v15-refactor tag pins the
+  # exact installed state.
+  #
+  # Apple Health integration: read-only sync (writes off without losing reads; resume a read-only
+  # grant). Touches HealthKitBridge/AppleHealthView/HealthSyncPolicy — no other branch does.
   "feature/health-read-only-sync"
-  # Log-only instrumentation (IntelligenceEngine cost line + WhoopStore SQL tally). Touches
-  # IntelligenceEngine.swift, which locked-rescore-deferral also edits, but in different regions
-  # (the pass-1 loop vs the debt/scheduler wiring) - merges clean as of this writing.
-  "feature/rescore-prep-instrumentation"
-  # Log/header-only battery attribution (BLE wake counters, getrusage at export, MetricKit daily
-  # line). Touches BLEManager's didUpdateValueFor and the LiveState header assembly - regions no
-  # other branch edits.
-  "feature/battery-instrumentation"
-  # Bond-loop pause self-healing (260831): keeps a parked connect outstanding within a bounded
-  # per-episode cycle budget so a transient overnight radio blip can't strand the link until a
-  # manual app open (the 4:30am 2.7h dead-air report). Touches BLEManager's pause/re-park sites
-  # (didDisconnect paused branch, didFailToConnect, the reset sites) — regions no other branch
-  # edits. Based on upstream/main; upstream-worthy (#1539 follow-up).
+  # BLE connection reliability, kept SEPARATE deliberately: it fixes upstream's own #1539 escape
+  # (bond-loop pause + parked connect), so it must stay unentangled from fork-only branches to
+  # remain upstreamable. Touches BLEManager's pause/re-park sites only.
   "feature/bond-loop-repark"
-  "feature/lock-screen-hr-average"
-  # DEPENDENT BRANCH: based on feature/lock-screen-hr-average, not on main. The duty cycle's -1
-  # sentinel lives in that branch's Lock-Screen refresh setting and its Live Activity handling
-  # extends that branch's lock-aware cadence code — as an independent branch it would conflict in
-  # Units.swift / SettingsView.swift / LiveActivityController.swift on every rebuild. Keep it
-  # directly after its base, rebase it with `git rebase --onto feature/lock-screen-hr-average`,
-  # and upstream the two together, base first.
-  # KNOWN RECURRING CONFLICT with feature/dynamic-ui-bug-fix (parallel stack): both edit
-  # LiveActivityController. Two-part resolution in the release merge:
-  #  1. update()'s handle-adoption block conflicts textually: keep THIS branch's single
-  #     `revalidateHandle()` call — it is a superset of the other branch's inline
-  #     `.active`-filtered adoption (it also drops a handle whose activity died in-hand).
-  #  2. Then integrate updateFromData by hand (it merges without markers but arrives with this
-  #     branch's bare calls): route its disconnect end through `endIfCurrent()` and give its
-  #     `Activity.request` path the same `generation &+= 1` / `isEnding = false` epoch bump as
-  #     the live start — a bare end/start there re-opens the stale-end bug that branch fixes.
-  "feature/locked-stream-duty-cycle"
-  "feature/locked-rescore-deferral"
-  # DEPENDENT BRANCH: based on feature/locked-rescore-deferral, not on main. Both rewrite the same
-  # opt-out/disconnect guard in LiveActivityController — the deferral branch replaces it with a
-  # LiveActivityPresentationPolicy switch, this one replaces the `Task { await end() }` inside it
-  # with the generation-gated `endIfCurrent()`. As independent branches they conflicted here on
-  # every rebuild; stacked, the fix is expressed against the policy and merges clean. So: keep it
-  # directly after its base, rebase it with `git rebase --onto feature/locked-rescore-deferral`
-  # (a plain rebase onto main flattens the stack and brings the conflict back), and upstream the
-  # two together, base first.
-  "feature/dynamic-ui-bug-fix"
-  "feature/dynamic-island-minimal-hr"
-  "feature/synthesis-horizons"
-  # ── 260829 trio — STACK-DEPENDENT, TEMPORARY HOMES ─────────────────────────────────────────
-  # All three are based on the release-10614-2 ASSEMBLY (not upstream/main): they edit
-  # LiveActivityController / the widget / the presentation policy, which three earlier branches
-  # already fight over, and re-fighting those merges for one night was not worth it.
-  # three-pillar-card additionally stacks ON island-disconnect-hold (both edit the controller
-  # and widget). CONSEQUENCES: (a) release 10.6.0.14.5 was built by EXTENDING release-10614-2
-  # (see docs/releases/fork/v10.6.0.14.5.md), not by this script; (b) after any upstream sync
-  # these three MUST be re-homed before this script can stack them cleanly. The planned v15
-  # refactor (fold the fork's features into a simpler list) is where that happens — do not
-  # upstream-sync before it without re-homing these.
-  "feature/rescore-lock-convergence"
-  "feature/island-disconnect-hold"
-  "feature/three-pillar-card"
-  # targets-widgets (260830) stacks ON three-pillar-card (it reads LiveTargets /
-  # cachedLiveTargets — and now REWORKS that branch's card: Effort n/t + total-Cal n/t replaced
-  # HR on every targets surface the same day), so it joins the same re-homing obligation above:
-  # after any upstream sync, re-home it together with (and after) three-pillar-card.
-  "feature/targets-widgets"
-  # breathe-automation (260830) stacks ON targets-widgets (its AppModel hook lands where that
-  # branch removed the breathe-cue level read). Same re-homing chain.
-  "feature/breathe-automation"
-  # background-light-rescore (260831) stacks ON breathe-automation (it hooks the same
-  # refreshAfterCompletedBackfill region breathe's reorder owns, and extends analyzeRecent /
-  # RescoreBackgroundScheduler that locked-rescore-deferral shaped). FIVE-deep re-homing chain now —
-  # after any upstream sync, re-home the whole chain in order (three-pillar-card → targets-widgets →
-  # breathe-automation → background-light-rescore); the v15 refactor is where this flattens.
-  "feature/background-light-rescore"
+  # ── The v15 chain: battery → synthesis → widgets. STACKED, in this order. ──────────────────
+  # Each is based on the branch above it (battery on upstream/main). After an upstream sync,
+  # rebase in order:
+  #   git rebase upstream/main feature/v15-battery
+  #   git rebase --onto feature/v15-battery  <old battery tip>   feature/v15-synthesis
+  #   git rebase --onto feature/v15-synthesis <old synthesis tip> feature/v15-widgets
+  # (capture each old tip BEFORE rebasing its base; see docs/FORK-RELEASE.md §stacked features)
+  #
+  # BATTERY: everything that reduces (or measures) the phone-side battery bill of live HR /
+  # background work. Locked-stream duty cycle + the user-configurable Lock-Screen refresh cadence
+  # (-1 sentinel), the sleep-window ("night window") pause for Lock Screen / Dynamic Island,
+  # locked re-score deferral (#1538 policy + debt), settle pacing, the background light re-score
+  # (numerators advance every sync; full pass waits for the morning open), and the two
+  # instrumentation sets (re-score prep spread; BLE wake/CPU/MetricKit attribution).
+  "feature/v15-battery"
+  # SYNTHESIS / LLM: the coach-written Today synthesis and every LLM-plumbing concern — 1h/3h/6h
+  # horizons, per-provider API-key slots, model fallback + retry (observable, named on every
+  # reply), timeout budget, unified Refresh, editable Today-synthesis instruction, and the extra
+  # sleep detail/trends fed to the model.
+  "feature/v15-synthesis"
+  # WIDGETS & LOCK-SCREEN SURFACES: the targets widgets (steps n/t, cal n/t, effort n/t, sleep
+  # target), the Today strip, three-pillar Live Activity card + the synthesis vocabulary for its
+  # numbers, Dynamic Island presentation (minimal HR, disconnect hold, stale-end fix), breathe
+  # automation (burst-retrospective stress scan + notification), calendar-day rollover, frozen
+  # effort target, display-granularity reload dedup, and the widget-publish/retro-scan stats.
+  "feature/v15-widgets"
   "feature/release-by-default"
 )
 
