@@ -77,11 +77,12 @@ final class RepositoryLiveTargetsTests: XCTestCase {
     }
 
     /// The 260831 freeze's rest-day invariant: the effort target exists exactly when a session is
-    /// prescribed. A rest day (no session) has NO effort target — nil, so the displays degrade to
-    /// the bare numerator, never a broken-looking "8/0". Asserted as an invariant because forcing
+    /// prescribed. A rest day (no session) has effort target ZERO — never nil (260901, maintainer
+    /// instruction): the pair form survives ("0/0", then "x/0" as ambient strain accrues), so a
+    /// rest day still shows whether any effort landed. Asserted as an invariant because forcing
     /// ReadinessEngine into `.rundown` needs a contrived HRV history; the session-day half is pinned
     /// concretely in testTargetsDeriveFromTheBodyState.
-    func testEffortTargetExistsExactlyWhenASessionDoes() {
+    func testEffortTargetIsAlwaysPresentAndZeroExactlyOnARestDay() {
         var days = (1...14).map {
             metric(day: String(format: "2026-08-%02d", $0), rhr: 60, strain: 10, kcal: 900)
         }
@@ -90,8 +91,29 @@ final class RepositoryLiveTargetsTests: XCTestCase {
             let t = Repository.liveTargets(days: days, charge: charge, restScore: rest,
                                            profile: UserProfile(),
                                            todayKey: "2026-08-15")
-            XCTAssertEqual(t.effortTarget == nil, t.restDay,
+            XCTAssertNotNil(t.effortTarget, "charge=\(String(describing: charge))")
+            XCTAssertEqual(t.effortTarget == 0, t.restDay,
                            "charge=\(String(describing: charge))")
         }
+    }
+
+    /// The pair form must survive a zero target on every snapshot-fed face: "0/0" on a fresh rest
+    /// day, "x/0" once ambient strain lands — and the numerator is never clamped to the target
+    /// (n > t is information, not an error).
+    func testZeroTargetKeepsThePairFormAndNeverClampsTheNumerator() {
+        var snap = WidgetSnapshot(recovery: nil, bpm: nil, batteryPct: nil, bonded: false,
+                                  updated: Date(),
+                                  effortDisplay: "0", effortTargetDisplay: "0",
+                                  kcal: 0, kcalTarget: 0, steps: 0, stepsTarget: 0)
+        XCTAssertEqual(snap.effortNT, "0/0")
+        XCTAssertEqual(snap.calAbbrev, "0/0")
+        XCTAssertEqual(snap.stepsAbbrev, "0/0")
+        snap = WidgetSnapshot(recovery: nil, bpm: nil, batteryPct: nil, bonded: false,
+                              updated: Date(),
+                              effortDisplay: "7", effortTargetDisplay: "0",
+                              kcal: 2_800, kcalTarget: 2_500, steps: 12_400, stepsTarget: 10_000)
+        XCTAssertEqual(snap.effortNT, "7/0", "ambient strain on a rest day stays visible")
+        XCTAssertEqual(snap.calAbbrev, "2.8k/2.5k", "n over t renders as-is, no clamp")
+        XCTAssertEqual(snap.stepsAbbrev, "12.4k/10k")
     }
 }
