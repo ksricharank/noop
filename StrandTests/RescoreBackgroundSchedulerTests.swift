@@ -344,16 +344,32 @@ final class RescoreBackgroundSchedulerTests: XCTestCase {
             3600 + 300)
     }
 
-    // 260901 light-pass battery fix: the post-offload light pass runs exactly when the full pass's
-    // debt is owed AND the clock is outside the sleep window. Overnight (in-window) syncs skip it —
-    // the numerators it would recompute are flat while the user sleeps, and the first post-window
-    // sync picks the work straight back up because the debt is untouched.
-    func testLightPassRunsOnlyWhenOwedAndOutsideTheSleepWindow() {
-        XCTAssertTrue(RescoreBackgroundScheduler.lightPassWanted(owed: true, inSleepWindow: false))
-        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: true, inSleepWindow: true),
-                       "an overnight sync must not burn a light pass on numerators that cannot move")
-        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: false, inSleepWindow: false),
-                       "no debt means the full pass already ran — the day rows are fresh")
-        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(owed: false, inSleepWindow: true))
+    // 260901 light-pass battery fix, maintainer-bounded: the post-offload light pass runs while
+    // the debt is owed EXCEPT during the after-midnight leg of the sleep window (00:00 → window
+    // end). The evening leg (window start → midnight) still updates — the user is awake and the
+    // day rolls at local midnight — so for the default 22:00–06:15 window the blackout is
+    // exactly 00:00–06:15, and the first post-window sync picks the work straight back up.
+    func testLightPassSkipsOnlyTheAfterMidnightLegOfTheSleepWindow() {
+        let end = 6 * 60 + 15   // 06:15
+        // Evening leg: in-window but before midnight — still updates.
+        XCTAssertTrue(RescoreBackgroundScheduler.lightPassWanted(
+            owed: true, inSleepWindow: true, minuteOfDay: 23 * 60 + 30, windowEndMinute: end),
+            "22:00–24:00 keeps updating — the numerators still move and the user is awake")
+        // After-midnight leg: blacked out.
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(
+            owed: true, inSleepWindow: true, minuteOfDay: 1 * 60, windowEndMinute: end),
+            "00:00 → window end must not burn a light pass on numerators that cannot move")
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(
+            owed: true, inSleepWindow: true, minuteOfDay: 0, windowEndMinute: end),
+            "midnight exactly is the cutoff the maintainer chose")
+        // Outside the window: normal daytime operation.
+        XCTAssertTrue(RescoreBackgroundScheduler.lightPassWanted(
+            owed: true, inSleepWindow: false, minuteOfDay: 14 * 60, windowEndMinute: end))
+        // A non-wrapped window (01:00–06:00) lies entirely after midnight: all of it skips.
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(
+            owed: true, inSleepWindow: true, minuteOfDay: 3 * 60, windowEndMinute: 6 * 60))
+        // No debt means the full pass already ran — the day rows are fresh, nothing to do.
+        XCTAssertFalse(RescoreBackgroundScheduler.lightPassWanted(
+            owed: false, inSleepWindow: false, minuteOfDay: 14 * 60, windowEndMinute: end))
     }
 }
