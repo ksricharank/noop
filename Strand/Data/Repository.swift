@@ -654,12 +654,14 @@ final class Repository: ObservableObject {
         // far + session". The riding form moved the goalpost all day — walk to 8 and the widget
         // read "8/67" instead of "8/59" — while Cal/Steps/Sleep stayed fixed at their morning
         // values. Now all four denominators hold still between morning scores; ambient movement
-        // counts TOWARD the day's one number instead of inflating it. A REST day has no session
-        // and therefore no effort target at all (nil — the displays degrade to the bare
-        // numerator), rather than the broken-looking "8/0".
-        let effortTarget: Int? = session.map { _ in
-            DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
-        }
+        // counts TOWARD the day's one number instead of inflating it. A REST day's target is ZERO,
+        // not nil (260901, maintainer instruction): the displays keep the pair form — "0/0", then
+        // "x/0" as ambient strain accrues — so a rest day still shows whether any effort landed.
+        // The numerator is never clamped to the target on any surface: n > t is a legitimate state
+        // for all three pairs (an over-target day is information, not an error).
+        let effortTarget: Int? = session != nil
+            ? DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+            : 0
         // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
         // the coach context): the population-anchored upper-quartile need.
         let nightlyMinutes = days.compactMap(\.totalSleepMin)
