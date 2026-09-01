@@ -428,6 +428,11 @@ struct StrandiOSApp: App {
                 // opened, which is a worse regression than the bug being fixed. `analyzeRecent`
                 // serialises itself, so overlapping with the sync this foreground also kicks off is safe.
                 Task { await model.runDeferredRescoreIfOwed() }
+                // Regenerate the coach-written Today synthesis on every open. The card shows the
+                // rule-based read until (and unless) the provider answers, so this only ever upgrades;
+                // a no-op when the Coach is unconfigured or consent is off, and self-throttled against
+                // foreground flaps (see AICoachEngine.refreshSynthesis).
+                Task { await model.coach.refreshSynthesis() }
                 Task {
                     health.refreshAuthIfPreviouslyGranted()
                     HealthWritebackBackgroundScheduler.updateSchedule(
