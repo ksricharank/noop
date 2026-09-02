@@ -642,7 +642,10 @@ final class Repository: ObservableObject {
     static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
                             profile: UserProfile,
                             todayKey: String) -> LiveTargets {
-        let readiness = ReadinessEngine.evaluate(days: days).level
+        // The full read, not just the level: the explainer's "body check" lines print the
+        // signals' actual values against their baselines (260901: no jargon, every line a number).
+        let readinessRead = ReadinessEngine.evaluate(days: days)
+        let readiness = readinessRead.level
         // The freshest resting measurement there is — last night's RHR, the body's current idle.
         let latestRhr = days.last(where: { $0.restingHr != nil })?.restingHr
         let age = profile.age > 0 ? profile.age : nil
@@ -694,7 +697,7 @@ final class Repository: ObservableObject {
             effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
             effortTarget: effortTarget,
             explainLines: TargetsExplainer.lines(
-                charge: charge, readiness: readiness, restScore: restScore,
+                charge: charge, readiness: readinessRead, restScore: restScore,
                 session: session,
                 sessionHrBpm: session.map {
                     DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
