@@ -836,6 +836,9 @@ public final class LiveState: ObservableObject {
         // 260831: the retro stress scan's daily cost (runs every completed sync; was unmeasured).
         let retroLines = RetroScanStats.summaryLines()
         if !retroLines.isEmpty { header += retroLines.joined(separator: "\n") + "\n" }
+        // 260901: nudge-frequency evidence for the configurable sensitivity knobs.
+        let breatheLines = BreatheCueStats.summaryLines()
+        if !breatheLines.isEmpty { header += breatheLines.joined(separator: "\n") + "\n" }
         #endif
         // Battery attribution (same shape as the Health line): per-channel BLE wake counts, the
         // process's CPU bill, and — on iOS — MetricKit's own daily numbers. Silent when the strap

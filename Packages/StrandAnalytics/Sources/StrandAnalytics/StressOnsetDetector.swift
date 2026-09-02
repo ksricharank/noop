@@ -76,19 +76,30 @@ public enum StressOnsetDetector {
         public var quietEndMinutes: Int
         /// Buzz strength (loops) for the confirming buzz — one light pulse, like evaluateStress.
         public var buzzLoops: Int
+        /// SENSITIVITY (260901, user-configurable): the dip threshold as a fraction of baseline —
+        /// fast RMSSD below `baseline × dropRatio` counts as a dip. Higher = shallower dips fire
+        /// (more nudges). Defaults to the shipped constant so existing callers are byte-identical.
+        public var dropRatio: Double
+        /// SENSITIVITY: how long a fresh dip must HOLD before it can fire. Shorter = brief dips
+        /// fire (more nudges, more wobble noise — ~87% of momentary dips self-recover inside 60 s).
+        public var sustainSeconds: Int
 
         public init(enabled: Bool = false,
                     autoNudge: Bool = false,
                     quietHoursEnabled: Bool = false,
                     quietStartMinutes: Int = SedentaryDetector.defaultQuietStartMin,
                     quietEndMinutes: Int = SedentaryDetector.defaultQuietEndMin,
-                    buzzLoops: Int = 1) {
+                    buzzLoops: Int = 1,
+                    dropRatio: Double = StressOnsetDetector.dropRatio,
+                    sustainSeconds: Int = StressOnsetDetector.sustainSeconds) {
             self.enabled = enabled
             self.autoNudge = autoNudge
             self.quietHoursEnabled = quietHoursEnabled
             self.quietStartMinutes = quietStartMinutes
             self.quietEndMinutes = quietEndMinutes
             self.buzzLoops = buzzLoops
+            self.dropRatio = dropRatio
+            self.sustainSeconds = sustainSeconds
         }
     }
 
@@ -294,7 +305,7 @@ public enum StressOnsetDetector {
         let baseline = next.baselineRMSSD
 
         // 4) Is the fast RMSSD below the drop threshold? (the dip test)
-        let threshold = baseline * dropRatio
+        let threshold = baseline * config.dropRatio
         let isBelow = fast < threshold
         // The edge: a FRESH crossing (above on the previous tick → below now). Always record the new
         // below-state so the NEXT tick can edge-detect, regardless of whether we fire.
@@ -317,7 +328,7 @@ public enum StressOnsetDetector {
         // Nothing armed while below: the dip predates this run (e.g. state restored mid-dip) or its
         // arm was already consumed — either way there is no fresh crossing to act on.
         guard next.pendingEdgeAt != 0 else { return decide(false, .notAnEdge) }
-        if nowSec - next.pendingEdgeAt < sustainSeconds { return decide(false, .awaitingSustain) }
+        if nowSec - next.pendingEdgeAt < config.sustainSeconds { return decide(false, .awaitingSustain) }
         next.pendingEdgeAt = 0   // consumed: proven sustained, now subject to the gates below
 
         // 5) Exercise gate (the credibility line). HR out of the resting band (or unknown) → metabolic.
