@@ -44,21 +44,31 @@ final class TargetAutomationsTests: XCTestCase {
     private func decide(minuteOfDay: Int, firedMask: Int = 0, steps: Int?, stepsTarget: Int? = 10_000,
                         kcalToday: Int? = nil, kcalTarget: Int? = nil,
                         effortToday: Int? = 0, effortTarget: Int? = 59, sessionMinutes: Int? = 45,
-                        intervalHours: Int = 2)
+                        intervalHours: Int = 2, dayStartMinute: Int = 8 * 60)
         -> (nudge: TargetAutomations.PacingNudge?, newMask: Int) {
         TargetAutomations.pacingDecision(enabled: true, minuteOfDay: minuteOfDay,
-                                         intervalHours: intervalHours, firedMask: firedMask,
+                                         intervalHours: intervalHours,
+                                         dayStartMinute: dayStartMinute, firedMask: firedMask,
                                          steps: steps, stepsTarget: stepsTarget,
                                          kcalToday: kcalToday, kcalTarget: kcalTarget,
                                          effortToday: effortToday, effortTarget: effortTarget,
                                          sessionMinutes: sessionMinutes)
     }
 
-    func testCheckpointsAreTheTopOfEveryNHoursAcrossTheWakingWindow() {
-        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 2),
+    func testCheckpointsRunEveryNHoursFromTheWake() {
+        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 2, dayStartMinute: 8 * 60),
                        [600, 720, 840, 960, 1_080, 1_200, 1_320])   // 10:00 … 22:00; 24:00 excluded
-        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 6),
+        // A 6:15 wake anchors the grid on the wake, not the clock: 8:15, 10:15, …
+        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 2, dayStartMinute: 375).prefix(2),
+                       [495, 615])
+        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 6, dayStartMinute: 8 * 60),
                        [840, 1_200])                                 // 14:00, 20:00
+    }
+
+    func testWakeMinuteClampGuardsMisScoredNights() {
+        XCTAssertEqual(TargetAutomations.clampWakeMinute(2 * 60), 4 * 60)
+        XCTAssertEqual(TargetAutomations.clampWakeMinute(6 * 60 + 15), 6 * 60 + 15)
+        XCTAssertEqual(TargetAutomations.clampWakeMinute(15 * 60), 12 * 60)
     }
 
     func testBehindOnAllThreeIsOneNudgeInTheCompactFormat() {
@@ -72,7 +82,7 @@ final class TargetAutomationsTests: XCTestCase {
         XCTAssertEqual(nudge?.title, "Behind pace")
         XCTAssertEqual(nudge?.body, """
         Steps 1500/3750/10000  22
-        Cal 980/1472/2525
+        Cal 980/1472/2525  123
         Effort 0/22/59  45
         """.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -107,7 +117,7 @@ final class TargetAutomationsTests: XCTestCase {
 
     func testDisabledPacingTouchesNothing() {
         let (nudge, mask) = TargetAutomations.pacingDecision(
-            enabled: false, minuteOfDay: 20 * 60, intervalHours: 2, firedMask: 0,
+            enabled: false, minuteOfDay: 20 * 60, intervalHours: 2, dayStartMinute: 8 * 60, firedMask: 0,
             steps: 0, stepsTarget: 10_000, kcalToday: 0, kcalTarget: 2_525,
             effortToday: 0, effortTarget: 59, sessionMinutes: 45)
         XCTAssertNil(nudge)
@@ -125,6 +135,16 @@ final class TargetAutomationsTests: XCTestCase {
         XCTAssertFalse(restDay.nudge!.body.contains("Effort"), restDay.nudge!.body)
     }
 
+
+    /// The waking window starts at the day's ACTUAL wake: an early riser's 14:00 pace is steeper
+    /// (more of their day has passed) than the fixed-8:00 assumption would claim.
+    func testPaceAnchorsOnTheWake() {
+        // Wake 6:00 → by 14:00, 8 of 18 waking hours passed → steps pace 4444, not 3750.
+        let (nudge, _) = decide(minuteOfDay: 14 * 60, steps: 4_000, effortToday: 59,
+                                dayStartMinute: 6 * 60)
+        XCTAssertEqual(nudge?.body, "Steps 4000/4444/10000  5")
+    }
+
     /// Calories prorate over the 24 h clock, not the waking window — resting burn accrues while
     /// asleep, so a waking-window proration would cry "behind" every morning.
     func testCalProratesOverTheFullClock() {
@@ -133,7 +153,7 @@ final class TargetAutomationsTests: XCTestCase {
         // line proves the clock proration is the one in force.
         let (nudge, _) = decide(minuteOfDay: 10 * 60, steps: 5_000, kcalToday: 800,
                                 kcalTarget: 2_525, effortToday: 30)
-        XCTAssertEqual(nudge?.body, "Cal 800/1052/2525")
+        XCTAssertEqual(nudge?.body, "Cal 800/1052/2525  63")
     }
 }
 

@@ -663,7 +663,7 @@ final class AppModel: ObservableObject {
         // attached — so publish the snapshot here too, for the same reason the post-offload path does.
         await WidgetSnapshot.publish(from: self)
         #endif
-        runTargetAutomations()
+        await runTargetAutomations()
     }
 
     /// Target-driven automations (260901: morning brief + pacing nudges + the wind-down's dynamic
@@ -671,7 +671,23 @@ final class AppModel: ObservableObject {
     /// no UI attached" moments the widget publish rides — so the brief arrives with the morning
     /// score and a pace check lands within one sync (~10 min) of its check-in time. Every decision
     /// is the pure `TargetAutomations` policy; this hook only gathers today's values and posts.
-    private func runTargetAutomations() {
+    /// The pacing window's start: the end of TODAY's main sleep (the longest session ending
+    /// today — naps end later and must not shrink the window; an overnight fragment ends earlier
+    /// and must not stretch it), falling back to the quiet-hours end until the night is scored.
+    /// Clamped to sane wake hours either way.
+    private func pacingWakeMinute(now: Date, todayStartTs: Int) async -> Int {
+        let sessions = await repo.sleepSessions(from: todayStartTs, to: Int(now.timeIntervalSince1970))
+            .filter { $0.endTs > todayStartTs }
+        let fallback = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        guard let main = sessions.max(by: { ($0.endTs - $0.effectiveStartTs) < ($1.endTs - $1.effectiveStartTs) })
+        else { return TargetAutomations.clampWakeMinute(fallback) }
+        let comps = Calendar.current.dateComponents([.hour, .minute],
+                                                    from: Date(timeIntervalSince1970: TimeInterval(main.endTs)))
+        return TargetAutomations.clampWakeMinute((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+    }
+
+    private func runTargetAutomations() async {
         let targets = repo.cachedLiveTargets()
         // B: the wind-down reminder tracks tonight's computed sleep target (inert unless opted in;
         // reschedules only when the applied value changes). Works on both platforms.
@@ -701,10 +717,14 @@ final class AppModel: ObservableObject {
         }
         // E: the pacing check-ins — at most one nudge per checkpoint per day, only when behind.
         let mask = TargetAutomations.pacingFiredMask(today: todayKey)
+        let todayStartTs = Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
         let (nudge, newMask) = TargetAutomations.pacingDecision(
             enabled: TargetAutomations.pacingEnabled,
             minuteOfDay: minuteOfDay,
             intervalHours: TargetAutomations.pacingIntervalHours,
+            dayStartMinute: TargetAutomations.pacingEnabled
+                ? await pacingWakeMinute(now: now, todayStartTs: todayStartTs)
+                : TargetAutomations.clampWakeMinute(0),
             firedMask: mask,
             steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
             kcalToday: targets.kcalToday, kcalTarget: targets.kcalTargetKcal,
@@ -790,7 +810,7 @@ final class AppModel: ObservableObject {
         // regardless of what the scan costs.
         await WidgetSnapshot.publish(from: self)
         #endif
-        runTargetAutomations()
+        await runTargetAutomations()
         // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
         // banked R-R becomes readable — replay it through the live detector so the island-less mode
         // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
