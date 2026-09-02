@@ -47,6 +47,18 @@ struct AutomationsView: View {
     @AppStorage(HapticPrefs.liveSession) private var liveSessionHaptic = true
     @AppStorage(HapticPrefs.workout) private var workoutHaptic = true
 
+    // 260901 stress-sensitivity knobs — @State mirrors of BiofeedbackPrefs (custom-defaulted
+    // accessors, so plain @AppStorage would misread an unset key as 0).
+    @State private var stressDipPct = Int((BiofeedbackPrefs.dropRatio * 100).rounded())
+    @State private var stressSustainSec = BiofeedbackPrefs.sustainSeconds
+    // 260901 target automations (A morning brief / E pacing nudges). Plain bools, so @AppStorage.
+    @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
+    @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
+    @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
+    @State private var pacingCheck1 = TargetAutomations.pacingCheckMinutes[0]
+    @State private var pacingCheck2 = TargetAutomations.pacingCheckMinutes[1]
+    @State private var pacingThresholdPct = TargetAutomations.pacingThresholdPct
+
     var body: some View {
         ScreenScaffold(title: "Automations",
                        subtitle: "Make the strap do things: tap to act, walk away to lock, train by feel.",
@@ -61,6 +73,8 @@ struct AutomationsView: View {
             hapticsCard
             wearCard
             coachingCard
+            morningBriefCard
+            pacingCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
             // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
             // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
@@ -252,9 +266,111 @@ struct AutomationsView: View {
                     ToggleRow(label: String(localized: "Use my resonance pace"),
                               help: String(localized: "Breathe at the pace your last \u{201C}find my pace\u{201D} sweep locked in, if you have one. Otherwise a calm 5.5 breaths/min."),
                               isOn: $behavior.stressUseResonancePace)
+                    // 260901 sensitivity knobs (maintainer's ask): the detector's dip threshold and
+                    // hold time, surfaced so nudge frequency is tunable. The exported log's
+                    // "Breathe cues today:" line is the evidence to tune against.
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip depth"),
+                               help: String(localized: "Fires when your beat-to-beat HRV drops below this share of your personal baseline. Higher = shallower dips count = more nudges. Ships at 60%."),
+                               value: $stressDipPct, suffix: "%", range: 50...80, step: 5)
+                        .onChangeCompat(of: stressDipPct) { pct in
+                            BiofeedbackPrefs.dropRatio = Double(pct) / 100.0
+                        }
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip must last"),
+                               help: String(localized: "A dip shorter than this is treated as a wobble, not stress. Shorter = more nudges (most brief dips self-recover within a minute). Ships at 60 s."),
+                               value: $stressSustainSec, suffix: "s", range: 15...120, step: 15)
+                        .onChangeCompat(of: stressSustainSec) { sec in
+                            BiofeedbackPrefs.sustainSeconds = sec
+                        }
                 }
             }
         }
+    }
+
+    // MARK: - Morning brief (260901, automation A)
+
+    private var morningBriefCard: some View {
+        Section2(icon: "sunrise.fill", title: String(localized: "Morning brief"),
+                 blurb: String(localized: "The day's plan as a notification the moment the first post-wake sync scores your night — Charge, workout, steps and tonight's sleep target, before you ever open the app."),
+                 active: morningBriefOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable morning brief"),
+                          help: String(localized: "One notification per day, sent when the morning score lands."),
+                          isOn: $morningBriefOn)
+                    .onChangeCompat(of: morningBriefOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if morningBriefOn {
+                    rowDivider
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not before").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            Text("An early sync can score the night while you're still asleep - hold the brief until this time.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        Spacer(minLength: 8)
+                        DatePicker("", selection: briefEarliestBinding, displayedComponents: .hourAndMinute)
+                            .labelsHidden().datePickerStyle(.compact)
+                            .accessibilityLabel("Morning brief earliest time")
+                    }
+                    .frame(minHeight: 42).padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private var briefEarliestBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: briefEarliestMin) },
+                set: { briefEarliestMin = Self.minutes(from: $0)
+                       UserDefaults.standard.set(briefEarliestMin, forKey: TargetAutomations.K.briefEarliestMin) })
+    }
+
+    // MARK: - Target pacing (260901, automation E)
+
+    private var pacingCard: some View {
+        Section2(icon: "figure.walk.motion", title: String(localized: "Target pacing"),
+                 blurb: String(localized: "Proactive check-ins against today's targets: if you're behind pace at a check-in time, a nudge says exactly what would catch you up (\u{201C}about 40 min of walking\u{201D}). On-pace check-ins stay silent."),
+                 active: pacingOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable pacing nudges"),
+                          help: String(localized: "At most one nudge per check-in per day, and only when you're behind."),
+                          isOn: $pacingOn)
+                    .onChangeCompat(of: pacingOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if pacingOn {
+                    rowDivider
+                    HStack(spacing: 12) {
+                        Text("Check-ins at").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                        DatePicker("", selection: pacingCheckBinding(key: TargetAutomations.K.pacingCheck1Min, state: $pacingCheck1),
+                                   displayedComponents: .hourAndMinute)
+                            .labelsHidden().datePickerStyle(.compact)
+                            .accessibilityLabel("First pace check time")
+                        Text("and").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
+                        DatePicker("", selection: pacingCheckBinding(key: TargetAutomations.K.pacingCheck2Min, state: $pacingCheck2),
+                                   displayedComponents: .hourAndMinute)
+                            .labelsHidden().datePickerStyle(.compact)
+                            .accessibilityLabel("Second pace check time")
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: 42).padding(.vertical, 4)
+                    rowDivider
+                    stepperRow(label: String(localized: "Nudge when below"),
+                               help: String(localized: "How far behind the day's prorated pace counts as \u{201C}behind\u{201D}. 60% means a lunch walk still keeps you silent; higher nudges sooner."),
+                               value: $pacingThresholdPct, suffix: String(localized: "% of pace"), range: 30...90, step: 10)
+                        .onChangeCompat(of: pacingThresholdPct) { pct in
+                            UserDefaults.standard.set(pct, forKey: TargetAutomations.K.pacingThresholdPct)
+                        }
+                }
+            }
+        }
+    }
+
+    private func pacingCheckBinding(key: String, state: Binding<Int>) -> Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: state.wrappedValue) },
+                set: { state.wrappedValue = Self.minutes(from: $0)
+                       UserDefaults.standard.set(state.wrappedValue, forKey: key) })
     }
 
     // MARK: - Inactivity reminder (#419)
