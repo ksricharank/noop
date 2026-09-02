@@ -57,22 +57,57 @@ struct DailyTargetsStrip: View {
                     }
                     .buttonStyle(.plain)
                     if showDerivations {
-                        // One multi-line block per target, monospaced — the derivations read as
-                        // code (260901 iteration: "more formula and if/else logic, less narrative").
-                        VStack(alignment: .leading, spacing: 8) {
+                        // One block per target (260901, third formatting pass): rounded medium-weight
+                        // type instead of the mono terminal look — the header wears the metric's own
+                        // colour (the same mapping as the cells above), rungs sit slightly bolder for
+                        // glanceability, and the untaken-branch legends step back smaller + indented.
+                        VStack(alignment: .leading, spacing: 12) {
                             ForEach(targets.explainLines, id: \.self) { block in
-                                Text(block)
-                                    .font(StrandFont.caption.monospaced())
-                                    .foregroundStyle(StrandPalette.textTertiary)
-                                    .fixedSize(horizontal: false, vertical: true)
+                                derivationBlock(block)
                             }
                         }
-                        .padding(.top, 2)
+                        .padding(.top, 4)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// One derivation block: header line in the metric's colour, rungs in rounded medium weight,
+    /// legend lines (the untaken branches, marked by their leading-space indent) smaller + inset.
+    @ViewBuilder
+    private func derivationBlock(_ block: String) -> some View {
+        let lines = block.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                if i == 0 {
+                    Text(line)
+                        .font(StrandFont.rounded(14, weight: .bold))
+                        .foregroundStyle(derivationTint(line))
+                } else if line.hasPrefix("   (") {
+                    Text(line.trimmingCharacters(in: .whitespaces))
+                        .font(StrandFont.rounded(11, weight: .regular))
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .padding(.leading, 12)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(line)
+                        .font(StrandFont.rounded(12.5, weight: .medium))
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// The same metric→colour mapping the four cells above use, keyed off the block header.
+    private func derivationTint(_ header: String) -> Color {
+        if header.hasPrefix("EFFORT") { return StrandPalette.effortColor }
+        if header.hasPrefix("CAL") { return StrandPalette.metricAmber }
+        if header.hasPrefix("STEP") { return StrandPalette.chargeColor }
+        if header.hasPrefix("SLEEP") { return StrandPalette.metricCyan }
+        return StrandPalette.textPrimary
     }
 
     /// "3205/8000" — full counts, mirrors `WidgetSnapshot.stepsDisplay` / the card's Steps column.
