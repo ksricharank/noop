@@ -707,12 +707,14 @@ final class AppModel: ObservableObject {
             intervalHours: TargetAutomations.pacingIntervalHours,
             firedMask: mask,
             steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
+            kcalToday: targets.kcalToday, kcalTarget: targets.kcalTargetKcal,
             effortToday: targets.effortTodayStored, effortTarget: targets.effortTarget,
             sessionMinutes: targets.sessionMinutes)
         if newMask != mask { TargetAutomations.setPacingFiredMask(newMask, today: todayKey) }
         if let nudge {
             TargetAutomations.post(identifier: "auto-pace-check", title: nudge.title, body: nudge.body)
-            live.append(log: "Automation: pace check posted (\(nudge.body))")
+            live.append(log: "Automation: pace check posted ("
+                        + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
         }
         #endif
     }
