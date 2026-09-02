@@ -76,13 +76,17 @@ enum TargetAutomations {
 
     // MARK: - E: target pacing (pure decision + text)
 
-    /// The waking window steps and effort prorate over — a plain, stated assumption, not a model.
-    /// Ends at MIDNIGHT, not the quiet-hours start: the maintainer walks late, and quiet hours
-    /// (22:00–07:00) are a BLE window, not a claim about when movement stops. Calories are
-    /// different: most of that target is resting burn accruing around the clock, so cal prorates
-    /// over the full 24 h from local midnight instead.
-    static let pacingDayStartMinute = 8 * 60
+    /// The waking window steps and effort prorate over. The START is the day's ACTUAL wake — the
+    /// end of the scored night's main sleep, falling back to the quiet-hours end until the night
+    /// is scored (the caller resolves it; see `AppModel.pacingWakeMinute`) — because a fixed clock
+    /// start misprices every early or late morning. The END is midnight, not the quiet-hours
+    /// start: the maintainer walks late, and quiet hours (22:00–07:00) are a BLE window, not a
+    /// claim about when movement stops. Calories are different: most of that target is resting
+    /// burn accruing around the clock, so cal prorates over the full 24 h from local midnight.
     static let pacingDayEndMinute = 24 * 60
+    /// Sanity bounds on the resolved wake minute (a mis-scored night must not produce a 2:00 or
+    /// 15:00 "wake" that poisons every pace all day).
+    static func clampWakeMinute(_ m: Int) -> Int { min(max(m, 4 * 60), 12 * 60) }
 
     struct PacingNudge: Equatable {
         let checkpointIndex: Int
@@ -90,12 +94,12 @@ enum TargetAutomations {
         let body: String
     }
 
-    /// The check-in instants for a cadence: the top of every `intervalHours` hours through the
-    /// waking window, anchored on the window start (8:00 + N, + 2N, …). Exclusive of the window
-    /// end — a midnight checkpoint could never fire (the day rolls first).
-    static func checkpointMinutes(intervalHours: Int) -> [Int] {
+    /// The check-in instants for a cadence: every `intervalHours` hours FROM THE WAKE ("check me
+    /// every 2 hours from when I got up"). Exclusive of the window end — a midnight checkpoint
+    /// could never fire (the day rolls first).
+    static func checkpointMinutes(intervalHours: Int, dayStartMinute: Int) -> [Int] {
         let step = max(1, intervalHours) * 60
-        return Array(stride(from: pacingDayStartMinute + step, to: pacingDayEndMinute, by: step))
+        return Array(stride(from: dayStartMinute + step, to: pacingDayEndMinute, by: step))
     }
 
     /// Evaluate the pacing check-ins. `firedMask` is a bitmask of checkpoint indices already
@@ -111,13 +115,14 @@ enum TargetAutomations {
     /// target, `actual/pace/goal`, with a trailing catch-up number where one exists: the walk
     /// minutes that close the step deficit, or the still-open workout's minutes.
     static func pacingDecision(enabled: Bool, minuteOfDay: Int, intervalHours: Int,
+                               dayStartMinute: Int,
                                firedMask: Int,
                                steps: Int?, stepsTarget: Int?,
                                kcalToday: Int?, kcalTarget: Int?,
                                effortToday: Int?, effortTarget: Int?,
                                sessionMinutes: Int?) -> (nudge: PacingNudge?, newMask: Int) {
         guard enabled else { return (nil, firedMask) }
-        let checkMinutes = checkpointMinutes(intervalHours: intervalHours)
+        let checkMinutes = checkpointMinutes(intervalHours: intervalHours, dayStartMinute: dayStartMinute)
         var mask = firedMask
         var due: Int?
         for (i, checkMin) in checkMinutes.enumerated() where minuteOfDay >= checkMin && mask & (1 << i) == 0 {
@@ -125,8 +130,8 @@ enum TargetAutomations {
             due = i
         }
         guard due != nil else { return (nil, mask) }
-        let wakingFraction = min(1.0, max(0.0, Double(minuteOfDay - pacingDayStartMinute)
-                                               / Double(pacingDayEndMinute - pacingDayStartMinute)))
+        let wakingFraction = min(1.0, max(0.0, Double(minuteOfDay - dayStartMinute)
+                                               / Double(max(60, pacingDayEndMinute - dayStartMinute))))
         let clockFraction = min(1.0, max(0.0, Double(minuteOfDay) / Double(24 * 60)))
         var lines: [String] = []
         if let target = stepsTarget, target > 0 {
@@ -142,7 +147,11 @@ enum TargetAutomations {
             let pace = Int(Double(target) * clockFraction)
             let actual = kcalToday ?? 0
             if actual < pace {
-                lines.append("Cal \(actual)/\(pace)/\(target)")
+                // Trailing number = walk minutes closing the kcal deficit, at the brisk-walk rule
+                // of thumb (~4 kcal/min for an average adult). Coarse on purpose — a hint, not a
+                // prescription; the honest per-user number would need the Keytel chain per line.
+                let walkMin = max(5, (pace - actual) / 4)
+                lines.append("Cal \(actual)/\(pace)/\(target)  \(walkMin)")
             }
         }
         if let target = effortTarget, target > 0 {
