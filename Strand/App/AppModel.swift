@@ -704,9 +704,8 @@ final class AppModel: ObservableObject {
         let (nudge, newMask) = TargetAutomations.pacingDecision(
             enabled: TargetAutomations.pacingEnabled,
             minuteOfDay: minuteOfDay,
-            checkMinutes: TargetAutomations.pacingCheckMinutes,
+            intervalHours: TargetAutomations.pacingIntervalHours,
             firedMask: mask,
-            thresholdPct: TargetAutomations.pacingThresholdPct,
             steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
             effortToday: targets.effortTodayStored, effortTarget: targets.effortTarget,
             sessionMinutes: targets.sessionMinutes)

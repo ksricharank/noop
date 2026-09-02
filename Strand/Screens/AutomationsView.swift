@@ -55,9 +55,7 @@ struct AutomationsView: View {
     @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
     @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
-    @State private var pacingCheck1 = TargetAutomations.pacingCheckMinutes[0]
-    @State private var pacingCheck2 = TargetAutomations.pacingCheckMinutes[1]
-    @State private var pacingThresholdPct = TargetAutomations.pacingThresholdPct
+    @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
 
     var body: some View {
         ScreenScaffold(title: "Automations",
@@ -330,47 +328,26 @@ struct AutomationsView: View {
 
     private var pacingCard: some View {
         Section2(icon: "figure.walk.motion", title: String(localized: "Target pacing"),
-                 blurb: String(localized: "Proactive check-ins against today's targets: if you're behind pace at a check-in time, a nudge says exactly what would catch you up (\u{201C}about 40 min of walking\u{201D}). On-pace check-ins stay silent."),
+                 blurb: String(localized: "Intelligent check-ins against today's pace: every few hours the day so far is compared with where it should be by now (the target spread over 8am\u{2013}10pm), and only a genuine shortfall nudges \u{2014} sized by what catches you up, not the whole day (\u{201C}2800 behind pace; ~28 min of walking\u{201D}). On pace = silence."),
                  active: pacingOn) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Enable pacing nudges"),
-                          help: String(localized: "At most one nudge per check-in per day, and only when you're behind."),
+                          help: String(localized: "At most one nudge per check-in, and only when you're behind where you should be at that hour."),
                           isOn: $pacingOn)
                     .onChangeCompat(of: pacingOn) { on in
                         if on { TargetAutomations.requestAuthorization() }
                     }
                 if pacingOn {
                     rowDivider
-                    HStack(spacing: 12) {
-                        Text("Check-ins at").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
-                        DatePicker("", selection: pacingCheckBinding(key: TargetAutomations.K.pacingCheck1Min, state: $pacingCheck1),
-                                   displayedComponents: .hourAndMinute)
-                            .labelsHidden().datePickerStyle(.compact)
-                            .accessibilityLabel("First pace check time")
-                        Text("and").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
-                        DatePicker("", selection: pacingCheckBinding(key: TargetAutomations.K.pacingCheck2Min, state: $pacingCheck2),
-                                   displayedComponents: .hourAndMinute)
-                            .labelsHidden().datePickerStyle(.compact)
-                            .accessibilityLabel("Second pace check time")
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minHeight: 42).padding(.vertical, 4)
-                    rowDivider
-                    stepperRow(label: String(localized: "Nudge when below"),
-                               help: String(localized: "How far behind the day's prorated pace counts as \u{201C}behind\u{201D}. 60% means a lunch walk still keeps you silent; higher nudges sooner."),
-                               value: $pacingThresholdPct, suffix: String(localized: "% of pace"), range: 30...90, step: 10)
-                        .onChangeCompat(of: pacingThresholdPct) { pct in
-                            UserDefaults.standard.set(pct, forKey: TargetAutomations.K.pacingThresholdPct)
+                    stepperRow(label: String(localized: "Check every"),
+                               help: String(localized: "How often the pace is checked, at the top of every N hours through the waking day. Nudges land within a strap sync (~10 min) of the hour."),
+                               value: $pacingEveryHours, suffix: String(localized: "h"), range: 1...6, step: 1)
+                        .onChangeCompat(of: pacingEveryHours) { h in
+                            UserDefaults.standard.set(h, forKey: TargetAutomations.K.pacingIntervalHours)
                         }
                 }
             }
         }
-    }
-
-    private func pacingCheckBinding(key: String, state: Binding<Int>) -> Binding<Date> {
-        Binding(get: { Self.date(fromMinutes: state.wrappedValue) },
-                set: { state.wrappedValue = Self.minutes(from: $0)
-                       UserDefaults.standard.set(state.wrappedValue, forKey: key) })
     }
 
     // MARK: - Inactivity reminder (#419)
