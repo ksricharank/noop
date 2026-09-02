@@ -33,6 +33,8 @@ struct SmartAlarmView: View {
     // `overrides` map mirrors the store so the pickers stay in sync. Additive: with none set, the nudge
     // behaves exactly as before (one wake time for every evening).
     @State private var perDayOn = WindDownNudge.hasPerDayOverrides
+    /// 260901 (automation B): the wind-down need tracks tonight's computed sleep target.
+    @State private var useTargetNeed = WindDownNudge.useTargetNeed
     @State private var overrides: [Int: Int] = WindDownNudge.perDayWakeOverrides
 
     // #34: consecutive times the strap reported back a DIFFERENT alarm time than we sent (set in
@@ -334,6 +336,30 @@ struct SmartAlarmView: View {
                     Text("You'll be reminded around \(timeLabel(WindDownNudge.nudgeMinuteOfDay())).")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textSecondary)
+
+                    Divider().overlay(StrandPalette.hairline)
+                    // 260901 (automation B): the need can track TONIGHT'S computed sleep target —
+                    // the number the Today strip shows — instead of the fixed default. Re-applied
+                    // after every fresh score (AppModel.runTargetAutomations → applyTargetNeed).
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Use tonight's sleep target")
+                                .font(StrandFont.body)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text(useTargetNeed
+                                 ? "Tonight's target (currently \(WindDownNudge.sleepNeedMinutes / 60)h\(String(format: "%02d", WindDownNudge.sleepNeedMinutes % 60))) sets when the reminder fires - it moves with your Charge, Rest and sleep ledger."
+                                 : "Off: the reminder assumes a fixed \(WindDownNudge.sleepNeedMinutes / 60)h night.")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $useTargetNeed)
+                            .labelsHidden()
+                            .onChangeCompat(of: useTargetNeed) { on in
+                                WindDownNudge.setUseTargetNeed(on)
+                            }
+                            .accessibilityLabel("Use tonight's sleep target")
+                    }
 
                     Divider().overlay(StrandPalette.hairline)
                     perDaySection

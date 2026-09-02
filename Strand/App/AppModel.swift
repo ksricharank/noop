@@ -663,6 +663,59 @@ final class AppModel: ObservableObject {
         // attached — so publish the snapshot here too, for the same reason the post-offload path does.
         await WidgetSnapshot.publish(from: self)
         #endif
+        runTargetAutomations()
+    }
+
+    /// Target-driven automations (260901: morning brief + pacing nudges + the wind-down's dynamic
+    /// sleep-target need). Called wherever a completed score/publish lands — the same "fresh data,
+    /// no UI attached" moments the widget publish rides — so the brief arrives with the morning
+    /// score and a pace check lands within one sync (~10 min) of its check-in time. Every decision
+    /// is the pure `TargetAutomations` policy; this hook only gathers today's values and posts.
+    private func runTargetAutomations() {
+        let targets = repo.cachedLiveTargets()
+        // B: the wind-down reminder tracks tonight's computed sleep target (inert unless opted in;
+        // reschedules only when the applied value changes). Works on both platforms.
+        WindDownNudge.applyTargetNeed(minutes: targets.sleepNeedTonightMin)
+        #if os(iOS)
+        let now = Date()
+        let todayKey = Repository.localDayKey(now)
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        // A: the morning brief — once per day, after the first post-wake score (anchor = today).
+        let anchor = Repository.widgetAnchor(days: repo.days, now: now)
+        if TargetAutomations.briefWanted(enabled: TargetAutomations.briefEnabled,
+                                         anchorDay: anchor?.day, todayKey: todayKey,
+                                         minuteOfDay: minuteOfDay,
+                                         earliestMinute: TargetAutomations.briefEarliestMinute,
+                                         lastFiredDay: TargetAutomations.briefLastFiredDay()) {
+            let text = TargetAutomations.briefText(
+                charge: anchor?.recovery.map { Int($0.rounded()) },
+                sessionMinutes: targets.sessionMinutes,
+                sessionHrBpm: targets.sessionHrBpm,
+                restDay: targets.restDay,
+                sleepNeedMin: targets.sleepNeedTonightMin,
+                stepsTarget: targets.stepsTarget)
+            TargetAutomations.markBriefFired(day: todayKey)   // before the async post: once means once
+            TargetAutomations.post(identifier: "auto-morning-brief", title: text.title, body: text.body)
+            live.append(log: "Automation: morning brief posted (\(text.body))")
+        }
+        // E: the pacing check-ins — at most one nudge per checkpoint per day, only when behind.
+        let mask = TargetAutomations.pacingFiredMask(today: todayKey)
+        let (nudge, newMask) = TargetAutomations.pacingDecision(
+            enabled: TargetAutomations.pacingEnabled,
+            minuteOfDay: minuteOfDay,
+            checkMinutes: TargetAutomations.pacingCheckMinutes,
+            firedMask: mask,
+            thresholdPct: TargetAutomations.pacingThresholdPct,
+            steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
+            effortToday: targets.effortTodayStored, effortTarget: targets.effortTarget,
+            sessionMinutes: targets.sessionMinutes)
+        if newMask != mask { TargetAutomations.setPacingFiredMask(newMask, today: todayKey) }
+        if let nudge {
+            TargetAutomations.post(identifier: "auto-pace-check", title: nudge.title, body: nudge.body)
+            live.append(log: "Automation: pace check posted (\(nudge.body))")
+        }
+        #endif
     }
 
     private func refreshAfterCompletedBackfill() async {
@@ -736,6 +789,7 @@ final class AppModel: ObservableObject {
         // regardless of what the scan costs.
         await WidgetSnapshot.publish(from: self)
         #endif
+        runTargetAutomations()
         // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
         // banked R-R becomes readable — replay it through the live detector so the island-less mode
         // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
@@ -1088,6 +1142,7 @@ final class AppModel: ObservableObject {
         // with continuous HRV set to overnight-only there is NO daytime detection — this fires only
         // while the stream is actually running.
         if behavior.stressNotify { BreatheNotifier.post() }
+        BreatheCueStats.recordFire(retro: false)   // sensitivity calibration evidence (260901)
         live.append(log: "Stress check-in , HRV dipped while still")
     }
 
@@ -1150,6 +1205,7 @@ final class AppModel: ObservableObject {
         let minutesAgo = max(0, (now - at) / 60)
         if canBuzz { buzz(loops: UInt8(clamping: cfg.buzzLoops)) }
         if behavior.stressNotify { BreatheNotifier.post(minutesAgo: minutesAgo) }
+        BreatheCueStats.recordFire(retro: true)    // sensitivity calibration evidence (260901)
         stressNudgeCenter.present(fastRMSSD: scan.fastRMSSD, baselineRMSSD: scan.baselineRMSSD)
         // Rare-event evidence (the diagnostics doctrine): a retro nudge names its lateness, so a
         // log reader can tell the sync-delayed path from the live one.
