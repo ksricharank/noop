@@ -328,7 +328,7 @@ struct AutomationsView: View {
 
     private var pacingCard: some View {
         Section2(icon: "figure.walk.motion", title: String(localized: "Target pacing"),
-                 blurb: String(localized: "Intelligent check-ins against today's pace: every few hours the day so far is compared with where it should be by now (the target spread over 8am\u{2013}10pm), and only a genuine shortfall nudges \u{2014} sized by what catches you up, not the whole day (\u{201C}2800 behind pace; ~28 min of walking\u{201D}). On pace = silence."),
+                 blurb: String(localized: "Intelligent check-ins against today's pace: every few hours from when you woke (your scored night's end; the quiet-hours end until it's scored), each target is compared with where it should be by now \u{2014} steps and effort spread over your waking day to midnight, calories over the full 24h \u{2014} and only a genuine shortfall nudges, sized by what catches you up. On pace = silence."),
                  active: pacingOn) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Enable pacing nudges"),
