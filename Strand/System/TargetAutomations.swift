@@ -76,10 +76,13 @@ enum TargetAutomations {
 
     // MARK: - E: target pacing (pure decision + text)
 
-    /// The waking window pace is prorated over — a plain, stated assumption (steps and calories
-    /// accrue between these hours), not a model.
+    /// The waking window steps and effort prorate over — a plain, stated assumption, not a model.
+    /// Ends at MIDNIGHT, not the quiet-hours start: the maintainer walks late, and quiet hours
+    /// (22:00–07:00) are a BLE window, not a claim about when movement stops. Calories are
+    /// different: most of that target is resting burn accruing around the clock, so cal prorates
+    /// over the full 24 h from local midnight instead.
     static let pacingDayStartMinute = 8 * 60
-    static let pacingDayEndMinute = 22 * 60
+    static let pacingDayEndMinute = 24 * 60
 
     struct PacingNudge: Equatable {
         let checkpointIndex: Int
@@ -88,10 +91,11 @@ enum TargetAutomations {
     }
 
     /// The check-in instants for a cadence: the top of every `intervalHours` hours through the
-    /// waking window, anchored on the window start (8:00 + N, + 2N, …), never past the window end.
+    /// waking window, anchored on the window start (8:00 + N, + 2N, …). Exclusive of the window
+    /// end — a midnight checkpoint could never fire (the day rolls first).
     static func checkpointMinutes(intervalHours: Int) -> [Int] {
         let step = max(1, intervalHours) * 60
-        return Array(stride(from: pacingDayStartMinute + step, through: pacingDayEndMinute, by: step))
+        return Array(stride(from: pacingDayStartMinute + step, to: pacingDayEndMinute, by: step))
     }
 
     /// Evaluate the pacing check-ins. `firedMask` is a bitmask of checkpoint indices already
@@ -101,12 +105,15 @@ enum TargetAutomations {
     /// against now) plus the updated mask; a checkpoint that is due but ON pace is consumed
     /// silently.
     ///
-    /// "Behind" is the pace itself (260901 rewire): the step target prorated linearly over the
-    /// waking window — no preset slack percentage. The nudge sizes the ask by the DEFICIT (what
-    /// gets you back ON pace now), not the whole remaining target.
+    /// "Behind" is the pace itself (260901 rewire, compacted 260902 to the maintainer's format):
+    /// each target prorated linearly to NOW — steps and effort over the waking window, calories
+    /// over the 24 h clock (see the window doc above) — no preset slack. One line per lagging
+    /// target, `actual/pace/goal`, with a trailing catch-up number where one exists: the walk
+    /// minutes that close the step deficit, or the still-open workout's minutes.
     static func pacingDecision(enabled: Bool, minuteOfDay: Int, intervalHours: Int,
                                firedMask: Int,
                                steps: Int?, stepsTarget: Int?,
+                               kcalToday: Int?, kcalTarget: Int?,
                                effortToday: Int?, effortTarget: Int?,
                                sessionMinutes: Int?) -> (nudge: PacingNudge?, newMask: Int) {
         guard enabled else { return (nil, firedMask) }
@@ -118,36 +125,39 @@ enum TargetAutomations {
             due = i
         }
         guard due != nil else { return (nil, mask) }
-        // Where the day SHOULD be right now: the target prorated over the waking window.
-        let fraction = min(1.0, max(0.0, Double(minuteOfDay - pacingDayStartMinute)
-                                         / Double(pacingDayEndMinute - pacingDayStartMinute)))
+        let wakingFraction = min(1.0, max(0.0, Double(minuteOfDay - pacingDayStartMinute)
+                                               / Double(pacingDayEndMinute - pacingDayStartMinute)))
+        let clockFraction = min(1.0, max(0.0, Double(minuteOfDay) / Double(24 * 60)))
         var lines: [String] = []
         if let target = stepsTarget, target > 0 {
-            let expected = Int(Double(target) * fraction)
+            let pace = Int(Double(target) * wakingFraction)
             let actual = steps ?? 0
-            if actual < expected {
-                // ~100 steps/min of ordinary walking; the ask is the DEFICIT, i.e. back on pace.
-                let deficit = expected - actual
-                let walkMin = max(5, deficit / 100)
-                lines.append("\(actual) steps — \(deficit) behind the \(expected) you'd be at "
-                             + "on pace for \(target); ~\(walkMin) min of walking catches you up")
+            if actual < pace {
+                // Trailing number = walk minutes that close the DEFICIT (~100 steps/min).
+                let walkMin = max(5, (pace - actual) / 100)
+                lines.append("Steps \(actual)/\(pace)/\(target)  \(walkMin)")
             }
         }
-        // The workout has no meaningful proration (it happens at once, whenever suits), so an
-        // undone workout alone is NOT "behind pace" — it rides along as context only when the
-        // steps side already tripped the nudge. With no step target at all, effort becomes the
-        // primary pace check, prorated like steps.
-        if let target = effortTarget, target > 0, let m = sessionMinutes, (effortToday ?? 0) < target {
-            if !lines.isEmpty {
-                lines.append("your \(m) min workout is still open (effort \(effortToday ?? 0) of \(target))")
-            } else if stepsTarget == nil, (effortToday ?? 0) < Int(Double(target) * fraction) {
-                lines.append("effort \(effortToday ?? 0) of \(target) — your \(m) min workout is still open")
+        if let target = kcalTarget, target > 0 {
+            let pace = Int(Double(target) * clockFraction)
+            let actual = kcalToday ?? 0
+            if actual < pace {
+                lines.append("Cal \(actual)/\(pace)/\(target)")
+            }
+        }
+        if let target = effortTarget, target > 0 {
+            let pace = Int(Double(target) * wakingFraction)
+            let actual = effortToday ?? 0
+            if actual < pace {
+                // Trailing number = the prescribed workout's minutes (doing it closes the gap).
+                let workout = sessionMinutes.map { "  \($0)" } ?? ""
+                lines.append("Effort \(actual)/\(pace)/\(target)\(workout)")
             }
         }
         guard !lines.isEmpty else { return (nil, mask) }   // on pace: consume silently
         return (PacingNudge(checkpointIndex: due!,
-                            title: String(localized: "Pace check"),
-                            body: lines.joined(separator: " · ")), mask)
+                            title: String(localized: "Behind pace"),
+                            body: lines.joined(separator: "\n")), mask)
     }
 
     // MARK: - Day-keyed fire bookkeeping
