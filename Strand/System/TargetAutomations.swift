@@ -22,9 +22,7 @@ enum TargetAutomations {
         static let briefEarliestMin = "auto.morningBrief.earliestMin"   // default 06:00
         static let briefLastDay = "auto.morningBrief.lastDay"
         static let pacingEnabled = "auto.pacing.enabled"
-        static let pacingCheck1Min = "auto.pacing.check1Min"            // default 14:00
-        static let pacingCheck2Min = "auto.pacing.check2Min"            // default 18:00
-        static let pacingThresholdPct = "auto.pacing.thresholdPct"      // default 60
+        static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
         static let pacingDay = "auto.pacing.day"
         static let pacingFiredMask = "auto.pacing.firedMask"
     }
@@ -37,14 +35,10 @@ enum TargetAutomations {
         return min(max(v, 4 * 60), 12 * 60)   // 04:00 (the day-roll) … noon
     }
     static var pacingEnabled: Bool { d.bool(forKey: K.pacingEnabled) }
-    static var pacingCheckMinutes: [Int] {
-        let c1 = d.object(forKey: K.pacingCheck1Min) as? Int ?? 14 * 60
-        let c2 = d.object(forKey: K.pacingCheck2Min) as? Int ?? 18 * 60
-        return [c1, c2].map { min(max($0, 9 * 60), 21 * 60) }   // 09:00…21:00, waking hours
-    }
-    static var pacingThresholdPct: Int {
-        let v = d.object(forKey: K.pacingThresholdPct) as? Int ?? 60
-        return min(max(v, 30), 90)
+    /// Check-in cadence: nudge-eligible at the top of every N hours through the waking window.
+    static var pacingIntervalHours: Int {
+        let v = d.object(forKey: K.pacingIntervalHours) as? Int ?? 2
+        return min(max(v, 1), 6)
     }
 
     // MARK: - A: morning brief (pure decision + text)
@@ -93,49 +87,67 @@ enum TargetAutomations {
         let body: String
     }
 
+    /// The check-in instants for a cadence: the top of every `intervalHours` hours through the
+    /// waking window, anchored on the window start (8:00 + N, + 2N, …), never past the window end.
+    static func checkpointMinutes(intervalHours: Int) -> [Int] {
+        let step = max(1, intervalHours) * 60
+        return Array(stride(from: pacingDayStartMinute + step, through: pacingDayEndMinute, by: step))
+    }
+
     /// Evaluate the pacing check-ins. `firedMask` is a bitmask of checkpoint indices already
     /// handled today (fired OR evaluated-and-on-pace — one evaluation per checkpoint per day, so a
     /// nudge can't re-fire off every later sync). Returns the nudge to post (at most one — the
-    /// earliest due checkpoint) plus the updated mask; a checkpoint that is due but ON pace is
-    /// consumed silently.
-    static func pacingDecision(enabled: Bool, minuteOfDay: Int, checkMinutes: [Int],
-                               firedMask: Int, thresholdPct: Int,
+    /// LATEST due checkpoint, so a phone that slept through several evaluates today's pace once,
+    /// against now) plus the updated mask; a checkpoint that is due but ON pace is consumed
+    /// silently.
+    ///
+    /// "Behind" is the pace itself (260901 rewire): the step target prorated linearly over the
+    /// waking window — no preset slack percentage. The nudge sizes the ask by the DEFICIT (what
+    /// gets you back ON pace now), not the whole remaining target.
+    static func pacingDecision(enabled: Bool, minuteOfDay: Int, intervalHours: Int,
+                               firedMask: Int,
                                steps: Int?, stepsTarget: Int?,
                                effortToday: Int?, effortTarget: Int?,
                                sessionMinutes: Int?) -> (nudge: PacingNudge?, newMask: Int) {
         guard enabled else { return (nil, firedMask) }
+        let checkMinutes = checkpointMinutes(intervalHours: intervalHours)
         var mask = firedMask
-        for (i, checkMin) in checkMinutes.enumerated() {
-            guard minuteOfDay >= checkMin, mask & (1 << i) == 0 else { continue }
-            mask |= (1 << i)
-            // Prorate the step target over the waking window: by `checkMin`, `fraction` of the
-            // day's movement time has passed, so being under `threshold%` of the prorated target
-            // is "behind pace" — the deliberate slack means a lunch walk still counts as on-pace.
-            let fraction = min(1.0, max(0.0, Double(minuteOfDay - pacingDayStartMinute)
-                                             / Double(pacingDayEndMinute - pacingDayStartMinute)))
-            var lines: [String] = []
-            if let target = stepsTarget, target > 0 {
-                let expected = Int(Double(target) * fraction)
-                let actual = steps ?? 0
-                if expected > 0, actual < expected * thresholdPct / 100 {
-                    // ~100 steps/min of ordinary walking — a concrete, doable catch-up ask.
-                    let remaining = target - actual
-                    let walkMin = max(5, remaining / 100)
-                    lines.append("\(actual) of \(target) steps — about \(walkMin) min of walking to get there")
-                }
-            }
-            if let target = effortTarget, target > 0, let m = sessionMinutes {
-                let actual = effortToday ?? 0
-                if actual < target * thresholdPct / 100 {
-                    lines.append("your \(m) min workout is still open (effort \(actual) of \(target))")
-                }
-            }
-            guard !lines.isEmpty else { return (nil, mask) }   // on pace: consume silently
-            return (PacingNudge(checkpointIndex: i,
-                                title: String(localized: "Pace check"),
-                                body: lines.joined(separator: " · ")), mask)
+        var due: Int?
+        for (i, checkMin) in checkMinutes.enumerated() where minuteOfDay >= checkMin && mask & (1 << i) == 0 {
+            mask |= (1 << i)   // every passed checkpoint is consumed; only the latest is evaluated
+            due = i
         }
-        return (nil, mask)
+        guard due != nil else { return (nil, mask) }
+        // Where the day SHOULD be right now: the target prorated over the waking window.
+        let fraction = min(1.0, max(0.0, Double(minuteOfDay - pacingDayStartMinute)
+                                         / Double(pacingDayEndMinute - pacingDayStartMinute)))
+        var lines: [String] = []
+        if let target = stepsTarget, target > 0 {
+            let expected = Int(Double(target) * fraction)
+            let actual = steps ?? 0
+            if actual < expected {
+                // ~100 steps/min of ordinary walking; the ask is the DEFICIT, i.e. back on pace.
+                let deficit = expected - actual
+                let walkMin = max(5, deficit / 100)
+                lines.append("\(actual) steps — \(deficit) behind the \(expected) you'd be at "
+                             + "on pace for \(target); ~\(walkMin) min of walking catches you up")
+            }
+        }
+        // The workout has no meaningful proration (it happens at once, whenever suits), so an
+        // undone workout alone is NOT "behind pace" — it rides along as context only when the
+        // steps side already tripped the nudge. With no step target at all, effort becomes the
+        // primary pace check, prorated like steps.
+        if let target = effortTarget, target > 0, let m = sessionMinutes, (effortToday ?? 0) < target {
+            if !lines.isEmpty {
+                lines.append("your \(m) min workout is still open (effort \(effortToday ?? 0) of \(target))")
+            } else if stepsTarget == nil, (effortToday ?? 0) < Int(Double(target) * fraction) {
+                lines.append("effort \(effortToday ?? 0) of \(target) — your \(m) min workout is still open")
+            }
+        }
+        guard !lines.isEmpty else { return (nil, mask) }   // on pace: consume silently
+        return (PacingNudge(checkpointIndex: due!,
+                            title: String(localized: "Pace check"),
+                            body: lines.joined(separator: " · ")), mask)
     }
 
     // MARK: - Day-keyed fire bookkeeping

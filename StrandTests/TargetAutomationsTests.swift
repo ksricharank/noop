@@ -39,73 +39,90 @@ final class TargetAutomationsTests: XCTestCase {
         XCTAssertEqual(rest.body, "Charge 20 · rest day — no workout · 4000 steps · sleep 9h00 tonight")
     }
 
-    // MARK: - E: pacing
+    // MARK: - E: pacing (260901 rewire: interval cadence, true prorated pace, deficit-sized ask)
 
     private func decide(minuteOfDay: Int, firedMask: Int = 0, steps: Int?, stepsTarget: Int? = 10_000,
-                        effortToday: Int? = 0, effortTarget: Int? = 59, sessionMinutes: Int? = 45)
+                        effortToday: Int? = 0, effortTarget: Int? = 59, sessionMinutes: Int? = 45,
+                        intervalHours: Int = 2)
         -> (nudge: TargetAutomations.PacingNudge?, newMask: Int) {
         TargetAutomations.pacingDecision(enabled: true, minuteOfDay: minuteOfDay,
-                                         checkMinutes: [14 * 60, 18 * 60], firedMask: firedMask,
-                                         thresholdPct: 60,
+                                         intervalHours: intervalHours, firedMask: firedMask,
                                          steps: steps, stepsTarget: stepsTarget,
                                          effortToday: effortToday, effortTarget: effortTarget,
                                          sessionMinutes: sessionMinutes)
     }
 
-    func testBehindPaceAtACheckpointNudgesWithTheCatchUpAsk() {
-        // 14:00: 6h of the 8:00–22:00 window elapsed (fraction 3/7) → expected ≈ 4285; 60% ≈ 2571.
-        // 1,500 steps is behind → nudge, with the walk-minutes ask (8,500 left ≈ 85 min) and the
-        // still-open workout.
+    func testCheckpointsAreTheTopOfEveryNHoursAcrossTheWakingWindow() {
+        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 2),
+                       [600, 720, 840, 960, 1_080, 1_200, 1_320])   // 10:00 … 22:00
+        XCTAssertEqual(TargetAutomations.checkpointMinutes(intervalHours: 6),
+                       [840, 1_200])                                 // 14:00, 20:00
+    }
+
+    func testBehindPaceNudgesWithTheDeficitSizedAsk() {
+        // 14:00, every-2h cadence: 6 of the 14 waking hours elapsed → expected ≈ 4285 of 10000.
+        // 1,500 is 2,785 behind → the ask is the DEFICIT (back on pace ≈ 27 min), not the day.
         let (nudge, mask) = decide(minuteOfDay: 14 * 60, steps: 1_500)
-        XCTAssertEqual(mask, 1)
-        XCTAssertNotNil(nudge)
-        XCTAssertEqual(nudge?.checkpointIndex, 0)
-        XCTAssertTrue(nudge!.body.contains("1500 of 10000 steps — about 85 min of walking"), nudge!.body)
+        XCTAssertEqual(mask, 0b111, "the 10:00/12:00/14:00 checkpoints are all consumed")
+        XCTAssertEqual(nudge?.checkpointIndex, 2, "only the latest due checkpoint is evaluated")
+        XCTAssertTrue(nudge!.body.contains("1500 steps — 2785 behind the 4285 you'd be at on pace for 10000"),
+                      nudge!.body)
+        XCTAssertTrue(nudge!.body.contains("~27 min of walking catches you up"), nudge!.body)
         XCTAssertTrue(nudge!.body.contains("your 45 min workout is still open (effort 0 of 59)"), nudge!.body)
     }
 
-    func testOnPaceCheckpointIsConsumedSilently() {
-        // 5,000 steps at 14:00 is ahead of the 60% bar, workout done (effort 59 of 59) → no nudge,
-        // but the checkpoint is consumed so a later sync can't re-litigate it.
-        let (nudge, mask) = decide(minuteOfDay: 14 * 60 + 10, steps: 5_000, effortToday: 59)
+    func testOnPaceIsSilentAndAnUndoneWorkoutAloneNeverNudges() {
+        // 5,000 at 14:10 is ahead of the ~4400 pace → silent even though the workout is untouched.
+        let (nudge, mask) = decide(minuteOfDay: 14 * 60 + 10, steps: 5_000)
         XCTAssertNil(nudge)
-        XCTAssertEqual(mask, 1)
-        // Same sync cadence 20 min later: checkpoint 0 already handled, checkpoint 1 not yet due.
-        let again = decide(minuteOfDay: 14 * 60 + 30, firedMask: mask, steps: 5_000, effortToday: 59)
+        XCTAssertEqual(mask, 0b111, "on-pace checkpoints are consumed so later syncs can't re-litigate")
+        // Same cadence 30 min later: nothing newly due, still silent.
+        let again = decide(minuteOfDay: 14 * 60 + 40, firedMask: mask, steps: 5_000)
         XCTAssertNil(again.nudge)
-        XCTAssertEqual(again.newMask, 1)
+        XCTAssertEqual(again.newMask, 0b111)
     }
 
-    func testSecondCheckpointFiresIndependently() {
-        // Evening check-in (18:00, fraction 5/7 → expected ≈ 7142; 60% ≈ 4285): 3,000 is behind.
-        let (nudge, mask) = decide(minuteOfDay: 18 * 60 + 5, firedMask: 1, steps: 3_000, effortToday: 59)
-        XCTAssertEqual(mask, 3)
-        XCTAssertEqual(nudge?.checkpointIndex, 1)
-        XCTAssertTrue(nudge!.body.contains("3000 of 10000 steps"), nudge!.body)
+    func testALaterCheckpointFiresIndependently() {
+        // 18:05 from the 14:00 mask: 16:00 + 18:00 consumed; expected ≈ 7202, 3000 is behind.
+        let (nudge, mask) = decide(minuteOfDay: 18 * 60 + 5, firedMask: 0b111, steps: 3_000,
+                                   effortToday: 59)
+        XCTAssertEqual(mask, 0b11111)
+        XCTAssertEqual(nudge?.checkpointIndex, 4)
+        XCTAssertTrue(nudge!.body.contains("3000 steps — 4202 behind the 7202"), nudge!.body)
         XCTAssertFalse(nudge!.body.contains("workout"), "a finished workout must not be nagged about")
     }
 
     func testBeforeTheFirstCheckpointNothingHappens() {
-        let (nudge, mask) = decide(minuteOfDay: 11 * 60, steps: 100)
+        let (nudge, mask) = decide(minuteOfDay: 9 * 60, steps: 100)
         XCTAssertNil(nudge)
         XCTAssertEqual(mask, 0)
     }
 
     func testDisabledPacingTouchesNothing() {
         let (nudge, mask) = TargetAutomations.pacingDecision(
-            enabled: false, minuteOfDay: 20 * 60, checkMinutes: [14 * 60, 18 * 60], firedMask: 0,
-            thresholdPct: 60, steps: 0, stepsTarget: 10_000, effortToday: 0, effortTarget: 59,
-            sessionMinutes: 45)
+            enabled: false, minuteOfDay: 20 * 60, intervalHours: 2, firedMask: 0,
+            steps: 0, stepsTarget: 10_000, effortToday: 0, effortTarget: 59, sessionMinutes: 45)
         XCTAssertNil(nudge)
         XCTAssertEqual(mask, 0)
     }
 
-    /// A rest day (no session, effort target 0) never nags about a workout — only steps can nudge.
+    /// A rest day (no session, effort target 0) never mentions a workout — only steps can nudge.
     func testRestDayNudgesOnlyOnSteps() {
         let (nudge, _) = decide(minuteOfDay: 14 * 60, steps: 500, effortToday: 3,
                                 effortTarget: 0, sessionMinutes: nil)
         XCTAssertNotNil(nudge)
         XCTAssertFalse(nudge!.body.contains("workout"), nudge!.body)
+    }
+
+    /// With no step target at all, effort becomes the primary pace check, prorated the same way.
+    func testEffortIsThePrimaryCheckWhenThereIsNoStepTarget() {
+        // 14:00: effort pace = 59 × 0.4286 ≈ 25; 3 is behind → nudge names the open workout.
+        let behind = decide(minuteOfDay: 14 * 60, steps: nil, stepsTarget: nil, effortToday: 3)
+        XCTAssertNotNil(behind.nudge)
+        XCTAssertTrue(behind.nudge!.body.contains("effort 3 of 59"), behind.nudge!.body)
+        // Effort ahead of its prorated pace → silent.
+        let onPace = decide(minuteOfDay: 14 * 60, steps: nil, stepsTarget: nil, effortToday: 30)
+        XCTAssertNil(onPace.nudge)
     }
 }
 
