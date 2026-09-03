@@ -191,6 +191,7 @@ extension Repository {
         // Only on a real change — this bump re-reads the Today card, and firing it on every sync made the
         // card redo its hydration read for nothing. Same reason as logHydration: hydration writes never
         // bump refreshSeq, so the card has no other signal.
+        refreshHydrationCache()
         noteHydrationChanged()
     }
 
@@ -212,6 +213,7 @@ extension Repository {
         let entries = HydrationEntries.adding(Self.hydrationEntries(day: dayKey), amountMl: amountMl)
         Self.writeHydrationEntries(entries, day: dayKey)
         // #989: hydration writes never bump refreshSeq, so tell the Today card directly.
+        refreshHydrationCache(day: dayKey)
         noteHydrationChanged()
         // `next` is the manual row; callers of this return value display it, so hand back the combined
         // figure (#949). Every in-tree caller discards it and re-reads, but a caller that trusted it
@@ -220,6 +222,13 @@ extension Repository {
     }
 
     // MARK: - Per-entry edit/delete (#798)
+
+    /// Re-derive the synchronous hydration cache the targets path reads (260903). Cheap (one
+    /// UserDefaults array read) and idempotent, so it is safe on every mutation and every sync.
+    func refreshHydrationCache(day: String? = nil) {
+        let dayKey = day ?? Repository.localDayKey(Date())
+        setHydrationCache(day: dayKey, totalML: HydrationEntries.total(Self.hydrationEntries(day: dayKey)))
+    }
 
     /// Today (or `day`)'s individual logged drinks, oldest first, as persisted in UserDefaults. Empty when
     /// nothing has been logged that day. Local-only; never synced.
@@ -259,6 +268,7 @@ extension Repository {
                 deviceId: HydrationStore.sourceId)
         }
         // #989: edits/deletes funnel through here; tell the Today card directly (see logHydration).
+        refreshHydrationCache(day: dayKey)
         noteHydrationChanged()
         // The entry list only ever describes hand-logged drinks, so re-deriving from it must not be
         // allowed to erase the imported row — write the manual figure, return the combined one (#949).

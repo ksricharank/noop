@@ -178,7 +178,11 @@ enum TargetAutomations {
                 behind.append(BehindItem(label: "Effort", actual: actual, pace: pace, goal: target))
             }
         }
-        guard !lines.isEmpty else { return (nil, mask) }   // on pace: consume silently
+        // On pace: consumed silently. Deliberately NOT an "on pace" notification — the widgets
+        // already say so, and a nudge that fires when nothing is wanted is the fastest way to get
+        // notifications muted. The encouraging voice lives in the coach TITLE of a real nudge (and
+        // in the water reminder, which keeps firing past its goal by design).
+        guard !lines.isEmpty else { return (nil, mask) }
         return (PacingNudge(checkpointIndex: due!,
                             title: String(localized: "Behind pace"),
                             body: lines.joined(separator: "\n"),
