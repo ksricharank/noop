@@ -2115,13 +2115,21 @@ final class IntelligenceEngine: ObservableObject {
             provenanceByCell["\(point.day)\u{1F}\(point.key)"] =
                 ScoreInputProvenanceRow(day: point.day, key: point.key, sourceId: source)
         }
+        // `persistComputedScores` upserts the daily rows but WIDE-DELETES the provenance rows across
+        // [from, to] before reinserting the ones this pass produced. For the full pass that is the
+        // intended reconciliation. For a LIGHT pass it is the same over-reach as the eviction below:
+        // it would strip score attribution from any day in the 2-day window this pass did not
+        // re-derive. Bounding the window to the days actually scored makes the light pass's write
+        // strictly additive — it can rewrite what it produced and nothing else (260902).
+        let persistFrom = lightPass ? (dailies.map(\.day).min() ?? oldestDay) : oldestDay
+        let persistTo = lightPass ? (dailies.map(\.day).max() ?? newestDay) : newestDay
         try? await store.persistComputedScores(
             dailyMetrics: dailies,
             metricPoints: restPoints,
             provenance: Array(provenanceByCell.values),
             deviceId: computedId,
-            from: oldestDay,
-            to: newestDay
+            from: persistFrom,
+            to: persistTo
         )
 
         // Now evict only the STALE computed rows in the window , those a prior (e.g. UTC-keyed) run left
@@ -2135,7 +2143,20 @@ final class IntelligenceEngine: ObservableObject {
         // covers the window, so eviction runs exactly as before; `persistComputedScores` is guarded the
         // same way, so an empty pass leaves the persisted window untouched. Twin of the Android
         // WhoopDao.replaceComputedScoreWindow empty guard.
-        if !dailies.isEmpty {
+        //
+        // A LIGHT PASS NEVER EVICTS (260902, the target-reversion bug). Eviction is a
+        // WINDOW-WIDE RECONCILIATION: "every computed day in [oldestDay, newestDay] that this pass
+        // did not reproduce is stale, delete it". That reasoning is only sound for the full 21-day
+        // pass, which re-derives every day in its window. The light pass runs at `maxDays: 2`, so
+        // its window is yesterday+today — and any day in there it does not re-score (an evening
+        // with no night yet, a night that does not re-derive from a 2-day raw read) was DELETED,
+        // every ~10 minutes, hours after the morning full pass had scored it correctly. The
+        // downstream damage was the reported one: the destroyed row took the widget/Today anchor
+        // with it, so Charge/Rest went unscored and the steps + sleep targets silently re-priced
+        // off a much older carried day until the next full pass restored the row. The light pass's
+        // entire job is to advance TODAY's accumulators; deciding what is stale is not its
+        // business, and the full pass still reconciles the whole window at the morning open.
+        if !dailies.isEmpty, !lightPass {
             let freshKeys = Set(dailies.map { $0.day })
             let existingWindow = (try? await store.dailyMetrics(deviceId: computedId, from: oldestDay, to: newestDay)) ?? []
             for stale in existingWindow where !freshKeys.contains(stale.day) {
