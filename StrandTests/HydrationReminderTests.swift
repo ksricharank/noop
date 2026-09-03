@@ -118,8 +118,20 @@ final class FrozenWaterTargetTests: XCTestCase {
 final class NotificationTitleCleaningTests: XCTestCase {
 
     func testAShortCleanLinePassesThrough() {
-        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("Quick lap around the block?"),
-                       "Quick lap around the block?")
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("Two thousand steps to go"),
+                       "Two thousand steps to go")
+    }
+
+    /// A model that echoes one of the prompt's shape examples has said nothing about the day, so
+    /// the line is rejected and the caller's plain title is used — the 260903 report, where every
+    /// nudge arrived titled "Big push left, block an hour" (an example, verbatim).
+    func testAParrotedPromptExampleIsRejected() {
+        for example in AICoachEngine.notificationTitleExamples {
+            XCTAssertNil(AICoachEngine.cleanNotificationTitle(example), example)
+        }
+        // Case and trailing punctuation must not smuggle one through.
+        XCTAssertNil(AICoachEngine.cleanNotificationTitle("Quick lap around the block?"))
+        XCTAssertNil(AICoachEngine.cleanNotificationTitle("NAILED IT, KEEP IT ROLLING"))
     }
 
     func testForbiddenShapesAreStripped() {
