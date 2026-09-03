@@ -9,32 +9,47 @@ final class RetroScanStatsTests: XCTestCase {
     override func setUp() { super.setUp(); RetroScanStats.reset() }
     override func tearDown() { RetroScanStats.reset(); super.tearDown() }
 
-    func testLineFormat() {
-        XCTAssertEqual(RetroScanStats.line(runs: 41, lastMs: 180, maxMs: 2100),
-                       "Stress retro-scan today: runs=41 lastMs=180 maxMs=2100")
+    func testLineNamesEveryPhaseSoAScanCanBeAttributed() {
+        // The reading contract: maxWait >> maxReplay = the scan was QUEUED on the store (the
+        // 260903 9.9-minute shape); the reverse would mean the detector itself is the cost.
+        XCTAssertEqual(
+            RetroScanStats.line(runs: 140, lastMs: 31, maxMs: 592_327,
+                                maxWaitMs: 591_800, maxReplayMs: 480, maxBeats: 19_500,
+                                blockedRuns: 1),
+            "Stress retro-scan today: runs=140 lastMs=31 maxMs=592327 maxWait=591800ms "
+            + "maxReplay=480ms maxBeats=19500 blocked=1")
     }
 
-    /// Silent until the scan ever runs — a macOS or fresh-install log must not carry a zeros line.
-    func testSilentWhenNeverRan() {
-        XCTAssertEqual(RetroScanStats.summaryLines(), [])
+    @MainActor
+    func testWorstPhaseValuesSurviveManyFastScans() {
+        RetroScanStats.reset()
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        // One blocked scan, then a hundred fast ones: the outlier must still be visible (a mean
+        // would bury it, which is why these are maxima).
+        RetroScanStats.record(millis: 600_000, waitMs: 599_000, replayMs: 400, beats: 19_000, now: now)
+        for _ in 0..<100 {
+            RetroScanStats.record(millis: 30, waitMs: 12, replayMs: 8, beats: 400, now: now)
+        }
+        let line = RetroScanStats.summaryLines(now: now).first ?? ""
+        XCTAssertTrue(line.contains("runs=101"), line)
+        XCTAssertTrue(line.contains("maxWait=599000ms"), line)
+        XCTAssertTrue(line.contains("maxBeats=19000"), line)
+        XCTAssertTrue(line.contains("blocked=1"), line)
+        XCTAssertTrue(line.contains("lastMs=30"), "lastMs stays the most recent scan: \(line)")
     }
 
-    /// lastMs tracks the most recent run; maxMs latches the day's worst.
-    func testLastAndMaxTracking() {
-        let t = Date(timeIntervalSince1970: 1_788_200_000)
-        RetroScanStats.record(millis: 500, now: t)
-        RetroScanStats.record(millis: 90, now: t)
-        let lines = RetroScanStats.summaryLines(now: t)
-        XCTAssertEqual(lines, ["Stress retro-scan today: runs=2 lastMs=90 maxMs=500"])
+    @MainActor
+    func testAFastScanIsNotCountedAsBlocked() {
+        RetroScanStats.reset()
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        RetroScanStats.record(millis: 40, waitMs: RetroScanStats.blockedWaitThresholdMs - 1,
+                              replayMs: 10, beats: 500, now: now)
+        XCTAssertTrue(RetroScanStats.summaryLines(now: now).first?.contains("blocked=0") ?? false)
     }
 
-    /// Day roll: the first record of a new local day starts fresh counters.
-    func testDayRollResets() {
-        let day1 = Date(timeIntervalSince1970: 1_788_200_000)
-        RetroScanStats.record(millis: 900, now: day1)
-        let day2 = day1.addingTimeInterval(86_400 * 2)
-        RetroScanStats.record(millis: 40, now: day2)
-        XCTAssertEqual(RetroScanStats.summaryLines(now: day2),
-                       ["Stress retro-scan today: runs=1 lastMs=40 maxMs=40"])
+    @MainActor
+    func testSilentUntilAScanRuns() {
+        RetroScanStats.reset()
+        XCTAssertTrue(RetroScanStats.summaryLines().isEmpty)
     }
 }

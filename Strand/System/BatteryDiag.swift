@@ -41,6 +41,22 @@ enum BatteryDiag {
         unflushed[label, default: 0] += 1
     }
 
+    /// 260903: the same count, split by whether the phone was LOCKED when the notification landed.
+    ///
+    /// A per-channel total cannot answer the battery question it exists for. The 260903-1145 log
+    /// showed puffin=35701 today and 102906 yesterday, and the halving is only good news if the
+    /// remainder is arriving while the user is actually looking at something. Wakes while LOCKED
+    /// are the pure cost — nobody is reading a screen, and each one resumes the process — so they
+    /// are the number a duty-cycle change has to move. Counted under the same label with a
+    /// ".locked" suffix, so the existing per-channel lines are untouched and the split is additive.
+    static func recordNotify(_ label: String, locked: Bool, now: Date = Date()) {
+        recordNotify(label, now: now)
+        if locked {
+            notifyCounts[label + ".locked", default: 0] += 1
+            unflushed[label + ".locked", default: 0] += 1
+        }
+    }
+
     // MARK: Cross-session persistence
     //
     // Per-process counters alone cannot answer the day question: the process that holds the
