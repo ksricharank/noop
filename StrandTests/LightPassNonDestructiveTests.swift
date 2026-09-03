@@ -81,6 +81,56 @@ final class LightPassNonDestructiveTests: XCTestCase {
                        "with the night deleted the carry reaches an ancient row — the reverted targets")
     }
 
+    /// 260903, the flip-flopping Charge: recovery is a z-score against the HRV/RHR baselines, and
+    /// on a strap-only install (no WHOOP export) those baselines are folded ENTIRELY from the
+    /// nights the pass itself scored. A 2-day light pass therefore folds a 2-NIGHT baseline,
+    /// against which a genuinely suppressed night reads as normal — the reported Charge 22 (full
+    /// 21-night pass) vs 47 (light pass), alternating as each overwrote the other.
+    ///
+    /// This pins the arithmetic that makes the two disagree, so the reason the light pass must not
+    /// recompute recovery survives in the suite rather than only in a comment.
+    func testAShortBaselineWindowScoresTheSameNightDifferently() {
+        // A suppressed night (26 ms) against a real 21-night history vs the light pass's 2 nights.
+        let full21 = [32.0, 34, 31, 33, 30, 35, 29, 32, 33, 31, 34, 30, 32, 28, 33, 31, 30, 34, 26, 24, 26]
+        let light2 = [24.0, 26]
+
+        let zFull = Self.zScore(today: 26, window: full21)
+        let zLight = Self.zScore(today: 26, window: light2)
+
+        XCTAssertLessThan(zFull, -1.0,
+                          "against the real baseline the night is clearly suppressed")
+        XCTAssertGreaterThan(zLight, 0,
+                             "against a 2-night baseline the SAME night looks normal — which is "
+                             + "why a light pass recomputing recovery produced a different Charge")
+        // The gap is not marginal: these are different verdicts, not rounding.
+        XCTAssertGreaterThan(abs(zFull - zLight), 2.0)
+    }
+
+    private static func zScore(today: Double, window: [Double]) -> Double {
+        let mean = window.reduce(0, +) / Double(window.count)
+        guard window.count > 1 else { return 0 }
+        let variance = window.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(window.count - 1)
+        let sd = variance.squareRoot()
+        return sd > 0 ? (today - mean) / sd : 0
+    }
+
+    /// The rule that follows: a light pass keeps the STORED recovery for a day, and only a full
+    /// pass recomputes it. Expressed over the same selection the engine makes.
+    func testALightPassKeepsTheStoredRecovery() {
+        let stored: [String: Double] = ["2026-09-03": 47]
+
+        func recovery(lightPass: Bool, day: String, freshlyComputed: Double?) -> Double? {
+            lightPass ? (stored[day] ?? nil) : freshlyComputed
+        }
+
+        // The light pass would have computed 22 off its starved baseline; it must keep 47.
+        XCTAssertEqual(recovery(lightPass: true, day: "2026-09-03", freshlyComputed: 22), 47)
+        // The full pass recomputes, which is correct — its baseline is the whole window.
+        XCTAssertEqual(recovery(lightPass: false, day: "2026-09-03", freshlyComputed: 22), 22)
+        // An unscored night stays unscored: a light pass never invents a value.
+        XCTAssertNil(recovery(lightPass: true, day: "2026-09-04", freshlyComputed: nil))
+    }
+
     private func metric(day: String, recovery: Double?) -> DailyMetric {
         DailyMetric(day: day, totalSleepMin: recovery == nil ? nil : 480, efficiency: nil,
                     deepMin: nil, remMin: nil, lightMin: nil, disturbances: nil, restingHr: 60,
