@@ -781,17 +781,20 @@ final class AppModel: ObservableObject {
         guard HydrationReminder.isEnabled else { return }
         let dayKey = Repository.localDayKey(Date())
         let total = await repo.hydrationTotal(day: dayKey)
-        let goal = repo.hydrationGoalML(profileSex: profile.sex)
+        // The goal comes from the SAME LiveTargets the Today row renders (260903) — never from
+        // `hydrationGoalML`, the retired millilitre formula, which is how the notification came to
+        // read "2/16" against the row's "3/19".
+        guard let goalCups = repo.cachedLiveTargets().waterTargetCups else { return }
         // A coach-written title for the reminders about to be armed. Generated HERE, not at fire
         // time: the reminders are calendar triggers that fire with no app running. Nil (no
         // provider/consent, or a failure) leaves the static "Water break".
         let title = await coach.notificationTitle(
-            status: HydrationReminder.coachStatus(totalML: total, goalML: goal))
+            status: HydrationReminder.coachStatus(totalML: total, goalCups: goalCups))
         if let outcome = coach.lastNotificationTitleOutcome {
             live.append(log: "Automation: water-reminder title — \(outcome)")
         }
         HydrationReminder.cacheCoachTitle(title, dayKey: dayKey)
-        HydrationReminder.refreshSnapshot(totalML: total, goalML: goal, dayKey: dayKey)
+        HydrationReminder.refreshSnapshot(totalML: total, goalCups: goalCups, dayKey: dayKey)
     }
 
     private func refreshAfterCompletedBackfill() async {
