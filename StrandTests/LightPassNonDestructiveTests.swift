@@ -131,6 +131,55 @@ final class LightPassNonDestructiveTests: XCTestCase {
         XCTAssertNil(recovery(lightPass: true, day: "2026-09-04", freshlyComputed: nil))
     }
 
+    /// The maintainer's rule (260903): "the light pass is only for the numerators, never the
+    /// targets, which should just be fixed after it is computed once during the day."
+    ///
+    /// Pins the merge directly: today's accumulators come from the fresh row, every scored-night
+    /// field from the stored one. Each preserved field either IS a target input or feeds one, and
+    /// a 2-day pass cannot compute any of them correctly — the baselines it folds cover only the
+    /// nights it scored.
+    func testLightPassTakesNumeratorsAndPreservesEveryTargetInput() {
+        let stored = full(day: "2026-09-03", recovery: 22, hrv: 26, rhr: 62, sleepMin: 500,
+                          steps: 1200, kcal: 700, strain: 8)
+        // What a light pass freshly computed: right numerators, WRONG scored-night values (the
+        // starved-baseline recovery 47 that produced the reported flip-flop).
+        let fresh = full(day: "2026-09-03", recovery: 47, hrv: 31, rhr: 58, sleepMin: 420,
+                         steps: 5342, kcal: 1306, strain: 15)
+
+        let merged = fresh.lightPassMerged(over: stored)
+
+        // Numerators: today's.
+        XCTAssertEqual(merged.steps, 5342)
+        XCTAssertEqual(merged.activeKcalEst, 1306)
+        XCTAssertEqual(merged.strain, 15)
+        // Target inputs: the stored night's, untouched.
+        XCTAssertEqual(merged.recovery, 22, "Charge must not be re-judged by a 2-day pass")
+        XCTAssertEqual(merged.avgHrv, 26)
+        XCTAssertEqual(merged.restingHr, 62)
+        XCTAssertEqual(merged.totalSleepMin, 500)
+        XCTAssertEqual(merged.efficiency, stored.efficiency)
+    }
+
+    /// With no stored row (a genuinely new day) the fresh values stand — preserving nil would
+    /// leave the day blank, which is worse than an early estimate the next full pass corrects.
+    func testLightPassKeepsFreshValuesWhenNothingIsStoredYet() {
+        let fresh = full(day: "2026-09-04", recovery: nil, hrv: 30, rhr: 60, sleepMin: 480,
+                         steps: 300, kcal: 120, strain: 2)
+        let merged = fresh.lightPassMerged(over: nil)
+        XCTAssertEqual(merged.steps, 300)
+        XCTAssertEqual(merged.avgHrv, 30)
+        XCTAssertEqual(merged.totalSleepMin, 480)
+    }
+
+    private func full(day: String, recovery: Double?, hrv: Double?, rhr: Int?, sleepMin: Double?,
+                      steps: Int?, kcal: Double?, strain: Double?) -> DailyMetric {
+        DailyMetric(day: day, totalSleepMin: sleepMin, efficiency: 90, deepMin: 90, remMin: 100,
+                    lightMin: 200, disturbances: 3, restingHr: rhr, avgHrv: hrv,
+                    recovery: recovery, strain: strain, exerciseCount: 1, spo2Pct: 96,
+                    skinTempDevC: 0.2, respRateBpm: 14, steps: steps, activeKcalEst: kcal,
+                    spo2Red: nil, spo2Ir: nil, avgSdnn: 45, skinTempC: 33.5)
+    }
+
     private func metric(day: String, recovery: Double?) -> DailyMetric {
         DailyMetric(day: day, totalSleepMin: recovery == nil ? nil : 480, efficiency: nil,
                     deepMin: nil, remMin: nil, lightMin: nil, disturbances: nil, restingHr: 60,
