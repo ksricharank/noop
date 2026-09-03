@@ -24,4 +24,29 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     ) {
         completionHandler([.banner, .sound, .list])
     }
+
+    /// The hook that gives a notification an ACTION (260902, the hydration reminder's "Logged a
+    /// cup"). iOS delivers a response only for a tapped action button or a tapped body — a
+    /// swipe-away/dismiss is never reported, which is exactly the wanted behaviour here: ignoring
+    /// the reminder logs nothing.
+    ///
+    /// The cup is written through the EXISTING hydration tracker (`Repository.logHydration`), the
+    /// same call the app's own +Cup button makes, so the notification can never diverge from the
+    /// Today card. `hydrationActionSink` is installed by the app at launch; when it is nil (a
+    /// response arriving before the model exists) the tap is dropped rather than queued — one
+    /// missed cup is a smaller wrong than a phantom one logged minutes later against the wrong day.
+    var hydrationActionSink: ((@escaping () -> Void) -> Void)?
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        guard response.actionIdentifier == HydrationReminder.logCupActionId,
+              let sink = hydrationActionSink else {
+            completionHandler()
+            return
+        }
+        sink(completionHandler)
+    }
 }

@@ -664,6 +664,7 @@ final class AppModel: ObservableObject {
         await WidgetSnapshot.publish(from: self)
         #endif
         await runTargetAutomations()
+        await refreshHydrationReminderSnapshot()
     }
 
     /// Target-driven automations (260901: morning brief + pacing nudges + the wind-down's dynamic
@@ -732,11 +733,47 @@ final class AppModel: ObservableObject {
             sessionMinutes: targets.sessionMinutes)
         if newMask != mask { TargetAutomations.setPacingFiredMask(newMask, today: todayKey) }
         if let nudge {
-            TargetAutomations.post(identifier: "auto-pace-check", title: nudge.title, body: nudge.body)
+            // The title is written by the coach when one is configured — a line scaled to how far
+            // behind the day is (260902). One short call per check-in, and ANY failure (no
+            // provider, no consent, timeout, over-long reply) falls back to the static "Behind
+            // pace" the decision already carries, so the notification never waits on the network
+            // to be useful.
+            let title = await coach.paceCheckTitle(behind: nudge.behind.map {
+                (label: $0.label, actual: $0.actual, pace: $0.pace, goal: $0.goal)
+            }) ?? nudge.title
+            TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
             live.append(log: "Automation: pace check posted ("
                         + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
         }
         #endif
+    }
+
+    /// Wire the hydration reminder's "Logged a cup" action to the EXISTING tracker, and keep the
+    /// reminder's copy current. Called once at startup (see `StrandApp`).
+    ///
+    /// The action writes through `Repository.logHydration` — the same call the app's +Cup button
+    /// makes — so the notification, the Today card and the hydration screen can never disagree
+    /// about the day's cups. After the write the snapshot is refreshed so the NEXT reminder states
+    /// the new count.
+    func installHydrationReminderSink() {
+        NotificationPresenter.shared.hydrationActionSink = { [weak self] done in
+            Task { @MainActor in
+                guard let self else { done(); return }
+                await self.repo.logHydration(amountMl: HydrationGoal.cupML)
+                await self.refreshHydrationReminderSnapshot()
+                done()
+            }
+        }
+    }
+
+    /// Push today's hydration figures into the reminder so a fired notification can state cups
+    /// drunk / cups left. Cheap (two cached reads); called after a cup is logged and after a sync.
+    func refreshHydrationReminderSnapshot() async {
+        guard HydrationReminder.isEnabled else { return }
+        let dayKey = Repository.localDayKey(Date())
+        let total = await repo.hydrationTotal(day: dayKey)
+        let goal = repo.hydrationGoalML(profileSex: profile.sex)
+        HydrationReminder.refreshSnapshot(totalML: total, goalML: goal, dayKey: dayKey)
     }
 
     private func refreshAfterCompletedBackfill() async {
@@ -811,6 +848,7 @@ final class AppModel: ObservableObject {
         await WidgetSnapshot.publish(from: self)
         #endif
         await runTargetAutomations()
+        await refreshHydrationReminderSnapshot()
         // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
         // banked R-R becomes readable — replay it through the live detector so the island-less mode
         // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.

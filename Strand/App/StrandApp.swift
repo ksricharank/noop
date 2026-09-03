@@ -22,6 +22,10 @@ struct StrandApp: App {
         // Foreground presentation: without a delegate, macOS suppresses a notification's banner while the
         // app is frontmost, so a reminder tested with NOOP open would show nothing. Mirrors iOS.
         UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
+        // Register the hydration reminder's action category up front, so a reminder that fires
+        // before any Settings visit still carries its "Logged a cup" button (a category unknown at
+        // fire time silently drops the actions).
+        UNUserNotificationCenter.current().setNotificationCategories([HydrationReminder.category])
     }
 
     @StateObject private var model = AppModel()
@@ -42,6 +46,7 @@ struct StrandApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task { model.installHydrationReminderSink() }
                 .environmentObject(model)
                 .environmentObject(model.ble)   // #334: Today pull-to-sync reads BLEManager (no HR churn)
                 .environmentObject(model.live)
@@ -73,13 +78,7 @@ struct StrandApp: App {
                 // Single-param form (not the two-param `{ _, phase in }`) — that overload needs macOS 14,
                 // this target is macOS 13.
                 .onChange(of: scenePhase) { phase in
-                    if phase == .active {
-                        model.ble.requestSync(.foreground)
-                        // Regenerate the coach-written Today synthesis on activation, twin of the iOS
-                        // scenePhase handler: a no-op when the Coach is unconfigured or consent is off,
-                        // and self-throttled against rapid re-focusing (AICoachEngine.refreshSynthesis).
-                        Task { await model.coach.refreshSynthesis() }
-                    }
+                    if phase == .active { model.ble.requestSync(.foreground) }
                 }
         }
         .windowStyle(.hiddenTitleBar)
