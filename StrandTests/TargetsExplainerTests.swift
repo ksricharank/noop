@@ -124,8 +124,9 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → \(cups) cups"), blocks[0])
         XCTAssertTrue(blocks[0].contains("baseline for your body: \(HydrationGoal.baselineMaleML) ml"),
                       blocks[0])
-        XCTAssertTrue(blocks[0].contains("today's effort 40 adds \(HydrationGoal.effortBump(effort: 40)) ml"),
-                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("yesterday's effort 40 adds "
+                                         + "\(HydrationGoal.effortBump(effort: 40)) ml"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("frozen at this morning's score"), blocks[0])
         XCTAssertTrue(blocks[0].contains("= \(goalML) ml"), blocks[0])
         XCTAssertTrue(blocks[0].contains("\(HydrationGoal.cupML) ml each → \(cups) cups"), blocks[0])
     }
@@ -139,7 +140,7 @@ final class TargetsExplainerTests: XCTestCase {
             age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
             waterTargetML: HydrationGoal.dailyGoalML(sex: "male", effort: nil),
             effortForWater: nil)
-        XCTAssertTrue(blocks[0].contains("no effort logged yet → +0 ml"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("no scored effort yet → +0 ml"), blocks[0])
         XCTAssertTrue(blocks[0].contains("adds up to \(HydrationGoal.maxEffortBumpML) ml"), blocks[0])
     }
 
