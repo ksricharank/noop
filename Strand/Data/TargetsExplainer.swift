@@ -97,7 +97,8 @@ enum TargetsExplainer {
                       profile: UserProfile,
                       debtBalanceMin: Double,
                       waterTargetCups: Int? = nil,
-                      effortForWater: Double? = nil) -> [String] {
+                      effortForWater: Double? = nil,
+                      waterEffortIsAccrued: Bool = false) -> [String] {
         var out: [String] = []
 
         // ── EFFORT: the session ladder, then the workout priced as the day's effort score ─────
@@ -296,10 +297,19 @@ enum TargetsExplainer {
             w.append("baseline for your body: \(baselineCups) cups (\(baselineML) ml at "
                      + "\(HydrationGoal.cupML) ml a cup)")
             if target > 0 {
-                w.append("today's effort target \(target) adds \(bumpCups) cups"
-                         + " — one cup per 10 points")
-                w.append("   (set once at this morning's score, like your other targets, so it"
-                         + " holds still all day)")
+                // Name WHICH of the two the number came from, or a day that went harder than
+                // prescribed would show a bump the stated basis cannot explain.
+                if waterEffortIsAccrued {
+                    w.append("today's effort so far \(target) adds \(bumpCups) cups"
+                             + " — one cup per 10 points")
+                    w.append("   (you've passed today's plan, so the ask followed the real work —"
+                             + " it can only grow, never shrink)")
+                } else {
+                    w.append("today's effort target \(target) adds \(bumpCups) cups"
+                             + " — one cup per 10 points")
+                    w.append("   (set at this morning's score; if you go past the plan, the ask"
+                             + " follows the real work)")
+                }
             } else {
                 w.append("rest day, no effort target → +0 cups   (one cup per 10 points when there"
                          + " is one)")
