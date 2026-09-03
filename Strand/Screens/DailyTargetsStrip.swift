@@ -23,6 +23,11 @@ struct DailyTargetsStrip: View {
     @State private var showDerivations = false
 
     var body: some View {
+        // Reading `repo.hydrationSeq` is what subscribes this view to water writes: hydration
+        // deliberately never bumps `refreshSeq` (#989), so without this the row would not re-render
+        // on a logged cup even though the targets memo now recomputes. It also joins the memo key,
+        // so the read is load-bearing twice over — never delete it as unused.
+        let hydrationSeq = repo.hydrationSeq
         let targets = repo.cachedLiveTargets()
         // 2×2 grid (260830 revision: four cells in one row collided at "1214/2075" widths) — Steps
         // and Cal on top, Effort and Sleep below, per the maintainer's slotting. One distinct data
@@ -44,7 +49,7 @@ struct DailyTargetsStrip: View {
             // hydration screen and the reminder's action use, so the three can never disagree.
             // Hidden entirely when hydration tracking is off (`waterTargetML` nil).
             if targets.waterTargetML != nil {
-                waterRow(targets)
+                waterRow(targets).id(hydrationSeq)
             }
             // Optional derivations (260901, maintainer's ask): the precise formula behind each of
             // the four targets, with TODAY's inputs filled in — collapsed by default so the strip
@@ -105,10 +110,15 @@ struct DailyTargetsStrip: View {
             Spacer(minLength: 0)
             // Half-cup steps. Remove is disabled at zero rather than hidden, so the control pair
             // never reflows as the count changes.
+            // Both controls move the number FIRST (optimistic), then persist. The store write is
+            // four awaits and can queue behind a strap sync; a counter you cannot watch move is
+            // not trackable, which is exactly what was reported.
             waterButton(systemName: "minus", disabled: drunkHalves == 0) {
+                repo.bumpHydrationOptimistically(deltaML: -HydrationGoal.halfCupML)
                 Task { await removeHalfCup() }
             }
             waterButton(systemName: "plus", disabled: false) {
+                repo.bumpHydrationOptimistically(deltaML: HydrationGoal.halfCupML)
                 Task { _ = await repo.logHydration(amountMl: HydrationGoal.halfCupML) }
             }
         }

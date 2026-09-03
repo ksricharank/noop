@@ -273,6 +273,20 @@ final class Repository: ObservableObject {
         hydrationTodayCachedML = totalML
     }
 
+    /// Move the water figure the Today row reads IMMEDIATELY, before the store write lands
+    /// (260903). A logged cup otherwise costs four awaits on the SQLite store — `storeHandle`, the
+    /// manual total, the upsert, the imported total — and while a strap sync holds the store actor
+    /// those queue behind it, so the tap felt unresponsive and a count that cannot be watched
+    /// cannot be tracked. The authoritative write still runs right after and re-derives this from
+    /// the stored entries, so a failed write self-corrects on the next refresh rather than leaving
+    /// an invented number. `delta` may be negative (the row's minus control).
+    func bumpHydrationOptimistically(deltaML: Int) {
+        let today = Repository.localDayKey(Date())
+        if hydrationCachedDay != today { hydrationCachedDay = today; hydrationTodayCachedML = 0 }
+        hydrationTodayCachedML = max(0, hydrationTodayCachedML + Double(deltaML))
+        noteHydrationChanged()
+    }
+
     /// Bumped whenever a period-start row is logged or removed. Cycle surfaces use this lightweight
     /// signal to reload their sensitive local history without forcing a full strap-data refresh.
     @Published private(set) var cycleTrackingSeq = 0
@@ -756,7 +770,8 @@ final class Repository: ObservableObject {
     func cachedLiveTargets(now: Date = Date()) -> LiveTargets {
         let logicalKey = Self.logicalDayKey(now)
         let localKey = Self.localDayKey(now)
-        return liveTargetsMemo.resolve(seq: refreshSeq, logicalKey: logicalKey, localKey: localKey) {
+        return liveTargetsMemo.resolve(seq: refreshSeq, hydrationSeq: hydrationSeq,
+                                       logicalKey: logicalKey, localKey: localKey) {
             let anchor = cachedWidgetAnchor(now: now)
             // Water rides the same memo: the figures come from the hydration tracker's own
             // synchronous caches (`hydrationTodayCachedML` is refreshed by every log + sync), so
@@ -769,8 +784,19 @@ final class Repository: ObservableObject {
                                     profile: profile,
                                     todayKey: max(logicalKey, localKey),
                                     waterTodayML: waterOn ? hydrationTodayCachedML : nil,
+                                    // FROZEN water target (260903, maintainer instruction — the
+                                    // same call as "freeze it" for effort on 260831): priced off
+                                    // the ANCHOR's effort (last night's scored day), not today's
+                                    // accumulating strain. Water was the last target whose
+                                    // denominator still moved during the day, so "4 cups left"
+                                    // could grow after a workout — the goalpost-moving the effort
+                                    // target was frozen to stop. The trade, stated: an unplanned
+                                    // hard session raises TOMORROW's water ask, not today's.
+                                    // (The calorie target was never live — it prices the anchor's
+                                    // prescribed session, so all five now hold still together.)
                                     waterTargetML: waterOn
-                                        ? hydrationGoalML(profileSex: profile.sex)
+                                        ? HydrationGoal.dailyGoalML(sex: profile.sex,
+                                                                    effort: anchor?.strain)
                                         : nil)
         }
     }

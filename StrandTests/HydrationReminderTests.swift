@@ -78,6 +78,40 @@ final class HydrationReminderTests: XCTestCase {
     }
 }
 
+/// 260903: the water target is FROZEN like the other four — priced off the ANCHOR's effort (the
+/// last scored day), never today's accumulating strain, so the denominator cannot move during the
+/// day. This is the same call the maintainer made for the effort target ("freeze it", 260831).
+final class FrozenWaterTargetTests: XCTestCase {
+
+    func testTheTargetIsTwoTermsBaselinePlusAnEffortBump() {
+        // The whole formula: round50(baseline_for_sex + effort/100 × 700).
+        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 0),
+                       HydrationGoal.baselineMaleML)
+        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 100),
+                       HydrationGoal.baselineMaleML + HydrationGoal.maxEffortBumpML)
+        // Linear in between, rounded to 50.
+        XCTAssertEqual(HydrationGoal.effortBump(effort: 50), HydrationGoal.maxEffortBumpML / 2)
+        // Nothing else feeds it — no charge, no sleep, no temperature.
+        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: nil),
+                       HydrationGoal.baselineMaleML)
+    }
+
+    /// The freeze itself: yesterday's scored effort sets today's target, so accumulating strain
+    /// through the day leaves the cup goal untouched.
+    func testTodaysAccumulatingStrainDoesNotMoveTheTarget() {
+        let anchorEffort: Double = 40          // last night's scored day
+        let frozen = HydrationGoal.dailyGoalML(sex: "male", effort: anchorEffort)
+        // Whatever today racks up, the target priced off the anchor is unchanged.
+        for todayStrain in [0.0, 12.0, 59.0, 95.0] {
+            let stillFrozen = HydrationGoal.dailyGoalML(sex: "male", effort: anchorEffort)
+            XCTAssertEqual(stillFrozen, frozen,
+                           "today's strain \(todayStrain) must not reprice the water target")
+        }
+        // And the live-target formula would have moved — proving the freeze is what's doing work.
+        XCTAssertNotEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 95), frozen)
+    }
+}
+
 /// Pins the shared notification-title enforcement (260903). The prompt asks the model for ≤32
 /// characters with examples; only this code can guarantee it, because a clipped Lock-Screen title
 /// is a worse outcome than a plain one.

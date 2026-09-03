@@ -35,6 +35,10 @@ struct LiquidTodayView: View {
     @EnvironmentObject var intelligence: IntelligenceEngine
     /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
     @State private var refreshingAll = false
+    /// 260903: the coach's synthesis section, collapsible so the deterministic numbers +
+    /// derivations above it can be read without scrolling past the model's prose. Expanded by
+    /// default — it is the headline of the card — and session-local, like `showDerivations`.
+    @State private var coachSectionExpanded = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
     /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
@@ -1093,22 +1097,43 @@ struct LiquidTodayView: View {
                         // the rule-based read below, unchanged.
                         if let ai = coach.synthesisText,
                            AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
-                            // LLM replies arrive as Markdown; plain Text showed literal asterisks.
-                            // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
-                            // for this card (see Theme.strandSynthesis).
-                            Markdown(ai)
-                                .markdownTheme(.strandSynthesis)
-                            HStack(spacing: 4) {
-                                Image(systemName: "sparkles").font(StrandFont.caption)
-                                Text("Written by your Coach").font(StrandFont.caption)
-                                // Always names the model that wrote it. Showing it only for a fallback made the
-                                // label's ABSENCE mean "your chosen model", which nobody can read off the
-                                // screen. Twin of the same line in the other Today view; keep them in step.
-                                if let model = coach.synthesisModel {
-                                    Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)").font(StrandFont.caption)
+                            // 260903: a titled, collapsible section with a rule above it. Without
+                            // the divider the coach's Markdown ran straight on from the "How these
+                            // were set" derivations and read as one undifferentiated block of text
+                            // — two different kinds of writing (deterministic arithmetic vs the
+                            // model's prose) with nothing marking the seam.
+                            Divider().overlay(StrandPalette.hairline).padding(.top, 2)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    coachSectionExpanded.toggle()
                                 }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "sparkles").font(StrandFont.caption)
+                                    Text("Written by your Coach")
+                                        .font(StrandFont.overline).tracking(1.2)
+                                    if let model = coach.synthesisModel {
+                                        Text(coach.synthesisCameFromFallback
+                                             ? "· \(model) (fallback)" : "· \(model)")
+                                            .font(StrandFont.caption)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: coachSectionExpanded ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .foregroundStyle(StrandPalette.textTertiary)
                             }
-                            .foregroundStyle(StrandPalette.textTertiary)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(coachSectionExpanded
+                                                ? "Collapse the coach's synthesis"
+                                                : "Expand the coach's synthesis")
+                            if coachSectionExpanded {
+                                // LLM replies arrive as Markdown; plain Text showed literal asterisks.
+                                // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
+                                // for this card (see Theme.strandSynthesis).
+                                Markdown(ai)
+                                    .markdownTheme(.strandSynthesis)
+                            }
                         } else {
                             Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textSecondary)
