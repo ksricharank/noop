@@ -664,7 +664,7 @@ final class AppModel: ObservableObject {
         await WidgetSnapshot.publish(from: self)
         #endif
         await runTargetAutomations()
-        await refreshHydrationReminderSnapshot()
+        await fireHydrationReminderIfDue()
     }
 
     /// Target-driven automations (260901: morning brief + pacing nudges + the wind-down's dynamic
@@ -714,6 +714,7 @@ final class AppModel: ObservableObject {
                 stepsTarget: targets.stepsTarget)
             TargetAutomations.markBriefFired(day: todayKey)   // before the async post: once means once
             TargetAutomations.post(identifier: "auto-morning-brief", title: text.title, body: text.body)
+            buzzForNudgeIfEnabled()
             live.append(log: "Automation: morning brief posted (\(text.body))")
         }
         // E: the pacing check-ins — at most one nudge per checkpoint per day, only when behind.
@@ -750,10 +751,21 @@ final class AppModel: ObservableObject {
                 live.append(log: "Automation: pace-check title — \(outcome)")
             }
             TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
+            buzzForNudgeIfEnabled()
             live.append(log: "Automation: pace check posted ("
                         + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
         }
         #endif
+    }
+
+    /// Buzz the strap alongside a NOOP-posted notification (260903), when the user has asked for
+    /// it. No-op when the toggle is off or the link cannot carry a command — `canBuzz` requires an
+    /// encrypted bond, so a disconnected or charging strap simply gets no cue rather than the app
+    /// pretending one landed. The breathe cue buzzes on its own path already (it has since it
+    /// shipped) and does not route through here.
+    func buzzForNudgeIfEnabled() {
+        guard TargetAutomations.wristBuzzEnabled, canBuzz else { return }
+        buzz(loops: 2)
     }
 
     /// Wire the hydration reminder's "Logged a cup" action to the EXISTING tracker, and keep the
@@ -769,32 +781,58 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { done(); return }
                 _ = await self.repo.logHydration(amountMl: amountMl)
-                await self.refreshHydrationReminderSnapshot()
+                // Confirm the log on the wrist, the same way the stress check-in confirms its
+                // nudge — this is the one water moment the app IS awake for (the action woke it),
+                // so unlike the scheduled reminder itself the buzz can actually land.
+                self.buzzForNudgeIfEnabled()
+                // No snapshot to refresh any more: the next reminder reads the live count when it
+                // fires from the sync path.
                 done()
             }
         }
     }
 
-    /// Push today's hydration figures into the reminder so a fired notification can state cups
-    /// drunk / cups left. Cheap (two cached reads); called after a cup is logged and after a sync.
-    func refreshHydrationReminderSnapshot() async {
+    /// Fire the water reminder if a slot has passed (260903, sync-driven).
+    ///
+    /// Rides the strap sync rather than a calendar trigger, so the app is AWAKE when the reminder
+    /// posts: it can buzz the strap, and it reads the LIVE cup count instead of a snapshot written
+    /// at schedule time. The cost is punctuality — the reminder lands at the first sync after its
+    /// slot, typically within ~10 minutes — which on a hydration nudge is immaterial.
+    func fireHydrationReminderIfDue() async {
         guard HydrationReminder.isEnabled else { return }
-        let dayKey = Repository.localDayKey(Date())
-        let total = await repo.hydrationTotal(day: dayKey)
-        // The goal comes from the SAME LiveTargets the Today row renders (260903) — never from
+        let now = Date()
+        let dayKey = Repository.localDayKey(now)
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let lastFired = HydrationReminder.lastFiredSlot(today: dayKey)
+        guard HydrationReminder.reminderWanted(
+                enabled: true,
+                minuteOfDay: minuteOfDay,
+                startMinute: HydrationReminder.startMinute,
+                intervalMinutes: HydrationReminder.intervalMinutes,
+                lastFiredSlot: lastFired,
+                isNewDay: lastFired == nil),
+              let due = HydrationReminder.dueSlot(minuteOfDay: minuteOfDay,
+                                                  startMinute: HydrationReminder.startMinute,
+                                                  intervalMinutes: HydrationReminder.intervalMinutes)
+        else { return }
+
+        // The goal comes from the SAME LiveTargets the Today row renders — never from
         // `hydrationGoalML`, the retired millilitre formula, which is how the notification came to
         // read "2/16" against the row's "3/19".
         guard let goalCups = repo.cachedLiveTargets().waterTargetCups else { return }
-        // A coach-written title for the reminders about to be armed. Generated HERE, not at fire
-        // time: the reminders are calendar triggers that fire with no app running. Nil (no
-        // provider/consent, or a failure) leaves the static "Water break".
+        let total = await repo.hydrationTotal(day: dayKey)
         let title = await coach.notificationTitle(
             status: HydrationReminder.coachStatus(totalML: total, goalCups: goalCups))
         if let outcome = coach.lastNotificationTitleOutcome {
             live.append(log: "Automation: water-reminder title — \(outcome)")
         }
-        HydrationReminder.cacheCoachTitle(title, dayKey: dayKey)
-        HydrationReminder.refreshSnapshot(totalML: total, goalCups: goalCups, dayKey: dayKey)
+        // Mark BEFORE posting: once means once, even if the post itself is slow.
+        HydrationReminder.markFired(slot: due, today: dayKey)
+        HydrationReminder.post(totalML: total, goalCups: goalCups, title: title)
+        buzzForNudgeIfEnabled()
+        live.append(log: "Automation: water reminder posted (slot \(due / 60):"
+                    + String(format: "%02d", due % 60) + ")")
     }
 
     private func refreshAfterCompletedBackfill() async {
@@ -869,7 +907,7 @@ final class AppModel: ObservableObject {
         await WidgetSnapshot.publish(from: self)
         #endif
         await runTargetAutomations()
-        await refreshHydrationReminderSnapshot()
+        await fireHydrationReminderIfDue()
         // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
         // banked R-R becomes readable — replay it through the live detector so the island-less mode
         // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.

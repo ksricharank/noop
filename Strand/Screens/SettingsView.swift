@@ -1714,7 +1714,7 @@ struct SettingsView: View {
                             }
                         }
 
-                        Text("Each reminder shows today's cup goal, how many you've had and how many are left. Long-press it (or swipe and tap) for \u{201C}Logged a cup\u{201D} to log one without opening NOOP; tapping it opens your water log. Ignoring it logs nothing. Reminders stop after 10pm.")
+                        Text("Each reminder shows today's cup goal, how many you've had and how many are left. Long-press it (or swipe and tap) to add a cup or a half cup without opening NOOP; tapping it opens your water log. Ignoring it logs nothing. Reminders ride your strap syncs, so one lands within about ten minutes of its time, and stop after 10pm.")
                             .font(StrandFont.caption)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
