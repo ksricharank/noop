@@ -162,6 +162,52 @@ final class TargetAutomationsTests: XCTestCase {
     }
 }
 
+/// 260903: NOOP's own nudges can also buzz the strap. Default off, and the coverage is uneven for
+/// a stated reason — the buzz needs an encrypted bond AND a running process, so a scheduled
+/// calendar notification (the water reminder) cannot buzz as it lands.
+final class NudgeWristBuzzTests: XCTestCase {
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: TargetAutomations.K.wristBuzz)
+        super.tearDown()
+    }
+
+    func testDefaultsOffSoAFreshInstallIsSilent() {
+        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+    }
+
+    func testReadsTheToggleTheAutomationsScreenWrites() {
+        UserDefaults.standard.set(true, forKey: TargetAutomations.K.wristBuzz)
+        XCTAssertTrue(TargetAutomations.wristBuzzEnabled)
+        UserDefaults.standard.set(false, forKey: TargetAutomations.K.wristBuzz)
+        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+    }
+
+    /// The buzz sites are the nudges the app posts while AWAKE. Structural, like the recovery
+    /// guard: a new NOOP-posted nudge that forgets the buzz shows up here rather than as a cue the
+    /// user expected and never felt.
+    func testEveryAppPostedNudgeBuzzes() throws {
+        let source = try String(contentsOfFile: Self.appModelPath, encoding: .utf8)
+        for post in ["auto-morning-brief", "auto-pace-check"] {
+            guard let idx = source.components(separatedBy: "\n")
+                .firstIndex(where: { $0.contains(post) }) else {
+                XCTFail("nudge post site not found: \(post)"); continue
+            }
+            let lines = source.components(separatedBy: "\n")
+            let window = lines[idx...min(idx + 2, lines.count - 1)].joined(separator: " ")
+            XCTAssertTrue(window.contains("buzzForNudgeIfEnabled"),
+                          "\(post) posts a notification but never offers the wrist buzz")
+        }
+    }
+
+    private static var appModelPath: String {
+        var dir = URL(fileURLWithPath: #filePath)
+        dir.deleteLastPathComponent()
+        dir.deleteLastPathComponent()
+        return dir.appendingPathComponent("Strand/App/AppModel.swift").path
+    }
+}
+
 /// Pins the day-keyed breathe-cue counter (the calibration evidence for the sensitivity knobs).
 @MainActor
 final class BreatheCueStatsTests: XCTestCase {

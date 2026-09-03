@@ -8,6 +8,48 @@ import WhoopStore
 /// that would make the two surfaces disagree: cups derived from anything other than `HydrationGoal`.
 final class HydrationReminderTests: XCTestCase {
 
+    /// 260903: the reminder rides the strap sync instead of calendar triggers, so the app is awake
+    /// when it posts (it can buzz, and it reads the live cup count). These pin the firing rule.
+    func testFiresOncePerSlotAndOnlyForTheLatestOnePassed() {
+        let start = 8 * 60, every = 90   // 08:00, 09:30, 11:00, …
+
+        // Before the first slot: nothing is owed.
+        XCTAssertFalse(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 7 * 60 + 30, startMinute: start,
+            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+
+        // First slot passed, nothing fired yet → fire.
+        XCTAssertTrue(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 8 * 60 + 5, startMinute: start,
+            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+
+        // Same slot, a later sync in the same ~10-minute window → already reminded, stay silent.
+        XCTAssertFalse(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 8 * 60 + 40, startMinute: start,
+            intervalMinutes: every, lastFiredSlot: 480, isNewDay: false))
+
+        // Next slot passed → fire again.
+        XCTAssertTrue(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 9 * 60 + 35, startMinute: start,
+            intervalMinutes: every, lastFiredSlot: 480, isNewDay: false))
+
+        // A phone away for hours owes ONE reminder, not one per missed slot.
+        XCTAssertEqual(HydrationReminder.dueSlot(minuteOfDay: 15 * 60, startMinute: start,
+                                                 intervalMinutes: every), 14 * 60,
+                       "the latest slot at or before now is the one that fires")
+
+        XCTAssertFalse(HydrationReminder.reminderWanted(
+            enabled: false, minuteOfDay: 12 * 60, startMinute: start,
+            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+    }
+
+    /// A new day re-arms even though the stored slot number would otherwise look "already fired".
+    func testANewDayRearmsTheFirstSlot() {
+        XCTAssertTrue(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 8 * 60 + 5, startMinute: 8 * 60,
+            intervalMinutes: 90, lastFiredSlot: nil, isNewDay: true))
+    }
+
     func testSlotsRunFromTheStartTimeAtTheChosenIntervalAndStopAt10pm() {
         // 08:00 every 90 min → 08:00, 09:30, … and nothing past 22:00.
         let slots = HydrationReminder.slotMinutes(startMinute: 8 * 60, intervalMinutes: 90)
