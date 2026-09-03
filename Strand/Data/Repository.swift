@@ -167,12 +167,16 @@ struct LiveTargets: Equatable {
     /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
     /// the Effort column's denominator.
     var effortTarget: Int?
-    /// Today's water figures (260903), in millilitres — the SAME numbers the hydration tracker and
-    /// its Today card use, carried here so the synthesis row, the reminder copy, the derivation
-    /// block and the coach context can never disagree about the day's water. `waterTargetML` is
-    /// `HydrationGoal.dailyGoalML` (profile + today's effort); nil when hydration tracking is off.
+    /// Today's water figures (260903) — the SAME numbers the hydration tracker and its Today card
+    /// use, carried here so the synthesis row, the reminder copy, the derivation block and the
+    /// coach context can never disagree about the day's water.
+    ///
+    /// The amount drunk stays in millilitres (that is how the tracker stores drinks, and half-cups
+    /// must not lose precision); the TARGET is in CUPS, because that is the only unit any water
+    /// surface displays and the rule is now legible in it — `baseline cups + effortTarget/10`.
+    /// Nil target = hydration tracking is off.
     var waterTodayML: Double?
-    var waterTargetML: Int?
+    var waterTargetCups: Int?
     /// The four target derivations with today's actual inputs, one line each (`TargetsExplainer`),
     /// for the optional "how these were set" disclosure under the targets strip (260901).
     var explainLines: [String] = []
@@ -678,7 +682,7 @@ final class Repository: ObservableObject {
                             profile: UserProfile,
                             todayKey: String,
                             waterTodayML: Double? = nil,
-                            waterTargetML: Int? = nil) -> LiveTargets {
+                            waterEnabled: Bool = false) -> LiveTargets {
         // The full read, not just the level: the explainer's "body check" lines print the
         // signals' actual values against their baselines (260901: no jargon, every line a number).
         let readinessRead = ReadinessEngine.evaluate(days: days)
@@ -705,6 +709,22 @@ final class Repository: ObservableObject {
         let effortTarget: Int? = session != nil
             ? DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
             : 0
+        // Today's water goal, in CUPS, priced off TODAY'S EFFORT TARGET (260903): the baseline for
+        // the user's body plus one cup per 10 points of prescribed effort — the maintainer's rule
+        // ("a target strain of 50 leads to 16 + 50/10 = 21 cups").
+        //
+        // Two earlier bases were wrong and both are worth remembering. Today's ACCUMULATING strain
+        // moved the denominator all day (the reported goalpost-moving). Then YESTERDAY's scored
+        // strain: frozen in principle, but the 2-day light pass keeps REWRITING yesterday's row
+        // hours into today, which is how the derivation came to read "yesterday's effort of 8"
+        // when yesterday had finished at 7. Today's effort target is set once at the morning score
+        // and describes the day being asked for, so it is both stable and the right day. A rest
+        // day (nil effort target) prices the body baseline alone.
+        let waterTargetCups: Int? = waterEnabled
+            ? HydrationGoal.dailyGoalCups(sex: profile.sex,
+                                          effortTarget: effortTarget.map(Double.init))
+            : nil
+
         // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
         // the coach context): the population-anchored upper-quartile need.
         let nightlyMinutes = days.compactMap(\.totalSleepMin)
@@ -734,7 +754,7 @@ final class Repository: ObservableObject {
             effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
             effortTarget: effortTarget,
             waterTodayML: waterTodayML,
-            waterTargetML: waterTargetML,
+            waterTargetCups: waterTargetCups,
             explainLines: TargetsExplainer.lines(
                 charge: charge, readiness: readinessRead, restScore: restScore,
                 session: session,
@@ -752,8 +772,8 @@ final class Repository: ObservableObject {
                                                                debtBalanceMin: ledger.balanceMin),
                 age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
                 debtBalanceMin: ledger.balanceMin,
-                waterTargetML: waterTargetML,
-                effortForWater: todayRow?.strain))
+                waterTargetCups: waterTargetCups,
+                effortForWater: effortTarget.map(Double.init)))
     }
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
@@ -784,20 +804,7 @@ final class Repository: ObservableObject {
                                     profile: profile,
                                     todayKey: max(logicalKey, localKey),
                                     waterTodayML: waterOn ? hydrationTodayCachedML : nil,
-                                    // FROZEN water target (260903, maintainer instruction — the
-                                    // same call as "freeze it" for effort on 260831): priced off
-                                    // the ANCHOR's effort (last night's scored day), not today's
-                                    // accumulating strain. Water was the last target whose
-                                    // denominator still moved during the day, so "4 cups left"
-                                    // could grow after a workout — the goalpost-moving the effort
-                                    // target was frozen to stop. The trade, stated: an unplanned
-                                    // hard session raises TOMORROW's water ask, not today's.
-                                    // (The calorie target was never live — it prices the anchor's
-                                    // prescribed session, so all five now hold still together.)
-                                    waterTargetML: waterOn
-                                        ? HydrationGoal.dailyGoalML(sex: profile.sex,
-                                                                    effort: anchor?.strain)
-                                        : nil)
+                                    waterEnabled: waterOn)
         }
     }
 

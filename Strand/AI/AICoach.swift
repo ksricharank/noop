@@ -1645,14 +1645,12 @@ final class AICoachEngine: ObservableObject {
         // Water (260903): the same cups the Today water row and the reminder show, so the
         // Activity section can talk about hydration without inventing a number. Omitted entirely
         // when hydration tracking is off.
-        if let goalML = targets.waterTargetML {
-            let goalCups = max(1, HydrationGoal.cups(fromML: Double(goalML)))
+        if let goalCups = targets.waterTargetCups {
             let drunkCups = HydrationGoal.cups(fromML: targets.waterTodayML ?? 0)
             let left = max(0, goalCups - drunkCups)
-            lines.append("Water target: \(goalCups) cups (\(goalML) ml — a baseline for the "
-                         + "user's body plus a bump for the last scored day's effort, frozen at "
-                         + "this morning's score like the other targets); drunk so far: "
-                         + "\(drunkCups) cups"
+            lines.append("Water target: \(goalCups) cups (a baseline for the user's body plus one "
+                         + "cup per 10 points of TODAY'S effort target, set once at this morning's "
+                         + "score like the other targets); drunk so far: \(drunkCups) cups"
                          + (left > 0 ? ", \(left) cups left." : " — target already met."))
         }
 

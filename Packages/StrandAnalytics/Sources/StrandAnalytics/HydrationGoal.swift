@@ -97,6 +97,31 @@ public enum HydrationGoal {
         roundToNearest(baselineForSex(sex) + effortBump(effort: effort), step: roundToML)
     }
 
+    /// Cups per 10 points of effort target — the maintainer's 260903 rule: "a target strain today
+    /// of 50 leads to 16 + 50/10 = 21 cups". One extra cup per 10 points, on top of the body
+    /// baseline in cups.
+    public static let cupsPerTenEffort = 1.0
+
+    /// Today's water goal IN CUPS, priced off today's EFFORT TARGET (260903, replacing the
+    /// millilitre chain for the water surfaces).
+    ///
+    /// Why cups and not ml: the number is only ever SHOWN in cups, logged in cups and half-cups,
+    /// and the old path rounded a millilitre sum to 50 ml before dividing by 237 — so a one-cup
+    /// change in the ask was invisible until the underlying effort moved a long way, and the
+    /// arithmetic in the derivation block could not be checked by eye. Pricing in cups makes the
+    /// whole rule legible: baseline cups + effortTarget/10.
+    ///
+    /// `effortTarget` is TODAY'S prescribed effort (nil on a rest day → the baseline alone), which
+    /// is set once at the morning score. Deliberately NOT yesterday's scored strain: that number
+    /// is still being rewritten by the 2-day light pass hours into the next day (the reported
+    /// "yesterday's effort of 8" when yesterday finished at 7), so a target priced off it was
+    /// neither today's ask nor stable.
+    public static func dailyGoalCups(sex: String, effortTarget: Double?) -> Int {
+        let baselineCups = cups(fromML: Double(baselineForSex(sex)))
+        let bump = Int(((effortTarget ?? 0) / 10.0 * cupsPerTenEffort).rounded())
+        return max(1, baselineCups + max(0, bump))
+    }
+
     // MARK: - Display helpers
 
     /// Litres (ml / 1000) for the litre read-outs.
