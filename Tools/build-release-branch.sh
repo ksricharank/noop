@@ -95,6 +95,34 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+# 260903: refuse to rebuild while work sits ONLY on a release branch.
+#
+# The release branch is disposable, so a commit made on it is destroyed by the very next rebuild —
+# silently, with the tests still green on the assembly that is about to be deleted. That happened:
+# the cups-based water target was committed onto release-10615-9, survived one build, and vanished
+# from -10, so a fix the maintainer had already verified reappeared as a bug on the phone.
+#
+# The check is cheap and exact: any commit reachable from the release branch being rebuilt, that is
+# NOT reachable from upstream or from any FEATURES branch, is work about to be lost.
+if git show-ref --verify --quiet "refs/heads/$RELEASE_BRANCH"; then
+  reachable_from_features=""
+  for branch in "${FEATURES[@]}"; do
+    git show-ref --verify --quiet "refs/heads/$branch" && reachable_from_features+=" ^$branch"
+  done
+  # shellcheck disable=SC2086
+  orphans="$(git rev-list --no-merges "$RELEASE_BRANCH" "^$UPSTREAM" $reachable_from_features 2>/dev/null)"
+  if [[ -n "$orphans" ]]; then
+    echo "ERROR: '$RELEASE_BRANCH' carries commits that live on NO feature branch." >&2
+    echo "       Rebuilding would destroy them (the release branch is disposable):" >&2
+    echo >&2
+    git log --no-merges --oneline "$RELEASE_BRANCH" "^$UPSTREAM" $reachable_from_features >&2
+    echo >&2
+    echo "  Move each onto the feature branch that owns it, then rebuild:" >&2
+    echo "       git checkout feature/<owner> && git cherry-pick <sha>" >&2
+    exit 1
+  fi
+fi
+
 echo "==> Rebuilding '$RELEASE_BRANCH' from $UPSTREAM ($(git rev-parse --short $UPSTREAM))"
 git checkout -q -B "$RELEASE_BRANCH" "$UPSTREAM"
 
