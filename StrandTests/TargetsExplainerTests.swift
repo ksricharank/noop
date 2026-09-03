@@ -107,41 +107,36 @@ final class TargetsExplainerTests: XCTestCase {
         }
     }
 
-    /// The water block (260903): a body baseline, an effort bump, the rounding, then cups — the
-    /// same arithmetic `HydrationGoal` uses, ending in the cup figure the Today row shows.
-    func testWaterBlockShowsBaselineEffortBumpAndCups() {
-        let read = readiness(level: .balanced)
-        let goalML = HydrationGoal.dailyGoalML(sex: "male", effort: 40)
+    /// The water block (260903, in cups): baseline cups, a cup per 10 points of effort target,
+    /// then the sum — arithmetic the reader can check by eye, which the millilitre chain was not.
+    func testWaterBlockShowsBaselineCupsAndTheEffortTargetBump() {
+        let goalCups = HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50)
         let blocks = TargetsExplainer.lines(
-            charge: 80, readiness: read, restScore: 81,
+            charge: 80, readiness: readiness(level: .balanced), restScore: 81,
             session: nil, sessionHrBpm: nil,
             effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
             age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
-            waterTargetML: goalML, effortForWater: 40)
+            waterTargetCups: goalCups, effortForWater: 50)
 
-        XCTAssertEqual(blocks.count, 1, "only the water block when every other target is nil")
-        let cups = HydrationGoal.cups(fromML: Double(goalML))
-        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → \(cups) cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("baseline for your body: \(HydrationGoal.baselineMaleML) ml"),
-                      blocks[0])
-        XCTAssertTrue(blocks[0].contains("yesterday's effort 40 adds "
-                                         + "\(HydrationGoal.effortBump(effort: 40)) ml"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("frozen at this morning's score"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("= \(goalML) ml"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("\(HydrationGoal.cupML) ml each → \(cups) cups"), blocks[0])
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 21 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("baseline for your body: 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("today's effort target 50 adds 5 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("one cup per 10 points"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("16 + 5 = 21 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("set once at this morning's score"), blocks[0])
     }
 
-    /// With no effort logged the bump rung still prints, showing what a hard day WOULD add.
-    func testWaterBlockPrintsTheZeroBumpRung() {
+    func testWaterBlockOnARestDayPricesTheBaselineAlone() {
         let blocks = TargetsExplainer.lines(
             charge: nil, readiness: readiness(level: .balanced), restScore: nil,
             session: nil, sessionHrBpm: nil,
             effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
             age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
-            waterTargetML: HydrationGoal.dailyGoalML(sex: "male", effort: nil),
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil),
             effortForWater: nil)
-        XCTAssertTrue(blocks[0].contains("no scored effort yet → +0 ml"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("adds up to \(HydrationGoal.maxEffortBumpML) ml"), blocks[0])
+        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("rest day, no effort target → +0 cups"), blocks[0])
     }
 
     func testRestDayBlocksExplainTheCancelledWorkoutAndTheZeroTarget() {
