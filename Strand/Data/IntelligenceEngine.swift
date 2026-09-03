@@ -1729,6 +1729,22 @@ final class IntelligenceEngine: ObservableObject {
                                                     tail: 14)
             for line in traced.lines { diagnosticSink?(line, .recovery) }
         }
+        // The recovery values already persisted for this window (260903). A LIGHT pass reuses
+        // these instead of recomputing against its own 2-night baseline — see the `recovery`
+        // assignment in the pass-2 loop for why that recomputation was wrong. Read once, and only
+        // for a light pass (the full pass recomputes every day anyway).
+        var storedRecoveryByDay: [String: Double] = [:]
+        if lightPass {
+            // Same window the pass scores: [now - (maxDays-1) days, today], derived here rather
+            // than reusing `oldestDay`/`newestDay`, which are declared further down.
+            let fromDay = AnalyticsEngine.dayString(nowLocalMidnight - (maxDays - 1) * 86_400,
+                                                    offsetSec: tzOffset)
+            let toDay = AnalyticsEngine.dayString(nowLocalMidnight, offsetSec: tzOffset)
+            let existing = (try? await store.dailyMetrics(deviceId: computedId,
+                                                          from: fromDay, to: toDay)) ?? []
+            for row in existing { if let r = row.recovery { storedRecoveryByDay[row.day] = r } }
+        }
+
         let baselines2 = AnalyticsEngine.ProfileBaselines(
             // HRV honours noop.hrvBaselineEpoch; rhr/resp/skin honour noop.recoveryBaselineEpoch via their
             // parallel day keys, so the manual Recalibrate restarts the whole Charge build-up together.
@@ -1823,7 +1839,24 @@ final class IntelligenceEngine: ObservableObject {
             let editsByStart = Dictionary(dayEditedRows.map { ($0.startTs, $0) }, uniquingKeysWith: { a, _ in a })
             let daily = sleepEditedDaily(night.daily, detected: night.cachedSleep, editsByStart: editsByStart,
                                          habitualMidsleepSec: habitualMidsleepSec)
-            let recovery = recomputeRecovery(daily, baselines2)
+            // A LIGHT pass must not recompute recovery (260903, the flip-flopping Charge).
+            //
+            // Recovery is a z-score against the HRV/RHR BASELINES, and on a strap-only install
+            // (no WHOOP export) those baselines are built ENTIRELY from the nights this pass
+            // itself scored — `hist` reads the imported device id, which is empty here, so
+            // `nightlyHrvByDay` is the only source. A 2-day light pass therefore folds a 2-night
+            // baseline, against which a genuinely suppressed night looks normal: the same night
+            // scored Charge 22 on the full 21-night window and 47 on the light pass's, and the
+            // two alternated as each pass overwrote the other — Charge and every target priced
+            // off it changed on every app open.
+            //
+            // The light pass's job is today's accumulators (steps/kcal/strain), never the scored
+            // night. So it KEEPS the stored recovery: the value the last full pass computed
+            // against the real baseline. Nil stays nil (an unscored night is not invented), and
+            // the next full pass recomputes normally.
+            let recovery = lightPass
+                ? (storedRecoveryByDay[daily.day] ?? daily.recovery)
+                : recomputeRecovery(daily, baselines2)
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
             // score is RecoveryScorer.recovery verbatim, so the `recovery` written above is unchanged.
