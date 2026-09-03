@@ -29,18 +29,32 @@ final class HydrationReminderTests: XCTestCase {
     }
 
     func testCopyStatesGoalDrunkAndRemaining() {
-        // A 3700 ml male baseline is ~16 cups; 4 cups in leaves 12.
         let text = HydrationReminder.reminderText(totalML: Double(HydrationGoal.cupML) * 4,
-                                                  goalML: 3_700)
+                                                  goalCups: 16)
         XCTAssertEqual(text.title, "Water break")
         XCTAssertEqual(text.body, "4 of 16 cups — 12 to go")
+    }
+
+    /// 260903: the notification read "2/16" while the Today row read "3/19" — the reminder was
+    /// deriving its goal from the retired millilitre formula AND re-rounding the drunk figure to
+    /// whole cups. The goal is now passed in from the row's own LiveTargets, and drunk is rendered
+    /// at the row's half-cup granularity, so the two surfaces cannot disagree.
+    func testCopyMatchesTheTodayRowForTheReportedCase() {
+        // 2.5 cups drunk (the row shows "2.5"), goal 19 from the cups rule.
+        let total = Double(HydrationGoal.halfCupML) * 5
+        let text = HydrationReminder.reminderText(totalML: total, goalCups: 19)
+        XCTAssertEqual(text.body, "2.5 of 19 cups — 17 to go",
+                       "the goal is the row's, and drunk keeps the row's half-cup precision")
+        // The row's own rendering of the same millilitres, for the same-to-the-drop guarantee.
+        XCTAssertEqual(HydrationGoal.cupsDisplay(halfCups: HydrationGoal.halfCups(fromML: total)),
+                       "2.5")
     }
 
     /// Past the goal the reminder must not nag with a negative remainder — it keeps firing until
     /// the day's last slot, so the over-goal case is a real, recurring state.
     func testPastTheGoalItCongratulatesInsteadOfShowingNegativeCups() {
         let text = HydrationReminder.reminderText(totalML: Double(HydrationGoal.cupML) * 20,
-                                                  goalML: 3_700)
+                                                  goalCups: 16)
         XCTAssertEqual(text.body, "20 of 16 cups — you're there, keep sipping")
     }
 
@@ -70,11 +84,11 @@ final class HydrationReminderTests: XCTestCase {
     /// which is what makes an over-goal reminder encouraging rather than nagging.
     func testCoachStatusStatesTheShortfallOrThatTheGoalIsMet() {
         let behind = HydrationReminder.coachStatus(totalML: Double(HydrationGoal.cupML) * 4,
-                                                   goalML: 3_700)
+                                                   goalCups: 16)
         XCTAssertTrue(behind.contains("4 of 16 cups"), behind)
         XCTAssertTrue(behind.contains("12 cups still to drink"), behind)
         let met = HydrationReminder.coachStatus(totalML: Double(HydrationGoal.cupML) * 18,
-                                                goalML: 3_700)
+                                                goalCups: 16)
         XCTAssertTrue(met.contains("already hit my target"), met)
     }
 }
