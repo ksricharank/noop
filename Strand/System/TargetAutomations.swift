@@ -150,9 +150,11 @@ enum TargetAutomations {
             let pace = Int(Double(target) * wakingFraction)
             let actual = steps ?? 0
             if actual < pace {
-                // Trailing number = walk minutes that close the DEFICIT (~100 steps/min).
+                // Trailing figure = walk minutes that close the DEFICIT (~100 steps/min). Every
+                // trailing figure now carries its UNIT (260903): a bare number was ambiguous
+                // across the three rows even to the person who specified them.
                 let walkMin = max(5, (pace - actual) / 100)
-                lines.append("Steps \(actual)/\(pace)/\(target)  \(walkMin)")
+                lines.append("Steps \(actual)/\(pace)/\(target)  \(walkMin) min walk")
                 behind.append(BehindItem(label: "Steps", actual: actual, pace: pace, goal: target))
             }
         }
@@ -160,11 +162,20 @@ enum TargetAutomations {
             let pace = Int(Double(target) * clockFraction)
             let actual = kcalToday ?? 0
             if actual < pace {
-                // Trailing number = walk minutes closing the kcal deficit, at the brisk-walk rule
-                // of thumb (~4 kcal/min for an average adult). Coarse on purpose — a hint, not a
-                // prescription; the honest per-user number would need the Keytel chain per line.
-                let walkMin = max(5, (pace - actual) / 4)
-                lines.append("Cal \(actual)/\(pace)/\(target)  \(walkMin)")
+                // Trailing figure = how to close the kcal deficit. When today has a prescribed
+                // WORKOUT, that is the honest closer and the walking equivalent is absurd (a
+                // ~330 kcal gap is ~20 min of exercise or ~80 min of walking — quoting the walk
+                // reads as a punishment for a gap the plan already answers). With no workout left
+                // to do, fall back to the walk at the brisk-walk rule of thumb (~4 kcal/min).
+                // Both are coarse hints, not prescriptions; the exact per-user figure would need
+                // the Keytel chain per line.
+                let deficit = pace - actual
+                if let m = sessionMinutes, (effortToday ?? 0) < (effortTarget ?? 0) {
+                    lines.append("Cal \(actual)/\(pace)/\(target)  \(m) min workout")
+                } else {
+                    let walkMin = max(5, deficit / 4)
+                    lines.append("Cal \(actual)/\(pace)/\(target)  \(walkMin) min walk")
+                }
                 behind.append(BehindItem(label: "Calories", actual: actual, pace: pace, goal: target))
             }
         }
@@ -173,7 +184,7 @@ enum TargetAutomations {
             let actual = effortToday ?? 0
             if actual < pace {
                 // Trailing number = the prescribed workout's minutes (doing it closes the gap).
-                let workout = sessionMinutes.map { "  \($0)" } ?? ""
+                let workout = sessionMinutes.map { "  \($0) min workout" } ?? ""
                 lines.append("Effort \(actual)/\(pace)/\(target)\(workout)")
                 behind.append(BehindItem(label: "Effort", actual: actual, pace: pace, goal: target))
             }

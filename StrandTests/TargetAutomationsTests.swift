@@ -80,10 +80,13 @@ final class TargetAutomationsTests: XCTestCase {
         XCTAssertEqual(mask, 0b111, "the 10:00/12:00/14:00 checkpoints are all consumed")
         XCTAssertEqual(nudge?.checkpointIndex, 2, "only the latest due checkpoint is evaluated")
         XCTAssertEqual(nudge?.title, "Behind pace")
+        // Every trailing figure carries its unit (260903), and Cal quotes the PRESCRIBED WORKOUT
+        // while one is still open — 123 min of walking is an absurd ask for a gap the plan already
+        // answers with 45 min of exercise.
         XCTAssertEqual(nudge?.body, """
-        Steps 1500/3750/10000  22
-        Cal 980/1472/2525  123
-        Effort 0/22/59  45
+        Steps 1500/3750/10000  22 min walk
+        Cal 980/1472/2525  45 min workout
+        Effort 0/22/59  45 min workout
         """.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
@@ -106,7 +109,7 @@ final class TargetAutomationsTests: XCTestCase {
                                    effortToday: 59)
         XCTAssertEqual(mask, 0b11111)
         XCTAssertEqual(nudge?.checkpointIndex, 4)
-        XCTAssertEqual(nudge?.body, "Steps 3000/6302/10000  33")
+        XCTAssertEqual(nudge?.body, "Steps 3000/6302/10000  33 min walk")
     }
 
     func testBeforeTheFirstCheckpointNothingHappens() {
@@ -128,7 +131,7 @@ final class TargetAutomationsTests: XCTestCase {
     /// the workout's minutes as the trailing catch-up number; a rest day (target 0) never appears.
     func testEffortNudgesAloneWhenBehindItsProratedPace() {
         let behind = decide(minuteOfDay: 14 * 60, steps: 5_000, effortToday: 3)
-        XCTAssertEqual(behind.nudge?.body, "Effort 3/22/59  45")
+        XCTAssertEqual(behind.nudge?.body, "Effort 3/22/59  45 min workout")
         let restDay = decide(minuteOfDay: 14 * 60, steps: 500, effortToday: 3,
                              effortTarget: 0, sessionMinutes: nil)
         XCTAssertNotNil(restDay.nudge)
@@ -142,7 +145,7 @@ final class TargetAutomationsTests: XCTestCase {
         // Wake 6:00 → by 14:00, 8 of 18 waking hours passed → steps pace 4444, not 3750.
         let (nudge, _) = decide(minuteOfDay: 14 * 60, steps: 4_000, effortToday: 59,
                                 dayStartMinute: 6 * 60)
-        XCTAssertEqual(nudge?.body, "Steps 4000/4444/10000  5")
+        XCTAssertEqual(nudge?.body, "Steps 4000/4444/10000  5 min walk")
     }
 
     /// Calories prorate over the 24 h clock, not the waking window — resting burn accrues while
@@ -151,9 +154,11 @@ final class TargetAutomationsTests: XCTestCase {
         // 10:00: clock fraction 0.4167 → cal pace 1052; waking fraction would claim 2525×0.125=315.
         // 800 kcal is comfortably past the waking-window number but behind the clock pace → the
         // line proves the clock proration is the one in force.
+        // Effort MET (59 of 59) ⇒ no workout left to quote, so Cal falls back to the walk
+        // equivalent — which is the proration under test here.
         let (nudge, _) = decide(minuteOfDay: 10 * 60, steps: 5_000, kcalToday: 800,
-                                kcalTarget: 2_525, effortToday: 30)
-        XCTAssertEqual(nudge?.body, "Cal 800/1052/2525  63")
+                                kcalTarget: 2_525, effortToday: 59)
+        XCTAssertEqual(nudge?.body, "Cal 800/1052/2525  63 min walk")
     }
 }
 
