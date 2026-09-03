@@ -419,6 +419,8 @@ final class AICoachEngine: ObservableObject {
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
     static let systemPromptKey = "ai.systemPrompt"
     static let synthesisPromptKey = "ai.synthesisPrompt"
+    /// The editable instruction behind every coach-written NOTIFICATION TITLE (260903).
+    static let notificationTitlePromptKey = "ai.notificationTitlePrompt"
 
     /// The built-in system prompt that frames every request. Anonymous, frames the assistant only as a
     /// coach. Exposed (read-only) so the UI's "Reset to default" can restore it and show it when nothing
@@ -482,14 +484,75 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
-    /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
-    /// instructions own the voice and priorities, and this only names the surface and its shape.
-    /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
+    /// The built-in instruction for the Today synthesis turn. The coach's own instructions still own
+    /// the voice; this names the surface and its SHAPE — three pillars, one line each, citing the
+    /// deterministic targets from the TODAY'S TARGETS block (the same numbers the Lock-Screen card
+    /// prints) so the synthesis and the card can never disagree. Exposed like `defaultSystemPrompt`
+    /// so the UI can show it and restore it.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
-    No headings, no lists, no greeting.
+    Today screen as three titled sections, in this order: **Heart**, **Activity**, \
+    **Rest & sleep**. Format, strictly — the reader is scanning, not studying:
+    - Each section's bold title on its OWN line.
+    - Directly under the title, ONE bolded takeaway line of at most ten words — the verdict or \
+    instruction, readable on its own if I read nothing else.
+    - Then 2-4 sub-bullets. Each is a single short fragment (roughly twelve words or fewer), in \
+    the shape "Thing — fact or instruction", never a full flowing sentence.
+    - Every number you cite goes in **bold**. A blank line between sections. NOTHING outside this \
+    structure: no paragraphs, no prose between bullets.
+    The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
+    HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
+    deviation), the direction they have been moving across the recent day-lines, and any watchout \
+    that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
+    strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
+    about it overall — this section is about my heart's trajectory, not this minute's reading.
+    The **Activity** section covers my effort, my total calories, my steps AND my water so far \
+    against today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): \
+    what produced those numbers, then the concrete session (or rest) that closes the gap, the \
+    walking left to do, and the cups of water left to drink. Total calories include resting \
+    metabolism on both sides, so early-day numbers far below target are normal — say so rather \
+    than urging a sprint.
+    The **Rest & sleep** section covers what last night and today's load mean for resting \
+    properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
+    TODAY'S TARGETS.
+    Within each section, order the sub-bullets so the ones explaining what led to the numbers come \
+    BEFORE prescribing ones, and bring in another metric from my data only when it strictly serves \
+    that section's story (for example an elevated skin temperature explaining poor rest — \
+    illustrative, not required). Cite my actual numbers; never invent targets that differ from \
+    TODAY'S TARGETS. No greeting, nothing outside the three sections.
     """
+
+    /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
+    /// water reminder and the move reminder all route through it (260903).
+    ///
+    /// The 32-character bound is stated to the model WITH worked examples, because that is what
+    /// actually produces short lines; iOS clips a Lock-Screen title around there. The bound is also
+    /// enforced in code (`notificationTitle` trims at a word boundary, then falls back to the
+    /// caller's static title) — the prompt asks, only the code can guarantee.
+    static let defaultNotificationTitlePrompt = """
+    Write ONE title for a phone notification about the status below.
+    Rules, strictly:
+    - At most 32 characters. This is a hard limit — a longer line gets thrown away.
+    - Warm, a little playful, motivating. Never scolding, never guilt-tripping.
+    - Scale it to the size of the gap: a small shortfall suggests something quick; a large one \
+    suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
+    encourage me to keep going rather than implying there is nothing left to do.
+    - No emoji, no quotation marks, no trailing period, no line breaks.
+    - Refer to MY numbers above. Never reuse the wording below — those show the SHAPE and length \
+    only, and a title copied from them tells me nothing about my day.
+    For shape only (do not copy): a small gap reads like "Quick lap around the block?", a large \
+    one like "Time to block out an hour", and being past target like "Nailed it, keep it rolling".
+    Reply with the line only.
+    """
+
+    /// The notification-title instruction actually sent, read FRESH so a Coach-screen edit applies
+    /// to the next notification. Blank/absent falls back to the built-in.
+    var notificationTitlePrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stored, !stored.isEmpty { return stored }
+        return Self.defaultNotificationTitlePrompt
+    }
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
     /// edit takes effect on the next refresh. Blank/absent falls back to `defaultSynthesisPrompt`, so
@@ -526,6 +589,31 @@ final class AICoachEngine: ObservableObject {
     /// Restore the built-in synthesis instruction by clearing the stored override.
     func resetSynthesisPrompt() {
         UserDefaults.standard.removeObject(forKey: Self.synthesisPromptKey)
+        objectWillChange.send()
+    }
+
+    /// The editable notification-title instruction, same shape as `customSynthesisPrompt` (260903).
+    var customNotificationTitlePrompt: String {
+        get { notificationTitlePrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultNotificationTitlePrompt {
+                UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.notificationTitlePromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomNotificationTitlePrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultNotificationTitlePrompt
+    }
+
+    func resetNotificationTitlePrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
         objectWillChange.send()
     }
 
@@ -972,6 +1060,102 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
+    /// A one-line, coach-written TITLE for any of NOOP's nudge notifications (260902, generalised
+    /// 260903): the pace check, the water reminder and the move reminder all route through here.
+    ///
+    /// `status` is the plain-language state to title — the caller's own numbers, already formatted
+    /// (e.g. "Steps: 1500 of 3750 expected by now (day goal 10000) — 60% behind pace"). The
+    /// instruction is the user-editable `notificationTitlePrompt`.
+    ///
+    /// Deliberately small and self-contained: at most one call per nudge, no history sent, one
+    /// short line back. Returns nil on ANY failure — no provider, no key, no consent, a timeout, an
+    /// empty reply, or a line that cannot be brought inside the length bound — and the caller then
+    /// uses its own static title. The notification must never wait on, or be blocked by, the
+    /// network.
+    func notificationTitle(status: String) async -> String? {
+        guard isConfigured, dataConsent, !status.isEmpty, let key = resolvedKey else {
+            lastNotificationTitleOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
+        do {
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let clean = Self.cleanNotificationTitle(reply)
+            // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule): a title that came
+            // back unusable is exactly what is missing when someone reports "the coach titles look
+            // generic". Costs a line only when a nudge actually fires.
+            lastNotificationTitleOutcome = clean == nil
+                ? "reply rejected (parroted example, too long, or empty): "
+                    + reply.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
+                : "written by \(lastAnsweringModel ?? "model")"
+            return clean
+        } catch {
+            lastNotificationTitleOutcome = "request failed: "
+                + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// What happened to the last notification-title generation — written on every attempt, read by
+    /// the callers for the strap log. Nil until one runs.
+    @Published private(set) var lastNotificationTitleOutcome: String?
+
+    /// The example lines from `defaultNotificationTitlePrompt`. A model that echoes one has told
+    /// us nothing about the day, so `cleanNotificationTitle` rejects it and the caller's plain
+    /// title is used instead — the observed 260903 failure, where every nudge arrived titled "Big
+    /// push left, block an hour" (an example, verbatim) and looked indistinguishable from a
+    /// working generation.
+    nonisolated static let notificationTitleExamples = [
+        "quick lap around the block",
+        "time to block out an hour",
+        "nailed it, keep it rolling",
+    ]
+
+    /// The length/shape enforcement behind `notificationTitle`, pure so it is pinned by tests.
+    ///
+    /// The prompt asks for ≤32 characters with examples, which is what actually produces short
+    /// lines — but a model can ignore it, and a clipped Lock-Screen title is a worse outcome than a
+    /// plain one. So: strip the shapes the prompt forbids (quotes, trailing punctuation, line
+    /// breaks), then TRIM at a word boundary rather than discarding a slightly-long line, and give
+    /// up only when even the first words cannot fit. nil = the caller's static title wins.
+    nonisolated static func cleanNotificationTitle(_ raw: String) -> String? {
+        // A model that ignores "no line breaks" usually offers its best line first.
+        let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
+        var clean = firstLine
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{201C}", with: "")
+            .replacingOccurrences(of: "\u{201D}", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!  "))
+        guard !clean.isEmpty else { return nil }
+        // A parroted example is a failed generation, not a title.
+        let normalized = clean.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?!.,;: "))
+        if notificationTitleExamples.contains(normalized) { return nil }
+        if clean.count > notificationTitleMaxChars {
+            // Keep whole words only — a title cut mid-word reads as a bug, not as brevity.
+            var kept: [String] = []
+            var used = 0
+            for word in clean.split(separator: " ") {
+                let cost = kept.isEmpty ? word.count : word.count + 1
+                guard used + cost <= notificationTitleMaxChars else { break }
+                kept.append(String(word))
+                used += cost
+            }
+            // One word is not a title; fall back rather than posting a fragment.
+            guard kept.count >= 2 else { return nil }
+            clean = kept.joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",;:-\u{2014} "))
+        }
+        return clean.isEmpty ? nil : clean
+    }
+
+    /// The hard title bound. iOS clips a Lock-Screen notification title around here, so a longer
+    /// line would be shown truncated — the one outcome worth failing over.
+    nonisolated static let notificationTitleMaxChars = 32
+
     /// Why the last Today-synthesis generation failed, or nil if the last one succeeded (or none has
     /// run). Surfaced in the Coach screen rather than on Today: the Today card's contract is to always
     /// show something useful, and a provider error is not that — but "synthesis is blank and I cannot
@@ -995,6 +1179,21 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
+        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so
+        // the synthesis and the card can never disagree about today's prescription. (A "right now"
+        // HR + live autonomic verdict rode here for one build, 270–271 — retired 260830 with the
+        // card's HR column; the Heart bullet reads the day-lines and baseline z-scores instead.)
+        let targets = repo.cachedLiveTargets()
+        let anchor = repo.cachedWidgetAnchor()
+        let targetsBlock = Self.dailyTargetsBlock(
+            targets: targets,
+            charge: anchor?.recovery.map { Int($0.rounded()) },
+            midsleepSec: await repo.habitualMidsleepSec(),
+            typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
+            effortScale: EffortScale(rawValue: UserDefaults.standard.string(
+                forKey: UnitPrefs.effortScaleKey) ?? "") ?? .hundred)
+        if !targetsBlock.isEmpty { ctx += "\n\n" + targetsBlock }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
@@ -1378,6 +1577,116 @@ final class AICoachEngine: ObservableObject {
         guard !lines.isEmpty else { return "" }
         return (["DERIVED TRENDS (computed on-device from the days above — deterministic, not model estimates):"]
                 + lines).joined(separator: "\n")
+    }
+
+    /// The THREE-PILLAR targets block: the same deterministic numbers the Live Activity card prints
+    /// (`LiveTargets` / `DailyTargets`), stated to the coach so the synthesis cites the
+    /// figures the user is already looking at instead of inventing parallel ones. Pure and
+    /// independently nil-guarded like `derivedTrendsBlock`: a cold-start field is simply absent,
+    /// never fabricated. Returns "" when nothing qualifies.
+    nonisolated static func dailyTargetsBlock(targets: LiveTargets,
+                                              charge: Int?,
+                                              midsleepSec: Int?,
+                                              typicalSleepHours: Double?,
+                                              effortScale: EffortScale = .hundred) -> String {
+        var lines: [String] = []
+
+        // (A Heart line — a "right now" bpm plus the live autonomic verdict — led this block for one
+        // build, 270–271. Retired 260830 with the card's HR column: the Heart bullet reads the
+        // overall state from the day-lines and baseline z-scores in the wider context instead, and
+        // the live dip reaches the user through the stress check-in's buzz + notification.)
+
+        // Activity & exercise: the prescribed session and the effort/calorie targets priced FROM
+        // it, vs today so far. Effort figures render on the USER'S chosen display scale — they said
+        // "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under the same
+        // label reads as a different (and absurdly large) prescription. Calories are TOTAL on both
+        // sides (260830): the whole-day estimate vs a full resting day plus the priced session.
+        let scaleMax = UnitFormatter.effortScaleMax(effortScale)
+        let effortTargetText = targets.effortTarget.map {
+            UnitFormatter.effortDisplay(Double($0), scale: effortScale)
+        }
+        let todayEffortText = UnitFormatter.effortDisplay(Double(targets.effortTodayStored ?? 0),
+                                                          scale: effortScale)
+        let kcalSidesText: String? = targets.kcalTargetKcal.map { target in
+            "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
+            + "prescription through the app's own Keytel model); total burned so far: "
+            + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
+        }
+        let stepsSidesText: String? = targets.stepsTarget.map { target in
+            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+            + "readiness read — a separate ask from the session); steps so far: "
+            + "\(targets.stepsToday.map(String.init) ?? "0")."
+        }
+        if targets.restDay {
+            var line = "Today's prescription: REST — the body's readiness read says recover, so "
+                       + "there is no session; the effort target is simply to hold near "
+                       + "\(effortTargetText ?? todayEffortText) of \(scaleMax) "
+                       + "(so far today: \(todayEffortText))."
+            if let kcalSidesText {
+                line += " " + kcalSidesText + " On a rest day the target is the resting day alone —"
+                        + " reaching it asks nothing extra."
+            }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        } else if let minutes = targets.sessionMinutes {
+            let hrText = targets.sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
+            var line = "Today's prescribed session: \(minutes) min\(hrText) (from today's charge "
+                       + "band + the multi-signal readiness read + last night's Rest — the body's "
+                       + "state, never past habits)."
+            if let targetText = effortTargetText {
+                line += " Completing it lands the day at effort \(targetText) of \(scaleMax) "
+                        + "(so far today: \(todayEffortText))."
+            }
+            if let kcalSidesText { line += " " + kcalSidesText }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        }
+
+        // Water (260903): the same cups the Today water row and the reminder show, so the
+        // Activity section can talk about hydration without inventing a number. Omitted entirely
+        // when hydration tracking is off.
+        if let goalCups = targets.waterTargetCups {
+            let drunkCups = HydrationGoal.cups(fromML: targets.waterTodayML ?? 0)
+            let left = max(0, goalCups - drunkCups)
+            lines.append("Water target: \(goalCups) cups (a baseline for the user's body plus one "
+                         + "cup per 10 points of today's effort — the prescribed target, or the "
+                         + "effort actually done if that is higher, so the ask can only grow); "
+                         + "drunk so far: \(drunkCups) cups"
+                         + (left > 0 ? ", \(left) cups left." : " — target already met."))
+        }
+
+        // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
+        if let need = targets.sleepNeedTonightMin {
+            lines.append(sleepPlanLine(needTonightMin: need, midsleepSec: midsleepSec,
+                                       typicalSleepHours: typicalSleepHours))
+        }
+
+        guard !lines.isEmpty else { return "" }
+        return (["TODAY'S TARGETS (deterministic, computed on-device from the user's own history — the "
+                 + "SAME numbers the Lock-Screen card shows; cite these, do not invent alternatives):"]
+                + lines.map { "  • " + $0 }).joined(separator: "\n")
+    }
+
+    /// Tonight's sleep prescription as one sentence: the target duration, plus the precise "asleep by"
+    /// time derived from the learned sleep model (#547 — habitual wake = midsleep + half the typical
+    /// night, the same circular arithmetic as `BatteryEstimator.bedtimeAlert`). Cold-start (no learned
+    /// midsleep or duration yet) states only the duration — a fixed-clock bedtime would be wrong for
+    /// exactly the shift/late sleepers the learner exists for.
+    nonisolated static func sleepPlanLine(needTonightMin: Int, midsleepSec: Int?,
+                                          typicalSleepHours: Double?) -> String {
+        let target = String(format: "%dh%02d", needTonightMin / 60, needTonightMin % 60)
+        guard let midsleep = midsleepSec, (0..<86_400).contains(midsleep),
+              let typical = typicalSleepHours, typical > 0 else {
+            return "Sleep tonight: target \(target) asleep."
+        }
+        func hhmm(_ secOfDay: Int) -> String {
+            let s = ((secOfDay % 86_400) + 86_400) % 86_400
+            return String(format: "%02d:%02d", s / 3600, (s % 3600) / 60)
+        }
+        let wakeSec = midsleep + Int((typical * 1800).rounded())
+        let bedSec = wakeSec - needTonightMin * 60
+        return "Sleep tonight: target \(target) asleep — aim to be asleep by \(hhmm(bedSec)) "
+               + "against the learned habitual wake of about \(hhmm(wakeSec))."
     }
 
     // MARK: Formatting helpers

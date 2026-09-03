@@ -47,6 +47,16 @@ struct AutomationsView: View {
     @AppStorage(HapticPrefs.liveSession) private var liveSessionHaptic = true
     @AppStorage(HapticPrefs.workout) private var workoutHaptic = true
 
+    // 260901 stress-sensitivity knobs — @State mirrors of BiofeedbackPrefs (custom-defaulted
+    // accessors, so plain @AppStorage would misread an unset key as 0).
+    @State private var stressDipPct = Int((BiofeedbackPrefs.dropRatio * 100).rounded())
+    @State private var stressSustainSec = BiofeedbackPrefs.sustainSeconds
+    // 260901 target automations (A morning brief / E pacing nudges). Plain bools, so @AppStorage.
+    @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
+    @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
+    @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
+    @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
+
     var body: some View {
         ScreenScaffold(title: "Automations",
                        subtitle: "Make the strap do things: tap to act, walk away to lock, train by feel.",
@@ -61,6 +71,8 @@ struct AutomationsView: View {
             hapticsCard
             wearCard
             coachingCard
+            morningBriefCard
+            pacingCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
             // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
             // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
@@ -224,13 +236,26 @@ struct AutomationsView: View {
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys
                 // mirror BiofeedbackPrefs, which the central detector (AppModel.evaluateStress) reads.
                 ToggleRow(label: String(localized: "Stress check-ins (haptic)"),
-                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz and a dismissible card. Never an alarm, never a diagnosis."),
+                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz, a screen notification and a dismissible card. Never an alarm, never a diagnosis."),
                           isOn: $behavior.stressCheckIn)
                 if behavior.stressCheckIn {
                     rowDivider
                     ToggleRow(label: String(localized: "Auto-nudge"),
-                              help: String(localized: "Let the check-in fire on its own. Off keeps it manual: you start a breath from Breathe yourself."),
+                              help: String(localized: "Let the check-in fire on its own: the strap buzzes when a deep breath would help. Off keeps it manual: you start a breath from Breathe yourself. Live stream on = instant; with Continuous HRV set to overnight only, daytime dips are found on each strap sync and nudged up to ~15 minutes late."),
                               isOn: $behavior.stressAutoNudge)
+                        .onChangeCompat(of: behavior.stressAutoNudge) { on in
+                            // Ask at the moment of intent (the IllnessNotifier idiom): the screen
+                            // notification defaults on, so arming the auto-nudge is the first
+                            // moment it could need permission.
+                            if on, behavior.stressNotify { BreatheNotifier.requestAuthorization() }
+                        }
+                    rowDivider
+                    ToggleRow(label: String(localized: "Screen notification"),
+                              help: String(localized: "Alongside the buzz, show a notification telling you to take a deep breath."),
+                              isOn: $behavior.stressNotify)
+                        .onChangeCompat(of: behavior.stressNotify) { on in
+                            if on { BreatheNotifier.requestAuthorization() }
+                        }
                     rowDivider
                     ToggleRow(label: String(localized: "Respect quiet hours"),
                               help: String(localized: "Suppress auto-nudges overnight (10pm-7am)."),
@@ -239,6 +264,87 @@ struct AutomationsView: View {
                     ToggleRow(label: String(localized: "Use my resonance pace"),
                               help: String(localized: "Breathe at the pace your last \u{201C}find my pace\u{201D} sweep locked in, if you have one. Otherwise a calm 5.5 breaths/min."),
                               isOn: $behavior.stressUseResonancePace)
+                    // 260901 sensitivity knobs (maintainer's ask): the detector's dip threshold and
+                    // hold time, surfaced so nudge frequency is tunable. The exported log's
+                    // "Breathe cues today:" line is the evidence to tune against.
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip depth"),
+                               help: String(localized: "Fires when your beat-to-beat HRV drops below this share of your personal baseline. Higher = shallower dips count = more nudges. Ships at 60%."),
+                               value: $stressDipPct, suffix: "%", range: 50...80, step: 5)
+                        .onChangeCompat(of: stressDipPct) { pct in
+                            BiofeedbackPrefs.dropRatio = Double(pct) / 100.0
+                        }
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip must last"),
+                               help: String(localized: "A dip shorter than this is treated as a wobble, not stress. Shorter = more nudges (most brief dips self-recover within a minute). Ships at 60 s."),
+                               value: $stressSustainSec, suffix: "s", range: 15...120, step: 15)
+                        .onChangeCompat(of: stressSustainSec) { sec in
+                            BiofeedbackPrefs.sustainSeconds = sec
+                        }
+                }
+            }
+        }
+    }
+
+    // MARK: - Morning brief (260901, automation A)
+
+    private var morningBriefCard: some View {
+        Section2(icon: "sunrise.fill", title: String(localized: "Morning brief"),
+                 blurb: String(localized: "The day's plan as a notification the moment the first post-wake sync scores your night — Charge, workout, steps and tonight's sleep target, before you ever open the app."),
+                 active: morningBriefOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable morning brief"),
+                          help: String(localized: "One notification per day, sent when the morning score lands."),
+                          isOn: $morningBriefOn)
+                    .onChangeCompat(of: morningBriefOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if morningBriefOn {
+                    rowDivider
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not before").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            Text("An early sync can score the night while you're still asleep - hold the brief until this time.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        Spacer(minLength: 8)
+                        DatePicker("", selection: briefEarliestBinding, displayedComponents: .hourAndMinute)
+                            .labelsHidden().datePickerStyle(.compact)
+                            .accessibilityLabel("Morning brief earliest time")
+                    }
+                    .frame(minHeight: 42).padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private var briefEarliestBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: briefEarliestMin) },
+                set: { briefEarliestMin = Self.minutes(from: $0)
+                       UserDefaults.standard.set(briefEarliestMin, forKey: TargetAutomations.K.briefEarliestMin) })
+    }
+
+    // MARK: - Target pacing (260901, automation E)
+
+    private var pacingCard: some View {
+        Section2(icon: "figure.walk.motion", title: String(localized: "Target pacing"),
+                 blurb: String(localized: "Intelligent check-ins against today's pace: every few hours from when you woke (your scored night's end; the quiet-hours end until it's scored), each target is compared with where it should be by now \u{2014} steps and effort spread over your waking day to midnight, calories over the full 24h \u{2014} and only a genuine shortfall nudges, sized by what catches you up. On pace = silence."),
+                 active: pacingOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable pacing nudges"),
+                          help: String(localized: "At most one nudge per check-in, and only when you're behind where you should be at that hour."),
+                          isOn: $pacingOn)
+                    .onChangeCompat(of: pacingOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if pacingOn {
+                    rowDivider
+                    stepperRow(label: String(localized: "Check every"),
+                               help: String(localized: "How often the pace is checked, at the top of every N hours through the waking day. Nudges land within a strap sync (~10 min) of the hour."),
+                               value: $pacingEveryHours, suffix: String(localized: "h"), range: 1...6, step: 1)
+                        .onChangeCompat(of: pacingEveryHours) { h in
+                            UserDefaults.standard.set(h, forKey: TargetAutomations.K.pacingIntervalHours)
+                        }
                 }
             }
         }

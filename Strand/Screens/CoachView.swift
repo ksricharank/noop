@@ -45,6 +45,9 @@ struct CoachView: View {
     /// Working copy of the synthesis instruction while editing, committed to the engine on change so
     /// an edit takes effect on the next Today refresh. Seeded when the editor opens.
     @State private var synthesisPromptDraft: String = ""
+    /// 260903: the editable instruction behind every coach-written notification title.
+    @State private var notifTitlePromptExpanded: Bool = false
+    @State private var notifTitlePromptDraft: String = ""
     @FocusState private var composerFocused: Bool
 
     /// Sentinel tag for the "Custom…" entry in the model Picker.
@@ -76,6 +79,7 @@ struct CoachView: View {
                 if coach.dataConsent { derivedTrendsBar }
                 systemPromptBar
                 synthesisPromptBar
+                notifTitlePromptBar
                 transcript
                 if let error = coach.errorText, !error.isEmpty {
                     errorBanner(error)
@@ -297,6 +301,88 @@ struct CoachView: View {
                         .foregroundStyle(StrandPalette.accent)
                         .disabled(!coach.hasCustomSystemPrompt)
                         .accessibilityLabel("Reset coach instructions to default")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Editable instruction for coach-written NOTIFICATION TITLES (260903) — the pace check, the
+    /// water reminder and the move reminder all route through it. A sibling of `synthesisPromptBar`
+    /// and deliberately the same shape. The 32-character bound lives in the prompt (with examples)
+    /// AND in code, so an edit that drops the limit still cannot post a clipped title.
+    private var notifTitlePromptBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.effortColor) {
+            VStack(alignment: .leading, spacing: notifTitlePromptExpanded ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        notifTitlePromptExpanded.toggle()
+                        if notifTitlePromptExpanded {
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bell.badge")
+                            .foregroundStyle(coach.hasCustomNotificationTitlePrompt
+                                             ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Notification title instructions")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(coach.hasCustomNotificationTitlePrompt
+                                 ? "Customised. Your edited instructions title every nudge."
+                                 : "Edit the one-line titles the coach writes for pace, water and move nudges.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: notifTitlePromptExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(notifTitlePromptExpanded
+                                    ? "Collapse notification title instructions"
+                                    : "Edit notification title instructions")
+
+                if notifTitlePromptExpanded {
+                    TextEditor(text: $notifTitlePromptDraft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset,
+                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: notifTitlePromptDraft) { newValue in
+                            coach.customNotificationTitlePrompt = newValue
+                        }
+                        .accessibilityLabel("Notification title instructions editor")
+
+                    Text("Titles longer than \(AICoachEngine.notificationTitleMaxChars) characters are shortened at a word boundary, or dropped for the plain title — iOS clips a long title on the Lock Screen.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            coach.resetNotificationTitlePrompt()
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!coach.hasCustomNotificationTitlePrompt)
+                        .accessibilityLabel("Reset notification title instructions to default")
                     }
                 }
             }

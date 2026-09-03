@@ -126,6 +126,62 @@ struct SleepDeletionSnapshot: Equatable {
     var sleepState: [Int]?
 }
 
+/// The deterministic daily targets the three-pillar Live Activity card prints and the coach
+/// synthesis cites — one bundle so the two surfaces can never disagree. Every field derives from
+/// `Repository.days` via the constant-explicit `DailyTargets` rules (see that type for the
+/// formulas); the optionals stay nil on thin history rather than guessing (the card then drops the
+/// denominator). Top-level rather than nested in `Repository` so it carries no MainActor isolation —
+/// the coach's `nonisolated` formatters and the widget-facing controller both hold plain values.
+struct LiveTargets: Equatable {
+    // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
+    // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
+    // maintainer replaced the threshold with the live autonomic breathe cue (red HR digits on the
+    // card). Later the same day the card dropped HR entirely (Effort n/t took the column) and the
+    // cue moved to the stress check-in's buzz + notification; `exerciseKcalToday` (the day estimate
+    // minus the resting accrual) went with it — the Cal glance is TOTAL calories now.
+    /// Today's TOTAL calories so far — the raw whole-day HR estimate (`activeKcalEst`), resting
+    /// metabolism included for every worn second. What the card's Cal numerator shows.
+    var kcalToday: Int?
+    /// Today's TOTAL-calorie target: a full day of resting metabolism plus the prescribed session
+    /// through the app's own Keytel model (`DailyTargets.dayKcalTarget`). A REST day's target is
+    /// honestly the resting day alone.
+    var kcalTargetKcal: Int?
+    /// The prescribed session itself, for the coach to narrate ("30 min at ~121 bpm"). Nil = rest day.
+    var sessionMinutes: Int?
+    var sessionHrBpm: Int?
+    /// True when the body's state prescribed REST (rundown readiness / poor-rest notching): the
+    /// effort target then holds at today's current effort, and the coach should say rest, not push.
+    var restDay: Bool = false
+    /// Minutes of sleep to target tonight (population base for the user's age, adjusted by today's
+    /// charge, last night's Rest, the readiness read, and the junior debt term; clamped 7–10 h).
+    var sleepNeedTonightMin: Int?
+    /// Today's steps so far (the day row's calibrated count — @57 ticks ÷ the user's divisor).
+    var stepsToday: Int?
+    /// Today's step target (`DailyTargets.stepsTarget`: charge band base 6k/8k/10k, readiness
+    /// notches, clamp 4k–12k — population guideline numbers banded by TODAY's body, never history).
+    var stepsTarget: Int?
+    /// Today's effort so far on the STORED 0–100 axis — the Effort column's numerator, carried here
+    /// so every surface (widget, card, strip, coach) reads the same value the target was priced from.
+    var effortTodayStored: Int?
+    /// Today's effort target on the STORED 0–100 axis: today's effort plus exactly the prescribed
+    /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
+    /// the Effort column's denominator.
+    var effortTarget: Int?
+    /// Today's water figures (260903) — the SAME numbers the hydration tracker and its Today card
+    /// use, carried here so the synthesis row, the reminder copy, the derivation block and the
+    /// coach context can never disagree about the day's water.
+    ///
+    /// The amount drunk stays in millilitres (that is how the tracker stores drinks, and half-cups
+    /// must not lose precision); the TARGET is in CUPS, because that is the only unit any water
+    /// surface displays and the rule is now legible in it — `baseline cups + effortTarget/10`.
+    /// Nil target = hydration tracking is off.
+    var waterTodayML: Double?
+    var waterTargetCups: Int?
+    /// The four target derivations with today's actual inputs, one line each (`TargetsExplainer`),
+    /// for the optional "how these were set" disclosure under the targets strip (260901).
+    var explainLines: [String] = []
+}
+
 /// Read model over the on-device WhoopStore. Opens its own handle (WAL + busy-timeout makes the
 /// two-handle BLEManager+Repository pattern safe) and publishes the dashboard caches the screens bind to.
 @MainActor
@@ -205,6 +261,54 @@ final class Repository: ObservableObject {
     /// so the card sat stale until an unrelated sync landed. Race-free: Repository is @MainActor.
     @Published private(set) var hydrationSeq = 0
     func noteHydrationChanged() { hydrationSeq += 1 }
+
+    /// Today's hydration total (ml) as a SYNCHRONOUS read, so the targets path (pure, sync, and
+    /// memoized per refresh) can carry water without becoming async (260903). Maintained from the
+    /// same per-entry log the async `hydrationTotal` reads — every mutation goes through
+    /// `logHydration` / `deleteHydrationEntry` / `updateHydrationEntry`, which re-derive this — and
+    /// re-derived on a day roll by `refreshHydrationCache`. Manual entries only, exactly like the
+    /// figure the Today card's ring shows before an import lands.
+    /// Backing store for `hydrationTodayCachedML`. Never read directly — go through the computed
+    /// property, which self-seeds.
+    private var hydrationCachedML: Double = 0
+    private var hydrationCachedDay = ""
+
+    /// Today's logged water (ml), derived on FIRST READ and after every mutation.
+    ///
+    /// Self-seeding deliberately (260903): this used to be a plain stored property refreshed only
+    /// by the three mutation sites, so a cold start read 0 until the user happened to log a drink —
+    /// the reported "water counter resets every time I open the app". The drinks themselves were
+    /// never lost (they live in UserDefaults); only this cache started empty. A launch-time call
+    /// would have fixed the symptom and could be forgotten again by the next caller, so the
+    /// invariant is enforced here instead: the value cannot be read before it has been derived for
+    /// the current day.
+    var hydrationTodayCachedML: Double {
+        let today = Repository.localDayKey(Date())
+        if hydrationCachedDay != today { refreshHydrationCache(day: today) }
+        return hydrationCachedML
+    }
+
+    /// Set by `refreshHydrationCache` (in HydrationStore.swift, where the entry reader lives).
+    func setHydrationCache(day: String, totalML: Double) {
+        hydrationCachedDay = day
+        hydrationCachedML = totalML
+    }
+
+    /// Move the water figure the Today row reads IMMEDIATELY, before the store write lands
+    /// (260903). A logged cup otherwise costs four awaits on the SQLite store — `storeHandle`, the
+    /// manual total, the upsert, the imported total — and while a strap sync holds the store actor
+    /// those queue behind it, so the tap felt unresponsive and a count that cannot be watched
+    /// cannot be tracked. The authoritative write still runs right after and re-derives this from
+    /// the stored entries, so a failed write self-corrects on the next refresh rather than leaving
+    /// an invented number. `delta` may be negative (the row's minus control).
+    func bumpHydrationOptimistically(deltaML: Int) {
+        let today = Repository.localDayKey(Date())
+        // Reading the computed property first is what seeds the day (and rolls it), so an
+        // optimistic bump on a fresh launch adds to the REAL total rather than to zero.
+        let current = hydrationTodayCachedML
+        setHydrationCache(day: today, totalML: max(0, current + Double(deltaML)))
+        noteHydrationChanged()
+    }
 
     /// Bumped whenever a period-start row is logged or removed. Cycle surfaces use this lightweight
     /// signal to reload their sensitive local history without forcing a full strap-data refresh.
@@ -582,6 +686,167 @@ final class Repository: ObservableObject {
     func restScore(for day: DailyMetric) -> Int? {
         let v = importedSleep[day.day]?.performancePct ?? AnalyticsEngine.Rest.composite(daily: day)
         return v.map { Int($0.rounded()) }
+    }
+
+    /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
+    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `restScore`
+    /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
+    /// static), `profile` the user's body metrics for the Keytel/Karvonen math, and `todayKey` the
+    /// future-clock-safe today key (the later of logical/local, as everywhere).
+    ///
+    /// Everything here is body-state, never habit (the maintainer's doctrine — see `DailyTargets`'
+    /// header): the only trailing-window reads are the multi-signal readiness baselines and the
+    /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
+    static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
+                            profile: UserProfile,
+                            todayKey: String,
+                            waterTodayML: Double? = nil,
+                            waterEnabled: Bool = false) -> LiveTargets {
+        // The full read, not just the level: the explainer's "body check" lines print the
+        // signals' actual values against their baselines (260901: no jargon, every line a number).
+        let readinessRead = ReadinessEngine.evaluate(days: days)
+        let readiness = readinessRead.level
+        // The freshest resting measurement there is — last night's RHR, the body's current idle.
+        let latestRhr = days.last(where: { $0.restingHr != nil })?.restingHr
+        let age = profile.age > 0 ? profile.age : nil
+        let todayRow = days.last(where: { $0.day == todayKey })
+        // The prescribed session (nil = rest day), and the two targets priced FROM it: the effort
+        // target is today's effort plus exactly that session through the app's own strain curve,
+        // and the calorie target is the same session through the app's own Keytel model.
+        let session = DailyTargets.sessionPrescription(charge: charge, readiness: readiness,
+                                                       restScore: restScore)
+        // FROZEN effort target (260831, maintainer instruction: "freeze it"): the target is the
+        // prescribed session's worth alone (0 + session through the strain curve), NOT "effort so
+        // far + session". The riding form moved the goalpost all day — walk to 8 and the widget
+        // read "8/67" instead of "8/59" — while Cal/Steps/Sleep stayed fixed at their morning
+        // values. Now all four denominators hold still between morning scores; ambient movement
+        // counts TOWARD the day's one number instead of inflating it. A REST day's target is ZERO,
+        // not nil (260901, maintainer instruction): the displays keep the pair form — "0/0", then
+        // "x/0" as ambient strain accrues — so a rest day still shows whether any effort landed.
+        // The numerator is never clamped to the target on any surface: n > t is a legitimate state
+        // for all three pairs (an over-target day is information, not an error).
+        let effortTarget: Int? = session != nil
+            ? DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+            : 0
+        // Today's water goal, in CUPS, priced off TODAY'S EFFORT TARGET (260903): the baseline for
+        // the user's body plus one cup per 10 points of prescribed effort — the maintainer's rule
+        // ("a target strain of 50 leads to 16 + 50/10 = 21 cups").
+        //
+        // The basis is max(today's effort TARGET, today's effort ACCRUED) — the maintainer's
+        // 260903 refinement. Pricing off the target alone was stable but under-asked on a day
+        // that genuinely went harder than prescribed: sweat loss is real and same-day, so
+        // exceeding the plan should raise the water ask. Taking the MAXIMUM keeps the goalpost
+        // honest in the one direction that matters — the number can only ever GROW during a day,
+        // never shrink, so "cups left" cannot go backwards on you.
+        //
+        // Two earlier bases were wrong and both are worth remembering. Today's accrued strain
+        // ALONE moved the denominator all day INCLUDING downward as the row was rescored (the
+        // reported goalpost-moving). Then YESTERDAY's scored strain: frozen in principle, but the
+        // 2-day light pass keeps REWRITING yesterday's row hours into today, which is how the
+        // derivation came to read "yesterday's effort of 8" when yesterday had finished at 7.
+        // A rest day with no accrued effort prices the body baseline alone.
+        let waterEffortBasis: Double? = {
+            let target = effortTarget.map(Double.init)
+            let accrued = todayRow?.strain
+            switch (target, accrued) {
+            case let (t?, a?): return max(t, a)
+            case let (t?, nil): return t
+            case let (nil, a?): return a
+            case (nil, nil): return nil
+            }
+        }()
+        let waterTargetCups: Int? = waterEnabled
+            ? HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: waterEffortBasis)
+            : nil
+
+        // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
+        // the coach context): the population-anchored upper-quartile need.
+        let nightlyMinutes = days.compactMap(\.totalSleepMin)
+        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
+            nightlyHours: nightlyMinutes.map { $0 / 60.0 },
+            age: nil) * 60.0
+        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
+                                      needHours: ledgerNeedMin / 60.0)
+        return LiveTargets(
+            // TOTAL calories, both sides (260830): the raw whole-day estimate vs a full resting day
+            // plus the priced session — the mainstream-tracker framing, by maintainer instruction.
+            kcalToday: todayRow?.activeKcalEst.map { Int($0.rounded()) },
+            kcalTargetKcal: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+            sessionMinutes: session?.minutes,
+            sessionHrBpm: session.map {
+                DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+            },
+            restDay: session == nil,
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
+                                                                  charge: charge,
+                                                                  restScore: restScore,
+                                                                  readiness: readiness,
+                                                                  debtBalanceMin: ledger.balanceMin),
+            stepsToday: todayRow?.steps,
+            stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+            effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
+            effortTarget: effortTarget,
+            waterTodayML: waterTodayML,
+            waterTargetCups: waterTargetCups,
+            explainLines: TargetsExplainer.lines(
+                charge: charge, readiness: readinessRead, restScore: restScore,
+                session: session,
+                sessionHrBpm: session.map {
+                    DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+                },
+                effortTarget: effortTarget,
+                kcalTarget: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+                stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+                sleepNeedMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
+                                                               charge: charge,
+                                                               restScore: restScore,
+                                                               readiness: readiness,
+                                                               debtBalanceMin: ledger.balanceMin),
+                age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
+                debtBalanceMin: ledger.balanceMin,
+                waterTargetCups: waterTargetCups,
+                effortForWater: waterEffortBasis,
+                waterEffortIsAccrued: {
+                    guard let basis = waterEffortBasis, let accrued = todayRow?.strain else {
+                        return false
+                    }
+                    // Accrued won only if it strictly exceeds the target (a tie reads as the plan).
+                    return accrued >= basis && accrued > Double(effortTarget ?? 0)
+                }()))
+    }
+
+    /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
+    private var liveTargetsMemo = LiveTargetsMemo()
+
+    /// The user's body metrics for the targets' Keytel/Karvonen math, lent by the app layer
+    /// (AppModel owns the Profile; the healthWriteBack closure idiom). Nil in tests and before
+    /// wiring — the estimator suite's standard profile then stands in.
+    var liveTargetsProfile: (() -> UserProfile)?
+
+    /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
+    /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
+    /// the charge band, keeping the card and the targets on one day).
+    func cachedLiveTargets(now: Date = Date()) -> LiveTargets {
+        let logicalKey = Self.logicalDayKey(now)
+        let localKey = Self.localDayKey(now)
+        return liveTargetsMemo.resolve(seq: refreshSeq, hydrationSeq: hydrationSeq,
+                                       logicalKey: logicalKey, localKey: localKey) {
+            let anchor = cachedWidgetAnchor(now: now)
+            // Water rides the same memo: the figures come from the hydration tracker's own
+            // synchronous caches (`hydrationTodayCachedML` is refreshed by every log + sync), so
+            // the targets stay a pure sync read while still speaking the tracker's numbers.
+            let waterOn = UserDefaults.standard.bool(forKey: HydrationStore.enabledKey)
+            let profile = liveTargetsProfile?() ?? UserProfile()
+            return Self.liveTargets(days: days,
+                                    charge: anchor?.recovery.map { Int($0.rounded()) },
+                                    restScore: anchor.flatMap { restScore(for: $0) },
+                                    profile: profile,
+                                    todayKey: max(logicalKey, localKey),
+                                    waterTodayML: waterOn ? hydrationTodayCachedML : nil,
+                                    waterEnabled: waterOn)
+        }
     }
 
     /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):
@@ -1149,6 +1414,11 @@ final class Repository: ObservableObject {
         }
         return Self.mergeRRByIdentity(lists)
     }
+
+    // HISTORY: `burstAvgHr` (mean HR over the freshest offload burst, anchored at the newest sample,
+    // 2 h staleness abstain) lived here for one build (10.6.0.14.9) as the targets widget's HR cell.
+    // Removed 260830 same-day by maintainer instruction: HR left the targets surfaces entirely —
+    // Effort n/t took the column — and nothing read the average any more.
 
     /// Logical day-start of the most recent day the active device has HR data for, or nil when the store is
     /// empty. Lets the Deep Timeline open on a day that actually has data instead of a possibly-empty today
