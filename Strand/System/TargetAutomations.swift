@@ -24,6 +24,8 @@ enum TargetAutomations {
         static let pacingEnabled = "auto.pacing.enabled"
         static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
         static let pacingDay = "auto.pacing.day"
+        /// 260903: also buzz the strap when NOOP posts one of its own nudges.
+        static let wristBuzz = "auto.wristBuzz.enabled"
         static let pacingFiredMask = "auto.pacing.firedMask"
     }
 
@@ -35,6 +37,15 @@ enum TargetAutomations {
         return min(max(v, 4 * 60), 12 * 60)   // 04:00 (the day-roll) … noon
     }
     static var pacingEnabled: Bool { d.bool(forKey: K.pacingEnabled) }
+
+    /// Whether NOOP's own nudges also buzz the strap (260903, default off).
+    ///
+    /// Every NOOP-posted nudge now rides the strap sync (the water reminder moved off calendar
+    /// triggers on 260903 precisely so it could buzz), so the app is awake at post time in all
+    /// cases. The remaining condition is the link itself: the buzz needs an ENCRYPTED, BONDED
+    /// connection, so a charging or out-of-range strap gets no cue rather than the app pretending
+    /// one landed.
+    static var wristBuzzEnabled: Bool { d.bool(forKey: K.wristBuzz) }
     /// Check-in cadence: nudge-eligible at the top of every N hours through the waking window.
     static var pacingIntervalHours: Int {
         let v = d.object(forKey: K.pacingIntervalHours) as? Int ?? 2
