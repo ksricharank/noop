@@ -47,8 +47,8 @@ struct DailyTargetsStrip: View {
             // the one target that is logged by hand — the −/+ half-cup controls exist so water
             // drunk outside a reminder still lands. Writes through the SAME `logHydration` the
             // hydration screen and the reminder's action use, so the three can never disagree.
-            // Hidden entirely when hydration tracking is off (`waterTargetML` nil).
-            if targets.waterTargetML != nil {
+            // Hidden entirely when hydration tracking is off (`waterTargetCups` nil).
+            if targets.waterTargetCups != nil {
                 waterRow(targets).id(hydrationSeq)
             }
             // Optional derivations (260901, maintainer's ask): the precise formula behind each of
@@ -93,7 +93,7 @@ struct DailyTargetsStrip: View {
     @ViewBuilder
     private func waterRow(_ t: LiveTargets) -> some View {
         let drunkHalves = HydrationGoal.halfCups(fromML: t.waterTodayML ?? 0)
-        let goalCups = max(1, HydrationGoal.cups(fromML: Double(t.waterTargetML ?? 0)))
+        let goalCups = max(1, t.waterTargetCups ?? 0)
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Water")

@@ -96,7 +96,7 @@ enum TargetsExplainer {
                       restingHr: Int?,
                       profile: UserProfile,
                       debtBalanceMin: Double,
-                      waterTargetML: Int? = nil,
+                      waterTargetCups: Int? = nil,
                       effortForWater: Double? = nil) -> [String] {
         var out: [String] = []
 
@@ -286,26 +286,25 @@ enum TargetsExplainer {
             out.append(sl.joined(separator: "\n"))
         }
 
-        // ── WATER: a body-size baseline, plus a bump for how hard the day has been ─────────
-        if let waterTargetML {
-            let goalCups = max(1, HydrationGoal.cups(fromML: Double(waterTargetML)))
-            let baseline = HydrationGoal.baselineForSex(profile.sex)
-            let bump = HydrationGoal.effortBump(effort: effortForWater)
-            var w: [String] = ["WATER TARGET → \(goalCups) cups"]
-            w.append("baseline for your body: \(baseline) ml"
-                     + " (\(HydrationGoal.cups(fromML: Double(baseline))) cups)")
-            if bump > 0 {
-                w.append("yesterday's effort \(Int((effortForWater ?? 0).rounded())) adds \(bump) ml"
-                         + " — harder days need more")
-                w.append("   (frozen at this morning's score, like your other targets — today's"
-                         + " effort raises tomorrow's water)")
+        // ── WATER: body-size baseline in cups, plus a cup per 10 points of effort target ───
+        if let waterTargetCups {
+            let baselineML = HydrationGoal.baselineForSex(profile.sex)
+            let baselineCups = HydrationGoal.cups(fromML: Double(baselineML))
+            let target = Int((effortForWater ?? 0).rounded())
+            let bumpCups = max(0, waterTargetCups - baselineCups)
+            var w: [String] = ["WATER TARGET → \(waterTargetCups) cups"]
+            w.append("baseline for your body: \(baselineCups) cups (\(baselineML) ml at "
+                     + "\(HydrationGoal.cupML) ml a cup)")
+            if target > 0 {
+                w.append("today's effort target \(target) adds \(bumpCups) cups"
+                         + " — one cup per 10 points")
+                w.append("   (set once at this morning's score, like your other targets, so it"
+                         + " holds still all day)")
             } else {
-                w.append("no scored effort yet → +0 ml   (a hard day adds up to"
-                         + " \(HydrationGoal.maxEffortBumpML) ml)")
+                w.append("rest day, no effort target → +0 cups   (one cup per 10 points when there"
+                         + " is one)")
             }
-            w.append("\(baseline) + \(bump) = \(waterTargetML) ml, rounded to the nearest"
-                     + " \(HydrationGoal.roundToML)")
-            w.append("shown in cups at \(HydrationGoal.cupML) ml each → \(goalCups) cups")
+            w.append("\(baselineCups) + \(bumpCups) = \(waterTargetCups) cups")
             out.append(w.joined(separator: "\n"))
         }
 
