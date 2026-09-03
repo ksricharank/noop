@@ -167,6 +167,12 @@ struct LiveTargets: Equatable {
     /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
     /// the Effort column's denominator.
     var effortTarget: Int?
+    /// Today's water figures (260903), in millilitres — the SAME numbers the hydration tracker and
+    /// its Today card use, carried here so the synthesis row, the reminder copy, the derivation
+    /// block and the coach context can never disagree about the day's water. `waterTargetML` is
+    /// `HydrationGoal.dailyGoalML` (profile + today's effort); nil when hydration tracking is off.
+    var waterTodayML: Double?
+    var waterTargetML: Int?
     /// The four target derivations with today's actual inputs, one line each (`TargetsExplainer`),
     /// for the optional "how these were set" disclosure under the targets strip (260901).
     var explainLines: [String] = []
@@ -251,6 +257,21 @@ final class Repository: ObservableObject {
     /// so the card sat stale until an unrelated sync landed. Race-free: Repository is @MainActor.
     @Published private(set) var hydrationSeq = 0
     func noteHydrationChanged() { hydrationSeq += 1 }
+
+    /// Today's hydration total (ml) as a SYNCHRONOUS read, so the targets path (pure, sync, and
+    /// memoized per refresh) can carry water without becoming async (260903). Maintained from the
+    /// same per-entry log the async `hydrationTotal` reads — every mutation goes through
+    /// `logHydration` / `deleteHydrationEntry` / `updateHydrationEntry`, which re-derive this — and
+    /// re-derived on a day roll by `refreshHydrationCache`. Manual entries only, exactly like the
+    /// figure the Today card's ring shows before an import lands.
+    private(set) var hydrationTodayCachedML: Double = 0
+    private var hydrationCachedDay = ""
+
+    /// Set by `refreshHydrationCache` (in HydrationStore.swift, where the entry reader lives).
+    func setHydrationCache(day: String, totalML: Double) {
+        hydrationCachedDay = day
+        hydrationTodayCachedML = totalML
+    }
 
     /// Bumped whenever a period-start row is logged or removed. Cycle surfaces use this lightweight
     /// signal to reload their sensitive local history without forcing a full strap-data refresh.
@@ -641,7 +662,9 @@ final class Repository: ObservableObject {
     /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
     static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
                             profile: UserProfile,
-                            todayKey: String) -> LiveTargets {
+                            todayKey: String,
+                            waterTodayML: Double? = nil,
+                            waterTargetML: Int? = nil) -> LiveTargets {
         // The full read, not just the level: the explainer's "body check" lines print the
         // signals' actual values against their baselines (260901: no jargon, every line a number).
         let readinessRead = ReadinessEngine.evaluate(days: days)
@@ -696,6 +719,8 @@ final class Repository: ObservableObject {
             stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
             effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
             effortTarget: effortTarget,
+            waterTodayML: waterTodayML,
+            waterTargetML: waterTargetML,
             explainLines: TargetsExplainer.lines(
                 charge: charge, readiness: readinessRead, restScore: restScore,
                 session: session,
@@ -712,7 +737,9 @@ final class Repository: ObservableObject {
                                                                readiness: readiness,
                                                                debtBalanceMin: ledger.balanceMin),
                 age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
-                debtBalanceMin: ledger.balanceMin))
+                debtBalanceMin: ledger.balanceMin,
+                waterTargetML: waterTargetML,
+                effortForWater: todayRow?.strain))
     }
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
@@ -731,11 +758,20 @@ final class Repository: ObservableObject {
         let localKey = Self.localDayKey(now)
         return liveTargetsMemo.resolve(seq: refreshSeq, logicalKey: logicalKey, localKey: localKey) {
             let anchor = cachedWidgetAnchor(now: now)
+            // Water rides the same memo: the figures come from the hydration tracker's own
+            // synchronous caches (`hydrationTodayCachedML` is refreshed by every log + sync), so
+            // the targets stay a pure sync read while still speaking the tracker's numbers.
+            let waterOn = UserDefaults.standard.bool(forKey: HydrationStore.enabledKey)
+            let profile = liveTargetsProfile?() ?? UserProfile()
             return Self.liveTargets(days: days,
                                     charge: anchor?.recovery.map { Int($0.rounded()) },
                                     restScore: anchor.flatMap { restScore(for: $0) },
-                                    profile: liveTargetsProfile?() ?? UserProfile(),
-                                    todayKey: max(logicalKey, localKey))
+                                    profile: profile,
+                                    todayKey: max(logicalKey, localKey),
+                                    waterTodayML: waterOn ? hydrationTodayCachedML : nil,
+                                    waterTargetML: waterOn
+                                        ? hydrationGoalML(profileSex: profile.sex)
+                                        : nil)
         }
     }
 

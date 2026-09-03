@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import StrandAnalytics
 
 /// Foreground presentation delegate for the app's local notifications (wind-down nudge, smart-alarm
 /// backup, battery/illness alerts).
@@ -35,18 +36,23 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// Today card. `hydrationActionSink` is installed by the app at launch; when it is nil (a
     /// response arriving before the model exists) the tap is dropped rather than queued — one
     /// missed cup is a smaller wrong than a phantom one logged minutes later against the wrong day.
-    var hydrationActionSink: ((@escaping () -> Void) -> Void)?
+    var hydrationActionSink: ((Int, @escaping () -> Void) -> Void)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        guard response.actionIdentifier == HydrationReminder.logCupActionId,
-              let sink = hydrationActionSink else {
+        let amount: Int?
+        switch response.actionIdentifier {
+        case HydrationReminder.logCupActionId: amount = HydrationGoal.cupML
+        case HydrationReminder.logHalfCupActionId: amount = HydrationGoal.halfCupML
+        default: amount = nil
+        }
+        guard let amount, let sink = hydrationActionSink else {
             completionHandler()
             return
         }
-        sink(completionHandler)
+        sink(amount, completionHandler)
     }
 }

@@ -738,9 +738,14 @@ final class AppModel: ObservableObject {
             // provider, no consent, timeout, over-long reply) falls back to the static "Behind
             // pace" the decision already carries, so the notification never waits on the network
             // to be useful.
-            let title = await coach.paceCheckTitle(behind: nudge.behind.map {
-                (label: $0.label, actual: $0.actual, pace: $0.pace, goal: $0.goal)
-            }) ?? nudge.title
+            let status = nudge.behind.map { item -> String in
+                let pct = item.pace > 0
+                    ? Int((Double(item.pace - item.actual) / Double(item.pace) * 100).rounded())
+                    : 0
+                return "\(item.label): \(item.actual) of \(item.pace) expected by now "
+                    + "(day goal \(item.goal)) — \(pct)% behind pace"
+            }.joined(separator: "\n")
+            let title = await coach.notificationTitle(status: status) ?? nudge.title
             TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
             live.append(log: "Automation: pace check posted ("
                         + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
@@ -756,10 +761,11 @@ final class AppModel: ObservableObject {
     /// about the day's cups. After the write the snapshot is refreshed so the NEXT reminder states
     /// the new count.
     func installHydrationReminderSink() {
-        NotificationPresenter.shared.hydrationActionSink = { [weak self] done in
+        Self.titleCoach = coach
+        NotificationPresenter.shared.hydrationActionSink = { [weak self] amountMl, done in
             Task { @MainActor in
                 guard let self else { done(); return }
-                await self.repo.logHydration(amountMl: HydrationGoal.cupML)
+                _ = await self.repo.logHydration(amountMl: amountMl)
                 await self.refreshHydrationReminderSnapshot()
                 done()
             }
@@ -773,6 +779,12 @@ final class AppModel: ObservableObject {
         let dayKey = Repository.localDayKey(Date())
         let total = await repo.hydrationTotal(day: dayKey)
         let goal = repo.hydrationGoalML(profileSex: profile.sex)
+        // A coach-written title for the reminders about to be armed. Generated HERE, not at fire
+        // time: the reminders are calendar triggers that fire with no app running. Nil (no
+        // provider/consent, or a failure) leaves the static "Water break".
+        let title = await coach.notificationTitle(
+            status: HydrationReminder.coachStatus(totalML: total, goalML: goal))
+        HydrationReminder.cacheCoachTitle(title, dayKey: dayKey)
         HydrationReminder.refreshSnapshot(totalML: total, goalML: goal, dayKey: dayKey)
     }
 
@@ -1574,12 +1586,27 @@ final class AppModel: ObservableObject {
     /// Post the local notification mirroring the inactivity (sedentary) wrist nudge. Called right after
     /// `BLEManager.maybeBuzzInactivity` fires its buzz (see crossLaneNotes). `minutes` = the seated bout
     /// length the detector reported. No-op on macOS and when wrist alerts are off.
+    /// The live coach, lent to this type's STATIC notification posters (260903) so they can ask for
+    /// a written title. Weak: the poster must never keep the model alive, and a nil reference simply
+    /// means the static title is used. Set once in `installHydrationReminderSink`.
+    private static weak var titleCoach: AICoachEngine?
+
     static func postInactivity(minutes: Int) {
         #if os(iOS)
         let body = minutes > 0
             ? String(localized: "You've been seated for about \(minutes) min. Time to move.")
             : String(localized: "Time to move. You've been seated a while.")
-        postWristAlert(identifier: "inactivity-nudge", title: String(localized: "Move reminder"), body: body)
+        // 260903: the coach titles this nudge too, on the same shared generator + fallback as the
+        // pace check and the water reminder. Posted from inside the task so the notification
+        // carries the written title when there is one; the buzz itself already fired independently
+        // in BLEManager, so nothing the user feels waits on this.
+        let staticTitle = String(localized: "Move reminder")
+        Task { @MainActor in
+            let title = await Self.titleCoach?.notificationTitle(
+                status: "Movement: I have been sitting still for a while and should get up")
+            Self.postWristAlert(identifier: "inactivity-nudge",
+                                title: title ?? staticTitle, body: body)
+        }
         #endif
     }
 

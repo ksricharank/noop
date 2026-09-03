@@ -419,6 +419,8 @@ final class AICoachEngine: ObservableObject {
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
     static let systemPromptKey = "ai.systemPrompt"
     static let synthesisPromptKey = "ai.synthesisPrompt"
+    /// The editable instruction behind every coach-written NOTIFICATION TITLE (260903).
+    static let notificationTitlePromptKey = "ai.notificationTitlePrompt"
 
     /// The built-in system prompt that frames every request. Anonymous, frames the assistant only as a
     /// coach. Exposed (read-only) so the UI's "Reset to default" can restore it and show it when nothing
@@ -504,11 +506,12 @@ final class AICoachEngine: ObservableObject {
     that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
     strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
     about it overall — this section is about my heart's trajectory, not this minute's reading.
-    The **Activity** section covers my effort, my total calories AND my steps so far against \
-    today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): what \
-    produced those numbers, then the concrete session (or rest) that closes the gap, and the \
-    walking left to do. Total calories include resting metabolism on both sides, so early-day \
-    numbers far below target are normal — say so rather than urging a sprint.
+    The **Activity** section covers my effort, my total calories, my steps AND my water so far \
+    against today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): \
+    what produced those numbers, then the concrete session (or rest) that closes the gap, the \
+    walking left to do, and the cups of water left to drink. Total calories include resting \
+    metabolism on both sides, so early-day numbers far below target are normal — say so rather \
+    than urging a sprint.
     The **Rest & sleep** section covers what last night and today's load mean for resting \
     properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
     TODAY'S TARGETS.
@@ -518,6 +521,36 @@ final class AICoachEngine: ObservableObject {
     illustrative, not required). Cite my actual numbers; never invent targets that differ from \
     TODAY'S TARGETS. No greeting, nothing outside the three sections.
     """
+
+    /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
+    /// water reminder and the move reminder all route through it (260903).
+    ///
+    /// The 32-character bound is stated to the model WITH worked examples, because that is what
+    /// actually produces short lines; iOS clips a Lock-Screen title around there. The bound is also
+    /// enforced in code (`notificationTitle` trims at a word boundary, then falls back to the
+    /// caller's static title) — the prompt asks, only the code can guarantee.
+    static let defaultNotificationTitlePrompt = """
+    Write ONE title for a phone notification about the status below.
+    Rules, strictly:
+    - At most 32 characters. This is a hard limit — a longer line gets thrown away.
+    - Warm, a little playful, motivating. Never scolding, never guilt-tripping.
+    - Scale it to the size of the gap: a small shortfall suggests something quick; a large one \
+    suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
+    encourage me to keep going rather than implying there is nothing left to do.
+    - No emoji, no quotation marks, no trailing period, no line breaks.
+    Good examples: "Quick lap around the block?", "Time to earn that couch", "Halfway there, keep \
+    sipping", "Nailed it — keep it rolling", "Big push left, block an hour".
+    Reply with the line only.
+    """
+
+    /// The notification-title instruction actually sent, read FRESH so a Coach-screen edit applies
+    /// to the next notification. Blank/absent falls back to the built-in.
+    var notificationTitlePrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stored, !stored.isEmpty { return stored }
+        return Self.defaultNotificationTitlePrompt
+    }
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
     /// edit takes effect on the next refresh. Blank/absent falls back to `defaultSynthesisPrompt`, so
@@ -554,6 +587,31 @@ final class AICoachEngine: ObservableObject {
     /// Restore the built-in synthesis instruction by clearing the stored override.
     func resetSynthesisPrompt() {
         UserDefaults.standard.removeObject(forKey: Self.synthesisPromptKey)
+        objectWillChange.send()
+    }
+
+    /// The editable notification-title instruction, same shape as `customSynthesisPrompt` (260903).
+    var customNotificationTitlePrompt: String {
+        get { notificationTitlePrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultNotificationTitlePrompt {
+                UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.notificationTitlePromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomNotificationTitlePrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultNotificationTitlePrompt
+    }
+
+    func resetNotificationTitlePrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
         objectWillChange.send()
     }
 
@@ -1000,45 +1058,67 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
-    /// A one-line, coach-written TITLE for a pace-check notification (260902) — the motivating
-    /// half of the nudge, sized to how far behind the day actually is: a light shortfall should
-    /// read as "grab a quick walk", a heavy one as "block out some real time".
+    /// A one-line, coach-written TITLE for any of NOOP's nudge notifications (260902, generalised
+    /// 260903): the pace check, the water reminder and the move reminder all route through here.
     ///
-    /// Deliberately a small, self-contained call rather than a reuse of the synthesis turn: it runs
-    /// at most once per check-in (~every 2 h by default), sends only the three deficit ratios and
-    /// no personal history, and asks for a single short line. Returns nil on ANY failure — no
-    /// provider, no key, no consent, a timeout, an over-long or empty reply — and the caller then
-    /// uses its own static title. That is the same fallback discipline the synthesis uses: the
-    /// notification must never wait on, or be blocked by, the network.
-    func paceCheckTitle(behind: [(label: String, actual: Int, pace: Int, goal: Int)]) async -> String? {
-        guard isConfigured, dataConsent, !behind.isEmpty, let key = resolvedKey else { return nil }
-        let lines = behind.map { item in
-            let shortfallPct = item.pace > 0
-                ? Int((Double(item.pace - item.actual) / Double(item.pace) * 100).rounded())
-                : 0
-            return "\(item.label): \(item.actual) of \(item.pace) expected by now "
-                + "(day goal \(item.goal)) — \(shortfallPct)% behind pace"
-        }.joined(separator: "\n")
-        let instruction = """
-        These are my activity targets and where I actually am right now, mid-day:
-
-        \(lines)
-
-        Write ONE short motivating line (max 8 words) to title a phone notification about this.         Scale it to how far behind I am: a small gap should suggest something quick like a short         walk; a large gap should suggest setting aside a real block of time. Be warm and a little         playful, never scolding, never guilt-tripping. No emoji, no quotes, no trailing period.         Reply with the line only.
-        """
+    /// `status` is the plain-language state to title — the caller's own numbers, already formatted
+    /// (e.g. "Steps: 1500 of 3750 expected by now (day goal 10000) — 60% behind pace"). The
+    /// instruction is the user-editable `notificationTitlePrompt`.
+    ///
+    /// Deliberately small and self-contained: at most one call per nudge, no history sent, one
+    /// short line back. Returns nil on ANY failure — no provider, no key, no consent, a timeout, an
+    /// empty reply, or a line that cannot be brought inside the length bound — and the caller then
+    /// uses its own static title. The notification must never wait on, or be blocked by, the
+    /// network.
+    func notificationTitle(status: String) async -> String? {
+        guard isConfigured, dataConsent, !status.isEmpty, let key = resolvedKey else { return nil }
+        let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
         do {
             let reply = try await callProvider(key: key, messages: [(.user, instruction)])
-            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "\"", with: "")
-                .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
-            // A model that ignores the length bound would push the rows off a Lock Screen banner,
-            // so an over-long line is treated as a failure and the caller's static title wins.
-            guard !clean.isEmpty, clean.count <= 48, !clean.contains("\n") else { return nil }
-            return clean
+            return Self.cleanNotificationTitle(reply)
         } catch {
             return nil
         }
     }
+
+    /// The length/shape enforcement behind `notificationTitle`, pure so it is pinned by tests.
+    ///
+    /// The prompt asks for ≤32 characters with examples, which is what actually produces short
+    /// lines — but a model can ignore it, and a clipped Lock-Screen title is a worse outcome than a
+    /// plain one. So: strip the shapes the prompt forbids (quotes, trailing punctuation, line
+    /// breaks), then TRIM at a word boundary rather than discarding a slightly-long line, and give
+    /// up only when even the first words cannot fit. nil = the caller's static title wins.
+    nonisolated static func cleanNotificationTitle(_ raw: String) -> String? {
+        // A model that ignores "no line breaks" usually offers its best line first.
+        let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
+        var clean = firstLine
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{201C}", with: "")
+            .replacingOccurrences(of: "\u{201D}", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!  "))
+        guard !clean.isEmpty else { return nil }
+        if clean.count > notificationTitleMaxChars {
+            // Keep whole words only — a title cut mid-word reads as a bug, not as brevity.
+            var kept: [String] = []
+            var used = 0
+            for word in clean.split(separator: " ") {
+                let cost = kept.isEmpty ? word.count : word.count + 1
+                guard used + cost <= notificationTitleMaxChars else { break }
+                kept.append(String(word))
+                used += cost
+            }
+            // One word is not a title; fall back rather than posting a fragment.
+            guard kept.count >= 2 else { return nil }
+            clean = kept.joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",;:-\u{2014} "))
+        }
+        return clean.isEmpty ? nil : clean
+    }
+
+    /// The hard title bound. iOS clips a Lock-Screen notification title around here, so a longer
+    /// line would be shown truncated — the one outcome worth failing over.
+    nonisolated static let notificationTitleMaxChars = 32
 
     /// Why the last Today-synthesis generation failed, or nil if the last one succeeded (or none has
     /// run). Surfaced in the Coach screen rather than on Today: the Today card's contract is to always
@@ -1524,6 +1604,19 @@ final class AICoachEngine: ObservableObject {
             if let kcalSidesText { line += " " + kcalSidesText }
             if let stepsSidesText { line += " " + stepsSidesText }
             lines.append(line)
+        }
+
+        // Water (260903): the same cups the Today water row and the reminder show, so the
+        // Activity section can talk about hydration without inventing a number. Omitted entirely
+        // when hydration tracking is off.
+        if let goalML = targets.waterTargetML {
+            let goalCups = max(1, HydrationGoal.cups(fromML: Double(goalML)))
+            let drunkCups = HydrationGoal.cups(fromML: targets.waterTodayML ?? 0)
+            let left = max(0, goalCups - drunkCups)
+            lines.append("Water target: \(goalCups) cups (\(goalML) ml — a baseline for the "
+                         + "user's body plus a bump for today's effort); drunk so far: "
+                         + "\(drunkCups) cups"
+                         + (left > 0 ? ", \(left) cups left." : " — target already met."))
         }
 
         // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.

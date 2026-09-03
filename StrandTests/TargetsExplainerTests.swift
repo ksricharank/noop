@@ -107,6 +107,42 @@ final class TargetsExplainerTests: XCTestCase {
         }
     }
 
+    /// The water block (260903): a body baseline, an effort bump, the rounding, then cups — the
+    /// same arithmetic `HydrationGoal` uses, ending in the cup figure the Today row shows.
+    func testWaterBlockShowsBaselineEffortBumpAndCups() {
+        let read = readiness(level: .balanced)
+        let goalML = HydrationGoal.dailyGoalML(sex: "male", effort: 40)
+        let blocks = TargetsExplainer.lines(
+            charge: 80, readiness: read, restScore: 81,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
+            waterTargetML: goalML, effortForWater: 40)
+
+        XCTAssertEqual(blocks.count, 1, "only the water block when every other target is nil")
+        let cups = HydrationGoal.cups(fromML: Double(goalML))
+        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → \(cups) cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("baseline for your body: \(HydrationGoal.baselineMaleML) ml"),
+                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("today's effort 40 adds \(HydrationGoal.effortBump(effort: 40)) ml"),
+                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("= \(goalML) ml"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("\(HydrationGoal.cupML) ml each → \(cups) cups"), blocks[0])
+    }
+
+    /// With no effort logged the bump rung still prints, showing what a hard day WOULD add.
+    func testWaterBlockPrintsTheZeroBumpRung() {
+        let blocks = TargetsExplainer.lines(
+            charge: nil, readiness: readiness(level: .balanced), restScore: nil,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
+            waterTargetML: HydrationGoal.dailyGoalML(sex: "male", effort: nil),
+            effortForWater: nil)
+        XCTAssertTrue(blocks[0].contains("no effort logged yet → +0 ml"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("adds up to \(HydrationGoal.maxEffortBumpML) ml"), blocks[0])
+    }
+
     func testRestDayBlocksExplainTheCancelledWorkoutAndTheZeroTarget() {
         let read = readiness(level: .rundown, hrv: (41, 60, .bad), rhr: (63, 56, .watch))
         let kcalTarget = DailyTargets.dayKcalTarget(session: nil, profile: profile, restingHr: 60)
