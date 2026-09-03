@@ -57,39 +57,45 @@ enum HydrationReminder {
         return Array(stride(from: startMinute, through: lastSlotMinute, by: step))
     }
 
-    /// Whole cups from a millilitre figure, rounded to nearest (the maintainer asked for rounded
-    /// cups, not decimals): 237 ml = 1 cup, the same `HydrationGoal.cupML` the +Cup button logs.
-    static func cups(fromML ml: Double) -> Int {
-        Int((ml / Double(HydrationGoal.cupML)).rounded())
-    }
+    /// Whole cups from a millilitre figure — delegated to `HydrationGoal` so the reminder cannot
+    /// round differently from the Today row (260903: it did).
+    static func cups(fromML ml: Double) -> Int { HydrationGoal.cups(fromML: ml) }
 
-    /// The reminder's copy: today's cup goal, cups drunk, cups left. `left` never goes negative —
-    /// past the goal it congratulates instead of nagging, since the reminder keeps firing until the
-    /// day's last slot and a "-2 cups left" would read as a bug.
-    static func reminderText(totalML: Double, goalML: Int) -> (title: String, body: String) {
-        let drunk = cups(fromML: totalML)
-        let goal = max(1, cups(fromML: Double(goalML)))
-        let left = max(0, goal - drunk)
+    /// The reminder's copy: today's cup goal, cups drunk, cups left.
+    ///
+    /// `goalCups` is the goal the Today ROW shows — passed in, never recomputed here. 260903: the
+    /// reminder used to derive it from `hydrationGoalML` (the retired millilitre formula) and
+    /// re-round the drunk figure to whole cups, so the notification read "2/16" while the row read
+    /// "3/19" — two formulas and two roundings for one number. Both now come from the one
+    /// `LiveTargets` the row reads.
+    ///
+    /// Drunk is rendered at the ROW's granularity (half-cups: "2.5"), not re-rounded to whole cups.
+    static func reminderText(totalML: Double, goalCups: Int) -> (title: String, body: String) {
+        let drunkHalves = HydrationGoal.halfCups(fromML: totalML)
+        let drunk = HydrationGoal.cupsDisplay(halfCups: drunkHalves)
+        let goal = max(1, goalCups)
+        // `left` counts WHOLE cups still to drink and never goes negative: the reminders keep
+        // coming to the day's last slot (hydration is not a finish line), so the over-goal copy
+        // has to encourage rather than show a "-2 cups left" that reads as a bug.
+        let left = max(0, goal - Int((Double(drunkHalves) / 2.0).rounded(.down)))
         let title = String(localized: "Water break")
-        // Past the goal the reminders KEEP coming to the day's last slot (the maintainer's call:
-        // hydration is not a finish line), so the over-goal copy has to encourage rather than
-        // nag — a "-2 cups left" would read as a bug, and "nothing left to do" is wrong.
         if left == 0 {
-            return (title, String(format: String(localized: "%d of %d cups — you're there, keep sipping"),
+            return (title, String(format: String(localized: "%@ of %d cups — you're there, keep sipping"),
                                   drunk, goal))
         }
-        return (title, String(format: String(localized: "%d of %d cups — %d to go"), drunk, goal, left))
+        return (title, String(format: String(localized: "%@ of %d cups — %d to go"), drunk, goal, left))
     }
 
     /// The status line handed to the coach for a written title (260903) — the same figures the body
     /// states, in the plain-language shape `AICoach.notificationTitle` expects.
-    static func coachStatus(totalML: Double, goalML: Int) -> String {
-        let drunk = cups(fromML: totalML)
-        let goal = max(1, cups(fromML: Double(goalML)))
-        if drunk >= goal {
+    static func coachStatus(totalML: Double, goalCups: Int) -> String {
+        let drunk = HydrationGoal.cupsDisplay(halfCups: HydrationGoal.halfCups(fromML: totalML))
+        let goal = max(1, goalCups)
+        let left = max(0, goal - Int((Double(HydrationGoal.halfCups(fromML: totalML)) / 2.0).rounded(.down)))
+        if left == 0 {
             return "Water: \(drunk) of \(goal) cups today — I have already hit my target"
         }
-        return "Water: \(drunk) of \(goal) cups today — \(goal - drunk) cups still to drink"
+        return "Water: \(drunk) of \(goal) cups today — \(left) cups still to drink"
     }
 
     // MARK: - Notification category + actions
@@ -212,16 +218,18 @@ enum HydrationReminder {
     /// Record today's hydration figures for the next fired reminder to describe, and re-arm the
     /// pending requests so their copy is current. Called whenever the tracker changes or a sync
     /// lands. A day roll resets the drunk figure to 0 so the morning's first reminder is honest.
-    static func refreshSnapshot(totalML: Double, goalML: Int, dayKey: String) {
+    static func refreshSnapshot(totalML: Double, goalCups: Int, dayKey: String) {
         let sameDay = d.string(forKey: snapDayKey) == dayKey
         let prevTotal = sameDay ? d.double(forKey: snapTotalKey) : -1
         let prevGoal = sameDay ? d.integer(forKey: snapGoalKey) : -1
         d.set(dayKey, forKey: snapDayKey)
         d.set(totalML, forKey: snapTotalKey)
-        d.set(goalML, forKey: snapGoalKey)
+        d.set(goalCups, forKey: snapGoalKey)
         // Only re-arm when the copy would actually change — rescheduling ~17 requests on every
         // hydration read would be needless churn.
-        guard isEnabled, cups(fromML: prevTotal) != cups(fromML: totalML) || prevGoal != goalML else { return }
+        guard isEnabled,
+              HydrationGoal.halfCups(fromML: prevTotal) != HydrationGoal.halfCups(fromML: totalML)
+                || prevGoal != goalCups else { return }
         schedule()
     }
 
@@ -255,12 +263,12 @@ enum HydrationReminder {
         let today = Repository.localDayKey(Date())
         guard d.string(forKey: snapDayKey) == today else {
             // No figures for today yet (fresh day, app not opened): state the goal only.
-            let goal = max(1, cups(fromML: Double(d.integer(forKey: snapGoalKey))))
+            let goal = max(1, d.integer(forKey: snapGoalKey))
             return (String(localized: "Water break"),
                     String(format: String(localized: "%d cups today — time for one"), goal))
         }
         let text = reminderText(totalML: d.double(forKey: snapTotalKey),
-                                goalML: d.integer(forKey: snapGoalKey))
+                                goalCups: d.integer(forKey: snapGoalKey))
         return (cachedCoachTitle() ?? text.title, text.body)
     }
 }
