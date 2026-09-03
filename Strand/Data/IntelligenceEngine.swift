@@ -1733,7 +1733,7 @@ final class IntelligenceEngine: ObservableObject {
         // these instead of recomputing against its own 2-night baseline — see the `recovery`
         // assignment in the pass-2 loop for why that recomputation was wrong. Read once, and only
         // for a light pass (the full pass recomputes every day anyway).
-        var storedRecoveryByDay: [String: Double] = [:]
+        var storedRowByDay: [String: DailyMetric] = [:]
         if lightPass {
             // Same window the pass scores: [now - (maxDays-1) days, today], derived here rather
             // than reusing `oldestDay`/`newestDay`, which are declared further down.
@@ -1742,7 +1742,7 @@ final class IntelligenceEngine: ObservableObject {
             let toDay = AnalyticsEngine.dayString(nowLocalMidnight, offsetSec: tzOffset)
             let existing = (try? await store.dailyMetrics(deviceId: computedId,
                                                           from: fromDay, to: toDay)) ?? []
-            for row in existing { if let r = row.recovery { storedRecoveryByDay[row.day] = r } }
+            for row in existing { storedRowByDay[row.day] = row }
         }
 
         let baselines2 = AnalyticsEngine.ProfileBaselines(
@@ -1854,9 +1854,10 @@ final class IntelligenceEngine: ObservableObject {
             // night. So it KEEPS the stored recovery: the value the last full pass computed
             // against the real baseline. Nil stays nil (an unscored night is not invented), and
             // the next full pass recomputes normally.
-            let recovery = lightPass
-                ? (storedRecoveryByDay[daily.day] ?? daily.recovery)
-                : recomputeRecovery(daily, baselines2)
+            // A light pass does not re-judge the night at all — the merge below restores every
+            // scored-night field from the stored row, recovery included. Computing it here would
+            // be wasted work against a baseline the light window cannot support.
+            let recovery = lightPass ? nil : recomputeRecovery(daily, baselines2)
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
             // score is RecoveryScorer.recovery verbatim, so the `recovery` written above is unchanged.
@@ -1944,8 +1945,12 @@ final class IntelligenceEngine: ObservableObject {
             // Persist the ABSOLUTE beside the deviation derived from it (#1636). Same value, same pass,
             // same `night.nightlySkin` the line above takes the deviation from — so the two can never
             // describe different nights, and no second derivation exists to drift.
-            dailies.append(daily.with(recovery: recovery, skinTempDevC: skinDev,
-                                      skinTempC: night.nightlySkin))
+            // The maintainer's rule (260903): a light pass contributes ONLY the numerators and
+            // leaves every target input as the last full pass computed it.
+            let scored = daily.with(recovery: recovery, skinTempDevC: skinDev,
+                                    skinTempC: night.nightlySkin)
+            dailies.append(lightPass ? scored.lightPassMerged(over: storedRowByDay[daily.day])
+                                     : scored)
             if let rest = AnalyticsEngine.Rest.composite(daily: daily) {
                 restPoints.append(MetricPoint(day: daily.day, key: "sleep_performance", value: rest))
             }
@@ -2161,9 +2166,16 @@ final class IntelligenceEngine: ObservableObject {
         // strictly additive — it can rewrite what it produced and nothing else (260902).
         let persistFrom = lightPass ? (dailies.map(\.day).min() ?? oldestDay) : oldestDay
         let persistTo = lightPass ? (dailies.map(\.day).max() ?? newestDay) : newestDay
+        // A LIGHT pass writes NO metric series (260903). Every one of them — `sleep_performance`
+        // (the Rest score: a target input, read by the sleep target and the session ladder), the
+        // SpO₂ candidate, the R-R overcount flag, the resting-HR session diagnostics — describes
+        // the SCORED NIGHT, and all are derived from the freshly computed `daily` whose
+        // scored-night fields the light merge deliberately discards in favour of the stored ones.
+        // Writing them would put values on screen that no longer match the row they came from.
+        // The next full pass recomputes the lot against the real window.
         try? await store.persistComputedScores(
             dailyMetrics: dailies,
-            metricPoints: restPoints,
+            metricPoints: lightPass ? [] : restPoints,
             provenance: Array(provenanceByCell.values),
             deviceId: computedId,
             from: persistFrom,
@@ -3007,6 +3019,41 @@ extension DailyMetric {
                     spo2Pct: spo2Pct, skinTempDevC: sd, respRateBpm: respRateBpm,
                     steps: steps, activeKcalEst: activeKcalEst,
                     spo2Red: spo2Red, spo2Ir: spo2Ir, avgSdnn: avgSdnn, skinTempC: sa)
+    }
+
+    /// The LIGHT-PASS merge (260903, the maintainer's rule: "the light pass is only for the
+    /// numerators, never the targets, which should just be fixed after it is computed once during
+    /// the day").
+    ///
+    /// `self` is the freshly computed row; `stored` is what the last FULL pass persisted. Only the
+    /// three day accumulators the widgets and the Today strip show as numerators are taken from
+    /// the fresh row — steps, calories, strain. Every SCORED-NIGHT field is preserved from
+    /// `stored`, because each one either IS a target input or feeds one, and a 2-day pass cannot
+    /// compute them correctly: on a strap-only install the HRV/RHR baselines are folded entirely
+    /// from the nights the pass scored, so a 2-night window mis-scores recovery (the reported
+    /// Charge 22 ↔ 47 flip), and Rest/HRV/resting-HR ride the same starved history.
+    ///
+    /// With no stored row yet (a genuinely new day, or a fresh install) the fresh values stand:
+    /// preserving nil would leave the day blank, which is worse than an early estimate the next
+    /// full pass corrects.
+    func lightPassMerged(over stored: DailyMetric?) -> DailyMetric {
+        guard let stored else { return self }
+        return DailyMetric(
+            day: day,
+            // ── target inputs: the last full pass's, untouched ──────────────────────────
+            totalSleepMin: stored.totalSleepMin, efficiency: stored.efficiency,
+            deepMin: stored.deepMin, remMin: stored.remMin, lightMin: stored.lightMin,
+            disturbances: stored.disturbances, restingHr: stored.restingHr,
+            avgHrv: stored.avgHrv, recovery: stored.recovery,
+            // ── numerators: today's, fresh from this pass ──────────────────────────────
+            strain: strain,
+            exerciseCount: exerciseCount,
+            // ── the rest of the scored night ───────────────────────────────────────────
+            spo2Pct: stored.spo2Pct, skinTempDevC: stored.skinTempDevC,
+            respRateBpm: stored.respRateBpm,
+            steps: steps, activeKcalEst: activeKcalEst,
+            spo2Red: stored.spo2Red, spo2Ir: stored.spo2Ir, avgSdnn: stored.avgSdnn,
+            skinTempC: stored.skinTempC)
     }
 
     /// Rebuild with substituted sleep-derived fields (a user-corrected wake window), leaving every
