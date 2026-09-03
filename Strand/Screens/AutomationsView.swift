@@ -54,6 +54,7 @@ struct AutomationsView: View {
     // 260901 target automations (A morning brief / E pacing nudges). Plain bools, so @AppStorage.
     @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
     @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
+    @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = false
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
     @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
 
@@ -71,6 +72,7 @@ struct AutomationsView: View {
             hapticsCard
             wearCard
             coachingCard
+            wristBuzzCard
             morningBriefCard
             pacingCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
@@ -281,6 +283,27 @@ struct AutomationsView: View {
                         .onChangeCompat(of: stressSustainSec) { sec in
                             BiofeedbackPrefs.sustainSeconds = sec
                         }
+                }
+            }
+        }
+    }
+
+    // MARK: - Wrist buzz for NOOP's own nudges (260903)
+
+    private var wristBuzzCard: some View {
+        Section2(icon: "hand.tap.fill", title: String(localized: "Buzz my wrist"),
+                 blurb: String(localized: "When NOOP sends you one of its own nudges, buzz the strap too \u{2014} so you feel it without checking the phone."),
+                 active: nudgeWristBuzz) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Buzz on NOOP nudges"),
+                          help: String(localized: "Applies to the morning brief, pace checks and water reminders, and confirms a cup logged from a reminder. Stress check-ins already buzz on their own."),
+                          isOn: $nudgeWristBuzz)
+                if nudgeWristBuzz {
+                    rowDivider
+                    Text("The buzz needs the strap connected and bonded, so a charging or out-of-range strap simply gets no cue.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
