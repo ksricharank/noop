@@ -107,26 +107,36 @@ final class TargetsExplainerTests: XCTestCase {
         }
     }
 
-    /// The water block (260903, in cups): baseline cups, a cup per 10 points of effort target,
-    /// then the sum — arithmetic the reader can check by eye, which the millilitre chain was not.
-    func testWaterBlockShowsBaselineCupsAndTheEffortTargetBump() {
-        let goalCups = HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50)
-        let blocks = TargetsExplainer.lines(
+    /// The water block names WHICH basis produced the bump, or a day that went harder than
+    /// prescribed would show a number the stated basis cannot explain (260903).
+    func testWaterBlockNamesThePlanOrTheRealWork() {
+        let planned = TargetsExplainer.lines(
             charge: 80, readiness: readiness(level: .balanced), restScore: 81,
             session: nil, sessionHrBpm: nil,
             effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
             age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
-            waterTargetCups: goalCups, effortForWater: 50)
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50),
+            effortForWater: 50, waterEffortIsAccrued: false)
+        XCTAssertTrue(planned[0].hasPrefix("WATER TARGET → 21 cups"), planned[0])
+        XCTAssertTrue(planned[0].contains("today's effort target 50 adds 5 cups"), planned[0])
+        XCTAssertTrue(planned[0].contains("one cup per 10 points"), planned[0])
+        XCTAssertTrue(planned[0].contains("16 + 5 = 21 cups"), planned[0])
 
-        XCTAssertEqual(blocks.count, 1)
-        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 21 cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("baseline for your body: 16 cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("today's effort target 50 adds 5 cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("one cup per 10 points"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("16 + 5 = 21 cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("set once at this morning's score"), blocks[0])
+        // Exceeded the plan: the block says so, and says the ask cannot shrink back.
+        let exceeded = TargetsExplainer.lines(
+            charge: 80, readiness: readiness(level: .balanced), restScore: 81,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 70),
+            effortForWater: 70, waterEffortIsAccrued: true)
+        XCTAssertTrue(exceeded[0].contains("today's effort so far 70 adds 7 cups"), exceeded[0])
+        XCTAssertTrue(exceeded[0].contains("passed today's plan"), exceeded[0])
+        XCTAssertTrue(exceeded[0].contains("can only grow, never shrink"), exceeded[0])
     }
 
+    /// A rest day with no effort accrued prices the body baseline alone, and says what a real
+    /// day would have added — the same "show the untaken branch" rule the other blocks follow.
     func testWaterBlockOnARestDayPricesTheBaselineAlone() {
         let blocks = TargetsExplainer.lines(
             charge: nil, readiness: readiness(level: .balanced), restScore: nil,
@@ -134,8 +144,9 @@ final class TargetsExplainerTests: XCTestCase {
             effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
             age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
             waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil),
-            effortForWater: nil)
+            effortForWater: nil, waterEffortIsAccrued: false)
         XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("baseline for your body: 16 cups"), blocks[0])
         XCTAssertTrue(blocks[0].contains("rest day, no effort target → +0 cups"), blocks[0])
     }
 

@@ -713,16 +713,31 @@ final class Repository: ObservableObject {
         // the user's body plus one cup per 10 points of prescribed effort — the maintainer's rule
         // ("a target strain of 50 leads to 16 + 50/10 = 21 cups").
         //
-        // Two earlier bases were wrong and both are worth remembering. Today's ACCUMULATING strain
-        // moved the denominator all day (the reported goalpost-moving). Then YESTERDAY's scored
-        // strain: frozen in principle, but the 2-day light pass keeps REWRITING yesterday's row
-        // hours into today, which is how the derivation came to read "yesterday's effort of 8"
-        // when yesterday had finished at 7. Today's effort target is set once at the morning score
-        // and describes the day being asked for, so it is both stable and the right day. A rest
-        // day (nil effort target) prices the body baseline alone.
+        // The basis is max(today's effort TARGET, today's effort ACCRUED) — the maintainer's
+        // 260903 refinement. Pricing off the target alone was stable but under-asked on a day
+        // that genuinely went harder than prescribed: sweat loss is real and same-day, so
+        // exceeding the plan should raise the water ask. Taking the MAXIMUM keeps the goalpost
+        // honest in the one direction that matters — the number can only ever GROW during a day,
+        // never shrink, so "cups left" cannot go backwards on you.
+        //
+        // Two earlier bases were wrong and both are worth remembering. Today's accrued strain
+        // ALONE moved the denominator all day INCLUDING downward as the row was rescored (the
+        // reported goalpost-moving). Then YESTERDAY's scored strain: frozen in principle, but the
+        // 2-day light pass keeps REWRITING yesterday's row hours into today, which is how the
+        // derivation came to read "yesterday's effort of 8" when yesterday had finished at 7.
+        // A rest day with no accrued effort prices the body baseline alone.
+        let waterEffortBasis: Double? = {
+            let target = effortTarget.map(Double.init)
+            let accrued = todayRow?.strain
+            switch (target, accrued) {
+            case let (t?, a?): return max(t, a)
+            case let (t?, nil): return t
+            case let (nil, a?): return a
+            case (nil, nil): return nil
+            }
+        }()
         let waterTargetCups: Int? = waterEnabled
-            ? HydrationGoal.dailyGoalCups(sex: profile.sex,
-                                          effortTarget: effortTarget.map(Double.init))
+            ? HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: waterEffortBasis)
             : nil
 
         // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
@@ -773,7 +788,14 @@ final class Repository: ObservableObject {
                 age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
                 debtBalanceMin: ledger.balanceMin,
                 waterTargetCups: waterTargetCups,
-                effortForWater: effortTarget.map(Double.init)))
+                effortForWater: waterEffortBasis,
+                waterEffortIsAccrued: {
+                    guard let basis = waterEffortBasis, let accrued = todayRow?.strain else {
+                        return false
+                    }
+                    // Accrued won only if it strictly exceeds the target (a tie reads as the plan).
+                    return accrued >= basis && accrued > Double(effortTarget ?? 0)
+                }()))
     }
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.

@@ -1649,8 +1649,9 @@ final class AICoachEngine: ObservableObject {
             let drunkCups = HydrationGoal.cups(fromML: targets.waterTodayML ?? 0)
             let left = max(0, goalCups - drunkCups)
             lines.append("Water target: \(goalCups) cups (a baseline for the user's body plus one "
-                         + "cup per 10 points of TODAY'S effort target, set once at this morning's "
-                         + "score like the other targets); drunk so far: \(drunkCups) cups"
+                         + "cup per 10 points of today's effort — the prescribed target, or the "
+                         + "effort actually done if that is higher, so the ask can only grow); "
+                         + "drunk so far: \(drunkCups) cups"
                          + (left > 0 ? ", \(left) cups left." : " — target already met."))
         }
 
