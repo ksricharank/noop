@@ -92,6 +92,17 @@ enum TargetAutomations {
         let checkpointIndex: Int
         let title: String
         let body: String
+        /// The lagging targets behind this nudge, for the coach-written title (260902). Carried on
+        /// the decision rather than re-derived at the call site, so the line the model is asked to
+        /// motivate and the rows the user reads can never describe different numbers.
+        var behind: [BehindItem] = []
+    }
+
+    struct BehindItem: Equatable {
+        let label: String
+        let actual: Int
+        let pace: Int
+        let goal: Int
     }
 
     /// The check-in instants for a cadence: every `intervalHours` hours FROM THE WAKE ("check me
@@ -134,6 +145,7 @@ enum TargetAutomations {
                                                / Double(max(60, pacingDayEndMinute - dayStartMinute))))
         let clockFraction = min(1.0, max(0.0, Double(minuteOfDay) / Double(24 * 60)))
         var lines: [String] = []
+        var behind: [BehindItem] = []
         if let target = stepsTarget, target > 0 {
             let pace = Int(Double(target) * wakingFraction)
             let actual = steps ?? 0
@@ -141,6 +153,7 @@ enum TargetAutomations {
                 // Trailing number = walk minutes that close the DEFICIT (~100 steps/min).
                 let walkMin = max(5, (pace - actual) / 100)
                 lines.append("Steps \(actual)/\(pace)/\(target)  \(walkMin)")
+                behind.append(BehindItem(label: "Steps", actual: actual, pace: pace, goal: target))
             }
         }
         if let target = kcalTarget, target > 0 {
@@ -152,6 +165,7 @@ enum TargetAutomations {
                 // prescription; the honest per-user number would need the Keytel chain per line.
                 let walkMin = max(5, (pace - actual) / 4)
                 lines.append("Cal \(actual)/\(pace)/\(target)  \(walkMin)")
+                behind.append(BehindItem(label: "Calories", actual: actual, pace: pace, goal: target))
             }
         }
         if let target = effortTarget, target > 0 {
@@ -161,12 +175,14 @@ enum TargetAutomations {
                 // Trailing number = the prescribed workout's minutes (doing it closes the gap).
                 let workout = sessionMinutes.map { "  \($0)" } ?? ""
                 lines.append("Effort \(actual)/\(pace)/\(target)\(workout)")
+                behind.append(BehindItem(label: "Effort", actual: actual, pace: pace, goal: target))
             }
         }
         guard !lines.isEmpty else { return (nil, mask) }   // on pace: consume silently
         return (PacingNudge(checkpointIndex: due!,
                             title: String(localized: "Behind pace"),
-                            body: lines.joined(separator: "\n")), mask)
+                            body: lines.joined(separator: "\n"),
+                            behind: behind), mask)
     }
 
     // MARK: - Day-keyed fire bookkeeping
