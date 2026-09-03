@@ -1000,6 +1000,46 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
+    /// A one-line, coach-written TITLE for a pace-check notification (260902) — the motivating
+    /// half of the nudge, sized to how far behind the day actually is: a light shortfall should
+    /// read as "grab a quick walk", a heavy one as "block out some real time".
+    ///
+    /// Deliberately a small, self-contained call rather than a reuse of the synthesis turn: it runs
+    /// at most once per check-in (~every 2 h by default), sends only the three deficit ratios and
+    /// no personal history, and asks for a single short line. Returns nil on ANY failure — no
+    /// provider, no key, no consent, a timeout, an over-long or empty reply — and the caller then
+    /// uses its own static title. That is the same fallback discipline the synthesis uses: the
+    /// notification must never wait on, or be blocked by, the network.
+    func paceCheckTitle(behind: [(label: String, actual: Int, pace: Int, goal: Int)]) async -> String? {
+        guard isConfigured, dataConsent, !behind.isEmpty, let key = resolvedKey else { return nil }
+        let lines = behind.map { item in
+            let shortfallPct = item.pace > 0
+                ? Int((Double(item.pace - item.actual) / Double(item.pace) * 100).rounded())
+                : 0
+            return "\(item.label): \(item.actual) of \(item.pace) expected by now "
+                + "(day goal \(item.goal)) — \(shortfallPct)% behind pace"
+        }.joined(separator: "\n")
+        let instruction = """
+        These are my activity targets and where I actually am right now, mid-day:
+
+        \(lines)
+
+        Write ONE short motivating line (max 8 words) to title a phone notification about this.         Scale it to how far behind I am: a small gap should suggest something quick like a short         walk; a large gap should suggest setting aside a real block of time. Be warm and a little         playful, never scolding, never guilt-tripping. No emoji, no quotes, no trailing period.         Reply with the line only.
+        """
+        do {
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\"", with: "")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".!"))
+            // A model that ignores the length bound would push the rows off a Lock Screen banner,
+            // so an over-long line is treated as a failure and the caller's static title wins.
+            guard !clean.isEmpty, clean.count <= 48, !clean.contains("\n") else { return nil }
+            return clean
+        } catch {
+            return nil
+        }
+    }
+
     /// Why the last Today-synthesis generation failed, or nil if the last one succeeded (or none has
     /// run). Surfaced in the Coach screen rather than on Today: the Today card's contract is to always
     /// show something useful, and a provider error is not that — but "synthesis is blank and I cannot
