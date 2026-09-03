@@ -44,19 +44,27 @@ struct WidgetAnchorMemo {
 /// refresh (`refreshSeq`) or a day roll, reuse on every streaming tick in between. Same MainActor-only
 /// ownership, so the plain `mutating` cache needs no locking.
 struct LiveTargetsMemo {
-    private var cached: (seq: Int, logicalKey: String, localKey: String, value: LiveTargets)?
+    private var cached: (seq: Int, hydrationSeq: Int, logicalKey: String, localKey: String,
+                         value: LiveTargets)?
 
+    /// `hydrationSeq` joins the key (260903) because the targets now CARRY the day's water, and a
+    /// hydration write deliberately never bumps `refreshSeq` (#989 — it is not strap data, and a
+    /// full data refresh per logged cup would be absurd). Without it in the key, tapping the Today
+    /// water row returned the memoized targets unchanged and the number only moved when an
+    /// unrelated sync happened to bump `refreshSeq` — the reported "significant lag".
     mutating func resolve(
         seq: Int,
+        hydrationSeq: Int,
         logicalKey: String,
         localKey: String,
         compute: () -> LiveTargets
     ) -> LiveTargets {
-        if let cached, cached.seq == seq, cached.logicalKey == logicalKey, cached.localKey == localKey {
+        if let cached, cached.seq == seq, cached.hydrationSeq == hydrationSeq,
+           cached.logicalKey == logicalKey, cached.localKey == localKey {
             return cached.value
         }
         let value = compute()
-        cached = (seq, logicalKey, localKey, value)
+        cached = (seq, hydrationSeq, logicalKey, localKey, value)
         return value
     }
 }

@@ -295,10 +295,12 @@ enum TargetsExplainer {
             w.append("baseline for your body: \(baseline) ml"
                      + " (\(HydrationGoal.cups(fromML: Double(baseline))) cups)")
             if bump > 0 {
-                w.append("today's effort \(Int((effortForWater ?? 0).rounded())) adds \(bump) ml"
+                w.append("yesterday's effort \(Int((effortForWater ?? 0).rounded())) adds \(bump) ml"
                          + " — harder days need more")
+                w.append("   (frozen at this morning's score, like your other targets — today's"
+                         + " effort raises tomorrow's water)")
             } else {
-                w.append("no effort logged yet → +0 ml   (a hard day adds up to"
+                w.append("no scored effort yet → +0 ml   (a hard day adds up to"
                          + " \(HydrationGoal.maxEffortBumpML) ml)")
             }
             w.append("\(baseline) + \(bump) = \(waterTargetML) ml, rounded to the nearest"
