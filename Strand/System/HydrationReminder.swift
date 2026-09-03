@@ -71,17 +71,32 @@ enum HydrationReminder {
         let goal = max(1, cups(fromML: Double(goalML)))
         let left = max(0, goal - drunk)
         let title = String(localized: "Water break")
+        // Past the goal the reminders KEEP coming to the day's last slot (the maintainer's call:
+        // hydration is not a finish line), so the over-goal copy has to encourage rather than
+        // nag — a "-2 cups left" would read as a bug, and "nothing left to do" is wrong.
         if left == 0 {
-            return (title, String(format: String(localized: "%d of %d cups — you're there. Keep sipping."),
+            return (title, String(format: String(localized: "%d of %d cups — you're there, keep sipping"),
                                   drunk, goal))
         }
         return (title, String(format: String(localized: "%d of %d cups — %d to go"), drunk, goal, left))
+    }
+
+    /// The status line handed to the coach for a written title (260903) — the same figures the body
+    /// states, in the plain-language shape `AICoach.notificationTitle` expects.
+    static func coachStatus(totalML: Double, goalML: Int) -> String {
+        let drunk = cups(fromML: totalML)
+        let goal = max(1, cups(fromML: Double(goalML)))
+        if drunk >= goal {
+            return "Water: \(drunk) of \(goal) cups today — I have already hit my target"
+        }
+        return "Water: \(drunk) of \(goal) cups today — \(goal - drunk) cups still to drink"
     }
 
     // MARK: - Notification category + actions
 
     static let categoryId = "noop.hydration.reminder"
     static let logCupActionId = "noop.hydration.logCup"
+    static let logHalfCupActionId = "noop.hydration.logHalfCup"
     static let requestIdPrefix = "hydration-reminder-"
 
     /// The action shown when the banner is expanded (long-press on the Lock Screen, or swipe →
@@ -92,9 +107,16 @@ enum HydrationReminder {
     static var category: UNNotificationCategory {
         UNNotificationCategory(
             identifier: categoryId,
-            actions: [UNNotificationAction(identifier: logCupActionId,
-                                           title: String(localized: "Logged a cup"),
-                                           options: [])],
+            // Full cup first: it is the common case, and iOS shows the first action closest to
+            // the thumb when the banner is expanded.
+            actions: [
+                UNNotificationAction(identifier: logCupActionId,
+                                     title: String(localized: "Add a cup"),
+                                     options: []),
+                UNNotificationAction(identifier: logHalfCupActionId,
+                                     title: String(localized: "Add half a cup"),
+                                     options: []),
+            ],
             intentIdentifiers: [],
             options: [])
     }
@@ -203,6 +225,32 @@ enum HydrationReminder {
         schedule()
     }
 
+    /// A coach-written title to use for the next scheduled reminders, cached at schedule time.
+    ///
+    /// The reminders fire from repeating CALENDAR triggers with no app running, so nothing can
+    /// generate copy at fire time. The honest shape is therefore: the app asks the coach for a
+    /// title whenever it re-arms the slots (a cup logged, a sync, a settings edit) and caches it
+    /// beside the figures; a fired reminder shows that. Absent or stale (a different day), the
+    /// static "Water break" is used.
+    private static let coachTitleKey = "hydration.reminder.coachTitle"
+    private static let coachTitleDayKey = "hydration.reminder.coachTitleDay"
+
+    static func cacheCoachTitle(_ title: String?, dayKey: String) {
+        if let title, !title.isEmpty {
+            d.set(title, forKey: coachTitleKey)
+            d.set(dayKey, forKey: coachTitleDayKey)
+        } else {
+            d.removeObject(forKey: coachTitleKey)
+            d.removeObject(forKey: coachTitleDayKey)
+        }
+    }
+
+    private static func cachedCoachTitle() -> String? {
+        guard d.string(forKey: coachTitleDayKey) == Repository.localDayKey(Date()) else { return nil }
+        let t = d.string(forKey: coachTitleKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t?.isEmpty ?? true) ? nil : t
+    }
+
     private static func snapshotText() -> (String, String) {
         let today = Repository.localDayKey(Date())
         guard d.string(forKey: snapDayKey) == today else {
@@ -211,6 +259,8 @@ enum HydrationReminder {
             return (String(localized: "Water break"),
                     String(format: String(localized: "%d cups today — time for one"), goal))
         }
-        return reminderText(totalML: d.double(forKey: snapTotalKey), goalML: d.integer(forKey: snapGoalKey))
+        let text = reminderText(totalML: d.double(forKey: snapTotalKey),
+                                goalML: d.integer(forKey: snapGoalKey))
+        return (cachedCoachTitle() ?? text.title, text.body)
     }
 }

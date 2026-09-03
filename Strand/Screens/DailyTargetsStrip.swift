@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import StrandAnalytics
 
 /// The daily-target numbers — Effort now/target, TOTAL calories now/target, Steps now/target,
 /// tonight's sleep target — big and clear at the head of the Synthesis section, BEFORE the LLM
@@ -36,6 +37,14 @@ struct DailyTargetsStrip: View {
             HStack(alignment: .top, spacing: 12) {
                 targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
                 targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.metricCyan)
+            }
+            // Water (260903, maintainer's ask): a THIRD row spanning both columns, because it is
+            // the one target that is logged by hand — the −/+ half-cup controls exist so water
+            // drunk outside a reminder still lands. Writes through the SAME `logHydration` the
+            // hydration screen and the reminder's action use, so the three can never disagree.
+            // Hidden entirely when hydration tracking is off (`waterTargetML` nil).
+            if targets.waterTargetML != nil {
+                waterRow(targets)
             }
             // Optional derivations (260901, maintainer's ask): the precise formula behind each of
             // the four targets, with TODAY's inputs filled in — collapsed by default so the strip
@@ -74,6 +83,70 @@ struct DailyTargetsStrip: View {
         }
     }
 
+    /// The water row: label + n/t in the same big rounded type the cells use, with half-cup −/+
+    /// controls. Spans the full width (the maintainer's slotting) since it carries two controls.
+    @ViewBuilder
+    private func waterRow(_ t: LiveTargets) -> some View {
+        let drunkHalves = HydrationGoal.halfCups(fromML: t.waterTodayML ?? 0)
+        let goalCups = max(1, HydrationGoal.cups(fromML: Double(t.waterTargetML ?? 0)))
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Water")
+                    .font(StrandFont.overline)
+                    .tracking(1.2)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves))/\(goalCups) cups")
+                    .font(StrandFont.rounded(24, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(StrandPalette.metricPurple)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+            }
+            Spacer(minLength: 0)
+            // Half-cup steps. Remove is disabled at zero rather than hidden, so the control pair
+            // never reflows as the count changes.
+            waterButton(systemName: "minus", disabled: drunkHalves == 0) {
+                Task { await removeHalfCup() }
+            }
+            waterButton(systemName: "plus", disabled: false) {
+                Task { _ = await repo.logHydration(amountMl: HydrationGoal.halfCupML) }
+            }
+        }
+        .padding(.top, 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("Water"))
+        .accessibilityValue(Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves)) of \(goalCups) cups"))
+    }
+
+    private func waterButton(systemName: String, disabled: Bool, action: @escaping () -> Void)
+        -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(StrandFont.rounded(15, weight: .bold))
+                .foregroundStyle(disabled ? StrandPalette.textTertiary : StrandPalette.metricPurple)
+                .frame(width: 36, height: 32)
+                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .accessibilityLabel(Text(systemName == "plus" ? "Add half a cup" : "Remove half a cup"))
+    }
+
+    /// Remove half a cup by deleting the most recent entries worth that much — the tracker stores
+    /// per-drink entries, so "subtract" means retiring what was logged, never writing a negative.
+    /// A last entry LARGER than a half-cup (a bottle) is shrunk rather than deleted, so undoing a
+    /// half-cup tap cannot silently discard a 500 ml log.
+    private func removeHalfCup() async {
+        let entries = repo.hydrationEntries()
+        guard let last = entries.last else { return }
+        if last.amountMl > HydrationGoal.halfCupML {
+            _ = await repo.updateHydrationEntry(id: last.id,
+                                                amountMl: last.amountMl - HydrationGoal.halfCupML)
+        } else {
+            _ = await repo.deleteHydrationEntry(id: last.id)
+        }
+    }
+
     /// One derivation block: header line in the metric's colour, rungs in rounded medium weight,
     /// legend lines (the untaken branches, marked by their leading-space indent) smaller + inset.
     @ViewBuilder
@@ -107,6 +180,7 @@ struct DailyTargetsStrip: View {
         if header.hasPrefix("CAL") { return StrandPalette.metricAmber }
         if header.hasPrefix("STEP") { return StrandPalette.chargeColor }
         if header.hasPrefix("SLEEP") { return StrandPalette.metricCyan }
+        if header.hasPrefix("WATER") { return StrandPalette.metricPurple }
         return StrandPalette.textPrimary
     }
 

@@ -95,7 +95,9 @@ enum TargetsExplainer {
                       age: Int?,
                       restingHr: Int?,
                       profile: UserProfile,
-                      debtBalanceMin: Double) -> [String] {
+                      debtBalanceMin: Double,
+                      waterTargetML: Int? = nil,
+                      effortForWater: Double? = nil) -> [String] {
         var out: [String] = []
 
         // ── EFFORT: the session ladder, then the workout priced as the day's effort score ─────
@@ -282,6 +284,27 @@ enum TargetsExplainer {
             sl.append("never set below \(Int(DailyTargets.sleepFloorMin / 60))h or above"
                       + " \(Int(DailyTargets.sleepCapMin / 60))h → \(hm(sleepNeedMin))")
             out.append(sl.joined(separator: "\n"))
+        }
+
+        // ── WATER: a body-size baseline, plus a bump for how hard the day has been ─────────
+        if let waterTargetML {
+            let goalCups = max(1, HydrationGoal.cups(fromML: Double(waterTargetML)))
+            let baseline = HydrationGoal.baselineForSex(profile.sex)
+            let bump = HydrationGoal.effortBump(effort: effortForWater)
+            var w: [String] = ["WATER TARGET → \(goalCups) cups"]
+            w.append("baseline for your body: \(baseline) ml"
+                     + " (\(HydrationGoal.cups(fromML: Double(baseline))) cups)")
+            if bump > 0 {
+                w.append("today's effort \(Int((effortForWater ?? 0).rounded())) adds \(bump) ml"
+                         + " — harder days need more")
+            } else {
+                w.append("no effort logged yet → +0 ml   (a hard day adds up to"
+                         + " \(HydrationGoal.maxEffortBumpML) ml)")
+            }
+            w.append("\(baseline) + \(bump) = \(waterTargetML) ml, rounded to the nearest"
+                     + " \(HydrationGoal.roundToML)")
+            w.append("shown in cups at \(HydrationGoal.cupML) ml each → \(goalCups) cups")
+            out.append(w.joined(separator: "\n"))
         }
 
         return out

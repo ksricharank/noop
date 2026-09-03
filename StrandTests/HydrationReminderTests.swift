@@ -40,14 +40,80 @@ final class HydrationReminderTests: XCTestCase {
     func testPastTheGoalItCongratulatesInsteadOfShowingNegativeCups() {
         let text = HydrationReminder.reminderText(totalML: Double(HydrationGoal.cupML) * 20,
                                                   goalML: 3_700)
-        XCTAssertEqual(text.body, "20 of 16 cups — you're there. Keep sipping.")
+        XCTAssertEqual(text.body, "20 of 16 cups — you're there, keep sipping")
     }
 
-    func testTheActionIsOfferedOnTheCategoryTheRemindersUse() {
+    func testBothLogActionsAreOfferedOnTheCategoryTheRemindersUse() {
         let category = HydrationReminder.category
         XCTAssertEqual(category.identifier, HydrationReminder.categoryId)
-        XCTAssertEqual(category.actions.map(\.identifier), [HydrationReminder.logCupActionId])
+        // Full cup FIRST (the common case sits closest to the thumb), then the half.
+        XCTAssertEqual(category.actions.map(\.identifier),
+                       [HydrationReminder.logCupActionId, HydrationReminder.logHalfCupActionId])
         // No authentication requirement: logging a cup must stay a one-gesture action.
-        XCTAssertFalse(category.actions[0].options.contains(.authenticationRequired))
+        for action in category.actions {
+            XCTAssertFalse(action.options.contains(.authenticationRequired))
+        }
+    }
+
+    /// Half-cup arithmetic must stay exact against the tracker's own cup, or a day logged in
+    /// halves would drift from one logged in cups.
+    func testHalfCupsComposeExactlyIntoCups() {
+        XCTAssertEqual(HydrationGoal.halfCupML * 2, HydrationGoal.cupML - (HydrationGoal.cupML % 2))
+        XCTAssertEqual(HydrationGoal.halfCups(fromML: Double(HydrationGoal.cupML)), 2)
+        XCTAssertEqual(HydrationGoal.cupsDisplay(halfCups: 5), "2.5")
+        XCTAssertEqual(HydrationGoal.cupsDisplay(halfCups: 6), "3")
+        XCTAssertEqual(HydrationGoal.cupsDisplay(halfCups: 0), "0")
+    }
+
+    /// The status line the coach titles from must state the shortfall — or that the goal is met,
+    /// which is what makes an over-goal reminder encouraging rather than nagging.
+    func testCoachStatusStatesTheShortfallOrThatTheGoalIsMet() {
+        let behind = HydrationReminder.coachStatus(totalML: Double(HydrationGoal.cupML) * 4,
+                                                   goalML: 3_700)
+        XCTAssertTrue(behind.contains("4 of 16 cups"), behind)
+        XCTAssertTrue(behind.contains("12 cups still to drink"), behind)
+        let met = HydrationReminder.coachStatus(totalML: Double(HydrationGoal.cupML) * 18,
+                                                goalML: 3_700)
+        XCTAssertTrue(met.contains("already hit my target"), met)
+    }
+}
+
+/// Pins the shared notification-title enforcement (260903). The prompt asks the model for ≤32
+/// characters with examples; only this code can guarantee it, because a clipped Lock-Screen title
+/// is a worse outcome than a plain one.
+final class NotificationTitleCleaningTests: XCTestCase {
+
+    func testAShortCleanLinePassesThrough() {
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("Quick lap around the block?"),
+                       "Quick lap around the block?")
+    }
+
+    func testForbiddenShapesAreStripped() {
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("  \"Time to earn that couch.\"  "),
+                       "Time to earn that couch")
+        // A model that ignores "no line breaks" usually offers its best line first.
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("Keep it rolling\nOr maybe: go walk"),
+                       "Keep it rolling")
+    }
+
+    func testAnOverLongLineIsTrimmedAtAWordBoundaryNotMidWord() {
+        let long = "You are quite a long way behind pace today, friend"
+        let cleaned = AICoachEngine.cleanNotificationTitle(long)
+        XCTAssertNotNil(cleaned)
+        XCTAssertLessThanOrEqual(cleaned!.count, AICoachEngine.notificationTitleMaxChars)
+        // Whole words only — the trim must land on a word from the original.
+        XCTAssertTrue(long.hasPrefix(cleaned!), cleaned!)
+        XCTAssertFalse(cleaned!.hasSuffix(" "), cleaned!)
+    }
+
+    func testAnUnusableReplyFallsBackToTheCallersTitle() {
+        XCTAssertNil(AICoachEngine.cleanNotificationTitle("   "))
+        XCTAssertNil(AICoachEngine.cleanNotificationTitle(""))
+        // A single word longer than the bound cannot be trimmed into a title.
+        XCTAssertNil(AICoachEngine.cleanNotificationTitle(String(repeating: "a", count: 40)))
+    }
+
+    func testTheBoundMatchesWhatALockScreenTitleCanShow() {
+        XCTAssertEqual(AICoachEngine.notificationTitleMaxChars, 32)
     }
 }

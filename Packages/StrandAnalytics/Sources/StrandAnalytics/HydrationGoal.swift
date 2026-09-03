@@ -37,7 +37,28 @@ public enum HydrationGoal {
     public static let sipML = 30
     public static let cupML = 237     // a US cup (8 fl oz)
     public static let bottleML = 500  // a standard small water bottle
+    /// Half a cup (260903) — the increment the Today water row and the reminder's second action
+    /// log in. Integer-halved from `cupML`, so two half-cups equal one cup exactly and a day
+    /// logged in halves can never drift from one logged in cups.
+    public static var halfCupML: Int { cupML / 2 }
 
+    /// Whole cups from a millilitre figure, rounded to nearest — the unit every water SURFACE
+    /// speaks in (the Today row, the reminder copy, the derivation block). Rounded rather than
+    /// truncated so 2.5 cups reads as 3, and shared so those surfaces cannot disagree.
+    public static func cups(fromML ml: Double) -> Int {
+        Int((ml / Double(cupML)).rounded())
+    }
+
+    /// Half-cup steps from a millilitre figure — the granularity the Today row edits in, so
+    /// "2.5 cups" can be shown without a float creeping into storage.
+    public static func halfCups(fromML ml: Double) -> Int {
+        Int((ml / Double(halfCupML)).rounded())
+    }
+
+    /// "2.5" / "3" — a half-cup count rendered for display, dropping a pointless ".0".
+    public static func cupsDisplay(halfCups: Int) -> String {
+        halfCups % 2 == 0 ? "\(halfCups / 2)" : String(format: "%.1f", Double(halfCups) / 2)
+    }
     // MARK: - Pieces (each pure + independently testable; mirror the Kotlin twin)
 
     /// Baseline ml for a sex token. Case- and whitespace-insensitive; "male"/"m" and "female"/"f" map to
