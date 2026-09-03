@@ -7050,7 +7050,12 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         // the whole question a drain report needs answered. One integer increment (BatteryDiag).
         // Counted alongside upstream's epitaph tallies above, not instead of them: they answer
         // "did anything arrive", this answers "which channel is waking us and how often".
-        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
+        //
+        // 260903: split by lock state. A wake while LOCKED is the pure battery cost (no screen to
+        // read), which is the number a duty-cycle change must actually move — a per-channel total
+        // alone could not say whether the 260903 halving landed where it mattered.
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid),
+                                 locked: deviceIsLocked())
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:
