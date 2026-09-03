@@ -1,6 +1,7 @@
 import XCTest
 @testable import Strand
 import StrandAnalytics
+import WhoopStore
 
 /// Pins the water reminder (260902) — the scheduling grid, the rounded-cup arithmetic and the copy.
 /// The reminder is a layer over the EXISTING hydration tracker, so these also guard the one thing
@@ -81,34 +82,88 @@ final class HydrationReminderTests: XCTestCase {
 /// 260903: the water target is FROZEN like the other four — priced off the ANCHOR's effort (the
 /// last scored day), never today's accumulating strain, so the denominator cannot move during the
 /// day. This is the same call the maintainer made for the effort target ("freeze it", 260831).
+/// 260903: the water target in CUPS — `baseline cups + effort/10`, where effort is
+/// max(today's TARGET, today's ACCRUED). Pinned end-to-end through `Repository.liveTargets`, in
+/// both directions, because three bases shipped in one day and each was wrong in its own way:
+/// accrued alone moved the ask DOWN as rows were rescored, yesterday's scored strain was still
+/// being rewritten hours into today ("yesterday's effort of 8" when yesterday finished at 7), and
+/// the target alone under-asked on a day that genuinely went harder than prescribed.
+@MainActor
 final class FrozenWaterTargetTests: XCTestCase {
 
-    func testTheTargetIsTwoTermsBaselinePlusAnEffortBump() {
-        // The whole formula: round50(baseline_for_sex + effort/100 × 700).
-        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 0),
-                       HydrationGoal.baselineMaleML)
-        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 100),
-                       HydrationGoal.baselineMaleML + HydrationGoal.maxEffortBumpML)
-        // Linear in between, rounded to 50.
-        XCTAssertEqual(HydrationGoal.effortBump(effort: 50), HydrationGoal.maxEffortBumpML / 2)
-        // Nothing else feeds it — no charge, no sleep, no temperature.
-        XCTAssertEqual(HydrationGoal.dailyGoalML(sex: "male", effort: nil),
-                       HydrationGoal.baselineMaleML)
+    /// The maintainer's rule: "a target strain today of 50 leads to 16 + 50/10 = 21 cups".
+    func testGoalIsBaselineCupsPlusOneCupPerTenEffort() {
+        XCTAssertEqual(HydrationGoal.cups(fromML: Double(HydrationGoal.baselineMaleML)), 16,
+                       "16 cups is the male baseline the rule is anchored on")
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50), 21)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 0), 16)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 100), 26)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil), 16,
+                       "a rest day prices the body baseline alone")
+        XCTAssertGreaterThanOrEqual(HydrationGoal.dailyGoalCups(sex: "", effortTarget: -50), 1)
     }
 
-    /// The freeze itself: yesterday's scored effort sets today's target, so accumulating strain
-    /// through the day leaves the cup goal untouched.
-    func testTodaysAccumulatingStrainDoesNotMoveTheTarget() {
-        let anchorEffort: Double = 40          // last night's scored day
-        let frozen = HydrationGoal.dailyGoalML(sex: "male", effort: anchorEffort)
-        // Whatever today racks up, the target priced off the anchor is unchanged.
-        for todayStrain in [0.0, 12.0, 59.0, 95.0] {
-            let stillFrozen = HydrationGoal.dailyGoalML(sex: "male", effort: anchorEffort)
-            XCTAssertEqual(stillFrozen, frozen,
-                           "today's strain \(todayStrain) must not reprice the water target")
+    func testBelowThePlanTheAskIsThePlans() {
+        let morning = targets(accrued: 3)
+        XCTAssertEqual(morning.waterTargetCups,
+                       HydrationGoal.dailyGoalCups(sex: maleProfile.sex,
+                                                   effortTarget: morning.effortTarget.map(Double.init)))
+        // Strain climbs but stays under the plan → unchanged.
+        let planned = Double(morning.effortTarget ?? 0)
+        XCTAssertEqual(targets(accrued: planned - 5).waterTargetCups, morning.waterTargetCups)
+    }
+
+    /// Past the plan the ask follows the real work — sweat loss is same-day, which is the whole
+    /// reason the basis is a max rather than the frozen target.
+    func testExceedingThePlanRaisesTheAsk() {
+        let morning = targets(accrued: 3)
+        let planned = Double(morning.effortTarget ?? 0)
+        let evening = targets(accrued: planned + 30)
+        XCTAssertEqual(evening.waterTargetCups,
+                       HydrationGoal.dailyGoalCups(sex: maleProfile.sex, effortTarget: planned + 30))
+        XCTAssertGreaterThan(evening.waterTargetCups ?? 0, morning.waterTargetCups ?? 0)
+    }
+
+    /// The guarantee the max buys: within a day the ask can never fall below what the plan already
+    /// asked, even when a rescore rewrites accrued strain downward.
+    func testTheAskNeverFallsBelowThePlan() {
+        let planFloor = HydrationGoal.dailyGoalCups(
+            sex: maleProfile.sex,
+            effortTarget: targets(accrued: 0).effortTarget.map(Double.init))
+        for accrued in [3.0, 60.0, 50.0, 20.0] {
+            XCTAssertGreaterThanOrEqual(targets(accrued: accrued).waterTargetCups ?? 0, planFloor,
+                                        "accrued \(accrued) must not walk the ask back")
         }
-        // And the live-target formula would have moved — proving the freeze is what's doing work.
-        XCTAssertNotEqual(HydrationGoal.dailyGoalML(sex: "male", effort: 95), frozen)
+    }
+
+    func testNoWaterTargetWhenTrackingIsOff() {
+        let days = [metric(day: "2026-09-15", strain: 10)]
+        let t = Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                       profile: maleProfile, todayKey: "2026-09-15",
+                                       waterTodayML: nil, waterEnabled: false)
+        XCTAssertNil(t.waterTargetCups)
+    }
+
+    // MARK: fixtures
+
+    private func targets(accrued: Double) -> LiveTargets {
+        var days = (1...14).map { metric(day: String(format: "2026-09-%02d", $0), strain: 10) }
+        days.append(metric(day: "2026-09-15", strain: accrued))
+        return Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                      profile: maleProfile, todayKey: "2026-09-15",
+                                      waterTodayML: 0, waterEnabled: true)
+    }
+
+    private var maleProfile: UserProfile {
+        UserProfile(weightKg: 70, heightCm: 175, age: 34, sex: "male", stepTicksPerStep: 0)
+    }
+
+    private func metric(day: String, strain: Double) -> DailyMetric {
+        DailyMetric(day: day, totalSleepMin: 480, efficiency: nil, deepMin: nil, remMin: nil,
+                    lightMin: nil, disturbances: nil, restingHr: 60, avgHrv: 40, recovery: 80,
+                    strain: strain, exerciseCount: nil, spo2Pct: nil, skinTempDevC: nil,
+                    respRateBpm: nil, steps: 5000, activeKcalEst: 1200, spo2Red: nil,
+                    spo2Ir: nil, avgSdnn: nil, skinTempC: nil)
     }
 }
 
