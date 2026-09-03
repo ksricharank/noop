@@ -874,7 +874,10 @@ final class AppModel: ObservableObject {
         // battery-attribution doctrine says must carry a counter; RetroScanStats is one header line.
         let scanStarted = Date()
         await scanOffloadedRRForStress()
-        RetroScanStats.record(millis: Int(Date().timeIntervalSince(scanStarted) * 1000))
+        RetroScanStats.record(millis: Int(Date().timeIntervalSince(scanStarted) * 1000),
+                              waitMs: retroScanWaitMs,
+                              replayMs: retroScanReplayMs,
+                              beats: retroScanBeats)
         #if os(iOS)
         // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
         // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
@@ -1235,6 +1238,13 @@ final class AppModel: ObservableObject {
     private var lastLiveRRAt: Date = .distantPast
     /// Unix-seconds high-water mark of R-R already replayed (persisted so a relaunch can't re-scan).
     private static let retroScanWatermarkKey = "stress.retroScanWatermarkTs"
+    /// Phase timings for the CURRENT retro scan (260903), read by the caller for RetroScanStats.
+    /// Instance state rather than return values because the scan has many early returns, each of
+    /// which should still report whatever phases it reached.
+    private var retroScanWaitMs = 0
+    private var retroScanReplayMs = 0
+    private var retroScanBeats = 0
+
     /// A dip older than this at scan time gets no buzz — "go breathe" 45+ minutes late is noise, not
     /// coaching. The state still advances, so the baseline keeps learning from every synced beat.
     private static let retroMaxDipAgeSec = 45 * 60
@@ -1252,6 +1262,9 @@ final class AppModel: ObservableObject {
     /// (≤ 45 min). By construction the nudge arrives up to one sync cadence late; the notification
     /// says so rather than implying "right now".
     func scanOffloadedRRForStress() async {
+        retroScanWaitMs = 0
+        retroScanReplayMs = 0
+        retroScanBeats = 0
         let cfg = BiofeedbackPrefs.stressConfig()
         guard cfg.enabled, cfg.autoNudge else { return }
         let now = Int(Date().timeIntervalSince1970)
@@ -1265,17 +1278,27 @@ final class AppModel: ObservableObject {
         }
         let watermark = d.object(forKey: Self.retroScanWatermarkKey) as? Int ?? 0
         let from = max(watermark + 1, now - Self.retroScanHorizonSec)
+        // 260903 phase timing: the two awaits below can QUEUE on the WhoopStore actor behind a
+        // re-score's throttled reads, which is the suspected shape of the 9.9-minute scan in the
+        // 260903-1145 log. Timed separately from the pure replay so the next log can attribute it
+        // instead of inviting a guess. `retroScanWaitMs`/`retroScanReplayMs` are handed to
+        // RetroScanStats by the caller.
+        let waitStarted = Date()
         guard from < now, let store = await repo.storeHandle() else { return }
         let rows = (try? await store.rrIntervals(deviceId: repo.deviceId, from: from, to: now,
                                                  limit: 20_000)) ?? []
+        retroScanWaitMs = Int(Date().timeIntervalSince(waitStarted) * 1000)
         d.set(now, forKey: Self.retroScanWatermarkKey)
         guard rows.count >= StressOnsetDetector.minBeats else { return }
+        retroScanBeats = rows.count
+        let replayStarted = Date()
         let scan = StressOnsetDetector.replayOffloaded(
             beats: rows.map { (ts: $0.ts, rrMs: $0.rrMs) },
             sessionActive: stressNudgeCenter.pending != nil,
             state: stressState,
             config: cfg,
             tzOffsetSec: TimeZone.current.secondsFromGMT())
+        retroScanReplayMs = Int(Date().timeIntervalSince(replayStarted) * 1000)
         stressState = scan.nextState
         BiofeedbackPrefs.saveStressState(scan.nextState)
         guard let at = scan.nudgeAtSec, now - at <= Self.retroMaxDipAgeSec else { return }

@@ -6487,7 +6487,11 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         lastDataAt = Date()   // feed the liveness watchdog on every notification
         // Battery attribution: every notification is a process resume, and which CHANNEL resumes us is
         // the whole question a drain report needs answered. One integer increment (BatteryDiag).
-        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
+        // 260903: split by lock state. A wake while LOCKED is the pure battery cost (no screen to
+        // read), which is the number a duty-cycle change must actually move — a per-channel total
+        // alone could not say whether the 260903 halving landed where it mattered.
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid),
+                                 locked: deviceIsLocked())
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:

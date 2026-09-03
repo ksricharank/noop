@@ -628,7 +628,12 @@ final class IntelligenceEngine: ObservableObject {
         // either way. Twin of the Android WhoopBleClient / AppViewModel attribution.
         let trigger = lightPass ? "light-today" : (!force ? "idle" : (skipIfUnchanged ? "post-offload" : "forced"))
         let hadNew = wmKey.isEmpty || storedWatermark != wmKey
-        diagnosticSink?("re-score: trigger=\(trigger) "
+        // 260903: name the app state the pass RUNS IN. The 260903-1145 log showed two full passes
+        // at 57 s and 75 s with no way to tell whether they burned that in the background (where
+        // it is a battery cost and a suspension risk) or in the foreground with the user waiting.
+        // Both readings change what to do about it, so the pass now says which it was.
+        let whereRun = RescoreBackgroundScheduler.isBackgrounded ? "background" : "foreground"
+        diagnosticSink?("re-score: trigger=\(trigger) where=\(whereRun) "
                         + "newData=\(hadNew ? "yes" : "no (nothing changed since last run)")", nil)
 
         // #1005: time the whole pass — the trigger line above records WHY; this records how many nights
