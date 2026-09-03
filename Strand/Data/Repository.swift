@@ -268,13 +268,30 @@ final class Repository: ObservableObject {
     /// `logHydration` / `deleteHydrationEntry` / `updateHydrationEntry`, which re-derive this — and
     /// re-derived on a day roll by `refreshHydrationCache`. Manual entries only, exactly like the
     /// figure the Today card's ring shows before an import lands.
-    private(set) var hydrationTodayCachedML: Double = 0
+    /// Backing store for `hydrationTodayCachedML`. Never read directly — go through the computed
+    /// property, which self-seeds.
+    private var hydrationCachedML: Double = 0
     private var hydrationCachedDay = ""
+
+    /// Today's logged water (ml), derived on FIRST READ and after every mutation.
+    ///
+    /// Self-seeding deliberately (260903): this used to be a plain stored property refreshed only
+    /// by the three mutation sites, so a cold start read 0 until the user happened to log a drink —
+    /// the reported "water counter resets every time I open the app". The drinks themselves were
+    /// never lost (they live in UserDefaults); only this cache started empty. A launch-time call
+    /// would have fixed the symptom and could be forgotten again by the next caller, so the
+    /// invariant is enforced here instead: the value cannot be read before it has been derived for
+    /// the current day.
+    var hydrationTodayCachedML: Double {
+        let today = Repository.localDayKey(Date())
+        if hydrationCachedDay != today { refreshHydrationCache(day: today) }
+        return hydrationCachedML
+    }
 
     /// Set by `refreshHydrationCache` (in HydrationStore.swift, where the entry reader lives).
     func setHydrationCache(day: String, totalML: Double) {
         hydrationCachedDay = day
-        hydrationTodayCachedML = totalML
+        hydrationCachedML = totalML
     }
 
     /// Move the water figure the Today row reads IMMEDIATELY, before the store write lands
@@ -286,8 +303,10 @@ final class Repository: ObservableObject {
     /// an invented number. `delta` may be negative (the row's minus control).
     func bumpHydrationOptimistically(deltaML: Int) {
         let today = Repository.localDayKey(Date())
-        if hydrationCachedDay != today { hydrationCachedDay = today; hydrationTodayCachedML = 0 }
-        hydrationTodayCachedML = max(0, hydrationTodayCachedML + Double(deltaML))
+        // Reading the computed property first is what seeds the day (and rolls it), so an
+        // optimistic bump on a fresh launch adds to the REAL total rather than to zero.
+        let current = hydrationTodayCachedML
+        setHydrationCache(day: today, totalML: max(0, current + Double(deltaML)))
         noteHydrationChanged()
     }
 

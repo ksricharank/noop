@@ -181,6 +181,49 @@ final class FrozenWaterTargetTests: XCTestCase {
     }
 }
 
+/// 260903: the Today water count must survive a cold start. The drinks always persisted (they
+/// live in UserDefaults); the in-memory cache the row reads did not — it was refreshed only by the
+/// three mutation sites, so a relaunch read 0 until the user happened to log another drink. The
+/// cache is now self-seeding, so it cannot be read before it has been derived for the day.
+@MainActor
+final class HydrationCacheSeedingTests: XCTestCase {
+
+    private let day = Repository.localDayKey(Date())
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: HydrationStore.entriesKey(forDay: day))
+        super.tearDown()
+    }
+
+    func testAFreshRepositoryReadsTheDaysStoredDrinks() {
+        // Two cups already logged, exactly as a previous app session left them.
+        writeEntries([HydrationGoal.cupML, HydrationGoal.cupML])
+
+        // A brand-new Repository — the cold-start case. No mutation, no explicit refresh.
+        let repo = Repository(deviceId: "test-hydration-seeding")
+        XCTAssertEqual(repo.hydrationTodayCachedML, Double(HydrationGoal.cupML * 2),
+                       "a relaunch must show the drinks already logged, not zero")
+    }
+
+    func testAnOptimisticBumpAddsToTheStoredTotalNotToZero() {
+        writeEntries([HydrationGoal.cupML, HydrationGoal.cupML])
+        let repo = Repository(deviceId: "test-hydration-seeding")
+        // The Today row's + control on a freshly launched app.
+        repo.bumpHydrationOptimistically(deltaML: HydrationGoal.halfCupML)
+        XCTAssertEqual(repo.hydrationTodayCachedML,
+                       Double(HydrationGoal.cupML * 2 + HydrationGoal.halfCupML),
+                       "the bump must land on the real total, not on a zeroed cache")
+    }
+
+    private func writeEntries(_ amounts: [Int]) {
+        let entries = amounts.map {
+            HydrationEntry(id: UUID(), amountMl: $0, loggedAt: Date())
+        }
+        UserDefaults.standard.set(try? JSONEncoder().encode(entries),
+                                  forKey: HydrationStore.entriesKey(forDay: day))
+    }
+}
+
 /// Pins the shared notification-title enforcement (260903). The prompt asks the model for ≤32
 /// characters with examples; only this code can guarantee it, because a clipped Lock-Screen title
 /// is a worse outcome than a plain one.
