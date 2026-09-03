@@ -538,8 +538,10 @@ final class AICoachEngine: ObservableObject {
     suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
     encourage me to keep going rather than implying there is nothing left to do.
     - No emoji, no quotation marks, no trailing period, no line breaks.
-    Good examples: "Quick lap around the block?", "Time to earn that couch", "Halfway there, keep \
-    sipping", "Nailed it — keep it rolling", "Big push left, block an hour".
+    - Refer to MY numbers above. Never reuse the wording below — those show the SHAPE and length \
+    only, and a title copied from them tells me nothing about my day.
+    For shape only (do not copy): a small gap reads like "Quick lap around the block?", a large \
+    one like "Time to block out an hour", and being past target like "Nailed it, keep it rolling".
     Reply with the line only.
     """
 
@@ -1071,15 +1073,45 @@ final class AICoachEngine: ObservableObject {
     /// uses its own static title. The notification must never wait on, or be blocked by, the
     /// network.
     func notificationTitle(status: String) async -> String? {
-        guard isConfigured, dataConsent, !status.isEmpty, let key = resolvedKey else { return nil }
+        guard isConfigured, dataConsent, !status.isEmpty, let key = resolvedKey else {
+            lastNotificationTitleOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
         let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
         do {
             let reply = try await callProvider(key: key, messages: [(.user, instruction)])
-            return Self.cleanNotificationTitle(reply)
+            let clean = Self.cleanNotificationTitle(reply)
+            // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule): a title that came
+            // back unusable is exactly what is missing when someone reports "the coach titles look
+            // generic". Costs a line only when a nudge actually fires.
+            lastNotificationTitleOutcome = clean == nil
+                ? "reply rejected (parroted example, too long, or empty): "
+                    + reply.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
+                : "written by \(lastAnsweringModel ?? "model")"
+            return clean
         } catch {
+            lastNotificationTitleOutcome = "request failed: "
+                + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
             return nil
         }
     }
+
+    /// What happened to the last notification-title generation — written on every attempt, read by
+    /// the callers for the strap log. Nil until one runs.
+    @Published private(set) var lastNotificationTitleOutcome: String?
+
+    /// The example lines from `defaultNotificationTitlePrompt`. A model that echoes one has told
+    /// us nothing about the day, so `cleanNotificationTitle` rejects it and the caller's plain
+    /// title is used instead — the observed 260903 failure, where every nudge arrived titled "Big
+    /// push left, block an hour" (an example, verbatim) and looked indistinguishable from a
+    /// working generation.
+    nonisolated static let notificationTitleExamples = [
+        "quick lap around the block",
+        "time to block out an hour",
+        "nailed it, keep it rolling",
+    ]
 
     /// The length/shape enforcement behind `notificationTitle`, pure so it is pinned by tests.
     ///
@@ -1098,6 +1130,10 @@ final class AICoachEngine: ObservableObject {
             .replacingOccurrences(of: "\u{201D}", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!  "))
         guard !clean.isEmpty else { return nil }
+        // A parroted example is a failed generation, not a title.
+        let normalized = clean.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?!.,;: "))
+        if notificationTitleExamples.contains(normalized) { return nil }
         if clean.count > notificationTitleMaxChars {
             // Keep whole words only — a title cut mid-word reads as a bug, not as brevity.
             var kept: [String] = []

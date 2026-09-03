@@ -746,6 +746,9 @@ final class AppModel: ObservableObject {
                     + "(day goal \(item.goal)) — \(pct)% behind pace"
             }.joined(separator: "\n")
             let title = await coach.notificationTitle(status: status) ?? nudge.title
+            if let outcome = coach.lastNotificationTitleOutcome {
+                live.append(log: "Automation: pace-check title — \(outcome)")
+            }
             TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
             live.append(log: "Automation: pace check posted ("
                         + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
@@ -784,6 +787,9 @@ final class AppModel: ObservableObject {
         // provider/consent, or a failure) leaves the static "Water break".
         let title = await coach.notificationTitle(
             status: HydrationReminder.coachStatus(totalML: total, goalML: goal))
+        if let outcome = coach.lastNotificationTitleOutcome {
+            live.append(log: "Automation: water-reminder title — \(outcome)")
+        }
         HydrationReminder.cacheCoachTitle(title, dayKey: dayKey)
         HydrationReminder.refreshSnapshot(totalML: total, goalML: goal, dayKey: dayKey)
     }
