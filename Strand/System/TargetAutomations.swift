@@ -25,9 +25,10 @@ enum TargetAutomations {
         static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
         static let pacingDay = "auto.pacing.day"
         // 260903: per-nudge wrist-buzz toggles. `wristBuzz` is the master; the four below are the
-        // individual cues, each defaulting ON so turning the master on gives every nudge a buzz
-        // and the user switches OFF what they do not want (rather than hunting for why a cue they
-        // just enabled is silent).
+        // individual cues. ALL default ON — the buzz was asked for, so the whole set arrives
+        // audible and the user switches OFF what they do not want, rather than hunting for why a
+        // feature they requested is silent. (Each underlying nudge still has its own enable
+        // toggle, so this only affects nudges already turned on.)
         static let wristBuzz = "auto.wristBuzz.enabled"
         static let buzzMorningBrief = "auto.wristBuzz.morningBrief"
         static let buzzPaceCheck = "auto.wristBuzz.paceCheck"
@@ -45,14 +46,20 @@ enum TargetAutomations {
     }
     static var pacingEnabled: Bool { d.bool(forKey: K.pacingEnabled) }
 
-    /// Whether NOOP's own nudges also buzz the strap (260903, default off).
+    /// Whether NOOP's own nudges also buzz the strap (260903). Defaults **ON**.
     ///
-    /// Every NOOP-posted nudge now rides the strap sync (the water reminder moved off calendar
-    /// triggers on 260903 precisely so it could buzz), so the app is awake at post time in all
-    /// cases. The remaining condition is the link itself: the buzz needs an ENCRYPTED, BONDED
-    /// connection, so a charging or out-of-range strap gets no cue rather than the app pretending
-    /// one landed.
-    static var wristBuzzEnabled: Bool { d.bool(forKey: K.wristBuzz) }
+    /// Shipped default-off for one build and that was wrong: the buzz was added on request, so
+    /// off-by-default meant the requested feature arrived silent and read as broken ("my whoop is
+    /// still not buzzing for water"). A cue nobody asked for should default off; this one was asked
+    /// for, so it defaults on and the per-cue switches below turn OFF what is not wanted.
+    ///
+    /// Safe to default on because it is self-limiting rather than merely quiet: every NOOP-posted
+    /// nudge rides the strap sync (the water reminder moved off calendar triggers on 260903
+    /// precisely so it could buzz), so the app is awake at post time in all cases, and the buzz
+    /// still requires an ENCRYPTED, BONDED link — a charging or out-of-range strap gets no cue
+    /// rather than the app pretending one landed. The nudges themselves each keep their own
+    /// enable toggle, so this cannot introduce a buzz for a nudge the user has not turned on.
+    static var wristBuzzEnabled: Bool { d.object(forKey: K.wristBuzz) as? Bool ?? true }
 
     /// The nudges a wrist buzz can accompany. Raw values are the UserDefaults keys.
     enum BuzzCue: String, CaseIterable {
