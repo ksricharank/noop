@@ -270,6 +270,45 @@ final class DayQualityComputerTests: XCTestCase {
         XCTAssertTrue(status.contains("HRV"))
     }
 
+    // MARK: - The coach's view of the trend
+
+    /// The history block must state the DIRECTION, not just the numbers: the whole point of the
+    /// score is that the wearer is trying to move it, and a bare list invites the model to
+    /// characterise a trend it has not been told about.
+    func testTheHistoryBlockCarriesBothAveragesAndTheChange() {
+        // Fourteen ascending days: the last 7 average clearly above the previous 7.
+        let series: [(day: String, value: Double)] = (1...14).map {
+            (day: String(format: "2026-08-%02d", $0), value: Double(50 + $0 * 2))
+        }
+        let block = AICoachEngine.dayQualityHistoryLines(series: series)
+        let text = try? XCTUnwrap(block)
+        XCTAssertNotNil(text)
+        guard let text else { return }
+        XCTAssertTrue(text.contains("Last 7 days average"), text)
+        XCTAssertTrue(text.contains("Previous 7 days average"), text)
+        XCTAssertTrue(text.contains("change: +"), "an improving run must be stated as improving: \(text)")
+        XCTAssertTrue(text.contains("trending UP"),
+                      "the model must be told which direction is the good one")
+    }
+
+    /// Under three scored days there is no trend to describe, and a model invited to describe one
+    /// produces confident noise.
+    func testTheHistoryBlockIsAbsentWithTooFewDays() {
+        let two: [(day: String, value: Double)] = [("2026-08-01", 70), ("2026-08-02", 72)]
+        XCTAssertNil(AICoachEngine.dayQualityHistoryLines(series: two))
+        let three = two + [("2026-08-03", 74)]
+        XCTAssertNotNil(AICoachEngine.dayQualityHistoryLines(series: three))
+    }
+
+    /// A declining run must read as declining — the sign is the actionable part.
+    func testADecliningRunIsReportedAsNegative() throws {
+        let series: [(day: String, value: Double)] = (1...14).map {
+            (day: String(format: "2026-08-%02d", $0), value: Double(90 - $0 * 2))
+        }
+        let text = try XCTUnwrap(AICoachEngine.dayQualityHistoryLines(series: series))
+        XCTAssertTrue(text.contains("change: -"), text)
+    }
+
     func testMedianHandlesBothParities() {
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([3, 1, 2])), 2, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([4, 1, 3, 2])), 2.5, accuracy: 0.001)
