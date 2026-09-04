@@ -23,7 +23,26 @@ final class HydrationConcurrentLogTests: XCTestCase {
     /// total — 1062 against 708 — which looked exactly like the drift under test and failed 2 runs
     /// in 3. The give-away was the direction: a lost write makes the series lower, never higher.
     ///
-    /// A UUID in both keys makes every run start empty without needing to delete anything.
+    /// An earlier attempt derived the day from `hashValue`, which is randomised per process but not
+    /// unique per run, so runs still collided: the series total came back HIGHER than the entry total
+    /// (944 against 708) and the test failed intermittently while looking exactly like the drift
+    /// under test. The direction is the tell — a lost write makes the series lower, never higher.
+    ///
+    /// A monotonic counter plus the process id gives a distinct, well-formed date per test per run,
+    /// so every test starts against empty storage without deleting anything.
+    ///
+    /// CORRECTION (260904): that was still not enough, and the failure looked exactly like the bug
+    /// under test. `pid % 100` recycles — macOS hands out pids well above 100 and wraps — so two
+    /// runs eventually share a year, and the day then collides. The UserDefaults entry list is
+    /// cleared in `setUp`, but the SQLite metricSeries row for that day is NOT, so the second run
+    /// added its six half-cups to the first run's banked total: 1416 against an expected 708,
+    /// EXACTLY double. The direction is the tell (a lost write makes the series lower, never
+    /// higher) and doubling is the signature of a surviving row, not of a race.
+    ///
+    /// Fixed by clearing BOTH stores for the chosen day in `setUp` rather than relying on the day
+    /// being unique. That removes the guesswork entirely: whatever day is picked, both records of
+    /// it start empty, so the invariant under test ("the two records agree") is measured against a
+    /// known-zero baseline.
     private var day = ""
     private var deviceId = ""
 
@@ -38,6 +57,19 @@ final class HydrationConcurrentLogTests: XCTestCase {
         day = "\(1900 + abs(unique.hashValue % 90))-09-04"
         deviceId = "test-hydration-\(unique)"
         UserDefaults.standard.removeObject(forKey: HydrationStore.entriesKey(forDay: day))
+        // And the SQLite side of the same day — see the note on `day`. Without this the series row
+        // survives a re-run that reuses the year, and the test fails looking like a lost write.
+        // Zeroed through the ORDINARY upsert (`ON CONFLICT … DO UPDATE`), not a test-only hook: the
+        // production write path is the thing that must leave the row at 0, and using it here means
+        // this reset cannot drift from how the app actually writes.
+        let repo = repository()
+        let dayKey = day
+        let done = expectation(description: "clear the day's series row")
+        Task { @MainActor in
+            await repo.resetHydrationSeries(day: dayKey)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
     }
 
     override func tearDown() {

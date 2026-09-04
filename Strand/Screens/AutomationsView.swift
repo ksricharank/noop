@@ -60,6 +60,20 @@ struct AutomationsView: View {
     @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = true
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
     @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
+    // 260904 pacing delivery window. Both OPTIONAL — nil means unbounded (wake -> midnight, the
+    // pre-control behaviour), which is why these are `Int?` mirrors rather than @AppStorage ints:
+    // an unset key must stay unset, not be written as a 0 that reads as "midnight".
+    @State private var pacingStartMin = TargetAutomations.pacingStartMinute
+    @State private var pacingStopMin = TargetAutomations.pacingStopMinute
+
+    // 260904 water reminders — moved here from Settings -> Features so every reminder and nudge
+    // lives on one screen. The TRACKER toggle stays in Settings (it is a data feature, not a
+    // notification); this card gates itself on it and points there when it is off.
+    @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
+    @AppStorage(HydrationReminder.K.enabled) private var hydrationRemindersOn = false
+    @State private var hydrationStartMin = HydrationReminder.startMinute
+    @State private var hydrationStopMin = HydrationReminder.stopMinute
+    @State private var hydrationIntervalMin = HydrationReminder.intervalMinutes
 
     var body: some View {
         ScreenScaffold(title: "Automations",
@@ -78,6 +92,7 @@ struct AutomationsView: View {
             wristBuzzCard
             morningBriefCard
             pacingCard
+            waterReminderCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
             // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
             // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
@@ -390,9 +405,169 @@ struct AutomationsView: View {
                         .onChangeCompat(of: pacingEveryHours) { h in
                             UserDefaults.standard.set(h, forKey: TargetAutomations.K.pacingIntervalHours)
                         }
+                    rowDivider
+                    ToggleRow(label: String(localized: "Only nudge between"),
+                              help: String(localized: "Keep check-ins inside set hours. Off means from when you woke until midnight."),
+                              isOn: pacingWindowEnabledBinding)
+                    if pacingStartMin != nil || pacingStopMin != nil {
+                        rowDivider
+                        HStack(spacing: 12) {
+                            Text("From").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            DatePicker("", selection: pacingStartBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Pacing nudge earliest time")
+                            Text("to").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
+                            DatePicker("", selection: pacingStopBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Pacing nudge latest time")
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        Text("The check-in schedule still counts from when you actually woke, so your pace targets stay priced against your real day \u{2014} these hours only decide when a nudge is allowed to reach you. A check-in that falls outside them is skipped, not saved up.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
+    }
+
+    /// The window switch. ON writes a sensible default pair; OFF clears BOTH keys so the decision
+    /// falls back to unbounded rather than to a stored pair that merely looks disabled.
+    private var pacingWindowEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { pacingStartMin != nil || pacingStopMin != nil },
+            set: { on in
+                if on {
+                    // 08:00-21:00: a plausible waking span that is not merely the old behaviour
+                    // re-expressed, so turning the switch on visibly does something.
+                    pacingStartMin = 8 * 60
+                    pacingStopMin = 21 * 60
+                } else {
+                    pacingStartMin = nil
+                    pacingStopMin = nil
+                }
+                TargetAutomations.setPacingStartMinute(pacingStartMin)
+                TargetAutomations.setPacingStopMinute(pacingStopMin)
+            })
+    }
+
+    private var pacingStartBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: pacingStartMin ?? 8 * 60) },
+                set: { d in
+                    let m = Self.minutes(from: d)
+                    pacingStartMin = m
+                    // Keep the pair ordered: a start dragged past the stop pushes the stop with it,
+                    // which is friendlier than refusing the edit or silently inverting the window.
+                    if let stop = pacingStopMin, stop <= m {
+                        pacingStopMin = min(24 * 60, m + 60)
+                        TargetAutomations.setPacingStopMinute(pacingStopMin)
+                    }
+                    TargetAutomations.setPacingStartMinute(m)
+                })
+    }
+
+    private var pacingStopBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: pacingStopMin ?? 21 * 60) },
+                set: { d in
+                    let m = Self.minutes(from: d)
+                    pacingStopMin = max(m, (pacingStartMin ?? 0) + 60)
+                    TargetAutomations.setPacingStopMinute(pacingStopMin)
+                })
+    }
+
+    // MARK: - Water reminders (260904 — moved from Settings → Features)
+
+    /// Water reminders, rehomed here so notifications live in one place.
+    ///
+    /// Gated on the hydration TRACKER, which stays in Settings: a reminder to drink with no log to
+    /// count against would have nothing to say. When the tracker is off this card says so and
+    /// points at Settings rather than hiding, so the control is discoverable from the screen the
+    /// wearer now expects to find it on.
+    private var waterReminderCard: some View {
+        Section2(icon: "drop.fill", title: String(localized: "Water reminders"),
+                 blurb: String(localized: "A nudge through the day carrying today's cup goal, how many you've had and how many are left. Long-press it to log a cup or a half cup without opening NOOP."),
+                 active: hydrationEnabled && hydrationRemindersOn) {
+            VStack(spacing: 0) {
+                if !hydrationEnabled {
+                    Text("Hydration tracking is off, so there is nothing to remind you about yet. Turn it on in Settings \u{2192} Features to use reminders.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.statusWarning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 6)
+                } else {
+                    ToggleRow(label: String(localized: "Enable water reminders"),
+                              help: String(localized: "Reminds you to drink through the day."),
+                              isOn: $hydrationRemindersOn)
+                        .onChangeCompat(of: hydrationRemindersOn) { on in
+                            HydrationReminder.setEnabled(on) { granted in
+                                if on && !granted { hydrationRemindersOn = false }
+                            }
+                        }
+                    if hydrationRemindersOn {
+                        rowDivider
+                        HStack(spacing: 12) {
+                            Text("From").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            DatePicker("", selection: hydrationStartBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Water reminder start time")
+                            Text("to").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
+                            DatePicker("", selection: hydrationStopBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Water reminder stop time")
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        rowDivider
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Remind every").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                                Text("Reminders ride your strap syncs, so one lands within about ten minutes of its time.")
+                                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            Picker("", selection: $hydrationIntervalMin) {
+                                Text("1 hour").tag(60)
+                                Text("1.5 hours").tag(90)
+                                Text("2 hours").tag(120)
+                                Text("2.5 hours").tag(150)
+                                Text("3 hours").tag(180)
+                            }
+                            .labelsHidden().pickerStyle(.menu)
+                            .accessibilityLabel("Water reminder interval")
+                            .onChangeCompat(of: hydrationIntervalMin) { minutes in
+                                HydrationReminder.setIntervalMinutes(minutes)
+                            }
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        Text("Tapping a reminder opens your water log; ignoring it logs nothing. Left alone, the stop time follows the start of your sleep window in Settings.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start/stop bindings write through `HydrationReminder`, so its clamps (and the stop's
+    /// sleep-window fallback) are the single authority on what a picker can express.
+    private var hydrationStartBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: hydrationStartMin) },
+                set: { d in
+                    HydrationReminder.setStartMinute(Self.minutes(from: d))
+                    hydrationStartMin = HydrationReminder.startMinute
+                    hydrationStopMin = HydrationReminder.stopMinute
+                })
+    }
+
+    private var hydrationStopBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: hydrationStopMin) },
+                set: { d in
+                    HydrationReminder.setStopMinute(Self.minutes(from: d))
+                    hydrationStopMin = HydrationReminder.stopMinute
+                })
     }
 
     // MARK: - Inactivity reminder (#419)

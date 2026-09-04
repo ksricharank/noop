@@ -137,6 +137,20 @@ extension Repository {
         await metricSeriesValue(key: HydrationStore.key, day: day)
     }
 
+    /// Set the day's hand-logged running total back to zero.
+    ///
+    /// Writes through the same idempotent `upsertMetricSeries` path every other hydration write
+    /// uses, so it cannot diverge from how the app banks a total. Exists for the concurrency tests,
+    /// which must start from a known-zero row: the entry list lives in UserDefaults and the running
+    /// total in SQLite, so clearing only the former left a stale row that made a re-run look
+    /// exactly like the lost-write bug those tests guard (see `HydrationConcurrentLogTests`).
+    func resetHydrationSeries(day: String) async {
+        guard let store = await storeHandle() else { return }
+        _ = try? await store.upsertMetricSeries(
+            [MetricPoint(day: day, key: HydrationStore.key, value: 0)],
+            deviceId: HydrationStore.sourceId)
+    }
+
     /// The hand-logged total as the ENTRY LIST reports it — the display's source of truth.
     ///
     /// Two records of the same water exist: the per-entry list in UserDefaults (one append per tap)

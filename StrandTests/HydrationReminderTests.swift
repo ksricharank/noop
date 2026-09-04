@@ -376,4 +376,111 @@ final class NotificationTitleCleaningTests: XCTestCase {
     func testTheBoundMatchesWhatALockScreenTitleCanShow() {
         XCTAssertEqual(AICoachEngine.notificationTitleMaxChars, 32)
     }
+    // MARK: - The configurable stop time (260904)
+    //
+    // Maintainer request: start AND stop time controls for the water reminder, with the stop
+    // following the sleep-window start already configured in Settings rather than a second number.
+
+    /// The grid ends at the stop, not at the old fixed 22:00.
+    func testTheStopTimeBoundsTheGrid() {
+        let slots = HydrationReminder.slotMinutes(startMinute: 7 * 60 + 30, intervalMinutes: 60,
+                                                  stopMinute: 21 * 60)
+        XCTAssertEqual(slots.first, 7 * 60 + 30)
+        XCTAssertEqual(slots.last, 20 * 60 + 30,
+                       "the last slot is the final whole interval AT OR BEFORE the stop")
+        XCTAssertFalse(slots.contains(21 * 60 + 30), "nothing past the stop")
+        XCTAssertEqual(slots.count, 14)
+    }
+
+    /// An earlier stop genuinely silences the evening, and a later one is not allowed past the
+    /// 22:00 ceiling the feature has always enforced.
+    func testTheStopTimeSilencesTheEveningAndIsCeilinged() {
+        // 18:00 stop: a 19:30 sync has nothing newer than the 18:00 slot.
+        XCTAssertEqual(HydrationReminder.dueSlot(minuteOfDay: 19 * 60 + 30, startMinute: 8 * 60,
+                                                 intervalMinutes: 120, stopMinute: 18 * 60),
+                       18 * 60)
+        XCTAssertFalse(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 19 * 60 + 30, startMinute: 8 * 60,
+            intervalMinutes: 120, lastFiredSlot: 18 * 60, stopMinute: 18 * 60),
+            "past the stop, the last in-window slot is already spent — stay silent")
+
+        // A stop beyond the ceiling is clamped rather than honoured.
+        XCTAssertEqual(HydrationReminder.clampStop(23 * 60 + 45, startMinute: 8 * 60),
+                       HydrationReminder.lastSlotMinute)
+    }
+
+    /// An inverted pair must never yield an empty grid — that would silently disable the feature.
+    func testAStopBeforeTheStartCannotDisableTheFeature() {
+        let start = 13 * 60
+        XCTAssertEqual(HydrationReminder.clampStop(6 * 60, startMinute: start), start,
+                       "a stop before the start is floored at the start")
+        let slots = HydrationReminder.slotMinutes(startMinute: start, intervalMinutes: 60,
+                                                  stopMinute: 6 * 60)
+        XCTAssertEqual(slots, [start], "the first reminder survives an inverted pair")
+    }
+
+    /// The DEFAULT stop is the sleep-window start, and the shipped default of that window (22:00)
+    /// reproduces the old hardcoded last slot exactly — so an existing install sees no shift.
+    func testTheDefaultStopFollowsTheSleepWindowAndPreservesOldBehaviour() {
+        let d = UserDefaults.standard
+        let savedStop = d.object(forKey: HydrationReminder.K.stopMin)
+        let savedSleep = d.object(forKey: ContinuousHrvSchedule.quietStartKey)
+        let savedStart = d.object(forKey: HydrationReminder.K.startMin)
+        defer {
+            savedStop == nil ? d.removeObject(forKey: HydrationReminder.K.stopMin)
+                             : d.set(savedStop, forKey: HydrationReminder.K.stopMin)
+            savedSleep == nil ? d.removeObject(forKey: ContinuousHrvSchedule.quietStartKey)
+                              : d.set(savedSleep, forKey: ContinuousHrvSchedule.quietStartKey)
+            savedStart == nil ? d.removeObject(forKey: HydrationReminder.K.startMin)
+                              : d.set(savedStart, forKey: HydrationReminder.K.startMin)
+        }
+
+        d.removeObject(forKey: HydrationReminder.K.stopMin)
+        d.removeObject(forKey: ContinuousHrvSchedule.quietStartKey)
+        d.set(8 * 60, forKey: HydrationReminder.K.startMin)
+        XCTAssertEqual(HydrationReminder.stopMinute, ContinuousHrvSchedule.defaultStartMinutes)
+        XCTAssertEqual(HydrationReminder.stopMinute, HydrationReminder.lastSlotMinute,
+                       "the shipped default must equal the old fixed last slot")
+
+        // Move the sleep window earlier: the last reminder follows it, with no second control.
+        d.set(21 * 60, forKey: ContinuousHrvSchedule.quietStartKey)
+        XCTAssertEqual(HydrationReminder.stopMinute, 21 * 60)
+
+        // An explicit stop overrides the window.
+        HydrationReminder.setStopMinute(19 * 60)
+        XCTAssertEqual(HydrationReminder.stopMinute, 19 * 60)
+        d.set(20 * 60, forKey: ContinuousHrvSchedule.quietStartKey)
+        XCTAssertEqual(HydrationReminder.stopMinute, 19 * 60,
+                       "an explicit choice is not overwritten by a sleep-window edit")
+    }
+
+    /// Raising the start past a stored stop re-normalises the STORED stop, so the picker never
+    /// displays a stop the schedule is ignoring.
+    func testRaisingTheStartRepairsAnExplicitStop() {
+        let d = UserDefaults.standard
+        let savedStop = d.object(forKey: HydrationReminder.K.stopMin)
+        let savedStart = d.object(forKey: HydrationReminder.K.startMin)
+        defer {
+            savedStop == nil ? d.removeObject(forKey: HydrationReminder.K.stopMin)
+                             : d.set(savedStop, forKey: HydrationReminder.K.stopMin)
+            savedStart == nil ? d.removeObject(forKey: HydrationReminder.K.startMin)
+                              : d.set(savedStart, forKey: HydrationReminder.K.startMin)
+        }
+
+        HydrationReminder.setStartMinute(7 * 60)
+        HydrationReminder.setStopMinute(9 * 60)
+        HydrationReminder.setStartMinute(13 * 60)
+        XCTAssertEqual(d.object(forKey: HydrationReminder.K.stopMin) as? Int, 13 * 60,
+                       "the stored stop is repaired, not just clamped on read")
+    }
+
+    /// The retirement id grid must keep spanning the ORIGINAL 22:00 range even though the schedule
+    /// no longer ends there — those legacy ids were minted against it.
+    func testTheRetirementGridStillCoversTheLegacyRange() {
+        let ids = HydrationReminder.retiredCalendarRequestIds
+        XCTAssertTrue(ids.contains("hydration-reminder-\(22 * 60)"))
+        XCTAssertEqual(HydrationReminder.lastSlotMinute, 22 * 60,
+                       "changing this orphans the pre-260903 repeating requests")
+    }
+
 }
