@@ -21,6 +21,11 @@ enum DayQualityPrefs {
         static let loadFactorPct = "dayquality.loadFactorPct"
         /// Overshoot ceiling, stored as a whole percentage of target (125 = 1.25).
         static let overshootCapPct = "dayquality.overshootCapPct"
+        /// The local day on which the nightly scoring pass last ran to completion.
+        static let lastScoredDay = "dayquality.lastScoredDay"
+        /// The config fingerprint that pass used, so changing a knob re-scores rather than waiting
+        /// for tomorrow (the wearer expects a slider to move the history it applies to).
+        static let lastScoredConfig = "dayquality.lastScoredConfig"
     }
 
     private static var d: UserDefaults { .standard }
@@ -59,6 +64,33 @@ enum DayQualityPrefs {
     /// something.
     static var isCustomised: Bool {
         [K.executionSharePct, K.loadFactorPct, K.overshootCapPct].contains { d.object(forKey: $0) != nil }
+    }
+
+    // MARK: - Once-per-day latch
+    //
+    // Maintainer requirement (260904): the score is computed ONCE, after the night's sleep is
+    // scored and the new targets are set — not continuously. Without a latch the engine's derived
+    // block runs it on every full pass, which is several times a day: wasted work on a
+    // battery-sensitive path, and a score that could visibly change during the day when the whole
+    // point is that it is a closed book.
+    //
+    // The latch is keyed on the day AND a fingerprint of the config, so the one legitimate reason
+    // to re-score early — the wearer moved a slider — still applies to history immediately.
+
+    /// A short, stable fingerprint of the settings that affect the number.
+    static var configFingerprint: String {
+        "\(executionSharePct)/\(loadFactorPct)/\(overshootCapPct)"
+    }
+
+    /// True when tonight's scoring has already run for `day` under the current settings.
+    static func alreadyScored(day: String) -> Bool {
+        d.string(forKey: K.lastScoredDay) == day
+            && d.string(forKey: K.lastScoredConfig) == configFingerprint
+    }
+
+    static func markScored(day: String) {
+        d.set(day, forKey: K.lastScoredDay)
+        d.set(configFingerprint, forKey: K.lastScoredConfig)
     }
 
     /// The config the nightly computation actually uses. Component weights stay at their defaults:

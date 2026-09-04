@@ -153,11 +153,24 @@ enum HydrationReminder {
     ///
     /// Only the LATEST due slot fires: a phone that was away for hours owes one reminder, not six.
     static func reminderWanted(enabled: Bool, minuteOfDay: Int, startMinute: Int,
-                               intervalMinutes: Int, lastFiredSlot: Int?, isNewDay: Bool) -> Bool {
+                               intervalMinutes: Int, lastFiredSlot: Int?, isNewDay: Bool = false) -> Bool {
         guard enabled else { return false }
+        // The START TIME gates every fire, including the day's first (260904).
+        //
+        // `dueSlot` is nil before `startMinute`, and that nil must be respected on a new day too.
+        // The old shape checked `isNewDay` FIRST and returned true unconditionally — and since the
+        // caller derived `isNewDay` from `lastFiredSlot == nil`, that was both redundant with the
+        // guard below AND wrong at a day boundary: the first sync after midnight fired a reminder
+        // hours before the configured 08:00 window, which the maintainer saw as a "0/21" reminder
+        // in the early morning, minutes after the previous day's legitimate "5/21".
+        //
+        // Two reminders, each valid for its OWN day, but the second one arrived at a time the
+        // wearer had never asked to be reminded and before they could have drunk anything.
         guard let due = dueSlot(minuteOfDay: minuteOfDay, startMinute: startMinute,
                                 intervalMinutes: intervalMinutes) else { return false }
-        if isNewDay { return true }
+        // No fire recorded for this day yet (a fresh day, or a fresh install): the day's first due
+        // slot has passed, so it is owed. `isNewDay` is kept for call-site clarity but is no longer
+        // load-bearing — it was only ever a restatement of this nil.
         guard let lastFiredSlot else { return true }
         return due > lastFiredSlot
     }
