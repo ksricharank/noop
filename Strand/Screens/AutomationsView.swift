@@ -299,14 +299,33 @@ struct AutomationsView: View {
                           help: String(localized: "Applies to the morning brief, pace checks and water reminders, and confirms a cup logged from a reminder. Stress check-ins already buzz on their own."),
                           isOn: $nudgeWristBuzz)
                 if nudgeWristBuzz {
+                    // One row per cue, so nothing is silently off and it is obvious which nudges
+                    // are wired to the wrist. Each defaults ON — enabling the master gives every
+                    // cue a buzz, and the user switches off what they do not want.
+                    ForEach(TargetAutomations.BuzzCue.allCases, id: \.rawValue) { cue in
+                        rowDivider
+                        ToggleRow(label: cue.label,
+                                  help: cue == .breathe
+                                      ? String(localized: "Stress check-ins buzz on their own path too, so this stays on even with the switch above off.")
+                                      : String(localized: "Buzz the strap when this nudge is posted."),
+                                  isOn: buzzCueBinding(cue))
+                    }
                     rowDivider
-                    Text("The buzz needs the strap connected and bonded, so a charging or out-of-range strap simply gets no cue.")
+                    Text("The buzz needs the strap connected and bonded, so a charging or out-of-range strap simply gets no cue. The Move reminder has its own buzz and its own switch \u{2014} see Inactivity reminder below.")
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+
+    /// A per-cue buzz switch, read/written through `TargetAutomations` so the default-ON semantics
+    /// live in one place rather than being restated by the view.
+    private func buzzCueBinding(_ cue: TargetAutomations.BuzzCue) -> Binding<Bool> {
+        Binding(
+            get: { UserDefaults.standard.object(forKey: cue.rawValue) as? Bool ?? true },
+            set: { UserDefaults.standard.set($0, forKey: cue.rawValue) })
     }
 
     // MARK: - Morning brief (260901, automation A)
