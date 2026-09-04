@@ -54,7 +54,10 @@ struct AutomationsView: View {
     // 260901 target automations (A morning brief / E pacing nudges). Plain bools, so @AppStorage.
     @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
     @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
-    @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = false
+    // Defaults TRUE, matching `TargetAutomations.wristBuzzEnabled`. These two defaults MUST agree:
+    // an @AppStorage default of false against a logic default of true would render the switch off
+    // while the buzz was in fact firing.
+    @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = true
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
     @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
 
