@@ -273,6 +273,56 @@ final class Repository: ObservableObject {
     private var hydrationCachedML: Double = 0
     private var hydrationCachedDay = ""
 
+    /// Tail of the serialised hydration-mutation chain (260904).
+    ///
+    /// Every hydration write is a read-modify-write (`logHydration` reads the day's total and
+    /// upserts total + amount; the edit/delete paths re-derive the day from its entry list), and the
+    /// call sites are fire-and-forget `Task`s from a +/- button. Concurrent taps therefore read the
+    /// same "current" and each wrote it back plus their own delta, losing every increment but one.
+    ///
+    /// Nil when no mutation is in flight. Each new mutation awaits the previous one's task before
+    /// starting, which makes the whole set serial without a lock — `Repository` is @MainActor, so
+    /// the only interleaving was at the awaits inside these functions.
+    private var hydrationMutationTail: Task<Void, Never>?
+    /// Monotonic id for the queued mutation, so the tail can be cleared only by the mutation that
+    /// actually owns it (`Task` is a struct, so identity comparison is not available).
+    private var hydrationMutationSeq = 0
+    private var hydrationMutationTailSeq = 0
+
+    /// Run `body` after every hydration mutation already queued, and make the next one wait for it.
+    ///
+    /// Deliberately a chained `Task` rather than an actor or a semaphore: the work is already
+    /// main-actor-bound and must stay ordered (a minus that overtakes its plus would delete the
+    /// wrong entry), and this keeps the queue visible in one property rather than hidden in a lock.
+    func withHydrationLock<T>(_ body: @escaping () async -> T) async -> T {
+        // The chained task must cover the BODY, not just the wait for its predecessor.
+        //
+        // A first version had the task await only `previous`, then ran `body()` outside it. That
+        // gate completed the moment its own predecessor finished, so every queued caller's body
+        // still overlapped and the writes were lost exactly as before — the tests showed six logs
+        // in the entry list and one in the series. Enclosing the body is what makes the chain
+        // serial: the next caller's `await previous?.value` cannot return until this body is done.
+        let previous = hydrationMutationTail
+        hydrationMutationSeq += 1
+        let mine = hydrationMutationSeq
+        // Held outside the task so the result survives it (the task is Void; the value is not).
+        let box = HydrationResultBox<T>()
+        let gate = Task { @MainActor in
+            _ = await previous?.value
+            box.value = await body()
+        }
+        hydrationMutationTail = gate
+        hydrationMutationTailSeq = mine
+        await gate.value
+        // Clear the tail only if nothing queued behind this one, so a later mutation still chains
+        // onto us rather than starting concurrently.
+        if hydrationMutationTailSeq == mine { hydrationMutationTail = nil }
+        // Non-nil by construction: the task above always assigns before it completes, and we have
+        // awaited it. The fallback runs the body rather than crashing on a future refactor.
+        if let v = box.value { return v }
+        return await body()
+    }
+
     /// Today's logged water (ml), derived on FIRST READ and after every mutation.
     ///
     /// Self-seeding deliberately (260903): this used to be a plain stored property refreshed only

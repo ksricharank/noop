@@ -851,7 +851,10 @@ final class AppModel: ObservableObject {
         // suspension between the two, so the second entry sees the slot taken and returns.
         HydrationReminder.markFired(slot: due, today: dayKey)
 
-        let total = await repo.hydrationTotal(day: dayKey)
+        // The ENTRY LIST's figure, which is what the Today row shows — see
+        // `hydrationTotalForDisplay`. Reading the running-total series here is how the reminder came
+        // to say "5 of 21" on a day the row read 8.
+        let total = await repo.hydrationTotalForDisplay(day: dayKey)
         let title = await coach.notificationTitle(
             status: HydrationReminder.coachStatus(totalML: total, goalCups: goalCups))
         if let outcome = coach.lastNotificationTitleOutcome {

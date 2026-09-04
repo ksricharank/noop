@@ -137,6 +137,30 @@ extension Repository {
         await metricSeriesValue(key: HydrationStore.key, day: day)
     }
 
+    /// The hand-logged total as the ENTRY LIST reports it — the display's source of truth.
+    ///
+    /// Two records of the same water exist: the per-entry list in UserDefaults (one append per tap)
+    /// and the `metricSeries` row (a running total). The list is the more reliable of the two,
+    /// because appending an entry cannot lose a tap, whereas the series row is a read-modify-write.
+    ///
+    /// 260904: they had drifted. Fast +/- taps launched concurrent `logHydration` tasks that each
+    /// read the same running total and wrote back their own increment, losing the others — so the
+    /// Today row (entries) read 8 cups while the series row said 5, and the water reminder, which
+    /// read the series, honestly reported "5 of 21". The serialisation in `logHydration` stops the
+    /// loss; reading the list here means a reminder AGREES WITH THE ROW even if a series write is
+    /// ever lost again for some other reason.
+    ///
+    /// Synchronous: UserDefaults, no store actor.
+    func hydrationManualTotalFromEntries(day: String) -> Double {
+        HydrationEntries.total(Self.hydrationEntries(day: day))
+    }
+
+    /// What the reminder should state: the entry list's hand-logged water plus imported water.
+    /// The display half comes from the same place the Today row's does, by construction.
+    func hydrationTotalForDisplay(day: String) async -> Double {
+        hydrationManualTotalFromEntries(day: day) + (await hydrationImportedTotal(day: day))
+    }
+
     /// Only what came from the platform health store (#949). Replaced wholesale by each sync.
     func hydrationImportedTotal(day: String) async -> Double {
         await metricSeriesValue(key: HydrationStore.importedKey, day: day)
@@ -213,7 +237,28 @@ extension Repository {
     @discardableResult
     func logHydration(amountMl: Int, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        guard amountMl > 0, let store = await storeHandle() else { return await hydrationTotal(day: dayKey) }
+        guard amountMl > 0 else { return await hydrationTotal(day: dayKey) }
+        // SERIALISED (260904). Everything below is a read-modify-write, and the callers are
+        // fire-and-forget `Task`s from a button — so without this, tapping + three times quickly
+        // ran three of them concurrently, each reading the SAME `current` and writing
+        // `current + half a cup`. Two of the three increments were lost.
+        //
+        // The on-screen counter still looked right, because `bumpHydrationOptimistically` moves a
+        // synchronous cache and never misses a tap. Only the STORE fell behind — so the Today row
+        // read 6 cups while the row in SQLite said 5, and the water reminder (which reads the
+        // store, correctly) honestly reported "5 of 21". Reported from the device as a wrong
+        // notification; it was really a lost write.
+        //
+        // `Repository` is @MainActor, so the interleaving was purely at these await points and a
+        // serial gate is enough — no locking needed.
+        return await withHydrationLock {
+            await self.logHydrationUnlocked(amountMl: amountMl, dayKey: dayKey)
+        }
+    }
+
+    /// The actual read-modify-write. Callers MUST hold the hydration gate — use `logHydration`.
+    private func logHydrationUnlocked(amountMl: Int, dayKey: String) async -> Double {
+        guard let store = await storeHandle() else { return await hydrationTotal(day: dayKey) }
         // MANUAL total, never the combined one (#949) — see `hydrationManualTotal`.
         let current = await hydrationManualTotal(day: dayKey)
         let next = current + Double(amountMl)
@@ -253,9 +298,16 @@ extension Repository {
     @discardableResult
     func deleteHydrationEntry(id: UUID, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        let next = HydrationEntries.removing(Self.hydrationEntries(day: dayKey), id: id)
-        Self.writeHydrationEntries(next, day: dayKey)
-        return await rebankHydrationTotal(entries: next, day: dayKey)
+        // Serialised with every other hydration mutation (260904). Without the gate this can
+        // overtake a queued `logHydration` and re-bank a day total derived from an entry list that
+        // does not yet contain that log — the same lost-write class, arriving by the other door.
+        // Ordering matters as well as exclusion: a minus that overtook its own plus would look for
+        // an entry that had not been written yet.
+        return await withHydrationLock {
+            let next = HydrationEntries.removing(Self.hydrationEntries(day: dayKey), id: id)
+            Self.writeHydrationEntries(next, day: dayKey)
+            return await self.rebankHydrationTotal(entries: next, day: dayKey)
+        }
     }
 
     /// Set an existing entry's amount (a non-positive amount deletes it), then re-derive + re-bank the day
@@ -263,16 +315,32 @@ extension Repository {
     @discardableResult
     func updateHydrationEntry(id: UUID, amountMl: Int, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        let next = HydrationEntries.updating(Self.hydrationEntries(day: dayKey), id: id, amountMl: amountMl)
-        Self.writeHydrationEntries(next, day: dayKey)
-        return await rebankHydrationTotal(entries: next, day: dayKey)
+        // Serialised for the same reason as the delete above.
+        return await withHydrationLock {
+            let next = HydrationEntries.updating(Self.hydrationEntries(day: dayKey), id: id,
+                                                 amountMl: amountMl)
+            Self.writeHydrationEntries(next, day: dayKey)
+            return await self.rebankHydrationTotal(entries: next, day: dayKey)
+        }
     }
 
     /// Re-derive the day total from `entries` and upsert it into `metricSeries` (the canonical total). The
     /// per-entry list is the source of truth for an edited/deleted day; this keeps the rest of the app in sync.
     @discardableResult
     private func rebankHydrationTotal(entries: [HydrationEntry], day dayKey: String) async -> Double {
-        let total = HydrationEntries.total(entries)
+        // RE-READ the list rather than trusting the snapshot the caller computed (260904).
+        //
+        // `storeHandle()` below is an await, so between the caller's read and this write another
+        // hydration mutation can have appended an entry. Banking the caller's stale snapshot then
+        // overwrote the series with a total that omitted it — the series and the entry list ended up
+        // disagreeing even though the mutations themselves were correctly serialised. Found by
+        // `testALogAndARemovalStayOrdered`, not by review.
+        //
+        // The entry list is the source of truth for an edited day, so deriving the banked total from
+        // its CURRENT contents is both cheaper than re-plumbing the callers and correct by
+        // construction: whatever the list says at write time is what gets stored.
+        let total = HydrationEntries.total(Self.hydrationEntries(day: dayKey))
+        _ = entries   // the caller's snapshot is now advisory only; see above
         if let store = await storeHandle() {
             _ = try? await store.upsertMetricSeries(
                 [MetricPoint(day: dayKey, key: HydrationStore.key, value: total)],
@@ -335,4 +403,13 @@ extension Repository {
     func hydrationGoalML(profileSex: String) -> Int {
         HydrationGoal.dailyGoalML(sex: profileSex, effort: today?.strain)
     }
+}
+
+/// One-slot holder so `Repository.withHydrationLock` can return the value its chained `Task`
+/// produced. The task must be `Task<Void, …>` for the chain to be type-uniform across different
+/// mutation return types, so the result travels out of band. MainActor-confined, like everything
+/// that touches it.
+@MainActor
+final class HydrationResultBox<T> {
+    var value: T?
 }
