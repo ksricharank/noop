@@ -252,6 +252,25 @@ final class DayQualityScoreTests: XCTestCase {
         XCTAssertLessThan(r.total, 60, "all-recovery: the same day reads as a poor one")
     }
 
+    /// Clamping must survive DIRECT ASSIGNMENT, not just the initializer.
+    ///
+    /// The app builds its config by mutating `.default` from stored preferences, which never touches
+    /// `init` — so a clamp that lived only there would be bypassed by the one caller that matters,
+    /// and a corrupt stored value could produce a nonsense score.
+    func testClampingSurvivesDirectAssignment() {
+        var c = DayQualityScore.Config.default
+        c.executionShare = 4.2
+        XCTAssertEqual(c.executionShare, 1.0)
+        c.executionShare = -1
+        XCTAssertEqual(c.executionShare, 0.0)
+        c.loadFactorStrength = 9
+        XCTAssertEqual(c.loadFactorStrength, 1.0)
+        c.overshootCap = 0.1
+        XCTAssertEqual(c.overshootCap, 1.0, "no assignment may make meeting a target worth less than full marks")
+        c.overshootCap = 50
+        XCTAssertEqual(c.overshootCap, 2.0)
+    }
+
     /// Out-of-range configuration is clamped at the boundary rather than trusted.
     func testConfigClampsItsInputs() {
         let c = DayQualityScore.Config(executionShare: 5, loadFactorStrength: -2,

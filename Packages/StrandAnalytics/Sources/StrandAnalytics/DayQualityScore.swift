@@ -96,11 +96,20 @@ public struct DayQualityScore: Equatable, Sendable {
 
     /// The wearer-tunable parts. Defaults are the shipped 60/40 with a mild load factor.
     public struct Config: Equatable, Sendable {
+        // The three tunables clamp on ASSIGNMENT, not only in `init`. Callers legitimately build a
+        // config by mutating `.default` (the app's prefs bridge does exactly that), which would
+        // otherwise skip the initializer's clamps entirely and let a corrupt stored preference
+        // produce a nonsense score. `didSet` does not fire during `init`, so the initializer keeps
+        // its own clamps too — both paths are covered, and both are tested.
         /// Share of the score carried by the execution half, 0…1. Recovery takes the remainder.
-        public var executionShare: Double
+        public var executionShare: Double {
+            didSet { executionShare = min(max(executionShare, 0), 1) }
+        }
         /// 0 disables the load factor; 1 applies it at full strength. Default 0.5 — enough to stop
         /// the deconditioning drift, not enough to punish a genuine rest day.
-        public var loadFactorStrength: Double
+        public var loadFactorStrength: Double {
+            didSet { loadFactorStrength = min(max(loadFactorStrength, 0), 1) }
+        }
 
         /// Ceiling on a single execution component's achievement, ≥ 1.0. Default 1.25: beating a
         /// target by 25% or more earns the full bonus and nothing beyond.
@@ -109,7 +118,9 @@ public struct DayQualityScore: Equatable, Sendable {
         /// matters more than the bonus: with four equal execution components, one metric run to the
         /// cap adds at most 0.25/4 of the execution half — enough to reward a hard day, far too
         /// little to cover a component that scored zero. Set to 1.0 to restore a hard cap at target.
-        public var overshootCap: Double
+        public var overshootCap: Double {
+            didSet { overshootCap = min(max(overshootCap, 1.0), 2.0) }
+        }
 
         /// Relative weights WITHIN each half. They need not sum to anything in particular; each half
         /// normalises its own present components, which is also what makes rule 2 work.
