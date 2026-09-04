@@ -765,7 +765,16 @@ final class AppModel: ObservableObject {
     /// shipped) and does not route through here.
     func buzzForNudgeIfEnabled(_ cue: TargetAutomations.BuzzCue) {
         guard TargetAutomations.buzzEnabled(cue), canBuzz else { return }
-        buzz(loops: 2)
+        // The ACKNOWLEDGED sequence, not the bare `buzz(loops:)` write (260903). A plain
+        // RUN_HAPTICS_PATTERN "can be silently ignored (WHOOP 4.0 via the Siri shortcut) or dropped
+        // unacked on a busy link" — see `BLEManager.buzzStrapOnce` — and a nudge fires on the
+        // post-offload path, which is exactly a busy link. It also adds the runAlarm follow-up a
+        // 5/MG needs, which the bare write omits entirely.
+        //
+        // So a nudge buzz uses the same hardware-confirmed path the Live "Buzz strap" button and
+        // the Buzz Strap App Intent use. Being felt is the whole point of the feature; a cue that
+        // is written but not felt is indistinguishable from one that never fired.
+        buzzStrapOnce()
     }
 
     /// Wire the hydration reminder's "Logged a cup" action to the EXISTING tracker, and keep the
