@@ -332,6 +332,8 @@ struct SettingsView: View {
     /// (S3). Nothing is removed; every section below stays one tap away by expanding this group.
     /// Persisted so it remembers the user's choice; mirrors the Android `noop.settingsAdvancedOpen` key.
     @AppStorage(SettingsDisclosureDefaults.advancedOpenKey) private var advancedOpen = SettingsDisclosureDefaults.advancedOpenDefault
+    /// "Configure coach" (260904), collapsed by default like Advanced.
+    @AppStorage(SettingsDisclosureDefaults.coachOpenKey) private var configureCoachOpen = SettingsDisclosureDefaults.coachOpenDefault
 
     var body: some View {
         ScreenScaffold(title: "Settings",
@@ -349,6 +351,26 @@ struct SettingsView: View {
                 streakCard.staggeredAppear(index: 4)
                 featuresCard.staggeredAppear(index: 5)
 
+                // Everything about HOW the coach works, in one place (260904, maintainer instruction).
+                // It used to sit above the chat on the Coach screen — provider, key, model, the three
+                // data consents and four editable prompts, 604 lines of it — so "Ask the Coach"
+                // meant scrolling past configuration to reach the conversation. The Coach screen is
+                // now only the Q&A; this is the one place the coach is configured.
+                SettingsDisclosureGroup(
+                    title: "Configure coach",
+                    subtitle: "Provider, API key, model, what the coach may read, and how it writes each surface.",
+                    isExpanded: $configureCoachOpen
+                ) {
+                    SettingsSection(
+                        icon: "sparkles",
+                        title: "Configure coach",
+                        blurb: "Coach is opt-in and bring-your-own-key. Set the provider and what it may read here; ask your questions on the Coach screen."
+                    ) {
+                        ConfigureCoachSection()
+                    }
+                }
+                .staggeredAppear(index: 6)
+
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
                 // (Recovery / advanced scoring, Test Centre, the experimental probes + raw-capture, and
@@ -364,10 +386,10 @@ struct SettingsView: View {
                     experimentalCard
                     backupCard
                 }
-                .staggeredAppear(index: 6)
+                .staggeredAppear(index: 7)
 
                 // About stays expanded at the foot (version, links and the help sheets people return to).
-                aboutCard.staggeredAppear(index: 7)
+                aboutCard.staggeredAppear(index: 8)
             }
         }
         .alert(backupAlertTitle, isPresented: $showBackupAlert) {
@@ -3355,6 +3377,10 @@ struct SettingsView: View {
 enum SettingsDisclosureDefaults {
     static let advancedOpenKey = "settingsAdvancedOpen"
     static let advancedOpenDefault = false
+    /// "Configure coach" (260904). Collapsed by default: set-once configuration should not be
+    /// something to scroll past on every visit to Settings.
+    static let coachOpenKey = "settingsConfigureCoachOpen"
+    static let coachOpenDefault = false
 }
 
 /// A collapsible group that tucks the lower-frequency settings sections behind one tap. It is NOT a

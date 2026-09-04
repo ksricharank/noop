@@ -15,28 +15,35 @@ import StrandAnalytics
 @MainActor
 final class HydrationConcurrentLogTests: XCTestCase {
 
-    /// A day AND a device unique to each RUN, not just to each test.
+    /// A day unique to each RUN — and the DAY is the only thing that isolates these tests.
     ///
-    /// Two persistent stores are involved: the entry list (UserDefaults, keyed by day) and the
-    /// metric series (SQLite, keyed by device id). Clearing only the UserDefaults key left the
-    /// series rows from previous runs behind, so the series total came back HIGHER than the entry
-    /// total — 1062 against 708 — which looked exactly like the drift under test and failed 2 runs
-    /// in 3. The give-away was the direction: a lost write makes the series lower, never higher.
+    /// Two persistent stores are involved: the entry list (UserDefaults, keyed by day) and the metric
+    /// series (SQLite). Hydration always writes the series under the fixed `HydrationStore.sourceId`,
+    /// NOT the Repository's device id, so a per-test device id isolates nothing — the rows collide
+    /// whatever it is. Only the day key separates them.
     ///
-    /// A UUID in both keys makes every run start empty without needing to delete anything.
+    /// An earlier attempt derived the day from `hashValue`, which is randomised per process but not
+    /// unique per run, so runs still collided: the series total came back HIGHER than the entry total
+    /// (944 against 708) and the test failed intermittently while looking exactly like the drift
+    /// under test. The direction is the tell — a lost write makes the series lower, never higher.
+    ///
+    /// A monotonic counter plus the process id gives a distinct, well-formed date per test per run,
+    /// so every test starts against empty storage without deleting anything.
     private var day = ""
-    private var deviceId = ""
+
+    private static var counter = 0
 
     private func repository() -> Repository {
-        Repository(deviceId: deviceId)
+        Repository(deviceId: "test-hydration")
     }
 
     override func setUp() {
         super.setUp()
-        let unique = UUID().uuidString.prefix(8)
-        // A real "yyyy-MM-dd" (the code parses it), made unique by year rather than by suffix.
-        day = "\(1900 + abs(unique.hashValue % 90))-09-04"
-        deviceId = "test-hydration-\(unique)"
+        Self.counter += 1
+        // A real "yyyy-MM-dd" — the code parses it — pushed into the far past where no other test
+        // or fixture writes. Year varies per run, day-of-month per test within the run.
+        let year = 1800 + (Int(ProcessInfo.processInfo.processIdentifier) % 100)
+        day = String(format: "%04d-01-%02d", year, (Self.counter % 28) + 1)
         UserDefaults.standard.removeObject(forKey: HydrationStore.entriesKey(forDay: day))
     }
 
