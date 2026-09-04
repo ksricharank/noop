@@ -2607,6 +2607,23 @@ final class IntelligenceEngine: ObservableObject {
                 ], deviceId: computedId)
             }
 
+            // ── Day QUALITY score , DAILY, keyed to each finished day ───────────────────────────────────
+            // One number per day for "how did that day go", against both the targets the day set and
+            // what the body did with them. Fed to Trends as the top-line motivation series.
+            //
+            // Lives inside `!lightPass` for the same reason its siblings do: a 2-day window cannot
+            // compute the scored-night fields the recovery half needs, and an idempotent upsert means
+            // the next full pass rewrites the same value. Placed BEFORE `repo.refresh()` below, so a
+            // freshly written score is immediately readable by `exploreSeries`.
+            //
+            // BACKFILL: every finished day in the working set is (re)scored, not just last night.
+            // The maintainer asked for the trend to have shape the moment it appears, and re-scoring
+            // is what lets a config change (the 60/40 split, the load factor) apply to history
+            // rather than only to days scored after the change. The cost is bounded by
+            // `targetDaysNeeded` — pricing walks the days being scored plus their trailing windows,
+            // not the whole history.
+            await scoreDayQuality(dailies: dailies, store: store, computedId: computedId)
+
             // ── Steps ESTIMATE (WHOOP 4.0) , DAILY, keyed to each strap-only day ────────────────────────
             // A WHOOP 4.0 sends no step count over BLE, so for days the phone DIDN'T also count steps we
             // estimate them: calibrate the strap's daily MOTION VOLUME against the phone's real step count
@@ -3125,6 +3142,93 @@ final class IntelligenceEngine: ObservableObject {
     /// baseline is usable (RecoveryScorer gates on `hrvBaseline.usable`, i.e. ≥ minNightsSeed valid
     /// nights) , so the honest null-until-4-nights cold-start is free. Mirrors AnalyticsEngine's own
     /// recovery call + Android IntelligenceEngine.recomputeRecovery. (#78)
+    /// Compute and persist the day-quality score for every FINISHED day in this pass's working set.
+    ///
+    /// Backfills rather than scoring only last night, deliberately: the trend is the feature, so it
+    /// must have shape the first time it is shown, and re-scoring is what lets a change to the
+    /// wearer's split or load factor apply to history instead of only to future days. Idempotent —
+    /// `upsertMetricSeries` overwrites each day's point — so repeated passes converge rather than
+    /// accumulate.
+    ///
+    /// The MainActor hop is once per pass, not once per day: the target table and every day's input
+    /// are assembled inside a single hop (`DayQualityComputer` is main-actor-isolated because
+    /// `Repository.liveTargets` is), then the scoring and the store write happen back out here.
+    private func scoreDayQuality(dailies: [DailyMetric], store: WhoopStore,
+                                 computedId: String) async {
+        // The full history, not just this pass's rows: the recovery half's baselines and the load
+        // factor's trailing window both read days before the ones being scored.
+        let history = await MainActor.run { repo.days }
+        guard !history.isEmpty else { return }
+
+        let todayKey = Repository.localDayKey(Date())
+        let days = DayQualityComputer.daysToScore(scoredDays: history.map(\.day), todayKey: todayKey)
+        guard !days.isEmpty else { return }
+
+        // Water is a metric series, so the whole history comes back in ONE range read rather than a
+        // per-day query — the same reason the target table is built in one walk.
+        let waterByDay = await hydrationCupsByDay(store: store, days: days)
+
+        let config = await MainActor.run { DayQualityPrefs.config }
+        let inputs: [(String, DayQualityScore.DayInput)] = await MainActor.run {
+            let profile = repo.liveTargetsProfile?() ?? UserProfile()
+            let needed = DayQualityComputer.targetDaysNeeded(toScore: days, history: history)
+            let targets = DayQualityComputer.targetsByDay(history: history, profile: profile,
+                                                          onlyDays: needed)
+            return days.compactMap { day in
+                guard let input = DayQualityComputer.input(
+                    for: day, history: history, profile: profile, targetsByDay: targets,
+                    waterCups: waterByDay[day]?.cups,
+                    waterTargetCups: waterByDay[day]?.target) else { return nil }
+                return (day, input)
+            }
+        }
+
+        let points: [MetricPoint] = inputs.compactMap { day, input in
+            guard let s = DayQualityScore.score(input, config: config) else { return nil }
+            return MetricPoint(day: day, key: DayQualityComputer.metricKey, value: Double(s.total))
+        }
+        guard !points.isEmpty else { return }
+        _ = try? await store.upsertMetricSeries(points, deviceId: computedId)
+        let newest = points.last
+        let newestLabel = newest == nil ? "-" : newest!.day + "=" + String(Int(newest!.value))
+        diagnosticSink?("day-quality: scored \(points.count) day(s), newest \(newestLabel)", nil)
+    }
+
+    /// Cups drunk and the day's cup target, per day, from ONE range read of the hydration series.
+    ///
+    /// The target is re-derived per day for the same reason the activity targets are: it moves with
+    /// that day's effort target, and the score must divide by what the wearer was actually asked for.
+    private func hydrationCupsByDay(store: WhoopStore,
+                                    days: [String]) async -> [String: (cups: Int, target: Int)] {
+        guard let first = days.first, let last = days.last else { return [:] }
+        let rows = (try? await store.metricSeries(deviceId: HydrationStore.sourceId,
+                                                  key: HydrationStore.key,
+                                                  from: first, to: last)) ?? []
+        guard !rows.isEmpty else { return [:] }
+        let mlByDay = Dictionary(rows.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
+        return await MainActor.run {
+            let profile = repo.liveTargetsProfile?() ?? UserProfile()
+            let history = repo.days
+            var out: [String: (cups: Int, target: Int)] = [:]
+            for day in days {
+                guard let ml = mlByDay[day] else { continue }
+                let upTo = history.filter { $0.day <= day }
+                guard let row = upTo.last(where: { $0.day == day }) else { continue }
+                let t = Repository.liveTargets(
+                    days: upTo, charge: row.recovery.map { Int($0.rounded()) },
+                    restScore: DayQualityComputer.restScoreFor(day: day, history: upTo),
+                    profile: profile, todayKey: day)
+                // Same basis the live water row uses: the day's effort ask, or what it actually did
+                // if that was higher.
+                let basis = max(Double(t.effortTarget ?? 0), row.strain ?? 0)
+                let target = HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: basis)
+                out[day] = (cups: Int((Double(HydrationGoal.halfCups(fromML: ml)) / 2).rounded(.down)),
+                            target: target)
+            }
+            return out
+        }
+    }
+
     private static func recomputeRecovery(_ daily: DailyMetric, _ baselines: AnalyticsEngine.ProfileBaselines) -> Double? {
         guard let hrvVal = daily.avgHrv, let rhrVal = daily.restingHr, let hrvBase = baselines.hrv else { return nil }
         // Charge enrichment: feed the Rest COMPOSITE (÷100) as the sleep-quality term instead of raw
