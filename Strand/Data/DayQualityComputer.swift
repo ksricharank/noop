@@ -1,0 +1,189 @@
+import Foundation
+import StrandAnalytics
+import WhoopStore
+
+/// Turns a scored day into a stored `day_quality` point.
+///
+/// Runs once a night has been scored — the same completion moment the morning brief uses — and
+/// upserts the score under the computed device id, so Trends reads it back through the ordinary
+/// `exploreSeries` path like Rest or Vitality.
+///
+/// ## Why it re-derives the targets rather than storing them
+///
+/// The score is only meaningful against the targets the day actually set, and those are a function
+/// of that morning's charge, readiness read and profile — not of anything stored per-day. Rather
+/// than persist a parallel copy of every target (which would drift from what the app displayed the
+/// moment either formula changed), this calls the SAME `Repository.liveTargets` the Today strip and
+/// the widgets call, with `todayKey` pointed at the day being scored.
+///
+/// That is what makes the grade honest: the number the score divides by is the number the wearer was
+/// shown. It also means one formula change moves both, which is the property a parallel copy loses.
+///
+/// Pure static functions over injected values — no store — so the day-selection logic and the input
+/// assembly are testable without a database.
+///
+/// `@MainActor` because `Repository.liveTargets` is: it is a pure static function, but it lives on
+/// the main-actor-isolated `Repository`. That is the right constraint to inherit rather than work
+/// around — the alternative would be a second copy of the target formulas reachable off the main
+/// actor, which is exactly the drift this type exists to avoid. The engine's scoring loop is
+/// nonisolated, so the caller hops once per pass and hands the results back; the walk is bounded to
+/// the days being scored precisely so that hop is cheap.
+@MainActor
+enum DayQualityComputer {
+
+    /// The metric-series key. Read back via `exploreSeries(key:source:)`.
+    static let metricKey = "day_quality"
+
+    /// How many days of history the load factor's "recent average target" is drawn from.
+    ///
+    /// 14 rather than 30: the factor asks "was this day demanding *for me lately*", and a fortnight
+    /// tracks a training block. A 30-day window would still be averaging in a block the wearer has
+    /// already moved on from.
+    static let recentTargetWindowDays = 14
+
+    /// Assemble one day's scorer input from the stored rows.
+    ///
+    /// `day` is the day being graded; `history` must contain it plus enough preceding days for the
+    /// baselines (the caller passes the engine's full working set). Returns nil when the day has no
+    /// row at all — there is nothing to grade, which is different from a day that scored badly.
+    /// `targetsByDay` comes from `targetsByDay(history:profile:)`, built ONCE by the caller and
+    /// reused across every day being scored — see that function on why it is not derived here.
+    static func input(for day: String,
+                      history: [DailyMetric],
+                      profile: UserProfile,
+                      targetsByDay: [String: Int],
+                      waterCups: Int?,
+                      waterTargetCups: Int?) -> DayQualityScore.DayInput? {
+        guard let row = history.last(where: { $0.day == day }) else { return nil }
+
+        // The targets AS THE DAY SET THEM. `liveTargets` reads the trailing history for its
+        // readiness evaluation, so the slice must END at the day being graded — feeding it the full
+        // history would grade a past day against a readiness read that includes days after it.
+        let upToDay = history.filter { $0.day <= day }
+        let charge = row.recovery.map { Int($0.rounded()) }
+        let restScore = restScoreFor(day: day, history: upToDay)
+        let targets = Repository.liveTargets(days: upToDay, charge: charge, restScore: restScore,
+                                             profile: profile, todayKey: day,
+                                             waterTodayML: nil, waterEnabled: false)
+
+        // Baselines for the autonomic half: the wearer's own recent central tendency, EXCLUDING the
+        // day being graded so a day cannot be its own yardstick (which would flatten every score to
+        // the baseline value and make the whole recovery half inert).
+        let prior = upToDay.filter { $0.day < day }
+        let hrvBaseline = median(prior.compactMap { $0.avgHrv })
+        let rhrBaseline = median(prior.compactMap { $0.restingHr }.map(Double.init))
+
+        return DayQualityScore.DayInput(
+            steps: row.steps,
+            stepsTarget: targets.stepsTarget,
+            kcal: row.activeKcalEst.map { Int($0.rounded()) },
+            kcalTarget: targets.kcalTargetKcal,
+            effort: row.strain.map { Int($0.rounded()) },
+            effortTarget: targets.effortTarget,
+            waterCups: waterCups,
+            waterTargetCups: waterTargetCups,
+            sleepMin: row.totalSleepMin,
+            sleepNeedMin: targets.sleepNeedTonightMin,
+            hrv: row.avgHrv,
+            hrvBaseline: hrvBaseline,
+            restingHr: row.restingHr,
+            restingHrBaseline: rhrBaseline,
+            recentAvgEffortTarget: recentAvgEffortTarget(before: day, targetsByDay: targetsByDay)
+        )
+    }
+
+    /// Mean of the effort TARGETS over the trailing window — the load factor's yardstick.
+    ///
+    /// Takes a PRE-BUILT table rather than re-deriving, and that is a performance requirement, not a
+    /// style choice. `Repository.liveTargets` runs `ReadinessEngine.evaluate`, which sorts the whole
+    /// history; its memo is keyed on a fingerprint of the exact row set it was handed, with capacity
+    /// 16. Deriving a target per day from a per-day history SLICE therefore misses the cache every
+    /// time and thrashes it — a full-history sort per day of the window, per day scored, on a
+    /// background pass. `targetsByDay` computes each day once in a single ascending walk.
+    ///
+    /// Nil when the window holds too little to average, which leaves the load factor inert rather
+    /// than guessing. Three days is the floor: below that a "recent average" is one or two days
+    /// wearing a mean, and the factor would swing on a single outlier.
+    static func recentAvgEffortTarget(before day: String, targetsByDay: [String: Int]) -> Double? {
+        let window = targetsByDay.keys.filter { $0 < day }.sorted().suffix(recentTargetWindowDays)
+        guard window.count >= 3 else { return nil }
+        let targets = window.compactMap { targetsByDay[$0] }.map(Double.init)
+        guard !targets.isEmpty else { return nil }
+        return targets.reduce(0, +) / Double(targets.count)
+    }
+
+    /// Every day's effort target, computed in ONE ascending pass over the history.
+    ///
+    /// The history is sorted once and the slice grows by one row per step, so `liveTargets` is
+    /// called exactly once per day rather than once per (day, window-member) pair. This is the only
+    /// place that walks the history for targets; both the score and the load factor read the result.
+    /// Bounded by `onlyDays` so the walk is proportional to what is being scored, not to the whole
+    /// history: a wearer with two years of rows must not pay a per-row `liveTargets` call every
+    /// night. The slice handed to `liveTargets` still ENDS at the day being priced (readiness must
+    /// not see the future), and still starts at the beginning of history, because the readiness read
+    /// legitimately draws on the trailing baselines.
+    static func targetsByDay(history: [DailyMetric], profile: UserProfile,
+                             onlyDays: Set<String>) -> [String: Int] {
+        guard !onlyDays.isEmpty else { return [:] }
+        let sorted = history.sorted { $0.day < $1.day }
+        var out: [String: Int] = [:]
+        for i in sorted.indices where onlyDays.contains(sorted[i].day) {
+            let upTo = Array(sorted[...i])
+            let row = sorted[i]
+            let t = Repository.liveTargets(days: upTo,
+                                           charge: row.recovery.map { Int($0.rounded()) },
+                                           restScore: restScoreFor(day: row.day, history: upTo),
+                                           profile: profile, todayKey: row.day)
+            if let target = t.effortTarget { out[row.day] = target }
+        }
+        return out
+    }
+
+    /// The days `targetsByDay` must price to score `days`: each of them, plus the trailing window
+    /// each one's load factor averages over.
+    static func targetDaysNeeded(toScore days: [String], history: [DailyMetric]) -> Set<String> {
+        let all = history.map(\.day).sorted()
+        var needed = Set(days)
+        for day in days {
+            let prior = all.filter { $0 < day }.suffix(recentTargetWindowDays)
+            needed.formUnion(prior)
+        }
+        return needed
+    }
+
+    /// Rest score for a day, from the stored efficiency composite when present.
+    ///
+    /// `liveTargets` uses it only to shade the sleep need, so a nil here costs a small adjustment
+    /// rather than the target — which is why it is derived cheaply from the row rather than pulling
+    /// the whole `sleep_performance` series into this path.
+    static func restScoreFor(day: String, history: [DailyMetric]) -> Int? {
+        guard let row = history.last(where: { $0.day == day }), let eff = row.efficiency else {
+            return nil
+        }
+        // Efficiency is stored as either a fraction or a percentage depending on the import path
+        // (#949's bimodality, same as the coach context's skin temp). Normalise before rounding.
+        let pct = eff > 1.5 ? eff : eff * 100
+        guard pct > 0, pct <= 100 else { return nil }
+        return Int(pct.rounded())
+    }
+
+    static func median(_ xs: [Double]) -> Double? {
+        guard !xs.isEmpty else { return nil }
+        let s = xs.sorted()
+        let mid = s.count / 2
+        return s.count % 2 == 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid]
+    }
+
+    /// Which days to (re)score on this pass.
+    ///
+    /// Only days STRICTLY BEFORE today: the score is a closed book about a finished day, and a
+    /// partial today would publish a low number at breakfast and revise it by bedtime — the exact
+    /// churn the "computed at the end of a night" requirement exists to avoid.
+    ///
+    /// Idempotent by construction: `upsertMetricSeries` overwrites the day's point, so re-running a
+    /// pass over the same days is a no-op in effect. That is what lets the caller simply hand over
+    /// the scored window without tracking what it has already written.
+    static func daysToScore(scoredDays: [String], todayKey: String) -> [String] {
+        Array(Set(scoredDays.filter { $0 < todayKey })).sorted()
+    }
+}
