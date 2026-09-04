@@ -483,4 +483,45 @@ final class NotificationTitleCleaningTests: XCTestCase {
                        "changing this orphans the pre-260903 repeating requests")
     }
 
+    // MARK: - Notification titles (260904, from the 1119 log)
+
+    /// The prompt must not QUOTE any line the validator rejects.
+    ///
+    /// The 1119 log caught the trap: the prompt offered "Time to block out an hour" as an example,
+    /// the model returned exactly that against a genuinely large gap, and the parrot check threw it
+    /// away — so the nudge arrived titled "Behind pace". The two mechanisms were pulling in
+    /// opposite directions. Fixed by DESCRIBING the shape rather than supplying quotable text, and
+    /// this is the guard that stops an example being reintroduced into the prompt later.
+    func testThePromptDoesNotQuoteAnyRejectedTitle() {
+        let prompt = AICoachEngine.defaultNotificationTitlePrompt.lowercased()
+        for canned in AICoachEngine.notificationTitleExamples {
+            XCTAssertFalse(prompt.contains(canned),
+                           "the prompt quotes \"\(canned)\", which cleanNotificationTitle rejects — "
+                           + "a model that follows the example is guaranteed the static fallback")
+        }
+    }
+
+    /// The prompt must still steer length and specificity, which is what actually produces short,
+    /// day-specific lines — removing the examples must not have removed the constraints with them.
+    func testThePromptStillConstrainsLengthAndDemandsMyNumbers() {
+        let prompt = AICoachEngine.defaultNotificationTitlePrompt
+        XCTAssertTrue(prompt.contains("\(AICoachEngine.notificationTitleMaxChars) characters"),
+                      "the character limit must be stated in the prompt, not only enforced after")
+        XCTAssertTrue(prompt.lowercased().contains("my numbers"),
+                      "the prompt must still demand a day-specific line")
+    }
+
+    /// A title generated for a notification gets a MUCH tighter stall budget than the coach.
+    ///
+    /// From the 1119 log: both title failures were "took too long", and the lines before them show
+    /// a 25-second re-score and a just-finished backfill — titles are requested from the
+    /// post-offload path, competing with work the coach screen never competes with. The nudge
+    /// already carries a correct static title, so a long wait can win nothing.
+    func testTheNotificationTitleBudgetIsFarTighterThanTheCoachs() {
+        XCTAssertLessThan(AICoachEngine.notificationTitleTimeoutSeconds,
+                          AICoachEngine.requestTimeoutSeconds,
+                          "a background decoration must not wait as long as a user-initiated answer")
+        XCTAssertLessThanOrEqual(AICoachEngine.notificationTitleTimeoutSeconds, 30)
+    }
+
 }
