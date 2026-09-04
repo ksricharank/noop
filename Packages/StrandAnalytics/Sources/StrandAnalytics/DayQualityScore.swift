@@ -21,9 +21,12 @@ import Foundation
 ///
 /// ## Three rules that keep the number honest
 ///
-/// 1. **Every component caps at 100%.** A 20 000-step day cannot buy back a skipped workout. Without
-///    the cap the score stops answering "did I do what the day asked" and starts rewarding whichever
-///    component is easiest to inflate.
+/// 1. **Overshoot earns credit, but a bounded amount.** An execution component scores above 1.0 when
+///    the target is beaten — so a genuinely big day can reach 100 on execution alone, rather than
+///    being punished for being hard — but only up to `overshootCap`. The bound is what stops the
+///    score rewarding whichever component is easiest to inflate: a 40 000-step day still cannot fully
+///    offset a skipped workout, because its extra credit is worth a fraction of the component it
+///    would be covering for.
 /// 2. **A component with no data is ABSENT, never zero.** Weights renormalise over what is present,
 ///    so a night the strap did not record scores the day on what it does know. Scoring a missing
 ///    night as zero would be a claim about the day rather than about the data — the same rule the
@@ -99,6 +102,15 @@ public struct DayQualityScore: Equatable, Sendable {
         /// the deconditioning drift, not enough to punish a genuine rest day.
         public var loadFactorStrength: Double
 
+        /// Ceiling on a single execution component's achievement, ≥ 1.0. Default 1.25: beating a
+        /// target by 25% or more earns the full bonus and nothing beyond.
+        ///
+        /// This is what lets a big day reach 100 without the score becoming gameable. The bound
+        /// matters more than the bonus: with four equal execution components, one metric run to the
+        /// cap adds at most 0.25/4 of the execution half — enough to reward a hard day, far too
+        /// little to cover a component that scored zero. Set to 1.0 to restore a hard cap at target.
+        public var overshootCap: Double
+
         /// Relative weights WITHIN each half. They need not sum to anything in particular; each half
         /// normalises its own present components, which is also what makes rule 2 work.
         public var stepsWeight: Double
@@ -112,6 +124,7 @@ public struct DayQualityScore: Equatable, Sendable {
         public static let `default` = Config(
             executionShare: 0.60,
             loadFactorStrength: 0.5,
+            overshootCap: 1.25,
             stepsWeight: 1, calorieWeight: 1, effortWeight: 1, waterWeight: 1,
             // Sleep carries more than each autonomic signal: it is the one recovery input the wearer
             // has real agency over, and the two autonomic signals are correlated with each other.
@@ -119,11 +132,15 @@ public struct DayQualityScore: Equatable, Sendable {
         )
 
         public init(executionShare: Double, loadFactorStrength: Double,
+                    overshootCap: Double = 1.25,
                     stepsWeight: Double, calorieWeight: Double, effortWeight: Double,
                     waterWeight: Double, sleepWeight: Double, hrvWeight: Double,
                     restingHrWeight: Double) {
             self.executionShare = min(max(executionShare, 0), 1)
             self.loadFactorStrength = min(max(loadFactorStrength, 0), 1)
+            // Never below 1.0: a cap under target would mean hitting the target scored less than
+            // full marks for it, which no configuration should be able to express.
+            self.overshootCap = min(max(overshootCap, 1.0), 2.0)
             self.stepsWeight = max(0, stepsWeight)
             self.calorieWeight = max(0, calorieWeight)
             self.effortWeight = max(0, effortWeight)
@@ -189,7 +206,7 @@ public struct DayQualityScore: Equatable, Sendable {
                             detail: (Double, Double) -> String) -> (Component, Double)? {
             guard weight > 0 else { return nil }
             guard let actual, let target, target > 0 else { missing.append(label); return nil }
-            let achieved = min(1.0, max(0, actual / target))
+            let achieved = min(config.overshootCap, max(0, actual / target))
             return (Component(label: label, achieved: achieved, weight: 0, points: 0,
                               detail: detail(actual, target)), weight)
         }
@@ -217,7 +234,9 @@ public struct DayQualityScore: Equatable, Sendable {
         // the recovery half because it is what the body was given, not what it was asked to do.
         if config.sleepWeight > 0 {
             if let slept = input.sleepMin, let need = input.sleepNeedMin, need > 0 {
-                let achieved = min(1.0, max(0, slept / Double(need)))
+                // Sleeping PAST the need earns the same bounded credit as beating an execution
+                // target: an extra hour banked is a genuine recovery win, not a rounding error.
+                let achieved = min(config.overshootCap, max(0, slept / Double(need)))
                 recovery.append((Component(
                     label: "Sleep", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%.1fh of %.1fh needed", slept / 60, Double(need) / 60)

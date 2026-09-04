@@ -50,23 +50,65 @@ final class DayQualityScoreTests: XCTestCase {
         XCTAssertEqual(s.total, 100)
     }
 
-    /// Rule 1: components cap at 100%, so one runaway metric cannot paper over a skipped one.
-    func testOvershootingOneTargetCannotBuyBackAnotherThatWasSkipped() throws {
+    /// Rule 1, first half: beating a target EARNS something, so a big day is not punished for being
+    /// hard. Maintainer's requirement — 100 must be reachable by exceeding targets.
+    func testExceedingEveryTargetReachesOneHundred() throws {
         var d = perfectDay()
-        d.steps = 40_000           // 5x the target
-        d.effort = 0               // did no work at all
+        d.steps = 10_000           // 125% of 8 000
+        d.kcal = 2_900             // ~129% of 2 250
+        d.effort = 70              // ~130% of 54
+        d.waterCups = 27           // ~129% of 21
+        d.sleepMin = 610           // ~126% of need
+        // HRV and resting HR left AT baseline: this is a big day in a normal body, which is exactly
+        // the case that used to top out at 94.
         let s = try XCTUnwrap(DayQualityScore.score(d))
+        XCTAssertEqual(s.total, 100,
+                       "exceeding every target must be able to reach 100 even with baseline signals")
+    }
+
+    /// Rule 1, second half: the credit is BOUNDED, so one runaway metric still cannot paper over a
+    /// component that scored zero. This is the anti-gaming property, and it is the bound — not the
+    /// absence of a bonus — that provides it.
+    func testOvershootIsBoundedSoItCannotCoverASkippedComponent() throws {
+        var runaway = perfectDay()
+        runaway.steps = 40_000     // 5x the target
+        runaway.effort = 0         // did no work at all
+        let s = try XCTUnwrap(DayQualityScore.score(runaway))
 
         var honest = perfectDay()
         honest.steps = 8_000       // exactly met
         honest.effort = 0
         let baseline = try XCTUnwrap(DayQualityScore.score(honest))
 
-        XCTAssertEqual(s.total, baseline.total,
-                       "40 000 steps scored the same as 8 000 — the cap is what stops a step count "
-                       + "from disguising a skipped workout")
-        // And the skipped component really did cost its full share (execution has 4 equal parts of 60).
-        XCTAssertEqual(s.executionPoints, 45, accuracy: 0.01)
+        // The extra credit is real but small: capped at 1.25, one of four equal execution components
+        // is worth at most 0.25 × 15 = 3.75 points of bonus.
+        XCTAssertEqual(s.executionPoints - baseline.executionPoints, 3.75, accuracy: 0.01)
+        XCTAssertLessThan(s.total, 94,
+                          "five times the step target must not reach the score of a day that "
+                          + "actually did its workout")
+        // Beyond the cap, more steps buy literally nothing.
+        var absurd = runaway
+        absurd.steps = 400_000
+        XCTAssertEqual(try XCTUnwrap(DayQualityScore.score(absurd)).total, s.total,
+                       "400 000 steps scores the same as 40 000 — the cap holds")
+    }
+
+    /// The cap is configurable, and 1.0 restores the old hard-cap-at-target behaviour.
+    func testOvershootCapIsConfigurableAndNeverBelowTarget() throws {
+        var d = perfectDay()
+        d.steps = 20_000
+        var hard = DayQualityScore.Config.default
+        hard.overshootCap = 1.0
+        let capped = try XCTUnwrap(DayQualityScore.score(d, config: hard))
+        XCTAssertEqual(capped.executionPoints, 60, accuracy: 0.01,
+                       "with the cap at 1.0, overshooting earns nothing")
+        // A cap below 1.0 would mean hitting the target scored less than full marks for it.
+        let nonsense = DayQualityScore.Config(executionShare: 0.6, loadFactorStrength: 0.5,
+                                              overshootCap: 0.4,
+                                              stepsWeight: 1, calorieWeight: 1, effortWeight: 1,
+                                              waterWeight: 1, sleepWeight: 1, hrvWeight: 1,
+                                              restingHrWeight: 1)
+        XCTAssertEqual(nonsense.overshootCap, 1.0, "clamped up: no config may punish meeting a target")
     }
 
     /// Rule 2, and the one that matters most: a night the strap did not record must NOT be scored as
