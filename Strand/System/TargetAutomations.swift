@@ -24,8 +24,15 @@ enum TargetAutomations {
         static let pacingEnabled = "auto.pacing.enabled"
         static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
         static let pacingDay = "auto.pacing.day"
-        /// 260903: also buzz the strap when NOOP posts one of its own nudges.
+        // 260903: per-nudge wrist-buzz toggles. `wristBuzz` is the master; the four below are the
+        // individual cues, each defaulting ON so turning the master on gives every nudge a buzz
+        // and the user switches OFF what they do not want (rather than hunting for why a cue they
+        // just enabled is silent).
         static let wristBuzz = "auto.wristBuzz.enabled"
+        static let buzzMorningBrief = "auto.wristBuzz.morningBrief"
+        static let buzzPaceCheck = "auto.wristBuzz.paceCheck"
+        static let buzzWater = "auto.wristBuzz.water"
+        static let buzzBreathe = "auto.wristBuzz.breathe"
         static let pacingFiredMask = "auto.pacing.firedMask"
     }
 
@@ -46,6 +53,39 @@ enum TargetAutomations {
     /// connection, so a charging or out-of-range strap gets no cue rather than the app pretending
     /// one landed.
     static var wristBuzzEnabled: Bool { d.bool(forKey: K.wristBuzz) }
+
+    /// The nudges a wrist buzz can accompany. Raw values are the UserDefaults keys.
+    enum BuzzCue: String, CaseIterable {
+        case morningBrief = "auto.wristBuzz.morningBrief"
+        case paceCheck = "auto.wristBuzz.paceCheck"
+        case water = "auto.wristBuzz.water"
+        case breathe = "auto.wristBuzz.breathe"
+
+        var label: String {
+            switch self {
+            case .morningBrief: return String(localized: "Morning brief")
+            case .paceCheck: return String(localized: "Pace checks")
+            case .water: return String(localized: "Water reminders")
+            case .breathe: return String(localized: "Stress check-ins")
+            }
+        }
+    }
+
+    /// Whether a specific cue should buzz.
+    ///
+    /// Each cue defaults ON, so switching the master on is enough to feel everything and the user
+    /// turns OFF what they do not want — rather than enabling a feature and wondering why it is
+    /// silent.
+    ///
+    /// `breathe` is the exception, and deliberately: the stress check-in has buzzed since it
+    /// shipped, on its own path and with its own Automations toggle. Making it depend on the new
+    /// master would SILENCE an existing cue for anyone who leaves the master off — a regression
+    /// dressed as a feature. So its per-cue switch stands alone: on unless explicitly turned off.
+    static func buzzEnabled(_ cue: BuzzCue) -> Bool {
+        let ownSwitch = d.object(forKey: cue.rawValue) as? Bool ?? true
+        guard cue != .breathe else { return ownSwitch }
+        return wristBuzzEnabled && ownSwitch
+    }
     /// Check-in cadence: nudge-eligible at the top of every N hours through the waking window.
     static var pacingIntervalHours: Int {
         let v = d.object(forKey: K.pacingIntervalHours) as? Int ?? 2
