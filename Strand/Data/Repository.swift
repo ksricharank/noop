@@ -836,6 +836,31 @@ final class Repository: ObservableObject {
     /// wiring — the estimator suite's standard profile then stands in.
     var liveTargetsProfile: (() -> UserProfile)?
 
+    /// Cups drunk and the day's cup TARGET for one past day — the day-quality card's water input.
+    ///
+    /// Synchronous, reading the same per-day hydration cache the Today row reads, so the card can
+    /// assemble its breakdown without an async hop mid-render. The target is re-derived from that
+    /// day's own effort ask (`max(target, accrued)`, the live row's basis) rather than read from a
+    /// stored copy, for the same reason the rest of the score's targets are: it must divide by what
+    /// the wearer was actually asked for that day.
+    ///
+    /// Nil when hydration tracking is off or the day logged nothing — absent, not zero.
+    func waterCupsAndTarget(forDay day: String) -> (cups: Int, target: Int)? {
+        guard UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) else { return nil }
+        // Read the per-entry log for that day, not the today-only cache: this card summarises a
+        // PAST day, and the cache legitimately holds only the current one.
+        let ml = HydrationStore.manualML(day: day)
+        guard ml > 0 else { return nil }
+        let upTo = days.filter { $0.day <= day }
+        guard let row = upTo.last(where: { $0.day == day }) else { return nil }
+        let profile = liveTargetsProfile?() ?? UserProfile()
+        let t = Repository.liveTargets(days: upTo, charge: row.recovery.map { Int($0.rounded()) },
+                                       restScore: nil, profile: profile, todayKey: day)
+        let basis = max(Double(t.effortTarget ?? 0), row.strain ?? 0)
+        return (cups: Int((Double(HydrationGoal.halfCups(fromML: ml)) / 2).rounded(.down)),
+                target: HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: basis))
+    }
+
     /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
     /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
     /// the charge band, keeping the card and the targets on one day).

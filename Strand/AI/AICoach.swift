@@ -1419,6 +1419,89 @@ final class AICoachEngine: ObservableObject {
     /// the callers for the strap log. Nil until one runs.
     @Published private(set) var lastNotificationTitleOutcome: String?
 
+    // MARK: - Day-quality narrative (260904)
+
+    /// A short paragraph on how a finished day went, for the Trends day-quality card.
+    ///
+    /// Handed the SCORED BREAKDOWN rather than the raw day, deliberately: the components already
+    /// carry the arithmetic and its evidence ("7 412 of 8 000 steps", "HRV 62 ms vs 58 ms
+    /// baseline"), so the model is asked to interpret numbers it cannot get wrong rather than to
+    /// re-derive them. A model handed raw rows would occasionally state a different total than the
+    /// headline beside it, which is the one failure this card cannot afford.
+    ///
+    /// Returns nil on ANY failure — no provider, no consent, a timeout, an empty reply. The card
+    /// then says so plainly. Same contract as `notificationTitle`: a narrative is an enhancement,
+    /// and the score, the breakdown and the trend all stand without it.
+    func dayQualityNarrative(day: String, score: DayQualityScore) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastDayQualityOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let instruction = Self.dayQualityStatus(day: day, score: score)
+            + "\n\n---\n\n" + dayQualityPrompt
+        do {
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else {
+                lastDayQualityOutcome = "empty reply"
+                return nil
+            }
+            lastDayQualityOutcome = "written by \(lastAnsweringModel ?? "model")"
+            return clean
+        } catch {
+            lastDayQualityOutcome = "request failed: "
+                + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
+            return nil
+        }
+    }
+
+    @Published private(set) var lastDayQualityOutcome: String?
+
+    /// The facts handed to the model: the total, both halves, and every component with its evidence.
+    /// Deterministic and pure, so the prompt's factual half is testable without a provider.
+    static func dayQualityStatus(day: String, score: DayQualityScore) -> String {
+        var lines = ["Day: \(day)",
+                     "Overall score: \(score.total) of 100 (\(DayQualityScore.band(score.total)))",
+                     "Execution half: \(Int(score.executionPoints.rounded())) points",
+                     "Recovery half: \(Int(score.recoveryPoints.rounded())) points"]
+        for c in score.components {
+            lines.append("- \(c.label): \(c.detail) — earned "
+                         + "\(Int(c.points.rounded())) of \(Int(c.weight.rounded())) points")
+        }
+        if score.loadFactor != 1.0 {
+            let pct = Int(((score.loadFactor - 1) * 100).rounded())
+            lines.append("- The day's targets were \(pct > 0 ? "harder" : "easier") than the "
+                         + "recent average, so the execution half was scaled by \(pct)%.")
+        }
+        if !score.missing.isEmpty {
+            // Stated explicitly so the model does not describe a missing signal as a bad one.
+            lines.append("- NOT RECORDED (no data, not a zero): \(score.missing.joined(separator: ", "))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static let dayQualityPromptKey = "ai.dayQualityPrompt"
+
+    /// User-overridable, read fresh on every generation like the synthesis prompt.
+    var dayQualityPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultDayQualityPrompt)
+    }
+
+    static let defaultDayQualityPrompt = """
+        The numbers above summarise ONE FINISHED DAY. Write 2-3 short sentences for the person who         lived it, in the second person.
+
+        Rules:
+        - Say what actually drove the score up or down, naming the specific components.
+        - A field marked NOT RECORDED means there is no data. Never describe it as a bad result.
+        - Do not restate the total; it is displayed directly above your text.
+        - No preamble, no headings, no bullet points, no markdown. Plain sentences only.
+        - The day is over. Do not give instructions for it; a forward-looking note about today is         fine as the last sentence.
+        """
+
     /// The example lines from `defaultNotificationTitlePrompt`. A model that echoes one has told
     /// us nothing about the day, so `cleanNotificationTitle` rejects it and the caller's plain
     /// title is used instead — the observed 260903 failure, where every nudge arrived titled "Big
