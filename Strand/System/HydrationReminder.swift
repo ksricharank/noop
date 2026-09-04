@@ -139,6 +139,36 @@ enum HydrationReminder {
     // after 09:30 — typically within ~10 minutes, later if the strap is off or out of range. On a
     // hydration nudge that drift is immaterial, and it buys the buzz and a live count.
 
+    // MARK: - Retiring the OLD calendar-trigger requests (260904)
+    //
+    // Before 260903 the reminder was a set of repeating `UNCalendarNotificationTrigger`s, ids
+    // "hydration-reminder-<minute>", each carrying a SNAPSHOT of the cup count taken at schedule
+    // time. The 260903 rewrite moved to sync-driven posting but never removed those requests — and
+    // `repeats: true` means iOS keeps firing them daily, with their frozen body, forever.
+    //
+    // That is the reported bug, and neither of the two earlier fixes explained it: the SAME
+    // "5 of 21 cups" arriving many days running, each followed ~30 seconds later by the correct
+    // live figure from the new path. A lost write varies; a stale snapshot repeats. The 5 was
+    // whatever the count happened to be on the day those requests were last scheduled.
+    //
+    // The id grid mirrors the old `pendingIds` exactly — every 30 minutes from 00:00 through the
+    // last slot — so a request from ANY previous interval setting is covered. Cheap and idempotent:
+    // removing an id that isn't pending is a no-op, so this can run on every launch without a flag
+    // to forget to clear.
+    static var retiredCalendarRequestIds: [String] {
+        stride(from: 0, through: lastSlotMinute, by: 30).map { "hydration-reminder-\($0)" }
+    }
+
+    /// Remove the pre-260903 repeating requests. Call at launch, before any reminder can post.
+    static func retireLegacyCalendarRequests(
+        center: UNUserNotificationCenter = .current()
+    ) {
+        center.removePendingNotificationRequests(withIdentifiers: retiredCalendarRequestIds)
+        // Also drop any already-DELIVERED copies sitting in Notification Centre, so the stale text
+        // is not still readable in the shade after the fix lands.
+        center.removeDeliveredNotifications(withIdentifiers: retiredCalendarRequestIds)
+    }
+
     private static let lastFiredSlotKey = "hydration.reminder.lastFiredSlot"
     private static let lastFiredDayKey = "hydration.reminder.lastFiredDay"
 
@@ -155,17 +185,19 @@ enum HydrationReminder {
     static func reminderWanted(enabled: Bool, minuteOfDay: Int, startMinute: Int,
                                intervalMinutes: Int, lastFiredSlot: Int?, isNewDay: Bool = false) -> Bool {
         guard enabled else { return false }
-        // The START TIME gates every fire, including the day's first (260904).
+        // The START TIME gates every fire, including the day's first.
         //
-        // `dueSlot` is nil before `startMinute`, and that nil must be respected on a new day too.
-        // The old shape checked `isNewDay` FIRST and returned true unconditionally — and since the
-        // caller derived `isNewDay` from `lastFiredSlot == nil`, that was both redundant with the
-        // guard below AND wrong at a day boundary: the first sync after midnight fired a reminder
-        // hours before the configured 08:00 window, which the maintainer saw as a "0/21" reminder
-        // in the early morning, minutes after the previous day's legitimate "5/21".
+        // `isNewDay` was removed as a parameter in practice (defaulted, unused by the caller): it
+        // was derived from `lastFiredSlot == nil`, which is exactly the guard two lines below, so
+        // the branch it controlled was dead. Behaviour is unchanged — the `dueSlot` guard already
+        // preceded it, so a new day never fired before the start time.
         //
-        // Two reminders, each valid for its OWN day, but the second one arrived at a time the
-        // wearer had never asked to be reminded and before they could have drunk anything.
+        // CORRECTION (260904): an earlier revision of this comment claimed the old shape fired at
+        // the first sync after midnight. That was wrong — the guard order already prevented it, and
+        // a standalone reproduction of the pre-change function confirms it returned false at 00:00,
+        // 02:10, 06:00 and 07:59. The real cause of the reported duplicate reminders was a set of
+        // pre-260903 repeating calendar requests still firing a frozen snapshot; see
+        // `retireLegacyCalendarRequests`. This change only deletes dead code.
         guard let due = dueSlot(minuteOfDay: minuteOfDay, startMinute: startMinute,
                                 intervalMinutes: intervalMinutes) else { return false }
         // No fire recorded for this day yet (a fresh day, or a fresh install): the day's first due

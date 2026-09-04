@@ -15,19 +15,28 @@ import StrandAnalytics
 @MainActor
 final class HydrationConcurrentLogTests: XCTestCase {
 
-    /// A UNIQUE day per test. The entry list lives in UserDefaults keyed by day, and the metric
-    /// series in a store keyed by device — both process-wide. Sharing one day across tests let one
-    /// test's entries leak into the next and made the totals accumulate, which looked like a
-    /// concurrency failure and was really test bleed.
+    /// A day AND a device unique to each RUN, not just to each test.
+    ///
+    /// Two persistent stores are involved: the entry list (UserDefaults, keyed by day) and the
+    /// metric series (SQLite, keyed by device id). Clearing only the UserDefaults key left the
+    /// series rows from previous runs behind, so the series total came back HIGHER than the entry
+    /// total — 1062 against 708 — which looked exactly like the drift under test and failed 2 runs
+    /// in 3. The give-away was the direction: a lost write makes the series lower, never higher.
+    ///
+    /// A UUID in both keys makes every run start empty without needing to delete anything.
     private var day = ""
+    private var deviceId = ""
 
     private func repository() -> Repository {
-        Repository(deviceId: "test-hydration-concurrency-" + day)
+        Repository(deviceId: deviceId)
     }
 
     override func setUp() {
         super.setUp()
-        day = "2026-09-" + String(format: "%02d", abs(name.hashValue % 28) + 1)
+        let unique = UUID().uuidString.prefix(8)
+        // A real "yyyy-MM-dd" (the code parses it), made unique by year rather than by suffix.
+        day = "\(1900 + abs(unique.hashValue % 90))-09-04"
+        deviceId = "test-hydration-\(unique)"
         UserDefaults.standard.removeObject(forKey: HydrationStore.entriesKey(forDay: day))
     }
 

@@ -50,18 +50,13 @@ final class HydrationReminderTests: XCTestCase {
             intervalMinutes: 90, lastFiredSlot: nil))
     }
 
-    /// A NEW DAY STILL RESPECTS THE START TIME (260904).
+    /// A new day still respects the start time.
     ///
-    /// Reported from the device: a legitimate "5 of 21 cups" at 19:43, then a "0 of 21" in the early
-    /// morning — two reminders, each valid for its own day, but the second arrived hours before the
-    /// configured 08:00 window and before the wearer could have drunk anything.
-    ///
-    /// The cause was an `isNewDay` short-circuit that returned true BEFORE the start-time gate, and
-    /// the caller derived `isNewDay` from `lastFiredSlot == nil` — so the first sync after midnight
-    /// always fired. The flag was also redundant: it restated the nil check that follows.
-    ///
-    /// The old tests all passed `isNewDay: true` with a time AFTER the start minute, so none of them
-    /// could catch this. This one fixes the time at 02:10 — before any slot exists.
+    /// This property was previously UNTESTED — every case passed a time after the start minute — so
+    /// it is worth pinning even though it always held. (It was briefly believed to be the cause of
+    /// the reported duplicate reminders; it was not. A reproduction of the pre-change function
+    /// returned false at 00:00, 02:10, 06:00 and 07:59. The real cause was stale repeating calendar
+    /// requests — see `testTheLegacyRequestIdGridCovers…`.)
     func testANewDayDoesNotFireBeforeTheStartTime() {
         for minute in [0, 2 * 60 + 10, 6 * 60, 7 * 60 + 59] {
             XCTAssertFalse(HydrationReminder.reminderWanted(
@@ -73,6 +68,46 @@ final class HydrationReminderTests: XCTestCase {
         XCTAssertTrue(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 8 * 60, startMinute: 8 * 60,
             intervalMinutes: 90, lastFiredSlot: nil))
+    }
+
+    /// The pre-260903 repeating requests must be retired at launch, on BOTH platforms (260904).
+    ///
+    /// Reported from the device: the same "5 of 21 cups" arriving many days running, each followed
+    /// ~30 seconds later by the correct live figure. Neither the mark-before-await race nor the
+    /// day-boundary gate explained a REPEATING constant — a lost write varies, a frozen snapshot
+    /// repeats.
+    ///
+    /// The old reminder scheduled `UNCalendarNotificationTrigger`s with `repeats: true`, ids
+    /// "hydration-reminder-<minute>", each carrying a snapshot of the cup count at schedule time.
+    /// The 260903 rewrite to sync-driven posting never removed them, and iOS keeps firing a
+    /// repeating request with its original body indefinitely.
+    func testTheLegacyRequestIdGridCoversEverySettingAPreviousBuildCouldHaveScheduled() {
+        let ids = HydrationReminder.retiredCalendarRequestIds
+        // The old grid was every 30 minutes from 00:00 through the last slot, deliberately wider
+        // than any one interval setting, so a request from ANY previous configuration is covered.
+        XCTAssertTrue(ids.contains("hydration-reminder-0"))
+        XCTAssertTrue(ids.contains("hydration-reminder-480"), "08:00, the default start")
+        XCTAssertTrue(ids.contains("hydration-reminder-\(HydrationReminder.lastSlotMinute)"))
+        // A 30-minute grid over 0…lastSlot inclusive.
+        XCTAssertEqual(ids.count, HydrationReminder.lastSlotMinute / 30 + 1)
+        XCTAssertEqual(Set(ids).count, ids.count, "ids must be unique or removal is ambiguous")
+    }
+
+    /// Structural, like the notification-action wiring guard: the retirement must be reachable from
+    /// BOTH `@main` files. `StrandApp.swift` is macOS-only and excluded from the iOS target, so a
+    /// cleanup written in one place silently never runs on the other — the exact mistake that made
+    /// the "Add a cup" button dead on iOS.
+    func testBothPlatformsRetireTheLegacyRequestsAtLaunch() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        for (platform, path) in [("macOS", "Strand/App/StrandApp.swift"),
+                                 ("iOS", "StrandiOS/App/StrandiOSApp.swift")] {
+            let src = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
+            XCTAssertTrue(src.contains("HydrationReminder.retireLegacyCalendarRequests()"),
+                          """
+                          \(platform) launch (\(path)) never retires the legacy water reminders, \
+                          so iOS keeps firing their frozen snapshot text on that platform.
+                          """)
+        }
     }
 
     func testSlotsRunFromTheStartTimeAtTheChosenIntervalAndStopAt10pm() {

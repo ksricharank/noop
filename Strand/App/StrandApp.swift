@@ -30,6 +30,12 @@ struct StrandApp: App {
         // before any Settings visit still carries its "Logged a cup" button (a category unknown at
         // fire time silently drops the actions).
         UNUserNotificationCenter.current().setNotificationCategories([HydrationReminder.category])
+        // Retire the pre-260903 repeating water reminders (260904). They were scheduled as
+        // `repeats: true` calendar triggers carrying a SNAPSHOT of the cup count, so iOS kept
+        // firing the same frozen "5 of 21 cups" daily — followed seconds later by the correct
+        // figure from the current sync-driven path. Idempotent, so it needs no run-once flag.
+        // In BOTH @main files, like the category and sink above: this file is one platform's only.
+        HydrationReminder.retireLegacyCalendarRequests()
     }
 
     @StateObject private var model = AppModel()
