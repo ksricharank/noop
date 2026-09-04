@@ -17,6 +17,17 @@ import StrandAnalytics
 // detail shows the honest day figure. Everything stays on-device; nothing is synced.
 
 enum HydrationStore {
+
+    /// Hand-logged millilitres for ONE day, synchronously — the day-quality card's water read.
+    ///
+    /// The per-entry log lives in UserDefaults, so a PAST day is readable without the store actor
+    /// and without an async hop mid-render. The `Repository` cache cannot serve this: it holds the
+    /// current day only, by design. Manual only, matching what the Today row counts.
+    @MainActor
+    static func manualML(day dayKey: String) -> Double {
+        HydrationEntries.total(Repository.hydrationEntries(day: dayKey))
+    }
+
     /// Source/device id the hydration total is written under — its own local-only source so it is never
     /// confused with strap-imported or computed metrics. MUST match the Android `SOURCE_ID`.
     static let sourceId = "hydration"
@@ -277,7 +288,7 @@ extension Repository {
 
     // MARK: - Entry persistence (UserDefaults JSON, one array per local day)
 
-    fileprivate static func hydrationEntries(day dayKey: String) -> [HydrationEntry] {
+    static func hydrationEntries(day dayKey: String) -> [HydrationEntry] {
         guard let data = UserDefaults.standard.data(forKey: HydrationStore.entriesKey(forDay: dayKey)),
               let decoded = try? JSONDecoder().decode([HydrationEntry].self, from: data) else { return [] }
         return decoded.sorted { $0.loggedAt < $1.loggedAt }
