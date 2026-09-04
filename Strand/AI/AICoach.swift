@@ -675,6 +675,33 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
+    // The day-quality narrative's instruction (260904). Same three accessors as its siblings above:
+    // storing the DEFAULT clears the override rather than persisting a copy, so a later change to
+    // the built-in text reaches anyone who never customised it.
+    var customDayQualityPrompt: String {
+        get { dayQualityPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultDayQualityPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.dayQualityPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomDayQualityPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultDayQualityPrompt
+    }
+
+    func resetDayQualityPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
+        objectWillChange.send()
+    }
+
     /// The editable notification-title instruction, same shape as `customSynthesisPrompt` (260903).
     var customNotificationTitlePrompt: String {
         get { notificationTitlePrompt }
