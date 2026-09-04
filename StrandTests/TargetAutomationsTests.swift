@@ -169,31 +169,57 @@ final class NudgeWristBuzzTests: XCTestCase {
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: TargetAutomations.K.wristBuzz)
+        for cue in TargetAutomations.BuzzCue.allCases {
+            UserDefaults.standard.removeObject(forKey: cue.rawValue)
+        }
         super.tearDown()
     }
 
-    func testDefaultsOffSoAFreshInstallIsSilent() {
+    func testMasterDefaultsOffSoAFreshInstallIsSilent() {
         XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+        for cue in [TargetAutomations.BuzzCue.morningBrief, .paceCheck, .water] {
+            XCTAssertFalse(TargetAutomations.buzzEnabled(cue), "\(cue) must be silent by default")
+        }
     }
 
-    func testReadsTheToggleTheAutomationsScreenWrites() {
+    /// Enabling the master is enough to feel everything — each cue defaults ON, so the user turns
+    /// OFF what they do not want rather than hunting for why a feature they enabled is silent.
+    func testMasterOnGivesEveryCueABuzz() {
         UserDefaults.standard.set(true, forKey: TargetAutomations.K.wristBuzz)
-        XCTAssertTrue(TargetAutomations.wristBuzzEnabled)
-        UserDefaults.standard.set(false, forKey: TargetAutomations.K.wristBuzz)
-        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+        for cue in TargetAutomations.BuzzCue.allCases {
+            XCTAssertTrue(TargetAutomations.buzzEnabled(cue), "\(cue) should buzz with the master on")
+        }
     }
 
-    /// The buzz sites are the nudges the app posts while AWAKE. Structural, like the recovery
-    /// guard: a new NOOP-posted nudge that forgets the buzz shows up here rather than as a cue the
-    /// user expected and never felt.
+    func testAnIndividualCueCanBeSilencedWithoutTheOthers() {
+        UserDefaults.standard.set(true, forKey: TargetAutomations.K.wristBuzz)
+        UserDefaults.standard.set(false, forKey: TargetAutomations.BuzzCue.paceCheck.rawValue)
+        XCTAssertFalse(TargetAutomations.buzzEnabled(.paceCheck))
+        XCTAssertTrue(TargetAutomations.buzzEnabled(.water))
+        XCTAssertTrue(TargetAutomations.buzzEnabled(.morningBrief))
+    }
+
+    /// The stress check-in has buzzed since it shipped, on its own path. Tying it to the NEW master
+    /// would SILENCE an existing cue for anyone who leaves the master off — a regression dressed as
+    /// a feature — so its switch stands alone.
+    func testTheStressCheckInKeepsBuzzingWithTheMasterOff() {
+        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+        XCTAssertTrue(TargetAutomations.buzzEnabled(.breathe),
+                      "an existing cue must not go silent because a new toggle defaults off")
+        // It can still be turned off explicitly.
+        UserDefaults.standard.set(false, forKey: TargetAutomations.BuzzCue.breathe.rawValue)
+        XCTAssertFalse(TargetAutomations.buzzEnabled(.breathe))
+    }
+
+    /// Structural, like the recovery guard: every app-posted nudge must offer the buzz, so a new
+    /// nudge cannot ship as a cue the user expected and never felt.
     func testEveryAppPostedNudgeBuzzes() throws {
         let source = try String(contentsOfFile: Self.appModelPath, encoding: .utf8)
-        for post in ["auto-morning-brief", "auto-pace-check"] {
-            guard let idx = source.components(separatedBy: "\n")
-                .firstIndex(where: { $0.contains(post) }) else {
+        let lines = source.components(separatedBy: "\n")
+        for post in ["auto-morning-brief", "auto-pace-check", "HydrationReminder.post("] {
+            guard let idx = lines.firstIndex(where: { $0.contains(post) }) else {
                 XCTFail("nudge post site not found: \(post)"); continue
             }
-            let lines = source.components(separatedBy: "\n")
             let window = lines[idx...min(idx + 2, lines.count - 1)].joined(separator: " ")
             XCTAssertTrue(window.contains("buzzForNudgeIfEnabled"),
                           "\(post) posts a notification but never offers the wrist buzz")

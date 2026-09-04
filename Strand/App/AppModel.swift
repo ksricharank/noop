@@ -714,7 +714,7 @@ final class AppModel: ObservableObject {
                 stepsTarget: targets.stepsTarget)
             TargetAutomations.markBriefFired(day: todayKey)   // before the async post: once means once
             TargetAutomations.post(identifier: "auto-morning-brief", title: text.title, body: text.body)
-            buzzForNudgeIfEnabled()
+            buzzForNudgeIfEnabled(.morningBrief)
             live.append(log: "Automation: morning brief posted (\(text.body))")
         }
         // E: the pacing check-ins — at most one nudge per checkpoint per day, only when behind.
@@ -751,7 +751,7 @@ final class AppModel: ObservableObject {
                 live.append(log: "Automation: pace-check title — \(outcome)")
             }
             TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
-            buzzForNudgeIfEnabled()
+            buzzForNudgeIfEnabled(.paceCheck)
             live.append(log: "Automation: pace check posted ("
                         + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
         }
@@ -763,8 +763,8 @@ final class AppModel: ObservableObject {
     /// encrypted bond, so a disconnected or charging strap simply gets no cue rather than the app
     /// pretending one landed. The breathe cue buzzes on its own path already (it has since it
     /// shipped) and does not route through here.
-    func buzzForNudgeIfEnabled() {
-        guard TargetAutomations.wristBuzzEnabled, canBuzz else { return }
+    func buzzForNudgeIfEnabled(_ cue: TargetAutomations.BuzzCue) {
+        guard TargetAutomations.buzzEnabled(cue), canBuzz else { return }
         buzz(loops: 2)
     }
 
@@ -784,7 +784,7 @@ final class AppModel: ObservableObject {
                 // Confirm the log on the wrist, the same way the stress check-in confirms its
                 // nudge — this is the one water moment the app IS awake for (the action woke it),
                 // so unlike the scheduled reminder itself the buzz can actually land.
-                self.buzzForNudgeIfEnabled()
+                self.buzzForNudgeIfEnabled(.water)
                 // No snapshot to refresh any more: the next reminder reads the live count when it
                 // fires from the sync path.
                 done()
@@ -830,7 +830,7 @@ final class AppModel: ObservableObject {
         // Mark BEFORE posting: once means once, even if the post itself is slow.
         HydrationReminder.markFired(slot: due, today: dayKey)
         HydrationReminder.post(totalML: total, goalCups: goalCups, title: title)
-        buzzForNudgeIfEnabled()
+        buzzForNudgeIfEnabled(.water)
         live.append(log: "Automation: water reminder posted (slot \(due / 60):"
                     + String(format: "%02d", due % 60) + ")")
     }
@@ -1254,7 +1254,11 @@ final class AppModel: ObservableObject {
         stressState = decision.nextState
         BiofeedbackPrefs.saveStressState(decision.nextState)
         guard decision.shouldNudge else { return }
-        if canBuzz { buzz(loops: UInt8(clamping: decision.buzzLoops)) }
+        // The stress check-in has always buzzed on its own path; the 260903 per-cue switch can now
+        // silence it like any other nudge, without disabling the check-in itself.
+        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
+            buzz(loops: UInt8(clamping: decision.buzzLoops))
+        }
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)
         // 260830: the visible half of the nudge — a screen notification saying WHAT the buzz meant
         // ("take a deep breath"). Rides the exact decision the buzz rode (already de-duped,
@@ -1344,7 +1348,9 @@ final class AppModel: ObservableObject {
         BiofeedbackPrefs.saveStressState(scan.nextState)
         guard let at = scan.nudgeAtSec, now - at <= Self.retroMaxDipAgeSec else { return }
         let minutesAgo = max(0, (now - at) / 60)
-        if canBuzz { buzz(loops: UInt8(clamping: cfg.buzzLoops)) }
+        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
+            buzz(loops: UInt8(clamping: cfg.buzzLoops))
+        }
         if behavior.stressNotify { BreatheNotifier.post(minutesAgo: minutesAgo) }
         BreatheCueStats.recordFire(retro: true)    // sensitivity calibration evidence (260901)
         stressNudgeCenter.present(fastRMSSD: scan.fastRMSSD, baselineRMSSD: scan.baselineRMSSD)
