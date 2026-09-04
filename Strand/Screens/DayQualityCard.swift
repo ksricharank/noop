@@ -25,6 +25,8 @@ import WhoopStore
 struct DayQualityCard: View {
     @EnvironmentObject var repo: Repository
     @EnvironmentObject var coach: AICoachEngine
+    /// For the "Ask the Coach" link, the same affordance the Today synthesis carries.
+    @EnvironmentObject var router: NavRouter
 
     /// The stored series, keyed "yyyy-MM-dd" → score. Passed in from Trends, which already loads it
     /// for the chart — one read, two surfaces.
@@ -51,6 +53,7 @@ struct DayQualityCard: View {
                     headline(score)
                     computationSection
                     narrativeSection
+                    coachLink
                 } else {
                     // Honest empty state. A score needs a finished day with enough of it recorded,
                     // so a fresh install legitimately has nothing to show yet.
@@ -245,6 +248,29 @@ struct DayQualityCard: View {
                 }
             }
         }
+    }
+
+    /// "Ask the Coach", mirroring the Today synthesis's affordance (260904, maintainer request).
+    ///
+    /// Worth having here specifically because the coach now receives the day-quality HISTORY — the
+    /// recent run plus both 7-day averages — so a question asked from this card lands in a
+    /// conversation that can already see the trend the card is showing.
+    private var coachLink: some View {
+        HStack {
+            Spacer()
+            Button {
+                router.openCoach()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "sparkles").font(StrandFont.caption)
+                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                }
+                .foregroundStyle(StrandPalette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("Opens the AI Coach chat"))
+        }
+        .padding(.top, 2)
     }
 
     // MARK: - Loading
