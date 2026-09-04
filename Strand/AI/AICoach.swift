@@ -1482,6 +1482,46 @@ final class AICoachEngine: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// The day-quality score history, as a compact block for the coach context.
+    ///
+    /// Reads the SAME stored series the Trends card and its chart read, so all three describe one
+    /// set of numbers. Sends the recent run plus the two 7-day averages that define the trend's
+    /// direction — the thing the wearer is trying to move — rather than the whole history, which
+    /// would spend context on months the advice cannot act on.
+    ///
+    /// Nil when fewer than three days are scored: a "trend" over two points is not one, and inviting
+    /// the model to characterise it produces confident noise.
+    func dayQualityHistoryBlock() async -> String? {
+        let series = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+        return Self.dayQualityHistoryLines(series: series)
+    }
+
+    /// The pure formatter, split out so the block's content is pinned without a store or a provider.
+    nonisolated static func dayQualityHistoryLines(
+        series: [(day: String, value: Double)]
+    ) -> String? {
+        guard series.count >= 3 else { return nil }
+        let recent = series.suffix(14)
+        let last7 = series.suffix(7).map(\.value)
+        let prev7 = series.dropLast(7).suffix(7).map(\.value)
+        var lines = ["DAY QUALITY HISTORY (0-100 per finished day; the wearer's own overall score, "
+                     + "combining how well they hit that day's targets with how their body responded. "
+                     + "They are trying to keep this trending UP):"]
+        lines.append(recent.reversed().map { "\($0.day): \(Int($0.value.rounded()))" }
+            .joined(separator: ", "))
+        if !last7.isEmpty {
+            let a = last7.reduce(0, +) / Double(last7.count)
+            lines.append("Last 7 days average: \(Int(a.rounded()))")
+            if !prev7.isEmpty {
+                let b = prev7.reduce(0, +) / Double(prev7.count)
+                let delta = a - b
+                lines.append("Previous 7 days average: \(Int(b.rounded())) "
+                             + "(change: \(String(format: "%+.0f", delta)))")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static let dayQualityPromptKey = "ai.dayQualityPrompt"
 
     /// User-overridable, read fresh on every generation like the synthesis prompt.
@@ -1579,6 +1619,11 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
+        // Day-quality HISTORY (260904): the stored series behind the Trends card, so the coach can
+        // comment on the direction of travel and not only on today. Async because the scores live in
+        // `metricSeries` rather than on the daily rows — hence here, at the async call site, rather
+        // than inside the synchronous `buildContext()`.
+        if let block = await dayQualityHistoryBlock() { ctx += "\n\n" + block }
         // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so
         // the synthesis and the card can never disagree about today's prescription. (A "right now"
         // HR + live autonomic verdict rode here for one build, 270–271 — retired 260830 with the
