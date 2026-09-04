@@ -234,6 +234,42 @@ final class DayQualityComputerTests: XCTestCase {
                        "moving the execution split must re-score the history it applies to")
     }
 
+    // MARK: - The narrative's factual half
+
+    /// The model is handed the SCORED BREAKDOWN, not raw rows, so it interprets numbers it cannot
+    /// get wrong rather than re-deriving them. This pins that the facts it receives match the card.
+    func testTheNarrativeStatusRestatesTheScoreItWasGiven() throws {
+        let input = DayQualityScore.DayInput(
+            steps: 9_000, stepsTarget: 8_000, kcal: 2_100, kcalTarget: 2_250,
+            effort: 40, effortTarget: 54, waterCups: 12, waterTargetCups: 21,
+            sleepMin: 400, sleepNeedMin: 485, hrv: 50, hrvBaseline: 58,
+            restingHr: 56, restingHrBaseline: 52)
+        let score = try XCTUnwrap(DayQualityScore.score(input))
+        let status = AICoachEngine.dayQualityStatus(day: "2026-09-03", score: score)
+
+        XCTAssertTrue(status.contains("Overall score: \(score.total) of 100"),
+                      "the model must be told the SAME total the card displays: \(status)")
+        XCTAssertTrue(status.contains("2026-09-03"))
+        // Every component's evidence is present, so the prose can cite specifics.
+        for c in score.components {
+            XCTAssertTrue(status.contains(c.label), "missing component \(c.label)")
+        }
+    }
+
+    /// A missing signal must be labelled as NOT RECORDED, or the model will describe a data gap as
+    /// a bad result — the same failure mode the score's own renormalisation exists to prevent.
+    func testTheNarrativeStatusMarksMissingDataAsUnrecorded() throws {
+        var input = DayQualityScore.DayInput(
+            steps: 8_000, stepsTarget: 8_000, kcal: 2_250, kcalTarget: 2_250,
+            effort: 54, effortTarget: 54, waterCups: 21, waterTargetCups: 21)
+        input.hrv = nil; input.hrvBaseline = nil
+        let score = try XCTUnwrap(DayQualityScore.score(input))
+        let status = AICoachEngine.dayQualityStatus(day: "2026-09-03", score: score)
+        XCTAssertTrue(status.contains("NOT RECORDED"),
+                      "an absent signal must be flagged so it is not narrated as a zero: \(status)")
+        XCTAssertTrue(status.contains("HRV"))
+    }
+
     func testMedianHandlesBothParities() {
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([3, 1, 2])), 2, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([4, 1, 3, 2])), 2.5, accuracy: 0.001)
