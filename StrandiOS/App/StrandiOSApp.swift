@@ -72,6 +72,18 @@ struct StrandiOSApp: App {
         UNUserNotificationCenter.current().delegate = NotificationPresenter.shared
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
+        // 260903: register the hydration category and wire its action sink HERE, in the iOS @main.
+        // Both previously lived only in StrandApp.swift, which is the macOS @main and is excluded
+        // from the iOS target — so on iOS the buttons rendered (post() registers the category just
+        // before posting) but a tap reached a nil `hydrationActionSink` and was dropped silently:
+        // "Add a cup" logged nothing. Reported from the device, 260903.
+        //
+        // In `init` rather than a `.task` on the root view (the macOS shape) because iOS delivers an
+        // action response to a COLD-LAUNCHED app before any view has rendered: a scene-lifecycle
+        // install races exactly the tap that caused the launch. The delegate above has the same
+        // requirement and for the same reason.
+        UNUserNotificationCenter.current().setNotificationCategories([HydrationReminder.category])
+        model.installHydrationReminderSink()
         // #1538: a strap offload completes while the app is BACKGROUNDED — it stays alive as a
         // bluetooth-central to receive it — and the re-score it triggers took nearly eight minutes on the
         // reporter's install, far longer than that wake survives. The pass is all-or-nothing, so being
@@ -351,6 +363,22 @@ struct StrandiOSApp: App {
                 }
                 .onChange(of: effortScaleRaw) { _, _ in
                     guard scenePhase == .active else { return }
+                    Task { await WidgetSnapshot.publish(from: model) }
+                }
+                // 260903: republish when the day's water changes, so the targets widget's Water pair
+                // (which took Sleep's cell) moves with the app instead of waiting for the next strap
+                // sync. `hydrationSeq` is the one funnel EVERY hydration write already bumps (#989 —
+                // log, edit, delete, and the notification's "Add a cup"), so this single hook covers
+                // the notification action and the in-app +/- buttons without a publish call at each
+                // write site.
+                //
+                // Deliberately NOT scenePhase-gated, unlike the hooks above: the notification action
+                // is handled with the app in the BACKGROUND, which is exactly the case this exists
+                // for. The cost is bounded — hydration writes are deliberate taps, a handful a day
+                // rather than a background cadence, and `saveAndReloadIfChanged` requests no
+                // WidgetKit reload unless a rendered string moved (the face quantizes to whole cups,
+                // so half-cup logs frequently move nothing).
+                .onReceive(model.repo.$hydrationSeq.dropFirst()) { _ in
                     Task { await WidgetSnapshot.publish(from: model) }
                 }
                 // Apple Health is explicitly opt-in. Once any write type is authorized, keep one

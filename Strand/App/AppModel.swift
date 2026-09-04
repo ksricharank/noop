@@ -787,6 +787,8 @@ final class AppModel: ObservableObject {
                 self.buzzForNudgeIfEnabled(.water)
                 // No snapshot to refresh any more: the next reminder reads the live count when it
                 // fires from the sync path.
+                // The WIDGET's water pair is republished by the `hydrationSeq` hook in
+                // StrandiOSApp, which covers this write and the in-app +/- alike — see there.
                 done()
             }
         }
