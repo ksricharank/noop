@@ -192,6 +192,48 @@ final class DayQualityComputerTests: XCTestCase {
         XCTAssertNil(DayQualityComputer.restScoreFor(day: "2026-08-10", history: none))
     }
 
+    // MARK: - The once-per-day latch
+
+    /// Maintainer requirement: computed ONCE, after the night is scored — not continuously. The
+    /// engine's derived block runs on every full pass (several times a day), so the latch is what
+    /// makes the second and subsequent passes no-ops.
+    func testTheLatchMakesASecondPassTheSameDayANoOp() {
+        DayQualityPrefs.reset()
+        UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredDay)
+        UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredConfig)
+        defer {
+            DayQualityPrefs.reset()
+            UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredDay)
+            UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredConfig)
+        }
+
+        XCTAssertFalse(DayQualityPrefs.alreadyScored(day: "2026-09-04"))
+        DayQualityPrefs.markScored(day: "2026-09-04")
+        XCTAssertTrue(DayQualityPrefs.alreadyScored(day: "2026-09-04"),
+                      "a second full pass the same day must not re-score")
+        // A new day re-arms.
+        XCTAssertFalse(DayQualityPrefs.alreadyScored(day: "2026-09-05"))
+    }
+
+    /// The one legitimate reason to re-score early: the wearer moved a slider. A config change must
+    /// apply to history immediately rather than waiting for tomorrow's pass.
+    func testChangingAKnobReArmsTheLatch() {
+        DayQualityPrefs.reset()
+        UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredDay)
+        UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredConfig)
+        defer {
+            DayQualityPrefs.reset()
+            UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredDay)
+            UserDefaults.standard.removeObject(forKey: DayQualityPrefs.K.lastScoredConfig)
+        }
+
+        DayQualityPrefs.markScored(day: "2026-09-04")
+        XCTAssertTrue(DayQualityPrefs.alreadyScored(day: "2026-09-04"))
+        DayQualityPrefs.setExecutionSharePct(75)
+        XCTAssertFalse(DayQualityPrefs.alreadyScored(day: "2026-09-04"),
+                       "moving the execution split must re-score the history it applies to")
+    }
+
     func testMedianHandlesBothParities() {
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([3, 1, 2])), 2, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(DayQualityComputer.median([4, 1, 3, 2])), 2.5, accuracy: 0.001)
