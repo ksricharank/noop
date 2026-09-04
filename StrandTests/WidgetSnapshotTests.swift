@@ -59,7 +59,8 @@ final class WidgetSnapshotTests: XCTestCase {
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
                        effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495,
-                       steps: 6_214, stepsTarget: 8_000)
+                       steps: 6_214, stepsTarget: 8_000,
+                       waterHalfCups: 15, waterTargetCups: 19)
     }
 
     func testRenderedContentFirstPublishAlwaysChanges() {
@@ -129,16 +130,20 @@ final class WidgetSnapshotTests: XCTestCase {
     func testOlderSnapshotWithoutTargetsFieldsStillDecodes() throws {
         var old = renderedSnapshot()
         old.effortTargetDisplay = nil; old.kcal = nil; old.kcalTarget = nil; old.sleepNeedMin = nil
+        old.waterHalfCups = nil; old.waterTargetCups = nil
         let data = try JSONEncoder().encode(old)
         // Simulate the older writer by stripping the keys entirely, not just nulling them.
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        for key in ["effortTargetDisplay", "kcal", "kcalTarget", "sleepNeedMin"] { json.removeValue(forKey: key) }
+        for key in ["effortTargetDisplay", "kcal", "kcalTarget", "sleepNeedMin",
+                    "waterHalfCups", "waterTargetCups"] { json.removeValue(forKey: key) }
         let stripped = try JSONSerialization.data(withJSONObject: json)
         let decoded = try JSONDecoder().decode(WidgetSnapshot.self, from: stripped)
         XCTAssertNil(decoded.effortTargetDisplay)
         XCTAssertNil(decoded.kcal)
         XCTAssertNil(decoded.kcalTarget)
         XCTAssertNil(decoded.sleepNeedMin)
+        XCTAssertNil(decoded.waterHalfCups)
+        XCTAssertNil(decoded.waterTargetCups)
         XCTAssertEqual(decoded.recovery, 72)
     }
 
@@ -213,4 +218,50 @@ final class WidgetSnapshotTests: XCTestCase {
         XCTAssertTrue(WidgetSnapshot.liveUpdateRequiresFullBuild(
             previous: nil, now: nextDay, calendar: calendar))
     }
+
+    /// The Water glance (260903), which took Sleep's fourth widget cell. Whole cups, rounded DOWN
+    /// from the tracker's half-cup resolution: a half-cup in hand is not a cup drunk, and the same
+    /// floor is what the reminder's "cups still to drink" counts with.
+    func testWaterDisplayRendersWholeCupsRoundedDown() {
+        var snap = renderedSnapshot()
+        XCTAssertEqual(snap.waterDisplay, "7/19", "15 half-cups is 7.5 cups drunk — floors to 7")
+
+        snap.waterHalfCups = 16
+        XCTAssertEqual(snap.waterDisplay, "8/19")
+        snap.waterHalfCups = 0
+        XCTAssertEqual(snap.waterDisplay, "0/19", "a fresh day honestly is zero, like the other pairs")
+        // No numerator yet still renders against a live target — same degrade rule as Cal/Steps.
+        snap.waterHalfCups = nil
+        XCTAssertEqual(snap.waterDisplay, "0/19")
+    }
+
+    /// Hydration tracking OFF publishes no target, and the face must then read a dash rather than a
+    /// fabricated "0/0" — the target being nil is exactly how the widget learns the feature is off.
+    func testWaterDisplayIsNilWithoutATarget() {
+        var snap = renderedSnapshot()
+        snap.waterTargetCups = nil
+        XCTAssertNil(snap.waterDisplay)
+        snap.waterTargetCups = 0
+        XCTAssertNil(snap.waterDisplay, "a zero target is not a renderable denominator")
+    }
+
+    /// Water joins the reload dedup, and the whole-cup quantization is load-bearing for battery: a
+    /// logged cup triggers a publish directly (the `hydrationSeq` hook), so without this a half-cup
+    /// that moves nothing on screen would still spend one of the day's WidgetKit reload requests.
+    func testHalfCupThatDoesNotMoveTheFaceDoesNotReload() {
+        let previous = renderedSnapshot()          // 15 half-cups → "7/19"
+        var next = previous
+        next.waterHalfCups = 16                    // → "8/19": visible, must reload
+        XCTAssertTrue(WidgetSnapshot.renderedContentChanged(from: previous, to: next))
+
+        var withinCup = previous
+        withinCup.waterHalfCups = 14               // 7.0 cups → still "7/19"
+        XCTAssertFalse(WidgetSnapshot.renderedContentChanged(from: previous, to: withinCup),
+                       "a half-cup that leaves the rendered pair unchanged must not request a reload")
+
+        var targetMoved = previous
+        targetMoved.waterTargetCups = 21           // the day's target can move with effort
+        XCTAssertTrue(WidgetSnapshot.renderedContentChanged(from: previous, to: targetMoved))
+    }
+
 }
