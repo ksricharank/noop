@@ -16,22 +16,22 @@ final class HydrationReminderTests: XCTestCase {
         // Before the first slot: nothing is owed.
         XCTAssertFalse(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 7 * 60 + 30, startMinute: start,
-            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+            intervalMinutes: every, lastFiredSlot: nil))
 
         // First slot passed, nothing fired yet → fire.
         XCTAssertTrue(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 8 * 60 + 5, startMinute: start,
-            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+            intervalMinutes: every, lastFiredSlot: nil))
 
         // Same slot, a later sync in the same ~10-minute window → already reminded, stay silent.
         XCTAssertFalse(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 8 * 60 + 40, startMinute: start,
-            intervalMinutes: every, lastFiredSlot: 480, isNewDay: false))
+            intervalMinutes: every, lastFiredSlot: 480))
 
         // Next slot passed → fire again.
         XCTAssertTrue(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 9 * 60 + 35, startMinute: start,
-            intervalMinutes: every, lastFiredSlot: 480, isNewDay: false))
+            intervalMinutes: every, lastFiredSlot: 480))
 
         // A phone away for hours owes ONE reminder, not one per missed slot.
         XCTAssertEqual(HydrationReminder.dueSlot(minuteOfDay: 15 * 60, startMinute: start,
@@ -40,14 +40,39 @@ final class HydrationReminderTests: XCTestCase {
 
         XCTAssertFalse(HydrationReminder.reminderWanted(
             enabled: false, minuteOfDay: 12 * 60, startMinute: start,
-            intervalMinutes: every, lastFiredSlot: nil, isNewDay: true))
+            intervalMinutes: every, lastFiredSlot: nil))
     }
 
     /// A new day re-arms even though the stored slot number would otherwise look "already fired".
     func testANewDayRearmsTheFirstSlot() {
         XCTAssertTrue(HydrationReminder.reminderWanted(
             enabled: true, minuteOfDay: 8 * 60 + 5, startMinute: 8 * 60,
-            intervalMinutes: 90, lastFiredSlot: nil, isNewDay: true))
+            intervalMinutes: 90, lastFiredSlot: nil))
+    }
+
+    /// A NEW DAY STILL RESPECTS THE START TIME (260904).
+    ///
+    /// Reported from the device: a legitimate "5 of 21 cups" at 19:43, then a "0 of 21" in the early
+    /// morning — two reminders, each valid for its own day, but the second arrived hours before the
+    /// configured 08:00 window and before the wearer could have drunk anything.
+    ///
+    /// The cause was an `isNewDay` short-circuit that returned true BEFORE the start-time gate, and
+    /// the caller derived `isNewDay` from `lastFiredSlot == nil` — so the first sync after midnight
+    /// always fired. The flag was also redundant: it restated the nil check that follows.
+    ///
+    /// The old tests all passed `isNewDay: true` with a time AFTER the start minute, so none of them
+    /// could catch this. This one fixes the time at 02:10 — before any slot exists.
+    func testANewDayDoesNotFireBeforeTheStartTime() {
+        for minute in [0, 2 * 60 + 10, 6 * 60, 7 * 60 + 59] {
+            XCTAssertFalse(HydrationReminder.reminderWanted(
+                enabled: true, minuteOfDay: minute, startMinute: 8 * 60,
+                intervalMinutes: 90, lastFiredSlot: nil),
+                "a fresh day must not fire at minute \(minute), before the 08:00 window opens")
+        }
+        // And the moment the window does open, it fires.
+        XCTAssertTrue(HydrationReminder.reminderWanted(
+            enabled: true, minuteOfDay: 8 * 60, startMinute: 8 * 60,
+            intervalMinutes: 90, lastFiredSlot: nil))
     }
 
     func testSlotsRunFromTheStartTimeAtTheChosenIntervalAndStopAt10pm() {

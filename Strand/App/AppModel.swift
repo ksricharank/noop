@@ -825,8 +825,7 @@ final class AppModel: ObservableObject {
                 minuteOfDay: minuteOfDay,
                 startMinute: HydrationReminder.startMinute,
                 intervalMinutes: HydrationReminder.intervalMinutes,
-                lastFiredSlot: lastFired,
-                isNewDay: lastFired == nil),
+                lastFiredSlot: lastFired),
               let due = HydrationReminder.dueSlot(minuteOfDay: minuteOfDay,
                                                   startMinute: HydrationReminder.startMinute,
                                                   intervalMinutes: HydrationReminder.intervalMinutes)

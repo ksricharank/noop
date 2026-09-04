@@ -3161,6 +3161,26 @@ final class IntelligenceEngine: ObservableObject {
         guard !history.isEmpty else { return }
 
         let todayKey = Repository.localDayKey(Date())
+
+        // ONCE PER DAY (260904, maintainer: "computed only once — after the night's sleep is done
+        // and when the new targets are being set. not continuously").
+        //
+        // Two conditions, both required:
+        //
+        // 1. TONIGHT'S NIGHT IS IN. The newest scored day must be TODAY — the same test the morning
+        //    brief uses (`briefWanted`'s anchorDay == todayKey). Before that, today's targets are
+        //    still yesterday's carry, so this pass is not the "new targets are being set" moment.
+        // 2. NOT ALREADY DONE. The latch is keyed on the day plus a config fingerprint, so a full
+        //    pass later the same day is a no-op, while moving a slider re-scores immediately rather
+        //    than waiting for tomorrow.
+        //
+        // Without this the engine's derived block scored on every full pass — several times a day
+        // on a battery-sensitive path, and a "closed book" number that could visibly move at noon.
+        let newestScored = await MainActor.run { Repository.widgetAnchor(days: repo.days, now: Date())?.day }
+        guard newestScored == todayKey else { return }
+        guard await MainActor.run(resultType: Bool.self, body: { !DayQualityPrefs.alreadyScored(day: todayKey) })
+        else { return }
+
         let days = DayQualityComputer.daysToScore(scoredDays: history.map(\.day), todayKey: todayKey)
         guard !days.isEmpty else { return }
 
@@ -3189,6 +3209,9 @@ final class IntelligenceEngine: ObservableObject {
         }
         guard !points.isEmpty else { return }
         _ = try? await store.upsertMetricSeries(points, deviceId: computedId)
+        // Latch AFTER the write succeeded: a pass that died mid-way must be retried by the next
+        // one, not marked done. (The upsert is idempotent, so a retry rewrites identical values.)
+        await MainActor.run { DayQualityPrefs.markScored(day: todayKey) }
         let newest = points.last
         let newestLabel = newest == nil ? "-" : newest!.day + "=" + String(Int(newest!.value))
         diagnosticSink?("day-quality: scored \(points.count) day(s), newest \(newestLabel)", nil)
