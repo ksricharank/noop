@@ -99,6 +99,12 @@ struct StrandiOSApp: App {
         // install races exactly the tap that caused the launch. The delegate above has the same
         // requirement and for the same reason.
         UNUserNotificationCenter.current().setNotificationCategories([HydrationReminder.category])
+        // Retire the pre-260903 repeating water reminders (260904). They were scheduled as
+        // `repeats: true` calendar triggers carrying a SNAPSHOT of the cup count, so iOS kept
+        // firing the same frozen "5 of 21 cups" daily — followed seconds later by the correct
+        // figure from the current sync-driven path. Idempotent, so it needs no run-once flag.
+        // In BOTH @main files, like the category and sink above: this file is one platform's only.
+        HydrationReminder.retireLegacyCalendarRequests()
         model.installHydrationReminderSink()
         // #1538: a strap offload completes while the app is BACKGROUNDED — it stays alive as a
         // bluetooth-central to receive it — and the re-score it triggers took nearly eight minutes on the
