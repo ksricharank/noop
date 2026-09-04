@@ -34,6 +34,20 @@ UPSTREAM="$UPSTREAM_REMOTE/main"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
+  # ── v16: uplifted to upstream v11.1.0 (260903) ─────────────────────────────────────────────
+  # The FEATURE SET is unchanged — same five features, rebased onto the v11.1.0 tag rather than
+  # the old 10.6.x base. Version scheme is <last upstream tag>.<fork counter>, so builds are now
+  # 11.1.0.16.x; the counter reset its minor to 0 to mark the 10.x -> 11.x major move.
+  #
+  # Rebased onto the TAG, not upstream/main, which was 38 commits past it: a released point is a
+  # tested one. The `pre-v16-upgrade` tag pins the last 10.6.x assembly (build 311) if a bisect
+  # is ever needed.
+  #
+  # Three conflicts, all resolved permanently on the feature branches: two mechanical (both sides
+  # adding at the same site in IntelligenceEngine and BLEManager) and one real — upstream and the
+  # fork had independently built the same coach sleep-detail feature with opposite nil rules. See
+  # the "Coach context: reconcile" commit on feature/v15-widgets.
+  #
   # ── v15 consolidation (260901) ──────────────────────────────────────────────────────────────
   # The 16-branch v14 stack (five-deep re-homing chain, two stacked pairs, three assembly-based
   # branches) was folded into the five features below; the v15 stack was verified TREE-IDENTICAL
