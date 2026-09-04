@@ -127,9 +127,13 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 81,
                                                         readiness: .balanced, debtBalanceMin: -400),
                        480 + 45)
+        // 480 base + 20 (maintain band) + 15 (strained) + 5 (the debt term: a 20-minute deficit is
+        // OUTSIDE the 10-minute deadband, so a quarter of it is asked back tonight). The debt term
+        // was originally omitted from this expectation, which made the case assert 515 against a
+        // correct 520 — the code was right and the arithmetic here was short by one term.
         XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 50, restScore: 60,
                                                         readiness: .strained, debtBalanceMin: -20),
-                       480 + 20 + 15)
+                       480 + 20 + 15 + 5)
         XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 90,
                                                         readiness: .primed, debtBalanceMin: 0),
                        480 - 15 - 15)

@@ -1844,7 +1844,7 @@ final class AICoachEngine: ObservableObject {
         // The fork's toggle-gated form is kept — it is the superset once `light` is folded in below —
         // so a narrow context stays narrow for users who have not opted into the richer prompt.
         lines.append(includeDerivedTrends
-            ? "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(sleep efficiency %), HRV(RMSSD, ms), RHR(bpm), wakes(disturbances), SDNN(broad HRV, ms), skin(skin temperature — labelled either absolute °C or a signed deviation vs baseline). A dash means NOT MEASURED, not zero; the trailing fields are omitted on nights that didn't record them:"
+            ? "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(sleep efficiency %), HRV(RMSSD, ms), RHR(bpm), wakes(disturbances), SDNN(broad HRV, ms), skin(skin temperature — labelled either absolute °C or a signed deviation vs baseline). A dash means NOT MEASURED, not zero; the wakes/SDNN/skin fields are omitted entirely on nights that didn't record them:"
             : "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(%), HRV(ms), RHR(bpm). A dash means NOT MEASURED, not zero:")
         for d in recent {
             lines.append("  " + dayLine(d))
@@ -2118,26 +2118,30 @@ final class AICoachEngine: ObservableObject {
         parts.append("charge " + (d.recovery.map { "\(Int($0.rounded()))" } ?? "—"))
         parts.append("effort " + (d.strain.map { String(format: "%.1f", $0) } ?? "—"))
         parts.append("rest " + (d.totalSleepMin.map { String(format: "%.1fh", $0 / 60) } ?? "—"))
-        // The stage breakdown and efficiency, which the coach could not see at all: a user asked why it
-        // said it had no access to sleep stages, and it was answering honestly — `rest 7.8h` was every
-        // word it got about a night. These four sit on the SAME DailyMetric the line already reads, so
-        // nothing new is plumbed; they were simply never included. (#124 widened this context once
-        // before, for the same reason.)
+        // The stage breakdown and efficiency, which the coach could not see at all (#1817): a user
+        // asked why it said it had no access to sleep stages, and it was answering honestly — `rest
+        // 7.5h` was every word it got about a night. These sit on the SAME DailyMetric the line
+        // already reads, so nothing new is plumbed; they were simply never included.
         //
-        // Always emitted, "—" when absent, like every other field here. A night with no staging then
-        // says so rather than going quiet, which matters more than line length: the alternative — only
-        // appending stages when present — gives the model a schema that changes shape between days and
-        // invites it to read a missing field as a zero.
-        parts.append("deep " + hoursOrDash(d.deepMin))
-        parts.append("REM " + hoursOrDash(d.remMin))
-        parts.append("light " + hoursOrDash(d.lightMin))
-        parts.append("eff " + efficiencyPercentOrDash(d.efficiency))
+        // ALWAYS emitted, "—" when absent. The v11.1.0 uplift found upstream had built the same
+        // feature with the opposite rule — stages behind the `wide` toggle, omitted when nil — and
+        // the fork's rule was kept deliberately (maintainer decision at the uplift). A fixed schema
+        // is what stops the model inferring: a line whose columns appear and vanish between days
+        // invites "no deep field" to be read as zero, which is the same misreading upstream's rule
+        // guards against, arriving by the other door. "deep —" states the absence out loud.
+        //
+        // The genuinely optional columns below keep upstream's omit-when-nil rule: they are extra
+        // detail rather than part of the night's basic shape, so their absence carries no meaning.
+        parts.append("deep " + Self.hoursOrDash(d.deepMin))
+        parts.append("REM " + Self.hoursOrDash(d.remMin))
+        parts.append("light " + Self.hoursOrDash(d.lightMin))
+        parts.append("eff " + Self.efficiencyPercentOrDash(d.efficiency))
         parts.append("HRV " + (d.avgHrv.map { "\(Int($0.rounded()))ms" } ?? "—"))
         parts.append("RHR " + (d.restingHr.map { "\($0)bpm" } ?? "—"))
         guard wide else { return parts.joined(separator: ", ") }
 
-        // deep / REM / eff are NOT re-emitted here: they are already unconditional above. Upstream's
-        // pre-merge `wide` block repeated them in minutes beside the fork's hours, which would have
+        // deep / REM / light / eff are NOT repeated here — they are unconditional above. Upstream's
+        // pre-merge wide block emitted them in minutes, which alongside the fork's hours would have
         // handed the model the same night twice in two units.
         if let dist = d.disturbances { parts.append("wakes \(dist)") }
         if let sdnn = d.avgSdnn { parts.append("SDNN \(Int(sdnn.rounded()))ms") }

@@ -14,33 +14,42 @@ final class AICoachDerivedTrendsTests: XCTestCase {
 
     // MARK: - dayLine
 
-    /// Narrow mode is the pre-existing five-column line. Pinned so the default (opt-in OFF) context
-    /// cannot drift: every wearer who never touches the toggle keeps exactly this shape.
-    func testNarrowLineIsUnchangedByTheWideFields() {
+    /// Narrow mode carries the night's basic shape — the five original columns PLUS the sleep stages
+    /// and efficiency (#1817) — and must not leak the genuinely wide-only columns.
+    ///
+    /// Rewritten at the v11.1.0 uplift. This test previously asserted a bare five-column line, from
+    /// upstream's version of this feature, which put stages behind the `wide` toggle and omitted them
+    /// when nil. The fork had already shipped the opposite rule: stages always present, "—" when the
+    /// night did not record them. The fork's rule was kept (maintainer decision), so the assertion is
+    /// inverted here rather than deleted — the property it guards (no wide-only leakage into the
+    /// default context) still matters and is still pinned.
+    func testNarrowLineCarriesStagesButNotTheWideOnlyColumns() {
         let d = metric(day: "2026-08-01", recovery: 62, strain: 11.4, totalSleepMin: 431,
                        avgHrv: 48, restingHr: 54, deepMin: 88, remMin: 96, efficiency: 91,
                        disturbances: 7, avgSdnn: 62, skinTempDevC: -0.3)
         let line = AICoachEngine.dayLine(d, wide: false)
-        XCTAssertEqual(line, "2026-08-01:, charge 62, effort 11.4, rest 7.2h, HRV 48ms, RHR 54bpm")
+        XCTAssertEqual(line, "2026-08-01:, charge 62, effort 11.4, rest 7.2h, "
+                       + "deep 1.5h, REM 1.6h, light —, eff 91%, HRV 48ms, RHR 54bpm")
         // The wide-only columns must not leak into the narrow line. Matched on the rendered token
-        // (", eff ") rather than the bare prefix, since "eff" also occurs inside the always-present
-        // "effort" — a substring check there passes for the wrong reason and would hide a real leak.
-        for absent in [", deep ", ", REM ", ", eff ", ", wakes ", ", SDNN ", ", skin "] {
+        // (", wakes ") rather than a bare prefix, so a substring cannot pass for the wrong reason.
+        for absent in [", wakes ", ", SDNN ", ", skin "] {
             XCTAssertFalse(line.contains(absent), "narrow line leaked \(absent)")
         }
     }
 
-    /// Wide mode appends the columns the coach already held but never sent.
+    /// Wide mode appends the autonomic / disturbance columns the coach already held but never sent.
+    /// Stages are NOT among them any more — they ride the narrow line too, in hours (see above), and
+    /// re-emitting them here in minutes would hand the model the same night twice in two units.
     func testWideLineAddsTheHeldButUnsentColumns() {
         let d = metric(day: "2026-08-01", recovery: 62, strain: 11.4, totalSleepMin: 431,
                        avgHrv: 48, restingHr: 54, deepMin: 88, remMin: 96, efficiency: 91,
                        disturbances: 7, avgSdnn: 62, skinTempDevC: -0.3)
         let line = AICoachEngine.dayLine(d, wide: true)
-        XCTAssertTrue(line.contains("deep 88m"), line)
-        XCTAssertTrue(line.contains("REM 96m"), line)
-        XCTAssertTrue(line.contains("eff 91%"), line)
         XCTAssertTrue(line.contains("wakes 7"), line)
         XCTAssertTrue(line.contains("SDNN 62ms"), line)
+        // The stage columns appear exactly once, in the narrow line's hour form.
+        XCTAssertTrue(line.contains("deep 1.5h"), line)
+        XCTAssertFalse(line.contains("deep 88m"), "stages must not be re-emitted in minutes: \(line)")
     }
 
     /// A missing field is simply absent — never "0", never an em-dash placeholder in the wide columns.
@@ -51,10 +60,14 @@ final class AICoachDerivedTrendsTests: XCTestCase {
                        avgHrv: nil, restingHr: nil, deepMin: nil, remMin: nil, efficiency: nil,
                        disturbances: nil, avgSdnn: nil, skinTempDevC: nil)
         let line = AICoachEngine.dayLine(d, wide: true)
-        for absent in [", deep ", ", REM ", ", eff ", ", wakes ", ", SDNN ", ", skin "] {
+        // The wide-ONLY columns stay absent when nil. (deep/REM/light/eff are deliberately excluded
+        // from this list now: they are part of the night's basic shape and render "—" instead, which
+        // is the fork's #1817 rule — a stated absence, not a vanished field.)
+        for absent in [", wakes ", ", SDNN ", ", skin "] {
             XCTAssertFalse(line.contains(absent), "absent field \(absent) was rendered anyway: \(line)")
         }
         XCTAssertFalse(line.contains("0m"), line)
+        XCTAssertTrue(line.contains("deep —"), "an unstaged night must SAY so, not go quiet: \(line)")
     }
 
     /// `skinTempDevC` is BIMODAL — strap nights bank a deviation, CSV/Apple imports an absolute wrist °C.
