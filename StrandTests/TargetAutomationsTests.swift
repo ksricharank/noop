@@ -160,6 +160,101 @@ final class TargetAutomationsTests: XCTestCase {
                                 kcalTarget: 2_525, effortToday: 59)
         XCTAssertEqual(nudge?.body, "Cal 800/1052/2525  63 min walk")
     }
+
+    // MARK: - The delivery window (260904)
+    //
+    // Maintainer request: start and stop times for the pacing check-ins. Implemented as a floor and
+    // ceiling on DELIVERY, keeping the wake anchor for the checkpoint grid and the pace math — the
+    // maintainer chose this over a hard clock start precisely so targets stay priced against the
+    // real day. These pin that distinction, which is the part a future refactor could quietly lose.
+
+    /// Unset bounds mean unbounded — the pre-control behaviour.
+    func testAnUnsetWindowIsUnbounded() {
+        XCTAssertTrue(TargetAutomations.pacingWindowAllows(minuteOfDay: 0, startMinute: nil,
+                                                           stopMinute: nil))
+        XCTAssertTrue(TargetAutomations.pacingWindowAllows(minuteOfDay: 23 * 60 + 59,
+                                                           startMinute: nil, stopMinute: nil))
+    }
+
+    func testTheWindowExcludesBeforeTheStartAndAtOrAfterTheStop() {
+        let start = 8 * 60, stop = 21 * 60
+        XCTAssertFalse(TargetAutomations.pacingWindowAllows(minuteOfDay: 7 * 60 + 59,
+                                                            startMinute: start, stopMinute: stop))
+        XCTAssertTrue(TargetAutomations.pacingWindowAllows(minuteOfDay: start,
+                                                           startMinute: start, stopMinute: stop),
+                      "the start itself is inside the window")
+        XCTAssertTrue(TargetAutomations.pacingWindowAllows(minuteOfDay: stop - 1,
+                                                           startMinute: start, stopMinute: stop))
+        XCTAssertFalse(TargetAutomations.pacingWindowAllows(minuteOfDay: stop,
+                                                            startMinute: start, stopMinute: stop),
+                       "the stop is exclusive, matching the checkpoint grid's end")
+    }
+
+    /// An inverted pair is treated as NO window: silently muting every nudge is the worse failure.
+    func testAnInvertedWindowDoesNotMuteEverything() {
+        XCTAssertTrue(TargetAutomations.pacingWindowAllows(minuteOfDay: 12 * 60,
+                                                           startMinute: 21 * 60, stopMinute: 8 * 60))
+    }
+
+    /// A checkpoint outside the window is SPENT, not banked — so silencing the early edge cannot
+    /// queue a nudge that fires the instant the floor opens.
+    func testAnOutOfWindowCheckpointIsConsumedNotBanked() {
+        // 10:00 checkpoint has passed, but the wearer's floor is 12:00.
+        let early = TargetAutomations.pacingDecision(
+            enabled: true, minuteOfDay: 10 * 60 + 5, intervalHours: 2, dayStartMinute: 8 * 60,
+            firedMask: 0, steps: 0, stepsTarget: 10_000, kcalToday: nil, kcalTarget: nil,
+            effortToday: 0, effortTarget: 59, sessionMinutes: 45,
+            windowStartMinute: 12 * 60, windowStopMinute: 21 * 60)
+        XCTAssertNil(early.nudge, "before the floor, nothing is delivered")
+        XCTAssertEqual(early.newMask, 0b1, "the passed checkpoint is still consumed")
+
+        // Just after the floor but BEFORE the next checkpoint (12:00 is the index-1 checkpoint, so
+        // 11:59 is still inside checkpoint 0's span): the muted checkpoint must not now speak.
+        let justOpened = TargetAutomations.pacingDecision(
+            enabled: true, minuteOfDay: 11 * 60 + 59, intervalHours: 2, dayStartMinute: 8 * 60,
+            firedMask: early.newMask, steps: 0, stepsTarget: 10_000, kcalToday: nil, kcalTarget: nil,
+            effortToday: 0, effortTarget: 59, sessionMinutes: 45,
+            windowStartMinute: 11 * 60, windowStopMinute: 21 * 60)
+        XCTAssertNil(justOpened.nudge,
+                     "the 10:00 checkpoint was spent while muted; it must not fire once the floor "
+                     + "opens — that is the banked nudge this design rules out")
+
+        // The NEXT checkpoint (12:00), now inside the window, speaks normally: muting an edge must
+        // not disable the feature for the rest of the day.
+        let next = TargetAutomations.pacingDecision(
+            enabled: true, minuteOfDay: 12 * 60 + 1, intervalHours: 2, dayStartMinute: 8 * 60,
+            firedMask: early.newMask, steps: 0, stepsTarget: 10_000, kcalToday: nil, kcalTarget: nil,
+            effortToday: 0, effortTarget: 59, sessionMinutes: 45,
+            windowStartMinute: 12 * 60, windowStopMinute: 21 * 60)
+        XCTAssertEqual(next.nudge?.checkpointIndex, 1)
+    }
+
+    /// Past the ceiling, nothing is delivered.
+    func testPastTheStopNothingIsDelivered() {
+        let (nudge, mask) = TargetAutomations.pacingDecision(
+            enabled: true, minuteOfDay: 22 * 60, intervalHours: 2, dayStartMinute: 8 * 60,
+            firedMask: 0, steps: 0, stepsTarget: 10_000, kcalToday: nil, kcalTarget: nil,
+            effortToday: 0, effortTarget: 59, sessionMinutes: 45,
+            windowStartMinute: 8 * 60, windowStopMinute: 21 * 60)
+        XCTAssertNil(nudge)
+        XCTAssertNotEqual(mask, 0, "the evening checkpoints are consumed, not left to fire tomorrow")
+    }
+
+    /// THE POINT OF THE DESIGN: the window does not touch the pace math. The same moment, with and
+    /// without a window that admits it, must produce an IDENTICAL nudge — the proration still runs
+    /// off the actual wake, so a wearer who set a 08:00 floor after a 06:00 wake is not repriced.
+    func testTheWindowDoesNotRepriceTheDay() {
+        let unbounded = decide(minuteOfDay: 14 * 60, steps: 3_000, dayStartMinute: 6 * 60)
+        let windowed = TargetAutomations.pacingDecision(
+            enabled: true, minuteOfDay: 14 * 60, intervalHours: 2, dayStartMinute: 6 * 60,
+            firedMask: 0, steps: 3_000, stepsTarget: 10_000, kcalToday: nil, kcalTarget: nil,
+            effortToday: 0, effortTarget: 59, sessionMinutes: 45,
+            windowStartMinute: 8 * 60, windowStopMinute: 21 * 60)
+        XCTAssertNotNil(windowed.nudge)
+        XCTAssertEqual(windowed.nudge?.body, unbounded.nudge?.body,
+                       "a delivery window must not change the prorated pace numbers")
+        XCTAssertEqual(windowed.nudge?.checkpointIndex, unbounded.nudge?.checkpointIndex)
+    }
 }
 
 /// 260903: NOOP's own nudges can also buzz the strap. Defaults ON as of build 310 — see

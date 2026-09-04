@@ -23,6 +23,11 @@ enum TargetAutomations {
         static let briefLastDay = "auto.morningBrief.lastDay"
         static let pacingEnabled = "auto.pacing.enabled"
         static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
+        /// The earliest and latest clock times a pacing nudge may land (260904). Both ABSENT by
+        /// default, which preserves the pre-control behaviour exactly: check-ins run from the
+        /// actual wake to midnight. See `pacingWindow`.
+        static let pacingStartMin = "auto.pacing.startMin"
+        static let pacingStopMin = "auto.pacing.stopMin"
         static let pacingDay = "auto.pacing.day"
         // 260903: per-nudge wrist-buzz toggles. `wristBuzz` is the master; the four below are the
         // individual cues. ALL default ON — the buzz was asked for, so the whole set arrives
@@ -142,6 +147,48 @@ enum TargetAutomations {
     /// claim about when movement stops. Calories are different: most of that target is resting
     /// burn accruing around the clock, so cal prorates over the full 24 h from local midnight.
     static let pacingDayEndMinute = 24 * 60
+
+    // MARK: - The quiet-edges window (260904)
+    //
+    // Maintainer request: a start and stop time for the check-ins. Implemented as a FLOOR AND
+    // CEILING ON DELIVERY, deliberately NOT as a replacement for the wake anchor above.
+    //
+    // The distinction is the whole point. `dayStartMinute` is doing two jobs: it is where the
+    // checkpoint grid begins AND the denominator of the pace math ("how far through my waking day
+    // am I?"). Repointing it at a clock time would silently reprice every target on an early or
+    // late morning — the exact mispricing the wake anchor exists to prevent. So the grid and the
+    // proration keep using the real wake, and these two numbers only decide which of the resulting
+    // checkpoints are allowed to speak.
+    //
+    // A suppressed checkpoint is still MARKED as handled (see `pacingDecision`), so silencing the
+    // early edge does not bank a nudge that then fires the moment the window opens.
+
+    /// The default earliest nudge: absent means "no floor", i.e. from the wake itself.
+    static var pacingStartMinute: Int? { d.object(forKey: K.pacingStartMin) as? Int }
+    /// The default latest nudge: absent means "no ceiling", i.e. through to midnight.
+    static var pacingStopMinute: Int? { d.object(forKey: K.pacingStopMin) as? Int }
+
+    static func setPacingStartMinute(_ m: Int?) {
+        guard let m else { return d.removeObject(forKey: K.pacingStartMin) }
+        d.set(min(max(m, 0), 24 * 60 - 1), forKey: K.pacingStartMin)
+    }
+
+    static func setPacingStopMinute(_ m: Int?) {
+        guard let m else { return d.removeObject(forKey: K.pacingStopMin) }
+        d.set(min(max(m, 0), 24 * 60), forKey: K.pacingStopMin)
+    }
+
+    /// Is a checkpoint at `minuteOfDay` inside the wearer's allowed delivery window?
+    ///
+    /// Pure, and nil-tolerant on both bounds so "unset" means "unbounded" rather than a magic
+    /// literal. An inverted pair (stop before start) is treated as NO WINDOW rather than as an
+    /// empty one: silently disabling every nudge is the worse failure, and the UI clamps anyway.
+    static func pacingWindowAllows(minuteOfDay: Int, startMinute: Int?, stopMinute: Int?) -> Bool {
+        if let startMinute, let stopMinute, stopMinute <= startMinute { return true }
+        if let startMinute, minuteOfDay < startMinute { return false }
+        if let stopMinute, minuteOfDay >= stopMinute { return false }
+        return true
+    }
     /// Sanity bounds on the resolved wake minute (a mis-scored night must not produce a 2:00 or
     /// 15:00 "wake" that poisons every pace all day).
     static func clampWakeMinute(_ m: Int) -> Int { min(max(m, 4 * 60), 12 * 60) }
@@ -189,7 +236,9 @@ enum TargetAutomations {
                                steps: Int?, stepsTarget: Int?,
                                kcalToday: Int?, kcalTarget: Int?,
                                effortToday: Int?, effortTarget: Int?,
-                               sessionMinutes: Int?) -> (nudge: PacingNudge?, newMask: Int) {
+                               sessionMinutes: Int?,
+                               windowStartMinute: Int? = nil,
+                               windowStopMinute: Int? = nil) -> (nudge: PacingNudge?, newMask: Int) {
         guard enabled else { return (nil, firedMask) }
         let checkMinutes = checkpointMinutes(intervalHours: intervalHours, dayStartMinute: dayStartMinute)
         var mask = firedMask
@@ -199,6 +248,18 @@ enum TargetAutomations {
             due = i
         }
         guard due != nil else { return (nil, mask) }
+        // The wearer's delivery window (260904). Checked AFTER the mask has consumed the passed
+        // checkpoints and BEFORE any evaluation, which gives the two properties that matter:
+        //   * a checkpoint outside the window is spent, not banked — so a night-time checkpoint
+        //     cannot queue up and fire the instant the morning floor opens;
+        //   * the pace math below is never reached with an out-of-window minute, so nothing is
+        //     computed to be thrown away.
+        // Note this gates on NOW, not on the checkpoint's nominal minute: a nudge lands at the
+        // first sync after its checkpoint, and it is the moment the phone buzzes that the wearer
+        // asked to bound.
+        guard pacingWindowAllows(minuteOfDay: minuteOfDay,
+                                 startMinute: windowStartMinute,
+                                 stopMinute: windowStopMinute) else { return (nil, mask) }
         let wakingFraction = min(1.0, max(0.0, Double(minuteOfDay - dayStartMinute)
                                                / Double(max(60, pacingDayEndMinute - dayStartMinute))))
         let clockFraction = min(1.0, max(0.0, Double(minuteOfDay) / Double(24 * 60)))
