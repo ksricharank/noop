@@ -45,12 +45,20 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// (`LiveTargets.stepsToday` / `.stepsTarget`) — the Steps column's two sides.
     public var steps: Int?
     public var stepsTarget: Int?
+    /// Today's water, in HALF-cups drunk so far and whole cups targeted (260903). Half-cups because
+    /// that is the tracker's own resolution — the notification and the Today row both log half a cup
+    /// — and rounding to whole cups at publish time would make a logged half-cup invisible on the
+    /// widget until a second one landed. `waterTargetCups` is nil when hydration tracking is off,
+    /// which is what makes the face degrade to a dash rather than to a fake zero.
+    public var waterHalfCups: Int?
+    public var waterTargetCups: Int?
 
     public init(recovery: Int?, bpm: Int?, batteryPct: Int?, bonded: Bool, updated: Date,
                 effort: Int? = nil, rest: Int? = nil, hrv: Int? = nil, restingHr: Int? = nil,
                 effortDisplay: String? = nil, effortWhoop: Bool? = nil,
                 effortTargetDisplay: String? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
-                sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil) {
+                sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil,
+                waterHalfCups: Int? = nil, waterTargetCups: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -68,6 +76,8 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.sleepNeedMin = sleepNeedMin
         self.steps = steps
         self.stepsTarget = stepsTarget
+        self.waterHalfCups = waterHalfCups
+        self.waterTargetCups = waterTargetCups
     }
 
     // MARK: - Targets-trio display strings
@@ -106,6 +116,23 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var sleepDisplay: String? {
         guard let need = sleepNeedMin, need > 0 else { return nil }
         return String(format: "%dh%02d", need / 60, need % 60)
+    }
+
+    /// The Water glance: cups drunk over today's cup target ("7/19").
+    ///
+    /// Deliberately rendered in WHOLE cups even though the tracker stores half-cups. Two reasons, one
+    /// of them about battery: a widget cell has no room for "7.5/19" beside three other pairs, and —
+    /// more importantly — the rendered string is what `renderedContentChanged` dedups on, so
+    /// quantizing here means a half-cup log that does not move the whole-cup figure costs NO
+    /// WidgetKit reload request. At the maintainer's ~16-21 cup target that roughly halves the
+    /// requests this feature can spend against iOS's daily widget refresh budget (see the
+    /// `renderedContentChanged` note on why that budget is the binding constraint).
+    ///
+    /// Rounds DOWN: a half-cup in hand is not a cup drunk, and the same floor is what the
+    /// notification's "cups still to drink" already counts with.
+    public var waterDisplay: String? {
+        guard let target = waterTargetCups, target > 0 else { return nil }
+        return "\((waterHalfCups ?? 0) / 2)/\(target)"
     }
 
     /// The Steps glance: today over target as FULL counts ("3205/8000") — the in-app strip and the
@@ -209,7 +236,8 @@ public struct WidgetSnapshot: Codable, Equatable {
                        effort: 38, rest: 81, hrv: 64, restingHr: 52,
                        effortDisplay: "38", effortWhoop: false,
                        effortTargetDisplay: "51", kcal: 1830, kcalTarget: 2650, sleepNeedMin: 495,
-                       steps: 6_214, stepsTarget: 8_000)
+                       steps: 6_214, stepsTarget: 8_000,
+                       waterHalfCups: 15, waterTargetCups: 19)
     }
 
     /// Honest runtime state when the app has not published a readable snapshot yet. Unlike
@@ -265,6 +293,10 @@ public struct WidgetSnapshot: Codable, Equatable {
             || previous.calAbbrev != next.calAbbrev
             || previous.sleepDisplay != next.sleepDisplay
             || previous.stepsAbbrev != next.stepsAbbrev
+            // Water compares at display granularity for the same reason, and it matters more here:
+            // a cup is logged by a deliberate tap that ALSO triggers a publish, so without the
+            // whole-cup quantization every half-cup would spend a reload request.
+            || previous.waterDisplay != next.waterDisplay
     }
 
     /// A live-only update may reuse score fields only within the same local calendar day. At rollover,

@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import WidgetKit
+import StrandAnalytics   // HydrationGoal — half-cup conversion for the water glance
 
 extension WidgetSnapshot {
     /// Build a glance snapshot from the live app state and publish it to the shared App Group, then
@@ -99,12 +100,18 @@ extension WidgetSnapshot {
             kcalTarget: targets.kcalTargetKcal,
             sleepNeedMin: targets.sleepNeedTonightMin,
             steps: targets.stepsToday,
-            stepsTarget: targets.stepsTarget
+            stepsTarget: targets.stepsTarget,
+            // 260903: water joins the targets faces (it took Sleep's fourth cell). Half-cups, the
+            // tracker's own resolution — the face quantizes to whole cups, which is also what keeps
+            // a half-cup log from spending a WidgetKit reload. Nil target = tracking off = dash.
+            waterHalfCups: targets.waterTodayML.map { HydrationGoal.halfCups(fromML: $0) },
+            waterTargetCups: targets.waterTargetCups
         )
         let reloaded = saveAndReloadIfChanged(snap)
         WidgetPublishStats.recordFullFinished(
             glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
-                + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-")",
+                + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-") "
+                + "water=\(snap.waterDisplay ?? "-")",
             reloadRequested: reloaded)
     }
 

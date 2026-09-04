@@ -6,13 +6,17 @@ import StrandDesign
 /// Activity OFF, continuous HRV overnight-only, daytime data arriving as ~15-minute offload bursts.
 /// With no island and no banner, these widgets ARE the daytime surface, carrying the same three
 /// numbers the Live Activity card shows: Effort now/target, TOTAL calories now/target, Steps
-/// now/target, and tonight's sleep target. (A burst-average HR held the first column for one build — replaced same-day by
+/// now/target, and today's water now/target. (260903: Water replaced tonight's sleep target in the
+/// fourth slot on maintainer instruction — sleep need is a fixed figure that does not move through
+/// the day, so it spent a daytime cell saying the same thing every refresh, whereas water is both
+/// actionable and the one number the notification's buttons change. Sleep keeps its Live Activity
+/// column and its in-app row.) (A burst-average HR held the first column for one build — replaced same-day by
 /// Effort n/t on maintainer instruction; the HRV-dip "go breathe" read moved to the stress
 /// check-in's buzz + notification.)
 ///
 /// Families and their intended slots:
 ///   - `accessoryInline` (the Lock-Screen line ABOVE the clock): "Cal 1830/2650 · Steps 3k/8k" —
-///     the maintainer's two most actionable daytime pairs; Effort and Sleep are skipped by spec.
+///     the maintainer's two most actionable daytime pairs; Effort and Water are skipped by spec.
 ///   - `accessoryRectangular` (below the clock): all four as a 2×2 grid, no wordmark.
 ///   - `systemSmall` / `systemMedium` (Home Screen): the four targets plus the strap battery in the
 ///     top-right corner — the targets analogue of `NOOPWidget`'s Charge · Effort · Rest rings.
@@ -37,7 +41,7 @@ struct NOOPTargetsWidget: Widget {
             }
         }
         .configurationDisplayName("NOOP Targets")
-        .description("Effort, calories and steps against today's targets, plus tonight's sleep target — updated with each strap sync, no Live Activity needed.")
+        .description("Effort, calories, steps and water against today's targets — updated with each strap sync, no Live Activity needed.")
         .supportedFamilies([
             .systemSmall, .systemMedium,
             .accessoryInline, .accessoryRectangular
@@ -56,14 +60,14 @@ struct NOOPTargetsView: View {
     private var effortText: String { snap.effortNT ?? "–" }
     private var calText: String { snap.calAbbrev ?? "–" }
     private var stepsText: String { snap.stepsAbbrev ?? "–" }
-    private var sleepText: String { snap.sleepDisplay ?? "–" }
+    private var waterText: String { snap.waterDisplay ?? "–" }
 
     var body: some View {
         switch family {
         case .accessoryInline:
             // The slot above the Lock-Screen clock: one line, Cal + Steps (260830 revision — was
             // Cal-only), abbreviated and BOLD — the full counts were "hard to read across" one line.
-            // Effort and Sleep are deliberately skipped: the maintainer's pick for the two most
+            // Effort and Water are deliberately skipped: the maintainer's pick for the two most
             // actionable daytime numbers, and the line has no room for four pairs anyway.
             Text("Cal \(calText) · Steps \(stepsText)").bold()
         case .accessoryRectangular:
@@ -80,7 +84,7 @@ struct NOOPTargetsView: View {
     /// 2×2 grid, no "NOOP" wordmark (260830 revision: four cells in one row crushed the Cal pair,
     /// and the label spent a whole line saying what the widget's placement already says). Rows match
     /// the in-app strip — each LONG pair (Steps, Cal — full counts) shares its row with a short one
-    /// (Effort, Sleep) so the rows balance. Values are pushed to the slot's ceiling ("as large as
+    /// (Effort, Water) so the rows balance. Values are pushed to the slot's ceiling ("as large as
     /// possible without spoiling the formatting", third screenshot review): 21pt BOLD with the
     /// labels dropped to 8pt and every spacing at minimum — the ~72pt rectangular slot fits exactly
     /// two 8+21 cells plus 2pt between rows; `minimumScaleFactor` absorbs the widest pairs.
@@ -95,7 +99,7 @@ struct NOOPTargetsView: View {
             HStack(alignment: .top, spacing: 6) {
                 targetCell("Cal", text: snap.calAbbrev, size: 21, labelSize: 8,
                            tint: StrandPalette.metricAmber)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 21, labelSize: 8,
+                targetCell("Water", text: snap.waterDisplay, size: 21, labelSize: 8,
                            tint: StrandPalette.metricCyan)
             }
         }
@@ -109,12 +113,12 @@ struct NOOPTargetsView: View {
         VStack(alignment: .leading, spacing: 6) {
             header
             Spacer(minLength: 0)
-            // One distinct data colour per metric (260830: a shared activity tint made Sleep's muted
-            // restColor read as "off" beside three identical blues).
+            // One distinct data colour per metric (260830: a shared activity tint made the fourth
+            // cell's muted restColor read as "off" beside three identical blues).
             targetRow("Steps", value: stepsText, tint: StrandPalette.chargeColor)
             targetRow("Effort", value: effortText, tint: StrandPalette.effortColor)
             targetRow("Cal", value: calText, tint: StrandPalette.metricAmber)
-            targetRow("Sleep", value: sleepText, tint: StrandPalette.metricCyan)
+            targetRow("Water", value: waterText, tint: StrandPalette.metricCyan)
             Spacer(minLength: 0)
         }
         .padding(10)
@@ -134,7 +138,7 @@ struct NOOPTargetsView: View {
                            tint: StrandPalette.effortColor)
                 targetCell("Cal", text: snap.calAbbrev, size: 20,
                            tint: StrandPalette.metricAmber)
-                targetCell("Sleep", text: snap.sleepDisplay, size: 20,
+                targetCell("Water", text: snap.waterDisplay, size: 20,
                            tint: StrandPalette.metricCyan)
             }
             Spacer(minLength: 0)
