@@ -174,16 +174,25 @@ enum DayQualityComputer {
         return s.count % 2 == 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid]
     }
 
-    /// Which days to (re)score on this pass.
+    /// Which days to score on this pass: the finished days that DON'T already have a score.
     ///
     /// Only days STRICTLY BEFORE today: the score is a closed book about a finished day, and a
     /// partial today would publish a low number at breakfast and revise it by bedtime — the exact
     /// churn the "computed at the end of a night" requirement exists to avoid.
     ///
-    /// Idempotent by construction: `upsertMetricSeries` overwrites the day's point, so re-running a
-    /// pass over the same days is a no-op in effect. That is what lets the caller simply hand over
-    /// the scored window without tracking what it has already written.
-    static func daysToScore(scoredDays: [String], todayKey: String) -> [String] {
-        Array(Set(scoredDays.filter { $0 < todayKey })).sorted()
+    /// INCREMENTAL (260904, maintainer: "I don't want the backfill to run every day. it should just
+    /// be a one time thing… and then a new score is computed each day?"). Exactly that: the first
+    /// pass finds every finished day unscored and backfills the history; from then on it finds one
+    /// new day per day. `alreadyScored` is the set of days the stored series already holds.
+    ///
+    /// Re-scoring everything was the previous behaviour, and while the once-per-day latch kept it
+    /// off the hot path, it still re-derived months of targets nightly for values that cannot change
+    /// — a finished day's inputs are fixed. The one case that DOES need a full re-score is a config
+    /// change, and that is handled where it belongs: `rescoreAll` forces it, driven by the latch's
+    /// config fingerprint rather than by re-deriving unconditionally.
+    static func daysToScore(scoredDays: [String], todayKey: String,
+                            alreadyScored: Set<String> = [], rescoreAll: Bool = false) -> [String] {
+        let finished = Set(scoredDays.filter { $0 < todayKey })
+        return (rescoreAll ? finished : finished.subtracting(alreadyScored)).sorted()
     }
 }

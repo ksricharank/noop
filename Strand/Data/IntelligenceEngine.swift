@@ -3176,13 +3176,42 @@ final class IntelligenceEngine: ObservableObject {
         //
         // Without this the engine's derived block scored on every full pass — several times a day
         // on a battery-sensitive path, and a "closed book" number that could visibly move at noon.
-        let newestScored = await MainActor.run { Repository.widgetAnchor(days: repo.days, now: Date())?.day }
-        guard newestScored == todayKey else { return }
+        // The latch alone decides. It is keyed on (day, config), so the pass runs at most once per
+        // day and re-runs when a knob moves — which is the whole requirement.
+        //
+        // 260904 FIX: this used to ALSO require `widgetAnchor(...)?.day == todayKey`, borrowed from
+        // the morning brief's "has the night landed" test. That was wrong here and it silently
+        // disabled the feature: the anchor deliberately CARRIES yesterday's scored row until today
+        // has a recovery of its own, so the condition is false for most of the day, and the first
+        // pass after midnight — the one that would backfill — always failed it. No scores were ever
+        // written. Reported as "I don't see any scores there".
+        //
+        // The brief needs that test because it speaks about TODAY and must not restate a stale
+        // carry. This pass scores FINISHED days only (`daysToScore` excludes today), so a fresh
+        // night is not a precondition: every day it grades is already complete.
         guard await MainActor.run(resultType: Bool.self, body: { !DayQualityPrefs.alreadyScored(day: todayKey) })
         else { return }
 
-        let days = DayQualityComputer.daysToScore(scoredDays: history.map(\.day), todayKey: todayKey)
-        guard !days.isEmpty else { return }
+        // Incremental: score the finished days the series does not already hold. The first pass
+        // backfills everything; afterwards it is one new day per day. A CONFIG change is the one
+        // reason to redo history — a finished day's inputs are fixed, so only the weighting can
+        // move its score.
+        let rescoreAll = await MainActor.run { DayQualityPrefs.configChanged }
+        // The days the series ALREADY holds, read once. One range query over the whole history,
+        // which is what makes "score only what is missing" cheaper than re-deriving everything.
+        let oldest = history.first?.day ?? todayKey
+        let existing: Set<String> = rescoreAll ? [] : Set(
+            ((try? await store.metricSeries(deviceId: computedId,
+                                            key: DayQualityComputer.metricKey,
+                                            from: oldest, to: todayKey)) ?? []).map(\.day))
+        let days = DayQualityComputer.daysToScore(scoredDays: history.map(\.day), todayKey: todayKey,
+                                                  alreadyScored: existing, rescoreAll: rescoreAll)
+        guard !days.isEmpty else {
+            // Nothing to do, but the latch must still advance or `configChanged` stays true and the
+            // next pass reconsiders the whole history again.
+            await MainActor.run { DayQualityPrefs.markScored(day: todayKey) }
+            return
+        }
 
         // Water is a metric series, so the whole history comes back in ONE range read rather than a
         // per-day query — the same reason the target table is built in one walk.

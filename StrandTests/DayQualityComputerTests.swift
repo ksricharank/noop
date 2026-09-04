@@ -55,6 +55,50 @@ final class DayQualityComputerTests: XCTestCase {
         XCTAssertEqual(picked, ["2026-09-01", "2026-09-02"])
     }
 
+    /// The backfill is a ONE-TIME event, then one new day per day (260904, maintainer).
+    ///
+    /// First pass: nothing is stored, so every finished day is scored. Steady state: only the day
+    /// that has just finished. A finished day's inputs are fixed, so re-deriving its score nightly
+    /// is work that cannot change an answer.
+    func testTheFirstPassBackfillsAndLaterPassesScoreOnlyTheNewDay() {
+        let history = (1...10).map { String(format: "2026-09-%02d", $0) }
+
+        // First run: empty series → the whole finished history.
+        let first = DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
+                                                   alreadyScored: [])
+        XCTAssertEqual(first.count, 10, "the first pass must backfill every finished day")
+
+        // Next day, with those ten stored: exactly the newly finished one.
+        let second = DayQualityComputer.daysToScore(scoredDays: history + ["2026-09-11"],
+                                                    todayKey: "2026-09-12",
+                                                    alreadyScored: Set(history))
+        XCTAssertEqual(second, ["2026-09-11"], "steady state is one new day, not a re-score")
+
+        // Same day again (a second full pass): nothing at all.
+        XCTAssertTrue(DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
+                                                     alreadyScored: Set(history)).isEmpty)
+    }
+
+    /// A gap in the middle is filled without re-scoring its neighbours — a day the strap missed and
+    /// that later gained data must not require redoing the history around it.
+    func testAGapIsFilledWithoutRescoringItsNeighbours() {
+        let history = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]
+        let stored: Set<String> = ["2026-09-01", "2026-09-02", "2026-09-04"]
+        XCTAssertEqual(DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-05",
+                                                      alreadyScored: stored),
+                       ["2026-09-03"])
+    }
+
+    /// A CONFIG change is the one thing that justifies redoing history: the weighting moved, so
+    /// every stored score is stale even though the days' inputs are not.
+    func testAConfigChangeRescoresEverything() {
+        let history = (1...10).map { String(format: "2026-09-%02d", $0) }
+        let picked = DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
+                                                    alreadyScored: Set(history), rescoreAll: true)
+        XCTAssertEqual(picked.count, 10,
+                       "moving a knob must re-score the history it applies to, not just new days")
+    }
+
     // MARK: - The day is graded against its OWN context
 
     /// A past day must not be graded against a readiness read that includes days AFTER it — that

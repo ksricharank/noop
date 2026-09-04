@@ -84,8 +84,18 @@ enum DayQualityPrefs {
 
     /// True when tonight's scoring has already run for `day` under the current settings.
     static func alreadyScored(day: String) -> Bool {
-        d.string(forKey: K.lastScoredDay) == day
-            && d.string(forKey: K.lastScoredConfig) == configFingerprint
+        d.string(forKey: K.lastScoredDay) == day && !configChanged
+    }
+
+    /// True when the settings differ from those the last scoring pass used.
+    ///
+    /// This is the ONLY thing that justifies re-scoring history: a finished day's inputs are fixed,
+    /// so its score can only change because the formula's weighting did. The nightly pass is
+    /// otherwise incremental — one new day per day (see `DayQualityComputer.daysToScore`).
+    static var configChanged: Bool {
+        // An absent fingerprint means no pass has ever recorded one: treat that as "changed" so a
+        // first run backfills rather than assuming the stored series is complete.
+        d.string(forKey: K.lastScoredConfig) != configFingerprint
     }
 
     static func markScored(day: String) {
