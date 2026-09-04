@@ -162,9 +162,9 @@ final class TargetAutomationsTests: XCTestCase {
     }
 }
 
-/// 260903: NOOP's own nudges can also buzz the strap. Default off, and the coverage is uneven for
-/// a stated reason — the buzz needs an encrypted bond AND a running process, so a scheduled
-/// calendar notification (the water reminder) cannot buzz as it lands.
+/// 260903: NOOP's own nudges can also buzz the strap. Defaults ON as of build 310 — see
+/// `testTheMasterDefaultsOnBecauseTheBuzzWasAskedFor`. The buzz needs an encrypted bond AND a
+/// running process; every nudge now rides the strap sync, so the app is awake at post time.
 final class NudgeWristBuzzTests: XCTestCase {
 
     override func tearDown() {
@@ -175,24 +175,30 @@ final class NudgeWristBuzzTests: XCTestCase {
         super.tearDown()
     }
 
-    func testMasterDefaultsOffSoAFreshInstallIsSilent() {
-        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
-        for cue in [TargetAutomations.BuzzCue.morningBrief, .paceCheck, .water] {
-            XCTAssertFalse(TargetAutomations.buzzEnabled(cue), "\(cue) must be silent by default")
+    /// The master defaults ON, and that is a deliberate reversal of the 15.19 default.
+    ///
+    /// Shipping it off meant the buzz — which was added on request — arrived silent, and read as
+    /// broken from the device: "my whoop is still not buzzing for water". A cue nobody asked for
+    /// should default off; this one was asked for. Turning a requested feature on is not the same
+    /// as making noise uninvited, and the nudges themselves each keep their own enable toggle, so
+    /// this can never buzz for a nudge the user has not turned on.
+    func testTheMasterDefaultsOnBecauseTheBuzzWasAskedFor() {
+        XCTAssertTrue(TargetAutomations.wristBuzzEnabled)
+        for cue in TargetAutomations.BuzzCue.allCases {
+            XCTAssertTrue(TargetAutomations.buzzEnabled(cue),
+                          "\(cue) must buzz on a fresh install — the buzz was requested")
         }
     }
 
-    /// Enabling the master is enough to feel everything — each cue defaults ON, so the user turns
-    /// OFF what they do not want rather than hunting for why a feature they enabled is silent.
-    func testMasterOnGivesEveryCueABuzz() {
-        UserDefaults.standard.set(true, forKey: TargetAutomations.K.wristBuzz)
-        for cue in TargetAutomations.BuzzCue.allCases {
-            XCTAssertTrue(TargetAutomations.buzzEnabled(cue), "\(cue) should buzz with the master on")
+    /// Turning the master OFF silences the three cues it governs, and only those.
+    func testMasterOffSilencesTheCuesItGoverns() {
+        UserDefaults.standard.set(false, forKey: TargetAutomations.K.wristBuzz)
+        for cue in [TargetAutomations.BuzzCue.morningBrief, .paceCheck, .water] {
+            XCTAssertFalse(TargetAutomations.buzzEnabled(cue), "\(cue) must follow the master off")
         }
     }
 
     func testAnIndividualCueCanBeSilencedWithoutTheOthers() {
-        UserDefaults.standard.set(true, forKey: TargetAutomations.K.wristBuzz)
         UserDefaults.standard.set(false, forKey: TargetAutomations.BuzzCue.paceCheck.rawValue)
         XCTAssertFalse(TargetAutomations.buzzEnabled(.paceCheck))
         XCTAssertTrue(TargetAutomations.buzzEnabled(.water))
@@ -203,7 +209,7 @@ final class NudgeWristBuzzTests: XCTestCase {
     /// would SILENCE an existing cue for anyone who leaves the master off — a regression dressed as
     /// a feature — so its switch stands alone.
     func testTheStressCheckInKeepsBuzzingWithTheMasterOff() {
-        XCTAssertFalse(TargetAutomations.wristBuzzEnabled)
+        UserDefaults.standard.set(false, forKey: TargetAutomations.K.wristBuzz)
         XCTAssertTrue(TargetAutomations.buzzEnabled(.breathe),
                       "an existing cue must not go silent because a new toggle defaults off")
         // It can still be turned off explicitly.
