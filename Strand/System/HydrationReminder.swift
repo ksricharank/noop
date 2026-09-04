@@ -26,6 +26,10 @@ enum HydrationReminder {
         static let enabled = "hydration.reminder.enabled"
         static let startMin = "hydration.reminder.startMin"        // default 08:00
         static let intervalMin = "hydration.reminder.intervalMin"  // default 90 min
+        /// Last reminder of the day. ABSENT BY DEFAULT — see `stopMinute`, which falls back to the
+        /// shared sleep-window start rather than to a literal, so the day's reminders end when the
+        /// wearer's night begins without a second number to keep in sync.
+        static let stopMin = "hydration.reminder.stopMin"
     }
 
     private static var d: UserDefaults { .standard }
@@ -45,16 +49,55 @@ enum HydrationReminder {
         return min(max(v, 30), 240)
     }
 
-    /// The last slot of the day — no reminders past this, so a late interval can't buzz at 01:00.
+    /// The latest slot the id grid must cover, and the hard ceiling on `stopMinute`.
+    ///
+    /// Retained as the RETIREMENT grid's upper bound (`retiredCalendarRequestIds`) — those ids were
+    /// minted when 22:00 was the fixed last slot, so the grid that cancels them must keep spanning
+    /// exactly that range or a legacy request would survive the sweep. It is no longer the schedule.
     static let lastSlotMinute = 22 * 60
+
+    /// Last reminder of the day, local minute-of-day (260904).
+    ///
+    /// Defaults to the START OF THE SLEEP WINDOW — the same `notif.quietStartMinutes` the quiet
+    /// hours, the inactivity detector and the overnight BLE gate already read (default 22:00).
+    /// Deliberately not a literal 22:00 duplicated here: the wearer already tells NOOP when their
+    /// night starts, and a reminder to drink belongs inside the waking day by definition. Moving
+    /// the sleep window therefore moves the last reminder, with no second control to reconcile.
+    ///
+    /// The shipped default is unchanged in effect — `defaultStartMinutes` IS 22:00, which is what
+    /// the fixed `lastSlotMinute` used to enforce — so an existing install sees no shift.
+    ///
+    /// Clamped to sit at least one interval after the start (a stop before the start would yield an
+    /// empty grid and silently disable the feature) and never past `lastSlotMinute`.
+    static var stopMinute: Int {
+        let sleepStart = d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int
+            ?? ContinuousHrvSchedule.defaultStartMinutes
+        let v = d.object(forKey: K.stopMin) as? Int ?? sleepStart
+        return clampStop(v, startMinute: startMinute)
+    }
+
+    /// The stop clamp, pure so the bounds are testable and identical in the setter and the getter.
+    ///
+    /// A wrap-past-midnight sleep window start (the normal case: 22:00 with a 07:00 end) is a plain
+    /// minute-of-day here, so no wrap handling is needed — but a wearer whose night starts after
+    /// midnight (say 01:00) would produce a stop BEFORE the start, so the lower bound is the floor
+    /// that keeps at least the first slot alive.
+    static func clampStop(_ v: Int, startMinute: Int) -> Int {
+        min(max(v, startMinute), lastSlotMinute)
+    }
 
     // MARK: - Pure policy
 
     /// Reminder instants for a start time + interval: every `interval` minutes from `start` through
-    /// the day's last slot. Pure so the grid is pinned without a clock.
-    static func slotMinutes(startMinute: Int, intervalMinutes: Int) -> [Int] {
+    /// `stop`. Pure so the grid is pinned without a clock.
+    ///
+    /// `stopMinute` defaults to `lastSlotMinute` ONLY for callers that predate the stop control
+    /// (the tests that pin the old grid); the app always passes the wearer's configured stop.
+    static func slotMinutes(startMinute: Int, intervalMinutes: Int,
+                            stopMinute: Int? = nil) -> [Int] {
         let step = max(30, intervalMinutes)
-        return Array(stride(from: startMinute, through: lastSlotMinute, by: step))
+        let stop = clampStop(stopMinute ?? lastSlotMinute, startMinute: startMinute)
+        return Array(stride(from: startMinute, through: stop, by: step))
     }
 
     /// Whole cups from a millilitre figure — delegated to `HydrationGoal` so the reminder cannot
@@ -173,8 +216,10 @@ enum HydrationReminder {
     private static let lastFiredDayKey = "hydration.reminder.lastFiredDay"
 
     /// The most recent slot at or before `minuteOfDay`, or nil before the day's first slot.
-    static func dueSlot(minuteOfDay: Int, startMinute: Int, intervalMinutes: Int) -> Int? {
-        slotMinutes(startMinute: startMinute, intervalMinutes: intervalMinutes)
+    static func dueSlot(minuteOfDay: Int, startMinute: Int, intervalMinutes: Int,
+                        stopMinute: Int? = nil) -> Int? {
+        slotMinutes(startMinute: startMinute, intervalMinutes: intervalMinutes,
+                    stopMinute: stopMinute)
             .last { $0 <= minuteOfDay }
     }
 
@@ -183,7 +228,8 @@ enum HydrationReminder {
     ///
     /// Only the LATEST due slot fires: a phone that was away for hours owes one reminder, not six.
     static func reminderWanted(enabled: Bool, minuteOfDay: Int, startMinute: Int,
-                               intervalMinutes: Int, lastFiredSlot: Int?, isNewDay: Bool = false) -> Bool {
+                               intervalMinutes: Int, lastFiredSlot: Int?, isNewDay: Bool = false,
+                               stopMinute: Int? = nil) -> Bool {
         guard enabled else { return false }
         // The START TIME gates every fire, including the day's first.
         //
@@ -199,7 +245,8 @@ enum HydrationReminder {
         // pre-260903 repeating calendar requests still firing a frozen snapshot; see
         // `retireLegacyCalendarRequests`. This change only deletes dead code.
         guard let due = dueSlot(minuteOfDay: minuteOfDay, startMinute: startMinute,
-                                intervalMinutes: intervalMinutes) else { return false }
+                                intervalMinutes: intervalMinutes,
+                                stopMinute: stopMinute) else { return false }
         // No fire recorded for this day yet (a fresh day, or a fresh install): the day's first due
         // slot has passed, so it is owed. `isNewDay` is kept for call-site clarity but is no longer
         // load-bearing — it was only ever a restatement of this nil.
@@ -252,7 +299,22 @@ enum HydrationReminder {
     }
 
     static func setStartMinute(_ minutes: Int) {
-        d.set(min(max(minutes, 4 * 60), 14 * 60), forKey: K.startMin)
+        let start = min(max(minutes, 4 * 60), 14 * 60)
+        d.set(start, forKey: K.startMin)
+        // Raising the start past a previously-stored stop would leave the pair inverted. The getter
+        // clamps it anyway, but re-normalising the STORED value here keeps the picker's displayed
+        // stop honest (it reads the stored number back) rather than showing a stop the schedule is
+        // silently ignoring. Only rewrites an EXPLICIT stop: an absent one still tracks the sleep
+        // window, and writing a literal here would sever that link.
+        if let stored = d.object(forKey: K.stopMin) as? Int, stored < start {
+            d.set(clampStop(stored, startMinute: start), forKey: K.stopMin)
+        }
+    }
+
+    /// Set the last reminder of the day. Clamped against the CURRENT start so the pair can never
+    /// express an empty schedule.
+    static func setStopMinute(_ minutes: Int) {
+        d.set(clampStop(minutes, startMinute: startMinute), forKey: K.stopMin)
     }
 
     static func setIntervalMinutes(_ minutes: Int) {

@@ -735,7 +735,9 @@ final class AppModel: ObservableObject {
             steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
             kcalToday: targets.kcalToday, kcalTarget: targets.kcalTargetKcal,
             effortToday: targets.effortTodayStored, effortTarget: targets.effortTarget,
-            sessionMinutes: targets.sessionMinutes)
+            sessionMinutes: targets.sessionMinutes,
+            windowStartMinute: TargetAutomations.pacingStartMinute,
+            windowStopMinute: TargetAutomations.pacingStopMinute)
         if newMask != mask { TargetAutomations.setPacingFiredMask(newMask, today: todayKey) }
         if let nudge {
             // The title is written by the coach when one is configured — a line scaled to how far
@@ -820,15 +822,21 @@ final class AppModel: ObservableObject {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         let lastFired = HydrationReminder.lastFiredSlot(today: dayKey)
+        // Read the stop ONCE and thread it into both calls: it resolves through the sleep-window
+        // fallback, so two reads either side of a midnight settings edit could disagree and make
+        // `reminderWanted` and `dueSlot` describe different grids.
+        let stopMinute = HydrationReminder.stopMinute
         guard HydrationReminder.reminderWanted(
                 enabled: true,
                 minuteOfDay: minuteOfDay,
                 startMinute: HydrationReminder.startMinute,
                 intervalMinutes: HydrationReminder.intervalMinutes,
-                lastFiredSlot: lastFired),
+                lastFiredSlot: lastFired,
+                stopMinute: stopMinute),
               let due = HydrationReminder.dueSlot(minuteOfDay: minuteOfDay,
                                                   startMinute: HydrationReminder.startMinute,
-                                                  intervalMinutes: HydrationReminder.intervalMinutes)
+                                                  intervalMinutes: HydrationReminder.intervalMinutes,
+                                                  stopMinute: stopMinute)
         else { return }
 
         // The goal comes from the SAME LiveTargets the Today row renders — never from

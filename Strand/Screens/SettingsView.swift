@@ -224,11 +224,9 @@ struct SettingsView: View {
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
-    // 260902 water reminders — state mirrors of HydrationReminder (custom-defaulted accessors, so
-    // plain @AppStorage would misread an unset interval as 0).
-    @AppStorage(HydrationReminder.K.enabled) private var hydrationRemindersOn = false
-    @State private var hydrationStartMin = HydrationReminder.startMinute
-    @State private var hydrationIntervalMin = HydrationReminder.intervalMinutes
+    // 260904: the water-REMINDER controls (enable, start, stop, interval) moved to AutomationsView,
+    // which is now the single screen for notifications and nudges. Only the tracker toggle above
+    // remains here, since it gates stored data rather than a notification.
 
     /// Opt-in "Auto-detect workouts" (default OFF). When ON, Today scans the last day or two of HR for a
     /// sustained-elevated window and offers — via a single dismissible card — to save it as a workout.
@@ -1793,62 +1791,15 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                // 260902: reminders for the tracker above — deliberately nested under it, since a
-                // reminder with tracking off would have nothing to count. The daily CUP goal is the
-                // one the tracker already derives from profile + effort (rendered in whole cups),
-                // never a second hand-set number that could disagree with the Today card.
+                // 260904: the water REMINDER controls moved to Automations, which is now the one
+                // screen for notifications and nudges. The tracker toggle stays here — it is a data
+                // feature, not a notification — and the pointer below is what keeps the reminder
+                // discoverable from the screen it used to live on.
                 if hydrationEnabled {
-                    Toggle(isOn: $hydrationRemindersOn) {
-                        Text("Water reminders")
-                            .font(StrandFont.subhead)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                    }
-                    .toggleStyle(.switch)
-                    .tint(StrandPalette.accent)
-                    .accessibilityHint("Reminds you to drink through the day")
-                    .onChangeCompat(of: hydrationRemindersOn) { on in
-                        HydrationReminder.setEnabled(on) { granted in
-                            if on && !granted { hydrationRemindersOn = false }
-                        }
-                    }
-
-                    if hydrationRemindersOn {
-                        HStack {
-                            Text("Start at")
-                                .font(StrandFont.subhead)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                            Spacer()
-                            DatePicker("", selection: hydrationStartBinding,
-                                       displayedComponents: .hourAndMinute)
-                                .labelsHidden()
-                                .accessibilityLabel("Water reminder start time")
-                        }
-
-                        HStack {
-                            Text("Remind every")
-                                .font(StrandFont.subhead)
-                                .foregroundStyle(StrandPalette.textPrimary)
-                            Spacer()
-                            Picker("", selection: $hydrationIntervalMin) {
-                                Text("1 hour").tag(60)
-                                Text("1.5 hours").tag(90)
-                                Text("2 hours").tag(120)
-                                Text("2.5 hours").tag(150)
-                                Text("3 hours").tag(180)
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .accessibilityLabel("Water reminder interval")
-                            .onChangeCompat(of: hydrationIntervalMin) { minutes in
-                                HydrationReminder.setIntervalMinutes(minutes)
-                            }
-                        }
-
-                        Text("Each reminder shows today's cup goal, how many you've had and how many are left. Long-press it (or swipe and tap) to add a cup or a half cup without opening NOOP; tapping it opens your water log. Ignoring it logs nothing. Reminders ride your strap syncs, so one lands within about ten minutes of its time, and stop after 10pm.")
-                            .font(StrandFont.caption)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text("Water reminders, including when they start and stop, are in Automations.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 rowDivider
@@ -3343,23 +3294,6 @@ struct SettingsView: View {
     #endif
 
     // MARK: - Shared bits
-
-    /// The water-reminder start time as a Date for the picker, writing minutes back through
-    /// `HydrationReminder` so an edit reschedules the day's slots.
-    private var hydrationStartBinding: Binding<Date> {
-        Binding(
-            get: {
-                var c = DateComponents()
-                c.hour = hydrationStartMin / 60
-                c.minute = hydrationStartMin % 60
-                return Calendar.current.date(from: c) ?? Date()
-            },
-            set: { newValue in
-                let c = Calendar.current.dateComponents([.hour, .minute], from: newValue)
-                hydrationStartMin = (c.hour ?? 8) * 60 + (c.minute ?? 0)
-                HydrationReminder.setStartMinute(hydrationStartMin)
-            })
-    }
 
     private var rowDivider: some View {
         Rectangle()
