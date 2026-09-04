@@ -836,14 +836,28 @@ final class AppModel: ObservableObject {
         // `hydrationGoalML`, the retired millilitre formula, which is how the notification came to
         // read "2/16" against the row's "3/19".
         guard let goalCups = repo.cachedLiveTargets().waterTargetCups else { return }
+
+        // CLAIM THE SLOT FIRST — before any await (260904).
+        //
+        // Reported from the device: two water notifications a second apart, "5/21" then "6/21".
+        // The mark used to sit after the three awaits below, one of which (`notificationTitle`) is
+        // a network call to the LLM that can take seconds. This function has TWO callers — the
+        // post-offload path and the deferred re-score settle — and both are `await`ed from
+        // @MainActor code, so a second entry runs at the first suspension point, sails through the
+        // same guard (the slot is still unmarked), and posts its own notification. Each read the
+        // cup count at a different instant, which is exactly the 5-then-6 that was observed.
+        //
+        // The old comment said "Mark BEFORE posting" and meant it; the awaits had simply grown in
+        // front of it since. Marking here makes the claim atomic with respect to the guard: no
+        // suspension between the two, so the second entry sees the slot taken and returns.
+        HydrationReminder.markFired(slot: due, today: dayKey)
+
         let total = await repo.hydrationTotal(day: dayKey)
         let title = await coach.notificationTitle(
             status: HydrationReminder.coachStatus(totalML: total, goalCups: goalCups))
         if let outcome = coach.lastNotificationTitleOutcome {
             live.append(log: "Automation: water-reminder title — \(outcome)")
         }
-        // Mark BEFORE posting: once means once, even if the post itself is slow.
-        HydrationReminder.markFired(slot: due, today: dayKey)
         HydrationReminder.post(totalML: total, goalCups: goalCups, title: title)
         buzzForNudgeIfEnabled(.water)
         live.append(log: "Automation: water reminder posted (slot \(due / 60):"
