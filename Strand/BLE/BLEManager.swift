@@ -5433,11 +5433,22 @@ public final class BLEManager: NSObject, ObservableObject {
         send(.runHapticsPattern, payload: [2, 3, 0, 0, 0], writeType: .withResponse)  // patternId=2, 3 loops (5/MG: send() remaps to the maverick notify buzz)
         if selectedModel.deviceFamily == .whoop5 {
             send(.runAlarm, payload: AlarmPayload.runAlarmRev2(), writeType: .withResponse)   // REVISION_2 [0x02, alarmId]
-            log("Buzz: one-shot fired (5/MG maverick buzz + runAlarm rev2, acked)")
+            // "written", NOT "acked" (260904). `.withResponse` gets an acknowledgement from the
+            // BLE STACK that the write landed on the characteristic — it says nothing about the
+            // strap accepting the command or the motor running. The 1119 log makes the gap
+            // concrete: all four nudge buzzes logged "acked" while the strap's own replies were
+            // RUN_HAPTIC_PATTERN_MAVERICK → PENDING(2) and RUN_ALARM → FAILURE(0), against a
+            // report of buzzes not always being felt. A line that claims more than it observed is
+            // what sent that diagnosis backwards (see CLAUDE.md: a diagnostic may only assert what
+            // it can attribute). The command responses arrive asynchronously on the notify
+            // characteristic and are already logged there; this line no longer pre-empts them.
+            log("Buzz: one-shot written (5/MG maverick buzz + runAlarm rev2; "
+                + "watch for the command responses)")
             return
         }
         send(.runAlarm, payload: [0x01], writeType: .withResponse)
-        log("Buzz: one-shot fired (patternId=2 loops=3 + runAlarm, acked)")
+        log("Buzz: one-shot written (patternId=2 loops=3 + runAlarm; "
+            + "watch for the command responses)")
     }
 
     /// Haptic Clock (#460): buzz the current wall-clock time out on the strap so the user can read it

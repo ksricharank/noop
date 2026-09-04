@@ -621,10 +621,12 @@ final class AICoachEngine: ObservableObject {
     suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
     encourage me to keep going rather than implying there is nothing left to do.
     - No emoji, no quotation marks, no trailing period, no line breaks.
-    - Refer to MY numbers above. Never reuse the wording below — those show the SHAPE and length \
-    only, and a title copied from them tells me nothing about my day.
-    For shape only (do not copy): a small gap reads like "Quick lap around the block?", a large \
-    one like "Time to block out an hour", and being past target like "Nailed it, keep it rolling".
+    - Refer to MY numbers above — name the metric or the figure that is actually behind, so the \
+    line could not have been written without seeing my day.
+    - Do not write a generic line that would fit any day.
+    Shape guide, as a description rather than as text to copy: for a small gap, suggest one quick \
+    concrete action; for a large gap, suggest setting aside a block of real time; when I am at or \
+    past target, congratulate me in a few words and point forward.
     Reply with the line only.
     """
 
@@ -750,12 +752,37 @@ final class AICoachEngine: ObservableObject {
     /// answer's length.
     nonisolated static let requestTimeoutSeconds: TimeInterval = 180
 
+    /// The stall budget for a NOTIFICATION TITLE, which is a different situation from the coach.
+    ///
+    /// 260904, from the 1119 log: two titles failed with "took too long", and the lines immediately
+    /// before them say why — `re-score (light): done — scored 2 night(s) in 25140 ms` and a
+    /// just-finished backfill. Titles are requested from the POST-OFFLOAD path, so they compete
+    /// with a re-score for a device that is already busy, whereas the synthesis and Ask-the-coach
+    /// run while the wearer is in the app with nothing else going on. That is exactly why the coach
+    /// screen looked healthy while every notification arrived with its static title.
+    ///
+    /// 20 s rather than 180: the nudge has a STATIC title that is already correct, so a slow
+    /// generation has nothing to win and a fast failure costs nothing. Waiting three minutes for a
+    /// decoration on a notification that has already been posted is the wrong trade on a
+    /// battery-sensitive background path — and `timeoutIntervalForRequest` is a between-bytes
+    /// stall budget, so a model that is answering steadily is not cut off by this.
+    nonisolated static let notificationTitleTimeoutSeconds: TimeInterval = 20
+
     /// A session configured for LLM latency. Used whenever a caller does not inject its own (the tests
     /// do), so the app never runs the coach on `URLSession.shared`'s 60 s default again.
     ///
     /// `nonisolated` because it builds a fresh value from constants and touches no engine state; the
     /// class's `@MainActor` isolation would otherwise ride along and force callers onto the main actor
     /// for what is a pure factory.
+    /// A session carrying the notification-title stall budget. Built once and reused, so a nudge
+    /// does not allocate a session per fire.
+    private lazy var notificationTitleSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = Self.notificationTitleTimeoutSeconds
+        config.timeoutIntervalForResource = Self.notificationTitleTimeoutSeconds * 2
+        return URLSession(configuration: config)
+    }()
+
     nonisolated static func makeDefaultSession() -> URLSession {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = requestTimeoutSeconds
@@ -1425,7 +1452,8 @@ final class AICoachEngine: ObservableObject {
         }
         let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
         do {
-            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)],
+                                               sessionOverride: notificationTitleSession)
             let clean = Self.cleanNotificationTitle(reply)
             // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule): a title that came
             // back unusable is exactly what is missing when someone reports "the coach titles look
@@ -1569,11 +1597,20 @@ final class AICoachEngine: ObservableObject {
         - The day is over. Do not give instructions for it; a forward-looking note about today is         fine as the last sentence.
         """
 
-    /// The example lines from `defaultNotificationTitlePrompt`. A model that echoes one has told
-    /// us nothing about the day, so `cleanNotificationTitle` rejects it and the caller's plain
-    /// title is used instead — the observed 260903 failure, where every nudge arrived titled "Big
-    /// push left, block an hour" (an example, verbatim) and looked indistinguishable from a
-    /// working generation.
+    /// Canned lines that are REJECTED as titles: a model echoing one has told us nothing about the
+    /// day. Originally the verbatim examples from `defaultNotificationTitlePrompt` — the 260903
+    /// failure, where every nudge arrived titled "Big push left, block an hour" (an example,
+    /// verbatim) and looked indistinguishable from a working generation.
+    ///
+    /// 260904: the prompt no longer QUOTES any of these. The 1119 log showed the rejection firing
+    /// on a title that was, by then, a reasonable answer — "Time to block out an hour" against a
+    /// genuinely large gap — so the wearer got the static "Behind pace" instead of a usable line.
+    /// Rejecting the model's best guess is worse than the parroting it was added to catch.
+    ///
+    /// The real fix is upstream of the check: the prompt now DESCRIBES the shape instead of
+    /// supplying quotable text, so there is nothing memorable to copy. The list stays as a
+    /// backstop, because a small model that has seen these strings in a previous prompt version can
+    /// still reach for them, and a verbatim canned line remains a failed generation either way.
     nonisolated static let notificationTitleExamples = [
         "quick lap around the block",
         "time to block out an hour",
@@ -1767,9 +1804,13 @@ final class AICoachEngine: ObservableObject {
     ///
     /// The retry never mutates `model`. The user's chosen model is theirs; a rescued answer must not
     /// silently re-point the picker at a smaller model for every request that follows.
+    /// `sessionOverride` lets a caller impose its own stall budget without disturbing the shared
+    /// session every other call uses — see `notificationTitleSession`. Nil = the engine's session.
     private func callProvider(key: String,
-                              messages: [(role: ChatMessage.Role, content: String)]) async throws -> String {
+                              messages: [(role: ChatMessage.Role, content: String)],
+                              sessionOverride: URLSession? = nil) async throws -> String {
         let attempted = model
+        let session = sessionOverride ?? self.session
         do {
             let reply = try await provider.client.send(
                 key: key,
