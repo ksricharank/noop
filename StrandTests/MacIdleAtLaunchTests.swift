@@ -58,4 +58,34 @@ final class MacIdleAtLaunchTests: XCTestCase {
                        asked" into "broken". Gate only connectFromSystem().
                        """)
     }
+
+    /// Building the recorder must not touch CoreLocation (260903).
+    ///
+    /// `AppModel` constructs `GpsWorkoutRecorder` eagerly at launch. A `CLLocationManager` held in a
+    /// STORED property — and having its delegate assigned in `init` — registers the process with the
+    /// location daemon right there, which surfaced as location requests every time the macOS app was
+    /// run, with no workout started. Same shape as the BLE complaint above: a permission prompt
+    /// caused by the act of building.
+    ///
+    /// The manager is therefore lazy, and `init` must stay empty of it. Structural for the same
+    /// reason as the tests above: instantiating the recorder here to prove the negative would be
+    /// the very thing under test.
+    func testConstructingTheGpsRecorderDoesNotTouchCoreLocation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let src = try String(contentsOf: root.appendingPathComponent("Strand/App/GpsWorkoutRecorder.swift"),
+                             encoding: .utf8)
+        XCTAssertTrue(src.contains("private lazy var manager: CLLocationManager"),
+                      """
+                      The CLLocationManager is a stored (non-lazy) property again, so it is built                       when the recorder is — at app launch — and registers with the location daemon                       before any workout exists.
+                      """)
+        guard let initRange = src.range(of: "override init() {"),
+              let initEnd = src.range(of: "}", range: initRange.upperBound..<src.endIndex) else {
+            return XCTFail("Expected an `override init()` in GpsWorkoutRecorder.")
+        }
+        let initBody = String(src[initRange.upperBound..<initEnd.lowerBound])
+        XCTAssertFalse(initBody.contains("manager"),
+                       """
+                       `init` touches `manager`, which forces the lazy property immediately and                        defeats the deferral. Configure the manager inside its lazy initializer.
+                       """)
+    }
 }
