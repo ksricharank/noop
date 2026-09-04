@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 import StrandDesign
 import StrandAnalytics
 import WhoopStore
@@ -234,9 +235,17 @@ struct DayQualityCard: View {
 
             if showNarrative {
                 if let narrative {
-                    Text(narrative)
-                        .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textSecondary)
+                    // MARKDOWN, not plain Text (260904). The coach replies in GitHub-flavored
+                    // Markdown — overwhelmingly bold, sometimes a list — and a plain `Text` renders
+                    // `**like this**` as literal asterisks. Every other coach surface (the Today
+                    // synthesis, the Q&A bubbles) already uses MarkdownUI; this card was the one
+                    // that did not, so it was the one showing raw syntax.
+                    //
+                    // `.strandSynthesis` rather than `.strand`: same footnote-scale secondary tone
+                    // this card already used, so only the FORMATTING changes, not the type size.
+                    Markdown(narrative)
+                        .markdownTheme(.strandSynthesis)
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if !narrativeInFlight {
                     // No provider, no consent, or the call failed. The card says so plainly rather
