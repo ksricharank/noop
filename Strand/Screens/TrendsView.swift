@@ -282,14 +282,25 @@ struct TrendsView: View {
                         // per-metric charts below it.
                         DayQualityCard(scoresByDay: dayQualityByDay)
                             .staggeredAppear(index: 0)
-                        dayQualityTrend
+                        // The range control sits ABOVE the day-quality trend (260904), because it
+                        // GOVERNS it: `dayQualityTrend` already windows on `range`, so leaving the
+                        // selector further down put the control after the first chart it drives —
+                        // the maintainer read the span as fixed. Moving it up needed no new state
+                        // and no second control; the one shared selector now precedes every chart
+                        // it applies to, which is also why the day-quality span "just works" at
+                        // W / M / 3M / 6M / 1Y / ALL.
+                        //
+                        // Deliberately still BELOW the day-quality CARD: that card is a single
+                        // finished number for yesterday, not a windowed series, so a range control
+                        // above it would imply it responds to the span. It does not.
+                        rangeBar(recovery: recovery)
                             .staggeredAppear(index: 1)
-                        weeklyDigestNav
+                        dayQualityTrend
                             .staggeredAppear(index: 2)
+                        weeklyDigestNav
+                            .staggeredAppear(index: 3)
                         // The Charge / Effort / Rest trio, presented in NOOP's pip language.
                         weekInReview(charge: recovery, effort: strain, rest: rest)
-                            .staggeredAppear(index: 3)
-                        rangeBar(recovery: recovery)
                             .staggeredAppear(index: 4)
                         heroRecovery(recovery: recovery)
                             .staggeredAppear(index: 5)
