@@ -149,6 +149,23 @@ final class LiveActivityBannerColumnsTests: XCTestCase {
         return String(src[start.lowerBound...])
     }
 
+    /// The EXPANDED presentation alone — the `DynamicIslandExpandedRegion`s, up to the first
+    /// collapsed slot. Split out on 260905, when HR left the expanded view but stayed the whole of
+    /// the collapsed one: "HR is in the island" stopped being a single answer, and a test that
+    /// cannot tell the two apart cannot pin either.
+    private var expandedBlock: String {
+        let island = islandBlock
+        guard let end = island.range(of: "} compactLeading: {") else { return "" }
+        return String(island[island.startIndex..<end.lowerBound])
+    }
+
+    /// The COLLAPSED presentation alone — compact leading/trailing and minimal.
+    private var collapsedBlock: String {
+        let island = islandBlock
+        guard let start = island.range(of: "} compactLeading: {") else { return "" }
+        return String(island[start.lowerBound...])
+    }
+
     func testTheBannerCarriesHRStepsCalAndEffort() {
         let banner = bannerBlock
         XCTAssertFalse(banner.isEmpty, "could not isolate the Lock-Screen banner")
@@ -180,22 +197,42 @@ final class LiveActivityBannerColumnsTests: XCTestCase {
     /// still showing Effort, and the report was "the dynamic HR is messed up - you didn't implement
     /// any of the changes I asked for". This test is what makes that reading unambiguous in code.
     func testTheCollapsedIslandShowsHeartRate() {
-        let island = islandBlock
-        XCTAssertTrue(island.contains("Text(hrText(context.state))"),
+        let collapsed = collapsedBlock
+        XCTAssertFalse(collapsed.isEmpty, "could not isolate the collapsed slots")
+        XCTAssertTrue(collapsed.contains("Text(hrText(context.state))"),
                       "the compact trailing slot must show the heart rate")
-        XCTAssertTrue(island.contains("Text(\"\\(bpm)\")"),
+        XCTAssertTrue(collapsed.contains("Text(\"\\(bpm)\")"),
                       "the minimal slot must show the heart rate")
-        XCTAssertFalse(island.contains("effortNowText"),
+        XCTAssertFalse(collapsed.contains("effortNowText"),
                        "effort no longer owns a collapsed slot — it moved to the expanded region")
+    }
+
+    /// HR is the COLLAPSED presentation only (260905: "in the expanded view remove the hr and just
+    /// keep the other five in their exact locations").
+    ///
+    /// The pairing is the point: HR must be absent from the expanded regions AND still present in
+    /// the collapsed ones. Asserting only the removal would be satisfied by deleting HR from the
+    /// island entirely, which is the opposite of what was asked.
+    func testTheExpandedViewHasNoHeartRate() {
+        let expanded = expandedBlock
+        XCTAssertFalse(expanded.isEmpty, "could not isolate the expanded regions")
+        XCTAssertFalse(expanded.contains("hrText("),
+                       "the expanded view must not show the heart rate")
+        XCTAssertFalse(expanded.contains("heart.fill"),
+                       "the heart glyph was the not-connected cue FOR the HR value; with no HR here "
+                       + "it would indicate nothing")
+        XCTAssertTrue(collapsedBlock.contains("hrText("),
+                      "HR must remain the collapsed presentation — removing it everywhere is not "
+                      + "what was asked")
     }
 
     /// The EXPANDED island carries the day: "hr, sleep target, steps n/t, cal n/t, effort n/t,
     /// water n/t". Collapsing the island to a pure HR readout is only acceptable because expanding
     /// it still answers everything else.
     func testTheExpandedIslandCarriesTheDaysPairs() {
-        let island = islandBlock
+        let expanded = expandedBlock
         for column in ["Effort", "Steps", "Cal", "Water", "Sleep"] {
-            XCTAssertTrue(island.contains("statColumn(label: \"\(column)\""),
+            XCTAssertTrue(expanded.contains("statColumn(label: \"\(column)\""),
                           "the expanded island must carry a \(column) column")
         }
     }
