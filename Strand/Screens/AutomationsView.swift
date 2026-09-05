@@ -502,7 +502,7 @@ struct AutomationsView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Prefer").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
-                        Text("Applies everywhere the count appears \u{2014} the Today tile, the steps target, pacing check-ins and your day-quality score.")
+                        Text("Applies everywhere the count appears \u{2014} the Today tile, the steps figure in your targets, pacing check-ins and your day-quality score. Your step target itself is set by Charge and readiness, so it does not change.")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
