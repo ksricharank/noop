@@ -352,6 +352,83 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// Shared by the full score publish and the live-only fast path so a redundant foreground, repository,
     /// battery, or connection signal does not rewrite App-Group defaults and ask WidgetKit to rebuild an
     /// identical timeline. nil means the app has never published, so the first snapshot always writes.
+    /// What the WIDGET EXTENSION did, recorded by the extension into the shared App Group (260905).
+    ///
+    /// The gap this closes: everything else on the publish path measures what the APP requested.
+    /// Nothing measured what WidgetKit actually SERVED. Those are the two halves of "the widget
+    /// lags behind the app", and without the second one the diagnosis stops at a guess —
+    ///
+    ///   * app requested N reloads, extension served ~N timelines → the pipeline works, and a stale
+    ///     face means the snapshot itself was stale when read;
+    ///   * app requested N, extension served far fewer → iOS is dropping or deferring the requests,
+    ///     which is the budget story and is fixed by spending fewer background reloads;
+    ///   * extension served timelines on the 15-minute policy only → our reload requests are not
+    ///     landing at all, a different bug entirely.
+    ///
+    /// Deliberately the cheapest thing that can distinguish those: two integers and a timestamp,
+    /// written where `getTimeline` already runs, formatted only when the log is exported. The
+    /// extension is memory-constrained and killed aggressively, so this must not allocate or block.
+    public enum ExtensionStats {
+        private static let servedKey = "wps.ext.served"
+        private static let servedDayKey = "wps.ext.servedDay"
+        private static let lastServedKey = "wps.ext.lastServedAt"
+
+        private static var store: UserDefaults? { UserDefaults(suiteName: WidgetSnapshot.suiteName) }
+
+        /// Called from `getTimeline`. Day-keyed like the app-side counters so the two lines describe
+        /// the same window.
+        public static func recordTimelineServed(now: Date = Date(), dayKey: String) {
+            guard let d = store else { return }
+            if d.string(forKey: servedDayKey) != dayKey {
+                d.set(dayKey, forKey: servedDayKey)
+                d.set(0, forKey: servedKey)
+            }
+            d.set(d.integer(forKey: servedKey) + 1, forKey: servedKey)
+            d.set(now.timeIntervalSince1970, forKey: lastServedKey)
+        }
+
+        /// Read back by the app for the log header.
+        public static func served(dayKey: String) -> (count: Int, lastAt: Date?) {
+            guard let d = store, d.string(forKey: servedDayKey) == dayKey else { return (0, nil) }
+            let ts = d.double(forKey: lastServedKey)
+            return (d.integer(forKey: servedKey), ts > 0 ? Date(timeIntervalSince1970: ts) : nil)
+        }
+
+        public static func reset() {
+            guard let d = store else { return }
+            for k in [servedKey, servedDayKey, lastServedKey] { d.removeObject(forKey: k) }
+        }
+    }
+
+    /// Fields the dedup compares that NO installed widget face actually renders (260905).
+    ///
+    /// `sleepDisplay` is the live example: it was on the targets faces until water took Sleep's
+    /// fourth cell (260903), and the dedup comparison stayed behind. A night's sleep figure moving
+    /// therefore still requests a WidgetKit reload for a repaint nobody can see — and in the
+    /// BACKGROUND that is charged against the ~40-70/day budget, so it is spent directly out of the
+    /// allowance the visible updates need.
+    ///
+    /// MEASURED, NOT REMOVED. The instrumentation-first rule applies: this predicts wasted reloads
+    /// and the next strap log says how many. Dropping the comparison outright would also be wrong
+    /// in one real case — `sleepDisplay` still appears in the glance string, so a snapshot whose
+    /// only change is sleep must still be SAVED, just not repainted. That is a different change
+    /// from deleting the comparison, and worth making only once the count justifies it.
+    ///
+    /// Returns true when `next` differs from `previous` ONLY in these fields — i.e. the reload this
+    /// publish is about to request cannot change a pixel.
+    static func changedOnlyInUnrenderedFields(from previous: WidgetSnapshot?,
+                                              to next: WidgetSnapshot) -> Bool {
+        guard let previous else { return false }
+        guard renderedContentChanged(from: previous, to: next) else { return false }
+        // Neutralise the unrendered fields and re-ask: if nothing else moved, the change was
+        // invisible. Comparing this way rather than listing the visible fields again means the two
+        // can never drift apart — a field added to the dedup is automatically counted as visible
+        // until it is explicitly named here.
+        var probe = next
+        probe.sleepNeedMin = previous.sleepNeedMin   // backs `sleepDisplay`
+        return !renderedContentChanged(from: previous, to: probe)
+    }
+
     static func renderedContentChanged(from previous: WidgetSnapshot?, to next: WidgetSnapshot) -> Bool {
         guard let previous else { return true }
         return previous.recovery != next.recovery
