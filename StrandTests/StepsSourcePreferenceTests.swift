@@ -21,10 +21,21 @@ final class StepsSourcePreferenceTests: XCTestCase {
                     strain: 12, exerciseCount: 1, steps: steps, activeKcalEst: kcal)
     }
 
+    /// Apple's side is an `AppleDaily`, which is the whole point of the 260905 fix: the first cut of
+    /// this feature read `dailyMetrics(deviceId: "apple-health")`, whose rows NEVER carry steps —
+    /// `HealthKitBridge` builds them with no `steps:` argument at all — so the fold was a guaranteed
+    /// no-op on the device while every test here passed. The tests passed because they fabricated
+    /// `DailyMetric` rows WITH steps, which the app could never produce. Typing the parameter as
+    /// `AppleDaily` is what makes that mistake unrepresentable.
+    private func appleDay(_ d: String, steps: Int?, kcal: Double? = nil) -> AppleDaily {
+        AppleDaily(day: d, steps: steps, activeKcal: kcal, basalKcal: nil, vo2max: nil,
+                   avgHr: nil, maxHr: nil, walkingHr: nil, weightKg: nil)
+    }
+
     /// The default is unchanged behaviour: the strap's count survives untouched.
     func testStrapPreferenceLeavesTheMergedRowsAlone() {
         let base = [day("2026-09-04", steps: 8_000)]
-        let apple = [day("2026-09-04", steps: 11_500)]
+        let apple = [appleDay("2026-09-04", steps: 11_500)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: false)
         XCTAssertEqual(out.first?.steps, 8_000, "the default must not consult Apple at all")
         XCTAssertEqual(out, base, "a false preference must be a byte-identical no-op")
@@ -33,7 +44,7 @@ final class StepsSourcePreferenceTests: XCTestCase {
     /// Preferring Apple replaces the count on a day BOTH cover — the reported case.
     func testApplePreferenceWinsWhenBothHaveACount() {
         let base = [day("2026-09-04", steps: 8_000)]
-        let apple = [day("2026-09-04", steps: 11_500)]
+        let apple = [appleDay("2026-09-04", steps: 11_500)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: true)
         XCTAssertEqual(out.first?.steps, 11_500)
     }
@@ -44,7 +55,7 @@ final class StepsSourcePreferenceTests: XCTestCase {
     /// on every day the Watch was off the wrist.
     func testADayAppleDidNotRecordKeepsTheStrapCount() {
         let base = [day("2026-09-03", steps: 7_100), day("2026-09-04", steps: 8_000)]
-        let apple = [day("2026-09-04", steps: 11_500)]
+        let apple = [appleDay("2026-09-04", steps: 11_500)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: true).sorted { $0.day < $1.day }
         XCTAssertEqual(out.first?.steps, 7_100, "an uncovered day must fall back, not blank")
         XCTAssertEqual(out.last?.steps, 11_500)
@@ -55,18 +66,18 @@ final class StepsSourcePreferenceTests: XCTestCase {
     /// overwrite a real strap count with 0.
     func testAZeroAppleCountIsIgnored() {
         let base = [day("2026-09-04", steps: 8_000)]
-        let apple = [day("2026-09-04", steps: 0)]
+        let apple = [appleDay("2026-09-04", steps: 0)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: true)
         XCTAssertEqual(out.first?.steps, 8_000)
 
-        let nilApple = [day("2026-09-04", steps: nil)]
+        let nilApple = [appleDay("2026-09-04", steps: nil)]
         XCTAssertEqual(Repository.mergeAppleSteps(into: base, nilApple, prefersApple: true).first?.steps,
                        8_000)
     }
 
     /// A day only Apple covers is added, matching the activity-file fold's `else` branch.
     func testADayOnlyAppleCoversIsAdded() {
-        let apple = [day("2026-09-02", steps: 9_400)]
+        let apple = [appleDay("2026-09-02", steps: 9_400)]
         let out = Repository.mergeAppleSteps(into: [], apple, prefersApple: true)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out.first?.steps, 9_400)
@@ -77,7 +88,7 @@ final class StepsSourcePreferenceTests: XCTestCase {
     /// effort history — a separate decision, not a side effect of a steps toggle.
     func testOnlyStepsAreOverriddenNeverCalories() {
         let base = [day("2026-09-04", steps: 8_000, kcal: 640)]
-        let apple = [day("2026-09-04", steps: 11_500, kcal: 999)]
+        let apple = [appleDay("2026-09-04", steps: 11_500, kcal: 999)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: true)
         XCTAssertEqual(out.first?.steps, 11_500)
         XCTAssertEqual(out.first?.activeKcalEst, 640,
@@ -89,7 +100,7 @@ final class StepsSourcePreferenceTests: XCTestCase {
     /// column omitted there is silently dropped with no compile error — this is the guard for that.
     func testEveryOtherColumnSurvivesTheOverride() {
         let base = [day("2026-09-04", steps: 8_000, kcal: 640)]
-        let apple = [day("2026-09-04", steps: 11_500)]
+        let apple = [appleDay("2026-09-04", steps: 11_500)]
         let out = Repository.mergeAppleSteps(into: base, apple, prefersApple: true)
         let before = base[0], after = out[0]
         XCTAssertEqual(after.day, before.day)
@@ -106,6 +117,60 @@ final class StepsSourcePreferenceTests: XCTestCase {
         XCTAssertEqual(after.exerciseCount, before.exerciseCount)
         // The whole row, modulo the one field that is meant to change.
         XCTAssertEqual(after, before.replacingSteps(11_500))
+    }
+
+    /// THE BUG THAT SHIPPED (260905), and the guard that would have caught it.
+    ///
+    /// Build 318 shipped this feature INERT: flipping the toggle changed nothing on the device. The
+    /// fold read `dailyMetrics(deviceId: "apple-health")`, but those rows never carry steps —
+    /// `HealthKitBridge` constructs them with no `steps:` argument, so the field is nil for every
+    /// row it will ever write. Apple's count lives in `appleDaily`.
+    ///
+    /// Every unit test passed throughout, because they fabricated apple-side rows WITH steps: a
+    /// shape the app cannot produce. That is the lesson worth pinning — a fixture that cannot occur
+    /// in production proves nothing about production. This test reads the WRITER instead, so the
+    /// claim "the source we read is the source that has the data" is checked against the code that
+    /// actually populates it.
+    func testTheAppleRowsWeReadAreTheOnesThatCarrySteps() throws {
+        let bridgePath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("StrandiOS/Health/HealthKitBridge.swift")
+        let bridge = try String(contentsOf: bridgePath, encoding: .utf8)
+
+        // The DailyMetric rows written under apple-health: isolate their construction and assert it
+        // still does NOT set steps. If someone later adds `steps:` there, this test fails and the
+        // fold should be revisited — two sources of the same number is the drift worth catching.
+        guard let dmStart = bridge.range(of: "let dmRows = byDay.map"),
+              let dmEnd = bridge.range(of: "\n        }", range: dmStart.upperBound..<bridge.endIndex) else {
+            return XCTFail("could not isolate the apple-health DailyMetric construction")
+        }
+        let dmRows = String(bridge[dmStart.upperBound..<dmEnd.lowerBound])
+        XCTAssertFalse(dmRows.contains("steps:"),
+                       "apple-health DailyMetric rows now carry steps — mergeAppleSteps reads "
+                       + "appleDaily instead, so there would be two sources of the same number")
+
+        // And the aggregate rows DO carry it — the table the fold actually reads.
+        guard let aggStart = bridge.range(of: "let aggregates = byDay.map"),
+              let aggEnd = bridge.range(of: "\n        }", range: aggStart.upperBound..<bridge.endIndex) else {
+            return XCTFail("could not isolate the AppleDailyAggregate construction")
+        }
+        XCTAssertTrue(String(bridge[aggStart.upperBound..<aggEnd.lowerBound]).contains("steps: a.steps"),
+                      "appleDaily must carry the step count — it is the only table that has it")
+    }
+
+    /// The merge must read the steps-bearing table. A type-level guard against the shipped bug:
+    /// `mergeAppleSteps` takes `AppleDaily`, so handing it the stepless `DailyMetric` rows will not
+    /// compile rather than silently no-op.
+    func testTheFoldIsFedFromAppleDailyNotTheDailyMetrics() throws {
+        let repoPath = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Strand/Data/Repository.swift")
+        let repo = try String(contentsOf: repoPath, encoding: .utf8)
+        XCTAssertTrue(repo.contains("store.appleDaily(deviceId: Self.appleHealthSource"),
+                      "the merge must read appleDaily for steps")
+        XCTAssertTrue(repo.contains("_ apple: [AppleDaily]"),
+                      "typing the parameter as AppleDaily is what makes the shipped mistake "
+                      + "unrepresentable rather than merely fixed")
     }
 
     /// THE TARGET IS NOT AFFECTED — only the numerator.
