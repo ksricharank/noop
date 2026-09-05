@@ -170,15 +170,35 @@ final class LiveActivityBannerColumnsTests: XCTestCase {
                       + "island to be left exactly as it was")
     }
 
-    /// THE ISLAND IS UNCHANGED. Pinned explicitly because the instruction was explicit: the compact
-    /// slot still carries today's effort, not the heart rate an earlier draft of this change put
-    /// there before the maintainer reverted the scope.
-    func testTheIslandStillShowsEffortNotHR() {
+    /// THE ISLAND SHOWS HR WHEN COLLAPSED (260905).
+    ///
+    /// CORRECTION, recorded because I got this wrong and shipped it: the original instruction was
+    /// "I want the island to show the live hr only". When the maintainer then said "for the dynamic
+    /// island, we have the right behavior", I read it as "leave the island alone" and reverted the
+    /// island change wholesale — but they were confirming the CADENCE (window average locked, live
+    /// unlocked, the -1 window), not the island's contents. Build 321 therefore shipped the island
+    /// still showing Effort, and the report was "the dynamic HR is messed up - you didn't implement
+    /// any of the changes I asked for". This test is what makes that reading unambiguous in code.
+    func testTheCollapsedIslandShowsHeartRate() {
         let island = islandBlock
-        XCTAssertTrue(island.contains("Text(effortNowText(context.state))"),
-                      "the compact trailing slot must still show effort")
-        XCTAssertFalse(island.contains("hrText(context.state)"),
-                       "HR belongs to the Lock-Screen card only — the island was explicitly left "
-                       + "alone")
+        XCTAssertTrue(island.contains("Text(hrText(context.state))"),
+                      "the compact trailing slot must show the heart rate")
+        XCTAssertTrue(island.contains("Text(\"\\(bpm)\")"),
+                      "the minimal slot must show the heart rate")
+        XCTAssertFalse(island.contains("effortNowText"),
+                       "effort no longer owns a collapsed slot — it moved to the expanded region")
+    }
+
+    /// The EXPANDED island carries the day: "hr, sleep target, steps n/t, cal n/t, effort n/t,
+    /// water n/t". Collapsing the island to a pure HR readout is only acceptable because expanding
+    /// it still answers everything else.
+    func testTheExpandedIslandCarriesTheDaysPairs() {
+        let island = islandBlock
+        for column in ["Effort", "Steps", "Cal", "Water", "Sleep"] {
+            XCTAssertTrue(island.contains("statColumn(label: \"\(column)\""),
+                          "the expanded island must carry a \(column) column")
+        }
+        XCTAssertTrue(island.contains("statColumn(label: \"Charge\""),
+                      "Charge set today's targets, so it stays beside them")
     }
 }

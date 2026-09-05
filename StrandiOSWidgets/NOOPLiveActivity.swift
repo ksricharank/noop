@@ -49,28 +49,50 @@ struct NOOPLiveActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     // The heart carries the identity + the not-connected cue (red = linked, grey =
-                    // dropped); the value beside it is the Effort pair, primary.
+                    // dropped); the value beside it is the LIVE HEART RATE, primary (260905,
+                    // maintainer: "I want the island to show the live hr only").
                     HStack(spacing: 4) {
                         Image(systemName: "heart.fill")
                             .foregroundStyle(context.state.bonded
                                              ? StrandPalette.statusCritical : StrandPalette.textSecondary)
-                        Text(effortNTText(context.state))
+                        Text(hrText(context.state))
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge (its band set today's targets) + the same Cal/Sleep pillars, one size.
-                    // Steps is deliberately BANNER-ONLY (260830, maintainer: "I don't need steps in
-                    // the island") — the island keeps its original three columns.
-                    HStack(spacing: 10) {
-                        if let r = context.state.recovery {
-                            statColumn(label: "Charge", value: "\(r)")
-                        }
-                        statColumn(label: "Cal", value: calText(context.state))
-                        statColumn(label: "Sleep", value: sleepText(context.state))
+                    // Charge: its band is what SET today's targets, so it earns the slot beside the
+                    // heart rate and explains the row below.
+                    if let r = context.state.recovery {
+                        statColumn(label: "Charge", value: "\(r)")
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.attributes.title).font(.caption).foregroundStyle(.secondary)
+                    // (The static "HR" title label used to sit here. It is not lost data — it was a
+                    // fixed string naming the session — and the region now leads with a heart icon
+                    // beside a live heart rate, which says the same thing with the space earning
+                    // its place.)
+                    //
+                    // The day's pairs (260905, maintainer: "I want the expanded dynamic HR to have
+                    // the various things I asked for as well" — "sleep target, steps n/t, cal n/t,
+                    // effort n/t, water n/t").
+                    //
+                    // The COLLAPSED island is now a pure heart-rate readout, so this is where the
+                    // day lives; expanding is the deliberate act of asking for it. Steps rejoins
+                    // here — it was banner-only from 260830 ("I don't need steps in the island"),
+                    // and this instruction names it explicitly, which supersedes that.
+                    //
+                    // Five equal columns in the bottom region rather than the trailing one: the
+                    // trailing slot shares its row with the leading HR and would clip five pairs.
+                    HStack(spacing: 6) {
+                        statColumn(label: "Effort", value: effortNTText(context.state))
+                        Spacer(minLength: 0)
+                        statColumn(label: "Steps", value: stepsText(context.state))
+                        Spacer(minLength: 0)
+                        statColumn(label: "Cal", value: calText(context.state))
+                        Spacer(minLength: 0)
+                        statColumn(label: "Water", value: waterText(context.state))
+                        Spacer(minLength: 0)
+                        statColumn(label: "Sleep", value: sleepText(context.state))
+                    }
                 }
             } compactLeading: {
                 // Grey heart = link down (the compact face of the same cue). Deliberately NOT applied
@@ -80,20 +102,29 @@ struct NOOPLiveActivity: Widget {
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
             } compactTrailing: {
-                // The compact slot carries today's effort ALONE — the full "3.2/10.7" pair does not
-                // fit a compact trailing without clipping, and the number the user checks in passing
-                // is where the day stands, not the ask.
-                Text(effortNowText(context.state))
+                // The compact slot carries the LIVE HEART RATE alone (260905). This is the slot seen
+                // in passing whenever the island is collapsed, and the maintainer asked for the
+                // island to show HR — so it carries the number that is actually moving, marked `~`
+                // while it is a live beat.
+                //
+                // HISTORY: this held today's effort from 260830 until now. Effort has not left the
+                // island — it reads in the EXPANDED region below, alongside Charge, Cal and Sleep.
+                Text(hrText(context.state))
+                    .minimumScaleFactor(0.8)
+                    .lineLimit(1)
             } minimal: {
                 // The minimal slot is what iOS demotes us to whenever a SECOND Live Activity is running
                 // — it is the only presentation the user sees then, so it has to carry a number. Only
-                // ONE of icon-or-number fits (the slot is a ~24pt circle), so today's effort wins and
-                // the red tint (the same statusCritical the rest of the widget uses) is what keeps it
-                // identifiable as ours next to another app's activity. With no reading yet, fall back
-                // to the heart rather than a dash: an en-dash alone reads as a broken widget, while
-                // the heart honestly says "NOOP is here, no number yet".
-                if let now = context.state.effortDisplay {
-                    Text(now)
+                // ONE of icon-or-number fits (the slot is a ~24pt circle), so the HEART RATE wins
+                // (260905) and the red tint (the same statusCritical the rest of the widget uses) is
+                // what keeps it identifiable as ours next to another app's activity. With no reading
+                // yet, fall back to the heart rather than a dash: an en-dash alone reads as a broken
+                // widget, while the heart honestly says "NOOP is here, no number yet".
+                //
+                // The bare number, without the `~` marker: at this size the tilde costs a digit of
+                // width for a distinction the slot has no room to make.
+                if let bpm = context.state.bpm {
+                    Text("\(bpm)")
                         .foregroundStyle(StrandPalette.statusCritical)
                         // The slot clips rather than shrinks; allow one step of shrink and pin to one
                         // line so a wide value stays whole instead of silently losing a digit.
@@ -135,9 +166,12 @@ private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
     return (state.live == true ? "~" : "") + "\(bpm)"
 }
 
-/// Today's effort alone, for the compact/minimal slots where the pair cannot fit.
-private func effortNowText(_ state: NOOPActivityAttributes.ContentState) -> String {
-    state.effortDisplay ?? "–"
+/// The Water pair, whole cups ("5/21"). Half-cups are the stored resolution — the tracker logs half
+/// a cup at a time — and the column renders cups, matching the widget faces and the Today row.
+/// A nil target means hydration tracking is off, so the column reads as a dash rather than "0/0".
+private func waterText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    guard let target = state.waterTargetCups, target > 0 else { return "–" }
+    return "\((state.waterHalfCups ?? 0) / 2)/\(target)"
 }
 
 /// The Cal column: TOTAL calories so far over today's total target ("1830/2650"). Either side
