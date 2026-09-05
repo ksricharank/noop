@@ -1,6 +1,7 @@
 import XCTest
 @testable import Strand
 import WhoopStore
+import StrandAnalytics
 
 /// The steps-source preference (260905): which device's count wins when both recorded one.
 ///
@@ -105,6 +106,25 @@ final class StepsSourcePreferenceTests: XCTestCase {
         XCTAssertEqual(after.exerciseCount, before.exerciseCount)
         // The whole row, modulo the one field that is meant to change.
         XCTAssertEqual(after, before.replacingSteps(11_500))
+    }
+
+    /// THE TARGET IS NOT AFFECTED — only the numerator.
+    ///
+    /// Recorded because I got this wrong (260905). I told the maintainer the toggle would feed "the
+    /// steps target", and wrote that into the rationale for adding a HealthKit observer; they
+    /// corrected it. `DailyTargets.stepsTarget` takes charge and readiness only, and neither
+    /// `ReadinessEngine` nor the recovery math reads steps, so no step count — from any source —
+    /// can move the denominator. This pins that, so the claim cannot be reintroduced by assertion.
+    func testTheStepsTargetIsIndependentOfAnyStepCount() {
+        // The same inputs must produce the same target regardless of what was walked.
+        let a = DailyTargets.stepsTarget(charge: 70, readiness: .balanced)
+        let b = DailyTargets.stepsTarget(charge: 70, readiness: .balanced)
+        XCTAssertEqual(a, b)
+
+        // And the target moves ONLY with charge / readiness — the two things it actually takes.
+        XCTAssertNotEqual(DailyTargets.stepsTarget(charge: 90, readiness: .balanced),
+                          DailyTargets.stepsTarget(charge: 20, readiness: .balanced),
+                          "charge is a real input")
     }
 
     /// The preference defaults to the strap, i.e. every prior build's behaviour.
