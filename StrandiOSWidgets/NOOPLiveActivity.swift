@@ -47,56 +47,68 @@ struct NOOPLiveActivity: Widget {
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
         } dynamicIsland: { context in
             DynamicIsland {
-                // TOP ROW (260905): HR leading, Sleep trailing — both pulled AWAY FROM THE CORNERS.
+                // TOP ROW (260905): HR, Sleep, Water. BOTTOM ROW: Effort, Steps, Cal.
                 //
-                // The Dynamic Island's expanded presentation wraps the sensor cutout, and its
-                // leading/trailing regions run right up to the rounded corners: content pinned to
-                // the outer edge is clipped by the curve. Reported exactly that way — "hr and charge
-                // are getting cutoff at the corners, same with effort on the bottom left". The fix
-                // is inset padding on the outer edge of each region plus centring the content, so
-                // the numbers sit in the flat middle of their region rather than in the curve.
+                // Three and three, by maintainer instruction. The split is not arbitrary — the top
+                // row is the three figures that are NOT "how much have I done today" (a live rate, a
+                // target for tonight, and a count against a fixed daily goal), the bottom row the
+                // three progress pairs. Three columns per row also gives each value about a third of
+                // the width instead of a quarter, which is what lets Steps show its full count.
                 //
-                // CHARGE IS GONE (maintainer instruction). It was here because its band set today's
-                // targets, but it is a score rather than a pair and the row reads better with two
-                // balanced items than three unequal ones.
+                // THE CORNERS: the expanded presentation wraps the sensor cutout and its
+                // leading/trailing regions run into the rounded corners, so content pinned to an
+                // outer edge is clipped by the curve — reported as "hr and charge are getting cutoff
+                // at the corners, same with effort on the bottom left". Both halves of the fix are
+                // needed: centre each region's content AND inset its outer edge off the curve.
+                //
+                // The top row is built as leading + trailing + a centre column borrowed from the
+                // `.center` region, because the expanded island has no single full-width top slot:
+                // leading and trailing are the two halves, and `.center` sits between them over the
+                // cutout.
+                // The TOP row is the leading+trailing pair. Each holds a HALF, and each half is an
+                // evenly-divided HStack — so HR/Sleep/Water land as three balanced columns across
+                // the row without depending on the `.center` region, which sits directly under the
+                // sensor cutout and is the narrowest, most easily clipped slot of the three. Using
+                // it for Sleep would have risked reproducing the very bug being fixed here.
                 DynamicIslandExpandedRegion(.leading) {
-                    // The heart carries the identity + the not-connected cue (red = linked, grey =
-                    // dropped); the value beside it is the LIVE HEART RATE, primary.
-                    HStack(spacing: 4) {
-                        Image(systemName: "heart.fill")
-                            .foregroundStyle(context.state.bonded
-                                             ? StrandPalette.statusCritical : StrandPalette.textSecondary)
-                        Text(hrText(context.state))
-                            .minimumScaleFactor(0.8)
-                            .lineLimit(1)
+                    HStack(spacing: 0) {
+                        // The heart carries the identity + the not-connected cue (red = linked,
+                        // grey = dropped); the value beside it is the LIVE HEART RATE.
+                        HStack(spacing: 4) {
+                            Image(systemName: "heart.fill")
+                                .foregroundStyle(context.state.bonded
+                                                 ? StrandPalette.statusCritical : StrandPalette.textSecondary)
+                            Text(hrText(context.state))
+                                .font(.headline)
+                                .minimumScaleFactor(0.75)
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        statColumn(label: "Sleep", value: sleepText(context.state))
+                            .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
                     .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Sleep joins the top row, opposite HR: the two numbers that are not "n so far
-                    // today" belong together, and it balances the row the corners would otherwise
-                    // crowd.
-                    statColumn(label: "Sleep", value: sleepText(context.state))
+                    statColumn(label: "Water", value: waterText(context.state))
                         .frame(maxWidth: .infinity)
                         .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    // The day's four pairs. Sleep moved up to the top row, so this row is Effort,
-                    // Steps, Cal and Water — evenly divided rather than Spacer-separated, which is
-                    // what let the first and last columns drift into the corners.
+                    // The three progress pairs. Evenly divided rather than Spacer-separated:
+                    // spacers push the outermost columns hard against the region's edges, which is
+                    // what put them in the corner curve. Equal `maxWidth: .infinity` shares centre
+                    // each value in its own third instead.
                     //
-                    // `maxWidth: .infinity` on each column makes them equal-width and centres each
-                    // value in its own share, so the outermost ones sit inside the region instead of
-                    // against its edge. The horizontal padding keeps that share clear of the curve.
+                    // Steps shows its FULL count here ("4412/8000"), not the widget faces'
+                    // thousands-abbreviated form — a third of this region is wide enough for it, and
+                    // the maintainer asked for it expanded.
                     HStack(spacing: 0) {
                         statColumn(label: "Effort", value: effortNTText(context.state))
                             .frame(maxWidth: .infinity)
                         statColumn(label: "Steps", value: stepsText(context.state))
                             .frame(maxWidth: .infinity)
                         statColumn(label: "Cal", value: calText(context.state))
-                            .frame(maxWidth: .infinity)
-                        statColumn(label: "Water", value: waterText(context.state))
                             .frame(maxWidth: .infinity)
                     }
                     .padding(.horizontal, 4)

@@ -200,6 +200,28 @@ final class LiveActivityBannerColumnsTests: XCTestCase {
         }
     }
 
+    /// Steps shows its FULL count in the island, never the widget faces' abbreviated form (260905:
+    /// "with steps expanded and not abbreviated"). `stepsText` is the full "4412/8000";
+    /// `stepsAbbrev` ("4.4k/8k") belongs to the home-screen widget, where a cell genuinely has no
+    /// room. Pinned so a later tidy-up cannot "unify" the two.
+    func testStepsAreNotAbbreviatedInTheLiveActivity() {
+        XCTAssertTrue(islandBlock.contains("statColumn(label: \"Steps\", value: stepsText("),
+                      "the island must use the full step count")
+        XCTAssertFalse(source.contains("stepsAbbrev"),
+                       "the Live Activity must never use the widget's abbreviated steps form")
+    }
+
+    /// The three-and-three split, and that Sleep does NOT sit in the `.center` region.
+    ///
+    /// `.center` sits directly under the sensor cutout and is the narrowest of the three top slots —
+    /// putting a value there would risk reproducing the clipping this layout exists to fix. The top
+    /// row is therefore built from leading + trailing, each holding an evenly-divided share.
+    func testTheTopRowAvoidsTheCutoutRegion() {
+        XCTAssertFalse(islandBlock.contains("DynamicIslandExpandedRegion(.center)"),
+                       "the centre region sits under the sensor cutout — the narrowest slot, and "
+                       + "the one most likely to clip")
+    }
+
     /// Charge was REMOVED from the island (260905, maintainer: "get rid of charge"). It is a score
     /// rather than a pair, and the top row reads better balanced two-up.
     ///
