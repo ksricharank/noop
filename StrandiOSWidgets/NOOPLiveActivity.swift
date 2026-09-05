@@ -47,43 +47,34 @@ struct NOOPLiveActivity: Widget {
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
         } dynamicIsland: { context in
             DynamicIsland {
-                // TOP ROW (260905): HR, Sleep, Water. BOTTOM ROW: Effort, Steps, Cal.
+                // TOP ROW: Sleep, Water. BOTTOM ROW: Effort, Steps, Cal. Five values, no HR
+                // (260905, maintainer: "in the expanded view remove the hr and just keep the other
+                // five in their exact locations").
                 //
-                // Three and three, by maintainer instruction. The split is not arbitrary — the top
-                // row is the three figures that are NOT "how much have I done today" (a live rate, a
-                // target for tonight, and a count against a fixed daily goal), the bottom row the
-                // three progress pairs. Three columns per row also gives each value about a third of
-                // the width instead of a quarter, which is what lets Steps show its full count.
+                // HR is NOT gone from the island — it is the whole of the COLLAPSED presentation
+                // (compact trailing + minimal), which is the one seen in passing. Expanding is the
+                // deliberate act of asking for the day, and the day is these five. The heart glyph
+                // goes with it: it was the not-connected cue for the HR value beside it, and with no
+                // HR here it would be an icon indicating nothing.
+                //
+                // POSITIONS ARE UNCHANGED, as instructed. Sleep keeps the leading region's second
+                // half and Water the trailing region, so removing HR leaves a gap on the left rather
+                // than sliding everything across — the layout the maintainer just approved stays put.
                 //
                 // THE CORNERS: the expanded presentation wraps the sensor cutout and its
                 // leading/trailing regions run into the rounded corners, so content pinned to an
                 // outer edge is clipped by the curve — reported as "hr and charge are getting cutoff
                 // at the corners, same with effort on the bottom left". Both halves of the fix are
-                // needed: centre each region's content AND inset its outer edge off the curve.
+                // needed and are kept here: centre each region's content AND inset its outer edge.
                 //
-                // The top row is built as leading + trailing + a centre column borrowed from the
-                // `.center` region, because the expanded island has no single full-width top slot:
-                // leading and trailing are the two halves, and `.center` sits between them over the
-                // cutout.
-                // The TOP row is the leading+trailing pair. Each holds a HALF, and each half is an
-                // evenly-divided HStack — so HR/Sleep/Water land as three balanced columns across
-                // the row without depending on the `.center` region, which sits directly under the
-                // sensor cutout and is the narrowest, most easily clipped slot of the three. Using
-                // it for Sleep would have risked reproducing the very bug being fixed here.
+                // `.center` is deliberately unused: it sits directly under the sensor cutout and is
+                // the narrowest of the three top slots, so a value there risks the very clipping
+                // this layout exists to avoid.
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 0) {
-                        // The heart carries the identity + the not-connected cue (red = linked,
-                        // grey = dropped); the value beside it is the LIVE HEART RATE.
-                        HStack(spacing: 4) {
-                            Image(systemName: "heart.fill")
-                                .foregroundStyle(context.state.bonded
-                                                 ? StrandPalette.statusCritical : StrandPalette.textSecondary)
-                            Text(hrText(context.state))
-                                .font(.headline)
-                                .minimumScaleFactor(0.75)
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity)
+                        // The empty half HR used to occupy. Kept as a spacer rather than collapsed
+                        // so Sleep stays exactly where it is.
+                        Color.clear.frame(maxWidth: .infinity)
                         statColumn(label: "Sleep", value: sleepText(context.state))
                             .frame(maxWidth: .infinity)
                     }
