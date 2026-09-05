@@ -37,7 +37,13 @@ final class WidgetPublishStatsTests: XCTestCase {
         WidgetPublishStats.recordFullFinished(glance: "steps=200/8000", reloadRequested: false, now: t)
         WidgetPublishStats.recordLive(reloadRequested: true, now: t)
         let lines = WidgetPublishStats.summaryLines(now: t)
-        XCTAssertEqual(lines.count, 1)
+        // 260905: the summary grew a background split and a requested-vs-served line. Assert the
+        // first line's CONTENT rather than the block's length, so adding a diagnostic line does not
+        // fail a test about counting publishes.
+        XCTAssertTrue(lines.count >= 1)
+        XCTAssertTrue(lines.contains { $0.hasPrefix("Widget background:") },
+                      "the fg/bg split must be reported — it is the only line that can say whether "
+                      + "the reload budget is the problem")
         XCTAssertTrue(lines[0].contains("full=2/2"), lines[0])
         XCTAssertTrue(lines[0].contains("live=1"), lines[0])
         XCTAssertTrue(lines[0].contains("reloads=2"), lines[0])
@@ -67,5 +73,50 @@ final class WidgetPublishStatsTests: XCTestCase {
         XCTAssertTrue(lines[0].contains("live=1"), lines[0])
         XCTAssertTrue(lines[0].contains("reloads=0"), lines[0])
         XCTAssertTrue(lines[0].hasSuffix("steps=900/8000"), lines[0])
+    }
+}
+
+/// The 260905 additions: the fg/bg split, the unseen-change probe and the served counter.
+///
+/// All three exist to answer ONE question the previous instrumentation could not — "the widgets lag
+/// behind the app; is that the OS reload budget, or us?" The old line reported a reload TOTAL, and a
+/// total cannot distinguish a healthy day of foreground reloads from a starving day of background
+/// ones, because only background requests are charged.
+final class WidgetPublishBackgroundStatsTests: XCTestCase {
+
+    /// No background activity is itself an answer, so it must be stated rather than omitted: it
+    /// would mean the scenePhase gating, not the budget, is what keeps the widget stale.
+    func testNoBackgroundPublishesSaysSoExplicitly() {
+        let line = WidgetPublishStats.backgroundLine(publishesBg: 0, reloadsBg: 0, dedupBg: 0,
+                                                     unseenBg: 0, firstBg: nil, lastBg: nil)
+        XCTAssertTrue(line.contains("none today"), line)
+        XCTAssertFalse(line.isEmpty, "an absent line cannot report an absence")
+    }
+
+    /// The line must carry the numbers a reduction effort would act on, and name the budget so the
+    /// count can be read against it without going back to the source.
+    func testTheBackgroundLineCarriesTheActionableNumbers() {
+        let line = WidgetPublishStats.backgroundLine(publishesBg: 40, reloadsBg: 31, dedupBg: 9,
+                                                     unseenBg: 12, firstBg: "06:12", lastBg: "11:48")
+        XCTAssertTrue(line.contains("publishes=40"), line)
+        XCTAssertTrue(line.contains("reloads=31"), line)
+        XCTAssertTrue(line.contains("unseen=12"), line)
+        XCTAssertTrue(line.contains("window=06:12-11:48"),
+                      "the window is the deferral signature — a cluster that stops early means the "
+                      + "budget went by mid-morning")
+        XCTAssertTrue(line.contains("40-70"), "state the budget so the count can be read against it")
+    }
+
+    /// Requested vs served is the other half of the pipeline: without it a stale widget cannot be
+    /// attributed to iOS dropping requests rather than to a stale snapshot.
+    func testTheServedLineReportsBothHalves() {
+        let line = WidgetPublishStats.servedLine(requested: 53, served: 11, lastServed: "09:40")
+        #if os(iOS)
+        XCTAssertTrue(line.contains("requested=53"), line)
+        XCTAssertTrue(line.contains("served=11"), line)
+        XCTAssertTrue(line.contains("last=09:40"), line)
+        #else
+        XCTAssertTrue(line.isEmpty, "macOS has no widgets; an always-zero line would read as a fault")
+        #endif
     }
 }

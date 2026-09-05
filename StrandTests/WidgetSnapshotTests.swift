@@ -265,3 +265,63 @@ final class WidgetSnapshotTests: XCTestCase {
     }
 
 }
+
+/// The unrendered-change probe (260905): does this publish's reload request change any pixel?
+///
+/// `sleepDisplay` is compared by `renderedContentChanged` but rendered by NO widget face — water
+/// took Sleep's fourth cell on 260903 and the dedup comparison stayed behind. So a night's sleep
+/// figure moving still requests a WidgetKit reload, and in the BACKGROUND that is charged against
+/// the ~40-70/day budget: spent directly out of the allowance the visible updates need.
+///
+/// Measured before being changed, per the fork's instrumentation-first rule — the count in the next
+/// strap log decides whether dropping the comparison is worth it.
+final class UnrenderedWidgetChangeTests: XCTestCase {
+
+    private func snap(sleepNeedMin: Int? = 480, steps: Int? = 5_000,
+                      waterHalfCups: Int? = 10) -> WidgetSnapshot {
+        WidgetSnapshot(recovery: 70, bpm: 60, batteryPct: 80, bonded: true, updated: Date(),
+                       effort: 40, rest: 75, hrv: 60, restingHr: 55,
+                       sleepNeedMin: sleepNeedMin, steps: steps, stepsTarget: 8_000,
+                       waterHalfCups: waterHalfCups, waterTargetCups: 21)
+    }
+
+    /// A sleep-only change is a reload nobody can see.
+    func testASleepOnlyChangeIsUnrendered() {
+        let before = snap(sleepNeedMin: 480)
+        let after = snap(sleepNeedMin: 505)
+        XCTAssertTrue(WidgetSnapshot.renderedContentChanged(from: before, to: after),
+                      "it still trips the dedup — that is the waste being measured")
+        XCTAssertTrue(WidgetSnapshot.changedOnlyInUnrenderedFields(from: before, to: after))
+    }
+
+    /// A change to something a face DOES show is not unrendered, even alongside a sleep change.
+    func testAVisibleChangeIsNeverCountedAsUnrendered() {
+        let before = snap(sleepNeedMin: 480, waterHalfCups: 10)
+        let bothMoved = snap(sleepNeedMin: 505, waterHalfCups: 14)   // 5 cups → 7 cups
+        XCTAssertFalse(WidgetSnapshot.changedOnlyInUnrenderedFields(from: before, to: bothMoved),
+                       "water is on the face, so this reload paints something")
+
+        let waterOnly = snap(sleepNeedMin: 480, waterHalfCups: 14)
+        XCTAssertFalse(WidgetSnapshot.changedOnlyInUnrenderedFields(from: before, to: waterOnly))
+    }
+
+    /// No change at all is not an unrendered change — it never requests a reload in the first place.
+    func testAnIdenticalSnapshotIsNotCountedAsUnrendered() {
+        let before = snap()
+        XCTAssertFalse(WidgetSnapshot.changedOnlyInUnrenderedFields(from: before, to: snap()))
+    }
+
+    /// A first publish (no previous) is not an unrendered change: it genuinely paints everything.
+    func testAFirstPublishIsNotUnrendered() {
+        XCTAssertFalse(WidgetSnapshot.changedOnlyInUnrenderedFields(from: nil, to: snap()))
+    }
+
+    /// The probe must stay honest as fields are added: it neutralises the KNOWN-unrendered field and
+    /// re-asks, so a newly-compared field counts as visible until someone explicitly says otherwise.
+    func testANewlyComparedFieldCountsAsVisibleByDefault() {
+        let before = snap(steps: 5_000)
+        let after = snap(steps: 9_000)   // stepsAbbrev moves: 5k → 9k
+        XCTAssertFalse(WidgetSnapshot.changedOnlyInUnrenderedFields(from: before, to: after),
+                       "steps are on the face; the probe must not silently absorb new fields")
+    }
+}
