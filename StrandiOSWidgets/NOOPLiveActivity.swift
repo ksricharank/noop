@@ -7,35 +7,40 @@ import StrandDesign
 struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation: four EQUAL stat columns — Effort now/target,
-            // Cal now/target (TOTAL calories), Steps now/target (thousands), and Sleep hours needed
-            // tonight — one shared type size.
-            // HISTORY: an HR column (live tilde + the red breathe-cue digits) led this row through
-            // 10.6.0.14.9 and was removed 260830 by maintainer instruction — the card carries the
-            // three TARGETS now; the HRV-dip "go breathe" read moved to the stress check-in's strap
-            // buzz + screen notification. Charge left the banner earlier the same day (the targets
-            // already encode it); it still reads in the expanded Dynamic Island.
-            // Spacing dropped 14 → 10 when Steps became the fourth column; the stats' own
-            // minimumScaleFactor absorbs the rest at narrow widths.
+            // Lock Screen / banner presentation: four EQUAL stat columns — HR, Steps now/target,
+            // Cal now/target (TOTAL calories) and Effort now/target — one shared type size.
+            //
+            // HISTORY, since this row has now changed hands twice and the reasons matter: an HR
+            // column (live tilde + the red breathe-cue digits) led it through 10.6.0.14.9 and was
+            // removed 260830 by maintainer instruction in favour of the three targets. HR RETURNS
+            // 260905 — "for the lock screen live notification, I realized I want HR, plus steps n/t
+            // cal n/t, effort n/t" — taking Sleep's column rather than adding a fifth, because four
+            // is what fits at this type size. Sleep still reads in the expanded Dynamic Island,
+            // which this change deliberately leaves untouched ("for the dynamic island, we have the
+            // right behavior"). The HRV-dip "go breathe" cue is NOT coming back with it; that moved
+            // to the stress check-in's strap buzz + screen notification and stays there.
+            //
+            // WHY HR BELONGS HERE AND NOT ON THE WIDGET: a Live Activity is pushed directly by the
+            // app — ~2 s unlocked, the wearer's locked spacing otherwise — and is NOT charged
+            // against the WidgetKit reload budget. It is the only lock-screen surface that can carry
+            // a genuinely live number.
             HStack(spacing: 10) {
                 // The identity icon doubles as the NOT-CONNECTED cue: grey while the strap link is
                 // down (charging, out of range — the card holds its last values through a drop
                 // instead of vanishing), red while connected. The numbers stay primary either way;
                 // they are real, just frozen.
-                // .body (was .title2): the icon is a cue, not a stat — its width now belongs to
-                // the four value columns, which run as large as the banner allows.
                 Image(systemName: "waveform.path.ecg")
                     .font(.body)
                     .foregroundStyle(context.state.bonded
                                      ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                 Spacer()
-                bannerStat(label: "Steps", value: stepsText(context.state))
+                bannerStat(label: "HR", value: hrText(context.state))
                 Spacer()
-                bannerStat(label: "Effort", value: effortNTText(context.state))
+                bannerStat(label: "Steps", value: stepsText(context.state))
                 Spacer()
                 bannerStat(label: "Cal", value: calText(context.state))
                 Spacer()
-                bannerStat(label: "Sleep", value: sleepText(context.state))
+                bannerStat(label: "Effort", value: effortNTText(context.state))
             }
             .padding()
             .activityBackgroundTint(StrandPalette.surfaceBase)
@@ -113,6 +118,21 @@ private func effortNTText(_ state: NOOPActivityAttributes.ContentState) -> Strin
     case let (nil, t?): return "0/\(t)"
     case (nil, nil): return "–"
     }
+}
+
+/// The heart rate for the banner's HR column (260905).
+///
+/// `~` marks a LIVE beat; a plain number is a settled window average — the wearer's Lock-Screen
+/// refresh setting decides which, and the `-1` sentinel averages over the sync window itself. The
+/// direction was chosen when the `live` flag was introduced and still holds: a card frozen because
+/// no push can reach it is left holding the honest PLAIN form, never the live marker, so the tilde
+/// can always be trusted to mean "this is beating now".
+///
+/// A dash when there is no reading at all, matching every other column's degrade rule — better than
+/// presenting a stale number as current.
+private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    guard let bpm = state.bpm else { return "–" }
+    return (state.live == true ? "~" : "") + "\(bpm)"
 }
 
 /// Today's effort alone, for the compact/minimal slots where the pair cannot fit.
