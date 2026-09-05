@@ -69,6 +69,11 @@ struct AutomationsView: View {
     // 260904 water reminders — moved here from Settings -> Features so every reminder and nudge
     // lives on one screen. The TRACKER toggle stays in Settings (it is a data feature, not a
     // notification); this card gates itself on it and points there when it is off.
+    // 260905 steps source. A @State mirror rather than @AppStorage: the stored value is a raw
+    // string with a non-empty default, which @AppStorage cannot express (an unset key would read as
+    // "" and fall out of the enum).
+    @State private var stepsSource = StepsSourcePrefs.preferred
+
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
     @AppStorage(HydrationReminder.K.enabled) private var hydrationRemindersOn = false
     @State private var hydrationStartMin = HydrationReminder.startMinute
@@ -92,6 +97,7 @@ struct AutomationsView: View {
             wristBuzzCard
             morningBriefCard
             pacingCard
+            stepsSourceCard
             waterReminderCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
             // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
@@ -474,6 +480,51 @@ struct AutomationsView: View {
                     pacingStopMin = max(m, (pacingStartMin ?? 0) + 60)
                     TargetAutomations.setPacingStopMinute(pacingStopMin)
                 })
+    }
+
+    // MARK: - Steps source (260905)
+
+    /// Which device's step count the app trusts when both have one.
+    ///
+    /// Sits here rather than in Settings because the maintainer asked for it "in the automations
+    /// page above hydration", and because the choice behaves like the other cards on this screen:
+    /// it changes what NOOP does with a signal, not what it stores.
+    ///
+    /// The picker writes through `StepsSourcePrefs`, and the effect lands in ONE place —
+    /// `Repository.mergeAppleSteps` — so the tile, the targets strip, pacing and the day-quality
+    /// score all move together. Nothing is recomputed: the next dashboard refresh simply merges the
+    /// other source's number, which is why this is a plain read rather than a re-score.
+    private var stepsSourceCard: some View {
+        Section2(icon: "figure.walk", title: String(localized: "Step count"),
+                 blurb: String(localized: "Your strap and your Apple Watch both count steps. Choose which one NOOP should trust when both have a number for the day."),
+                 active: stepsSource == .appleHealth) {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Prefer").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                        Text("Applies everywhere the count appears \u{2014} the Today tile, the steps target, pacing check-ins and your day-quality score.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Picker("", selection: $stepsSource) {
+                        ForEach(StepsSource.allCases) { s in Text(s.label).tag(s) }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                    .accessibilityLabel("Preferred step count source")
+                    .onChangeCompat(of: stepsSource) { s in
+                        StepsSourcePrefs.setPreferred(s)
+                        // Re-merge so the change is visible without waiting for the next sync. The
+                        // rows are already stored; only which column wins changes.
+                        Task { await model.repo.refresh() }
+                    }
+                }
+                .frame(minHeight: 42).padding(.vertical, 4)
+                Text("A day the other device did not record falls back to whichever count exists, so switching never blanks a day. Only steps are affected \u{2014} calories stay on NOOP's own estimate, which also feeds your effort score.")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: - Water reminders (260904 — moved from Settings → Features)

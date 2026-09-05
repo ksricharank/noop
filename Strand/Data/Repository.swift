@@ -1256,6 +1256,10 @@ final class Repository: ObservableObject {
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
+        // Read the steps preference HERE, on the main actor, and hand it to the detached merge as a
+        // plain Bool. The merge runs off-actor (see MergedCaches), and reading UserDefaults from
+        // there would be a second source of truth for a value that can change between refreshes.
+        let prefersAppleSteps = StepsSourcePrefs.prefersAppleHealth
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
 
@@ -1282,9 +1286,14 @@ final class Repository: ObservableObject {
             let editedDays = Self.userEditedDays(compSleep)
             return MergedCaches(
                 importedSleep: fig,
-                days: Self.mergeActivityFileSteps(
-                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
-                    activityFile
+                days: Self.mergeAppleSteps(
+                    into: Self.mergeActivityFileSteps(
+                        into: Self.mergeDaily(imported: imported, computed: computed,
+                                              userEditedDays: editedDays),
+                        activityFile
+                    ),
+                    apple,
+                    prefersApple: prefersAppleSteps
                 ),
                 sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
@@ -1410,6 +1419,48 @@ final class Repository: ObservableObject {
             } else {
                 byDay[row.day] = row
             }
+        }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    /// Fold Apple Health's step count into the merged rows when the wearer prefers it (260905).
+    ///
+    /// Maintainer request: one toggle that makes the preferred step count show up "consistent
+    /// everywhere — both the n in the steps n/t as well as the steps tile on the daily page".
+    ///
+    /// THIS is the place that delivers that, and the reason is `Repository.days`: it merges the
+    /// imported and computed sources only — Apple Health is NOT folded into it, which is why the
+    /// two Today views each reach for `appleDaily` separately as a fallback tier. So every reader
+    /// of the merged row (the targets strip's numerator, pacing's proration, the day-quality
+    /// score, the coach context, Workouts, the export) sees the strap's count and nothing else.
+    ///
+    /// Overriding the field HERE means those readers need no knowledge of the preference: they keep
+    /// reading `row.steps` and get whichever source was chosen. The alternative — teaching each
+    /// surface the precedence rule — is how the calorie figure ended up resolved one way on the
+    /// Today tile and another way in the targets strip.
+    ///
+    /// A no-op unless the preference is set AND Apple actually has a count for the day, so a wearer
+    /// on the default never pays for it, and choosing Apple on a day the Watch was not worn falls
+    /// back to the strap rather than blanking the row. `steps > 0` matches the activity-file fold
+    /// above: a stored zero is "no data recorded", not a measured zero.
+    ///
+    /// Steps ONLY. `activeKcalEst` is deliberately untouched — it is NOOP's own HR-derived estimate
+    /// and an input to strain, so swapping its source would silently re-base effort history. That
+    /// is a separate decision, not a side effect of a steps toggle.
+    nonisolated static func mergeAppleSteps(into base: [DailyMetric],
+                                            _ apple: [DailyMetric],
+                                            prefersApple: Bool) -> [DailyMetric] {
+        guard prefersApple, !apple.isEmpty else { return base }
+        var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
+        for row in apple {
+            guard let steps = row.steps, steps > 0 else { continue }
+            guard let existing = byDay[row.day] else {
+                // No merged row for the day at all: Apple's is better than nothing, and this is the
+                // same "else" the activity-file fold takes.
+                byDay[row.day] = row
+                continue
+            }
+            byDay[row.day] = existing.replacingSteps(steps)
         }
         return byDay.values.sorted { $0.day < $1.day }
     }

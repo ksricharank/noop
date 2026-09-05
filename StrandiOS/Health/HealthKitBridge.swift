@@ -86,7 +86,24 @@ final class HealthKitBridge: ObservableObject {
         } else if !HealthKitBridge.hasHealthKitEntitlement {
             auth = .entitlementMissing
         }
+        // Re-arm the observers when the steps source changes (260905): choosing Apple Health adds a
+        // step-count observer, choosing the strap retires it. Observed HERE rather than from the
+        // app's view chain — the concern is this type's, and the one UI that sets the preference is
+        // shared with macOS where this class does not exist. `enableLiveDelivery` already guards on
+        // authorization, so this is a no-op until the wearer has granted Health access.
+        stepsSourceObserver = NotificationCenter.default.addObserver(
+            forName: StepsSourcePrefs.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.enableLiveDelivery() }
+        }
     }
+
+    deinit {
+        if let stepsSourceObserver { NotificationCenter.default.removeObserver(stepsSourceObserver) }
+    }
+
+    /// Token for the steps-source observer, removed on deinit.
+    private var stepsSourceObserver: NSObjectProtocol?
 
     // MARK: - Types
 
@@ -288,6 +305,22 @@ final class HealthKitBridge: ObservableObject {
         .heartRateVariabilitySDNN, .restingHeartRate, .activeEnergyBurned, .heartRate, .vo2Max
     ]
 
+    /// Step count is observed ONLY when the wearer has chosen Apple Health as their step source
+    /// (260905).
+    ///
+    /// The list above deliberately excludes steps, and its stated reason is that steps "don't move a
+    /// score". The steps-source toggle makes that false: with Apple preferred, the count feeds the
+    /// steps target, the pacing check-ins' proration and the day-quality score, so a stale figure is
+    /// now a wrong nudge rather than a cosmetic lag.
+    ///
+    /// Gated rather than added outright because the rationale only flips for wearers who chose
+    /// Apple. On the default (strap) the strap's own count already arrives with each offload, an
+    /// hourly wake would buy nothing, and this fork's whole thread is trimming background wakes —
+    /// so a strap-preferring install must pay nothing for a feature it is not using.
+    private static var liveStepsIds: [HKQuantityTypeIdentifier] {
+        StepsSourcePrefs.prefersAppleHealth ? [.stepCount] : []
+    }
+
     /// Long-lived observer queries, retained so HealthKit doesn't tear them down. Keyed by the sample
     /// type's identifier so a second `enableLiveDelivery()` call replaces rather than duplicates.
     private var observerQueries: [String: HKObserverQuery] = [:]
@@ -301,10 +334,24 @@ final class HealthKitBridge: ObservableObject {
         guard auth == .authorized, HKHealthStore.isHealthDataAvailable() else { return }
 
         var types: [HKSampleType] = []
-        for id in HealthKitBridge.liveQuantityIds {
+        for id in HealthKitBridge.liveQuantityIds + HealthKitBridge.liveStepsIds {
             if let t = HKObjectType.quantityType(forIdentifier: id) { types.append(t) }
         }
         if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) { types.append(sleep) }
+
+        // Retire an observer whose type is no longer wanted — today only step count, when the wearer
+        // switches back to the strap. Re-registration alone cannot do this: the loop below only
+        // touches types that ARE in the list, so a dropped one would keep its observer and its hourly
+        // background delivery forever, waking the app for data nothing reads. Disabling delivery as
+        // well as stopping the query is the part that actually stops the wakes.
+        let wanted = Set(types.map(\.identifier))
+        for (key, query) in observerQueries where !wanted.contains(key) {
+            store.stop(query)
+            observerQueries[key] = nil
+            if let t = HKObjectType.quantityType(forIdentifier: HKQuantityTypeIdentifier(rawValue: key)) {
+                store.disableBackgroundDelivery(for: t) { _, _ in }
+            }
+        }
 
         for type in types {
             let key = type.identifier

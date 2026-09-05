@@ -764,6 +764,47 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    /// Log one cup from a strap double-tap (260905).
+    ///
+    /// Maintainer request: "a tap on the device adding a cup of water without me having to do
+    /// anything on the phone itself."
+    ///
+    /// Writes through `Repository.logHydration` — the SAME call the +Cup button and the
+    /// notification's "Add a cup" action make — so the tap, the Today card, the hydration screen
+    /// and the reminder can never disagree about the day's cups. In particular it inherits the
+    /// serialisation added on 260904, so a double-tap landing while a tap on the phone is in flight
+    /// cannot lose either write.
+    ///
+    /// Fires the confirmation buzz on the `.water` cue, which is the honest signal here: a double
+    /// tap has no on-screen feedback by definition, so without a buzz the wearer cannot tell a
+    /// logged cup from an unrecognised gesture. The buzz is skipped when the wearer has turned that
+    /// cue off, same as every other nudge.
+    ///
+    /// Deliberately a WHOLE cup, not a half: the gesture is coarse and unprompted, so it should mean
+    /// the common case. Half cups stay on the notification action and the app, where the wearer is
+    /// already choosing an amount.
+    ///
+    /// No-op when hydration tracking is off — a tap should not silently create a log for a feature
+    /// the wearer has not enabled. The gesture then falls through as if unbound, and the log line
+    /// says why rather than leaving a mystery.
+    private func logCupFromDoubleTap() {
+        guard UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) else {
+            live.append(log: "Double-tap: water not logged — hydration tracking is off")
+            return
+        }
+        Task { @MainActor in
+            let total = await repo.logHydration(amountMl: HydrationGoal.cupML)
+            buzzForNudgeIfEnabled(.water)
+            live.append(log: "Double-tap: logged a cup "
+                        + "(\(HydrationGoal.cups(fromML: total)) cups today)")
+            // Refresh the widget faces so the new count is on the Lock Screen too. iOS-only —
+            // `WidgetSnapshot` is excluded from the macOS target.
+            #if os(iOS)
+            await WidgetSnapshot.publish(from: self)
+            #endif
+        }
+    }
+
     /// Buzz the strap alongside a NOOP-posted notification (260903), when the user has asked for
     /// it. No-op when the toggle is off or the link cannot carry a command — `canBuzz` requires an
     /// encrypted bond, so a disconnected or charging strap simply gets no cue rather than the app
@@ -2008,6 +2049,7 @@ final class AppModel: ObservableObject {
         case .markMoment: markMoment()
         case .sleepMark: markSleep()
         case .hapticClock: ble.buzzTimeNow(is24h: Self.localeUses24HourClock)
+        case .logWater: logCupFromDoubleTap()
         case .runShortcut: MacActions.runShortcut(shortcut)
         }
     }
