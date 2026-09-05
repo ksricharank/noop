@@ -1,5 +1,6 @@
 #if os(iOS)
 import Foundation
+import UIKit
 import WidgetKit
 import StrandAnalytics   // HydrationGoal — half-cup conversion for the water glance
 
@@ -150,12 +151,18 @@ extension WidgetSnapshot {
             waterHalfCups: targets.waterTodayML.map { HydrationGoal.halfCups(fromML: $0) },
             waterTargetCups: targets.waterTargetCups
         )
-        let reloaded = saveAndReloadIfChanged(snap)
+        // Read the PREVIOUS snapshot once, before the save, so the scene split and the
+        // unrendered-change probe both describe the transition this publish is about to make.
+        let previousSnap = load()
+        let unseenOnly = WidgetSnapshot.changedOnlyInUnrenderedFields(from: previousSnap, to: snap)
+        let reloaded = saveAndReloadIfChanged(snap, previous: previousSnap)
         WidgetPublishStats.recordFullFinished(
             glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
                 + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-") "
                 + "water=\(snap.waterDisplay ?? "-")",
-            reloadRequested: reloaded)
+            reloadRequested: reloaded,
+            inBackground: Self.isBackground,
+            unseenOnly: unseenOnly)
     }
 
     /// Publish fields that come directly from the live BLE state without re-reading the Rest metric
@@ -180,7 +187,27 @@ extension WidgetSnapshot {
         snap.batteryPct = Self.activeBatteryPct(from: model)
         snap.bonded = model.live.bonded
         snap.updated = now
-        WidgetPublishStats.recordLive(reloadRequested: saveAndReloadIfChanged(snap, previous: previous))
+        WidgetPublishStats.recordLive(reloadRequested: saveAndReloadIfChanged(snap, previous: previous),
+                                      inBackground: Self.isBackground)
+    }
+
+    /// Is the app in the BACKGROUND right now? (260905)
+    ///
+    /// The distinction the widget-lag investigation turned on: WidgetKit reloads requested from the
+    /// background are charged against a daily budget (~40-70), foreground ones are exempt. The
+    /// existing `reloads` counter is a total and so cannot say whether a day's requests were free or
+    /// spent — which is the question "why does the widget lag behind the app" actually needs.
+    ///
+    /// Read at the publish site rather than threaded down from the view: the publish has several
+    /// entry points (the ungated hydration hook, the post-offload path, the gated foreground hooks)
+    /// and a parameter would have to be plumbed correctly through every one of them to be trusted.
+    /// `applicationState` is the OS's own answer and cannot fall out of step with reality.
+    ///
+    /// `.inactive` counts as foreground: it is the transitional phase (a notification shade pulled
+    /// down, the app switcher), not a suspended app.
+    @MainActor
+    private static var isBackground: Bool {
+        UIApplication.shared.applicationState == .background
     }
 
     /// Persist and ask WidgetKit for a new timeline only when a rendered field changed. The snapshot's

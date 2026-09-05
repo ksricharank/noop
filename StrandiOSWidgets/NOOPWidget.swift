@@ -18,12 +18,26 @@ struct NOOPProvider: TimelineProvider {
         completion(NOOPEntry(date: Date(), snapshot: WidgetSnapshot.load() ?? fallback))
     }
 
+    /// The app's day key format, duplicated here rather than imported: the widget extension does
+    /// not link the app module, and the two only need to AGREE on a string, not share a function.
+    static func localDayKey(_ date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+
     func getTimeline(in context: Context, completion: @escaping (Timeline<NOOPEntry>) -> Void) {
         // Gallery previews use `placeholder(in:)` / getSnapshot's preview branch. A real timeline
         // with no shared snapshot must show missing data honestly, never plausible sample numbers.
         let snap = WidgetSnapshot.load() ?? .unavailable
         // Refresh roughly every 15 minutes; the app also forces a reload when it publishes fresh data.
         let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date().addingTimeInterval(900)
+        // 260905: record that WidgetKit actually ASKED for a timeline. The app already counts the
+        // reloads it requests; this is the other half — without it, "the widget lags behind the
+        // app" cannot distinguish iOS dropping our requests from our snapshot being stale when
+        // read. Two integers into the shared App Group, on a path that was already running.
+        WidgetSnapshot.ExtensionStats.recordTimelineServed(dayKey: Self.localDayKey())
         completion(Timeline(entries: [NOOPEntry(date: Date(), snapshot: snap)], policy: .after(next)))
     }
 }
