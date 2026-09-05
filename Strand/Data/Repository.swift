@@ -1255,6 +1255,14 @@ final class Repository: ObservableObject {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
+        // Apple's STEP COUNT lives in `appleDaily`, NOT in the rows above (260905). The apple-health
+        // `DailyMetric` rows carry sleep/HR/HRV/SpO2/respiratory only — `HealthKitBridge` builds them
+        // without a `steps:` argument at all, so the field is always nil there. Reading it from the
+        // daily metrics is how the first cut of the steps preference shipped as a guaranteed no-op.
+        let appleDailyRows = StepsSourcePrefs.prefersAppleHealth
+            ? ((try? await store.appleDaily(deviceId: Self.appleHealthSource,
+                                            from: fromDay, to: toDay)) ?? [])
+            : []
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
         // Read the steps preference HERE, on the main actor, and hand it to the detached merge as a
         // plain Bool. The merge runs off-actor (see MergedCaches), and reading UserDefaults from
@@ -1292,7 +1300,7 @@ final class Repository: ObservableObject {
                                               userEditedDays: editedDays),
                         activityFile
                     ),
-                    apple,
+                    appleDailyRows,
                     prefersApple: prefersAppleSteps
                 ),
                 sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
@@ -1447,17 +1455,24 @@ final class Repository: ObservableObject {
     /// Steps ONLY. `activeKcalEst` is deliberately untouched — it is NOOP's own HR-derived estimate
     /// and an input to strain, so swapping its source would silently re-base effort history. That
     /// is a separate decision, not a side effect of a steps toggle.
+    /// Takes `AppleDaily`, NOT `DailyMetric`: that is where Apple's step count actually lives.
+    /// See the read site in `refresh()` — the apple-health `DailyMetric` rows never carry steps.
     nonisolated static func mergeAppleSteps(into base: [DailyMetric],
-                                            _ apple: [DailyMetric],
+                                            _ apple: [AppleDaily],
                                             prefersApple: Bool) -> [DailyMetric] {
         guard prefersApple, !apple.isEmpty else { return base }
         var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
         for row in apple {
             guard let steps = row.steps, steps > 0 else { continue }
             guard let existing = byDay[row.day] else {
-                // No merged row for the day at all: Apple's is better than nothing, and this is the
-                // same "else" the activity-file fold takes.
-                byDay[row.day] = row
+                // No merged row for the day at all. Mint a steps-only row rather than skipping the
+                // day: a day Apple covered and the strap did not is exactly the case the preference
+                // exists to surface.
+                byDay[row.day] = DailyMetric(day: row.day, totalSleepMin: nil, efficiency: nil,
+                                             deepMin: nil, remMin: nil, lightMin: nil,
+                                             disturbances: nil, restingHr: nil, avgHrv: nil,
+                                             recovery: nil, strain: nil, exerciseCount: nil,
+                                             steps: steps)
                 continue
             }
             byDay[row.day] = existing.replacingSteps(steps)
