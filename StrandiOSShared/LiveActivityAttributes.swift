@@ -50,12 +50,20 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         /// Today's steps and today's step target — the Steps column ("6.2k/8k").
         public var steps: Int?
         public var stepsTarget: Int?
+        /// Today's water, in HALF-cups drunk and whole cups targeted (260905) — the expanded
+        /// island's Water column ("5/21"). Half-cups because that is the tracker's own resolution,
+        /// matching `WidgetSnapshot`; the column renders whole cups. Same nil-default
+        /// decode-compatibility rule as every field above — an activity written by an older build
+        /// still decodes, and a nil simply drops the column.
+        public var waterHalfCups: Int?
+        public var waterTargetCups: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
                     live: Bool? = nil, effortDisplay: String? = nil,
                     effortTargetDisplay: String? = nil, kcal: Int? = nil,
                     kcalTarget: Int? = nil, sleepNeedMin: Int? = nil,
-                    steps: Int? = nil, stepsTarget: Int? = nil) {
+                    steps: Int? = nil, stepsTarget: Int? = nil,
+                    waterHalfCups: Int? = nil, waterTargetCups: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
@@ -71,6 +79,8 @@ public struct NOOPActivityAttributes: ActivityAttributes {
             self.sleepNeedMin = sleepNeedMin
             self.steps = steps
             self.stepsTarget = stepsTarget
+            self.waterHalfCups = waterHalfCups
+            self.waterTargetCups = waterTargetCups
         }
     }
 
