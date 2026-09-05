@@ -198,7 +198,36 @@ final class LiveActivityBannerColumnsTests: XCTestCase {
             XCTAssertTrue(island.contains("statColumn(label: \"\(column)\""),
                           "the expanded island must carry a \(column) column")
         }
-        XCTAssertTrue(island.contains("statColumn(label: \"Charge\""),
-                      "Charge set today's targets, so it stays beside them")
+    }
+
+    /// Charge was REMOVED from the island (260905, maintainer: "get rid of charge"). It is a score
+    /// rather than a pair, and the top row reads better balanced two-up.
+    ///
+    /// The FIELD is deliberately still pushed — see `ContentState.recovery` — so an activity adopted
+    /// across a build change still decodes. This asserts only that nothing renders it.
+    func testChargeIsNoLongerRendered() {
+        XCTAssertFalse(islandBlock.contains("statColumn(label: \"Charge\""),
+                       "Charge was removed from the island")
+        XCTAssertFalse(bannerBlock.contains("Charge"),
+                       "Charge left the Lock-Screen banner earlier and must not return")
+    }
+
+    /// The corner-clipping fix (260905): "hr and charge are getting cutoff at the corners, same with
+    /// effort on the bottom left".
+    ///
+    /// The expanded presentation wraps the sensor cutout and its regions run into the rounded
+    /// corners, so content pinned to an outer edge is clipped by the curve. Both halves of the fix
+    /// are pinned here because either alone leaves the report unaddressed: the regions must CENTRE
+    /// their content, and the outer edges must be inset off the curve.
+    func testTheExpandedRegionsAreInsetAndCentred() {
+        let island = islandBlock
+        XCTAssertTrue(island.contains(".padding(.leading, 6)"),
+                      "the leading region must be inset off the corner curve")
+        XCTAssertTrue(island.contains(".padding(.trailing, 6)"),
+                      "the trailing region must be inset off the corner curve")
+        XCTAssertTrue(island.contains(".padding(.horizontal, 4)"),
+                      "the bottom row must be inset, or its first and last columns clip")
+        XCTAssertTrue(island.contains(".frame(maxWidth: .infinity)"),
+                      "regions must centre their content rather than pinning it to an edge")
     }
 }

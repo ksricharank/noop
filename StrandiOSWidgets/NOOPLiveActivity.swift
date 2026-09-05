@@ -47,52 +47,59 @@ struct NOOPLiveActivity: Widget {
             .activitySystemActionForegroundColor(StrandPalette.textPrimary)
         } dynamicIsland: { context in
             DynamicIsland {
+                // TOP ROW (260905): HR leading, Sleep trailing — both pulled AWAY FROM THE CORNERS.
+                //
+                // The Dynamic Island's expanded presentation wraps the sensor cutout, and its
+                // leading/trailing regions run right up to the rounded corners: content pinned to
+                // the outer edge is clipped by the curve. Reported exactly that way — "hr and charge
+                // are getting cutoff at the corners, same with effort on the bottom left". The fix
+                // is inset padding on the outer edge of each region plus centring the content, so
+                // the numbers sit in the flat middle of their region rather than in the curve.
+                //
+                // CHARGE IS GONE (maintainer instruction). It was here because its band set today's
+                // targets, but it is a score rather than a pair and the row reads better with two
+                // balanced items than three unequal ones.
                 DynamicIslandExpandedRegion(.leading) {
                     // The heart carries the identity + the not-connected cue (red = linked, grey =
-                    // dropped); the value beside it is the LIVE HEART RATE, primary (260905,
-                    // maintainer: "I want the island to show the live hr only").
+                    // dropped); the value beside it is the LIVE HEART RATE, primary.
                     HStack(spacing: 4) {
                         Image(systemName: "heart.fill")
                             .foregroundStyle(context.state.bonded
                                              ? StrandPalette.statusCritical : StrandPalette.textSecondary)
                         Text(hrText(context.state))
+                            .minimumScaleFactor(0.8)
+                            .lineLimit(1)
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.leading, 6)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge: its band is what SET today's targets, so it earns the slot beside the
-                    // heart rate and explains the row below.
-                    if let r = context.state.recovery {
-                        statColumn(label: "Charge", value: "\(r)")
-                    }
+                    // Sleep joins the top row, opposite HR: the two numbers that are not "n so far
+                    // today" belong together, and it balances the row the corners would otherwise
+                    // crowd.
+                    statColumn(label: "Sleep", value: sleepText(context.state))
+                        .frame(maxWidth: .infinity)
+                        .padding(.trailing, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    // (The static "HR" title label used to sit here. It is not lost data — it was a
-                    // fixed string naming the session — and the region now leads with a heart icon
-                    // beside a live heart rate, which says the same thing with the space earning
-                    // its place.)
+                    // The day's four pairs. Sleep moved up to the top row, so this row is Effort,
+                    // Steps, Cal and Water — evenly divided rather than Spacer-separated, which is
+                    // what let the first and last columns drift into the corners.
                     //
-                    // The day's pairs (260905, maintainer: "I want the expanded dynamic HR to have
-                    // the various things I asked for as well" — "sleep target, steps n/t, cal n/t,
-                    // effort n/t, water n/t").
-                    //
-                    // The COLLAPSED island is now a pure heart-rate readout, so this is where the
-                    // day lives; expanding is the deliberate act of asking for it. Steps rejoins
-                    // here — it was banner-only from 260830 ("I don't need steps in the island"),
-                    // and this instruction names it explicitly, which supersedes that.
-                    //
-                    // Five equal columns in the bottom region rather than the trailing one: the
-                    // trailing slot shares its row with the leading HR and would clip five pairs.
-                    HStack(spacing: 6) {
+                    // `maxWidth: .infinity` on each column makes them equal-width and centres each
+                    // value in its own share, so the outermost ones sit inside the region instead of
+                    // against its edge. The horizontal padding keeps that share clear of the curve.
+                    HStack(spacing: 0) {
                         statColumn(label: "Effort", value: effortNTText(context.state))
-                        Spacer(minLength: 0)
+                            .frame(maxWidth: .infinity)
                         statColumn(label: "Steps", value: stepsText(context.state))
-                        Spacer(minLength: 0)
+                            .frame(maxWidth: .infinity)
                         statColumn(label: "Cal", value: calText(context.state))
-                        Spacer(minLength: 0)
+                            .frame(maxWidth: .infinity)
                         statColumn(label: "Water", value: waterText(context.state))
-                        Spacer(minLength: 0)
-                        statColumn(label: "Sleep", value: sleepText(context.state))
+                            .frame(maxWidth: .infinity)
                     }
+                    .padding(.horizontal, 4)
                 }
             } compactLeading: {
                 // Grey heart = link down (the compact face of the same cue). Deliberately NOT applied
@@ -236,8 +243,16 @@ private func bannerStat(label: String, value: String) -> some View {
 private func statColumn(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 1) {
         Text(label).font(.caption2).foregroundStyle(.secondary)
-        Text(value).font(.headline)
+        Text(value)
+            .font(.headline)
+            // 260905: shrink rather than clip. `fixedSize` below keeps a column from being squeezed
+            // narrower than its content, which is what stops a value wrapping mid-number — but with
+            // four equal columns sharing the bottom region, a wide pair ("1830/2650") can want more
+            // than its quarter. Allowing one step of shrink means it narrows to fit instead of
+            // overflowing its share into the neighbour or the corner curve.
+            .minimumScaleFactor(0.75)
+            .lineLimit(1)
     }
     .multilineTextAlignment(.center)
-    .fixedSize()
+    .fixedSize(horizontal: false, vertical: true)
 }
