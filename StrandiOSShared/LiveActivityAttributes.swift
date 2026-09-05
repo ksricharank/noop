@@ -8,6 +8,10 @@ import ActivityKit
 public struct NOOPActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         public var bpm: Int?
+        /// Charge (0-100). No longer RENDERED anywhere (260905 — the maintainer removed it from the
+        /// expanded island, the last surface that showed it), but still populated on every push: it
+        /// is the decode-continuity field for activities re-adopted across a build change, exactly
+        /// as `bpm` was while the HR column was away, and it costs nothing to carry.
         public var recovery: Int?
         public var bonded: Bool
         // Effort / strain on NOOP's 0–100 axis (#446) — one more stat in the Dynamic Island expanded
