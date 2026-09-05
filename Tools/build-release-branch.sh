@@ -29,7 +29,32 @@ RELEASE_BRANCH="${RELEASE_BRANCH:-release}"
 # rebased every feature branch onto.
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin"
-UPSTREAM="$UPSTREAM_REMOTE/main"
+# The BASE the stack is built on. Defaults to the pinned tag below rather than to the remote's
+# moving main.
+#
+# WHY A PIN (260905): the v16 line is deliberately built on the v11.1.0 TAG — "a released point is
+# a tested one", per the FEATURES notes. That was only ever true by accident: the script hardcoded
+# $UPSTREAM_REMOTE/main, and it happened to equal the tag on the day v16 was created. Nothing kept
+# it there. By the 16.4 cut local upstream/main was 38 commits past the tag, and the first assembly
+# came out carrying ~40 upstream commits that were never in the installed build — caught only by
+# diffing the assembly against the previous release branch and noticing the file count.
+#
+# The 16.5 cut then hit the SAME trap by a different route: pointing UPSTREAM_REMOTE at a bare ref
+# made `git remote get-url` fail, and the fallback silently selected origin/main — the fork's
+# mirror, which has DIVERGED from the tag. A silent fallback to the wrong base is the failure mode
+# worth engineering out, so the base is now stated here and verified below.
+#
+# To track upstream's main again (a future uplift), pass UPSTREAM_REF=upstream/main explicitly, or
+# move the pin. Either way it is a decision someone made, not an accident of fetch timing.
+UPSTREAM_PINNED_REF="v11.1.0"
+UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_PINNED_REF}"
+if ! UPSTREAM_SHA="$(git rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}")"; then
+  echo "FATAL: UPSTREAM_REF '$UPSTREAM_REF' does not resolve to a commit." >&2
+  echo "       Nothing was built. Fetch it, or pass a ref that exists — this used to fall back to" >&2
+  echo "       a remote's main silently and build the release on the wrong base." >&2
+  exit 1
+fi
+UPSTREAM="$UPSTREAM_REF"
 
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
