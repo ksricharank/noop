@@ -114,3 +114,71 @@ final class LiveActivityPresentationPolicyTests: XCTestCase {
         }
     }
 }
+
+/// The lock-screen card's columns (260905).
+///
+/// Structural, because the widget extension's view code is not linked into the test target and its
+/// helpers are file-private: what can be checked is WHICH columns the card is built from, and that
+/// is exactly the thing this change is about.
+///
+/// Maintainer instruction: "for the lock screen live notification, I realized I want HR, plus steps
+/// n/t cal n/t, effort n/t" — and, separately and explicitly, "for the dynamic island, we have the
+/// right behavior". So the card changes and the island must NOT, which is the pairing worth pinning:
+/// an edit to this file that improves the card while quietly restyling the island would satisfy the
+/// first half of the instruction and break the second.
+final class LiveActivityBannerColumnsTests: XCTestCase {
+
+    private var source: String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("StrandiOSWidgets/NOOPLiveActivity.swift")
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    /// Isolate the Lock-Screen banner: everything before the `dynamicIsland:` closure.
+    private var bannerBlock: String {
+        let src = source
+        guard let end = src.range(of: "} dynamicIsland: { context in") else { return "" }
+        return String(src[src.startIndex..<end.lowerBound])
+    }
+
+    /// Isolate the island: everything from that closure on.
+    private var islandBlock: String {
+        let src = source
+        guard let start = src.range(of: "} dynamicIsland: { context in") else { return "" }
+        return String(src[start.lowerBound...])
+    }
+
+    func testTheBannerCarriesHRStepsCalAndEffort() {
+        let banner = bannerBlock
+        XCTAssertFalse(banner.isEmpty, "could not isolate the Lock-Screen banner")
+        for column in ["HR", "Steps", "Cal", "Effort"] {
+            XCTAssertTrue(banner.contains("bannerStat(label: \"\(column)\""),
+                          "the Lock-Screen card must carry a \(column) column")
+        }
+        XCTAssertTrue(banner.contains("hrText(context.state)"),
+                      "HR must render through hrText, which carries the live `~` marker")
+    }
+
+    /// Sleep left the CARD (four columns is what fits at this type size) but must still read in the
+    /// expanded island — the instruction moved it, it did not delete it.
+    func testSleepLeftTheCardButNotTheIsland() {
+        XCTAssertFalse(bannerBlock.contains("bannerStat(label: \"Sleep\""),
+                       "Sleep gave up its column to HR; a fifth column does not fit")
+        XCTAssertTrue(islandBlock.contains("statColumn(label: \"Sleep\""),
+                      "the expanded island must still show Sleep — the maintainer asked for the "
+                      + "island to be left exactly as it was")
+    }
+
+    /// THE ISLAND IS UNCHANGED. Pinned explicitly because the instruction was explicit: the compact
+    /// slot still carries today's effort, not the heart rate an earlier draft of this change put
+    /// there before the maintainer reverted the scope.
+    func testTheIslandStillShowsEffortNotHR() {
+        let island = islandBlock
+        XCTAssertTrue(island.contains("Text(effortNowText(context.state))"),
+                      "the compact trailing slot must still show effort")
+        XCTAssertFalse(island.contains("hrText(context.state)"),
+                       "HR belongs to the Lock-Screen card only — the island was explicitly left "
+                       + "alone")
+    }
+}
