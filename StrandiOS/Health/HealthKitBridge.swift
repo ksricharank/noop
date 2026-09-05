@@ -308,15 +308,26 @@ final class HealthKitBridge: ObservableObject {
     /// Step count is observed ONLY when the wearer has chosen Apple Health as their step source
     /// (260905).
     ///
-    /// The list above deliberately excludes steps, and its stated reason is that steps "don't move a
-    /// score". The steps-source toggle makes that false: with Apple preferred, the count feeds the
-    /// steps target, the pacing check-ins' proration and the day-quality score, so a stale figure is
-    /// now a wrong nudge rather than a cosmetic lag.
+    /// The list above excludes steps because they "don't move a score". That was already only
+    /// half-true — the day-quality score's execution half grades steps against their target, and a
+    /// pacing check-in compares them with the prorated pace — but it held in PRACTICE, because the
+    /// count those readers see came from the strap and arrived with every offload (~10 min).
     ///
-    /// Gated rather than added outright because the rationale only flips for wearers who chose
-    /// Apple. On the default (strap) the strap's own count already arrives with each offload, an
-    /// hourly wake would buy nothing, and this fork's whole thread is trimming background wakes —
-    /// so a strap-preferring install must pay nothing for a feature it is not using.
+    /// CORRECTION (260905): an earlier revision of this comment claimed the steps-source toggle
+    /// makes the count feed the steps TARGET. It does not. `DailyTargets.stepsTarget` takes only
+    /// charge and readiness, and neither `ReadinessEngine` nor the recovery math reads steps, so the
+    /// target is independent of this preference. The toggle moves the NUMERATOR only.
+    ///
+    /// The real reason to observe: with Apple preferred, the numerator's freshness stops being the
+    /// strap's. `Repository`'s merge re-runs every offload, but it can only merge the Apple rows
+    /// already stored, and those are refreshed by `sync` alone — foreground, or an hourly observer
+    /// wake for some OTHER type. Without an observer of its own, a background pacing nudge could
+    /// grade an hour-old step count however often the merge ran.
+    ///
+    /// Gated rather than added outright because that only applies to wearers who chose Apple. On the
+    /// default the strap's count still arrives with each offload, an hourly wake would buy nothing,
+    /// and this fork's whole thread is trimming background wakes — so a strap-preferring install
+    /// must pay nothing for a feature it is not using.
     private static var liveStepsIds: [HKQuantityTypeIdentifier] {
         StepsSourcePrefs.prefersAppleHealth ? [.stepCount] : []
     }
