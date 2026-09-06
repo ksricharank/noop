@@ -208,24 +208,70 @@ public enum DailyTargets {
     public static let stepsFloorPerDay = 4_000
     public static let stepsCapPerDay = 12_000
 
-    /// Today's step target: charge band sets the base (recover 6k / maintain 8k / push 10k; unknown
-    /// charge = maintain), the readiness read notches it down when the body says ease off, clamped
-    /// 4k–12k. Primed adds nothing — a green day already asks 10k, and steps are not where a primed
-    /// body's headroom should go (the session is).
+    /// Rounding granularity for the step target (260906, maintainer's ask: "almost continuous").
+    ///
+    /// 50 steps rather than 1: the target is an ask, not a measurement, and a number like 7,438 reads
+    /// as false precision for something derived from a 0–100 charge score. 50 is fine enough that a
+    /// single point of charge moves the number, which is the whole point of the change.
+    public static let stepsRoundPerDay = 50
+
+    /// Today's step target: CONTINUOUS in charge (260906), the readiness read notches it down when the
+    /// body says ease off, clamped 4k–12k. Primed adds nothing — a green day already asks the push
+    /// figure, and steps are not where a primed body's headroom should go (the session is).
+    ///
+    /// ## Why interpolated rather than banded
+    ///
+    /// This used to pick one of three bases by charge band, so charge 34 and charge 66 both asked for
+    /// exactly 8,000 while charge 66→67 jumped the ask by 2,000 steps in a single point. The bands
+    /// were never a physiological claim — the population evidence supports the 7–10k RANGE, not three
+    /// points inside it — so the cliff was an artefact of the encoding, not of the science.
+    ///
+    /// The three published anchors are preserved EXACTLY (recover ceiling → 6k, push floor → 10k, and
+    /// the midpoint between them → 8k), so this is a refinement of the same curve rather than a new
+    /// target scale: any charge that previously sat on a band edge still gets that band's number.
+    /// Between the anchors the ask moves linearly, rounded to `stepsRoundPerDay`.
+    ///
+    /// Unknown charge still asks the maintain figure: no reading is not evidence of a low day.
     public static func stepsTarget(charge: Int?, readiness: ReadinessEngine.Level) -> Int {
-        let base: Int
-        switch charge {
-        case .some(let c) where c >= pushChargeFloor: base = stepsBasePushPerDay
-        case .some(let c) where c <= recoverChargeCeiling: base = stepsBaseRecoverPerDay
-        default: base = stepsBaseMaintainPerDay
-        }
+        let base = stepsBaseForCharge(charge)
         let notch: Int
         switch readiness {
         case .rundown: notch = stepsRundownAdj
         case .strained: notch = stepsStrainedAdj
         default: notch = 0
         }
-        return min(max(base + notch, stepsFloorPerDay), stepsCapPerDay)
+        let rounded = ((Double(base + notch) / Double(stepsRoundPerDay)).rounded()
+                       * Double(stepsRoundPerDay))
+        return min(max(Int(rounded), stepsFloorPerDay), stepsCapPerDay)
+    }
+
+    /// The continuous charge→steps curve, before the readiness notch and the clamp.
+    ///
+    /// Piecewise-linear through the three anchors rather than one straight line end to end: the
+    /// recover→maintain and maintain→push halves have different slopes (2k over 17 points vs 2k over
+    /// 34), and flattening them into a single line would move the maintain figure off 8k for the
+    /// mid-charge days that are the most common case. Outside the anchors the value is held, not
+    /// extrapolated — charge 5 and charge 33 are both "recover", and there is no evidence for asking
+    /// less than the recover figure as charge approaches zero (the readiness notch is what handles a
+    /// body that is genuinely rundown).
+    static func stepsBaseForCharge(_ charge: Int?) -> Int {
+        guard let c = charge else { return stepsBaseMaintainPerDay }
+        let mid = Double(recoverChargeCeiling + pushChargeFloor) / 2.0
+        let v: Double
+        if Double(c) <= Double(recoverChargeCeiling) {
+            v = Double(stepsBaseRecoverPerDay)
+        } else if Double(c) >= Double(pushChargeFloor) {
+            v = Double(stepsBasePushPerDay)
+        } else if Double(c) <= mid {
+            let t = (Double(c) - Double(recoverChargeCeiling)) / (mid - Double(recoverChargeCeiling))
+            v = Double(stepsBaseRecoverPerDay)
+                + t * Double(stepsBaseMaintainPerDay - stepsBaseRecoverPerDay)
+        } else {
+            let t = (Double(c) - mid) / (Double(pushChargeFloor) - mid)
+            v = Double(stepsBaseMaintainPerDay)
+                + t * Double(stepsBasePushPerDay - stepsBaseMaintainPerDay)
+        }
+        return Int(v.rounded())
     }
 
     // MARK: - Tonight's sleep need
