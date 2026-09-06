@@ -22,13 +22,33 @@ struct DailyTargetsStrip: View {
     /// The "How these were set" disclosure — collapsed by default, session-local state.
     @State private var showDerivations = false
 
+    /// The day to show, as a `yyyy-MM-dd` key. Nil (the default) means TODAY and keeps the memoized
+    /// live path every other surface uses — so an existing call site, and every non-browsable host,
+    /// behaves exactly as before.
+    ///
+    /// 260906: the strip previously took no day at all and always read `repo.cachedLiveTargets()`,
+    /// which is hard-anchored to today three ways over (`now: Date()` → `todayKey`, a
+    /// `cachedWidgetAnchor(now:)` driving every denominator, and the today-only hydration cache).
+    /// Browsing to a past day on Today therefore moved the rest of the synthesis section but left all
+    /// four n/t pairs showing today's numbers.
+    var day: String? = nil
+
     var body: some View {
         // Reading `repo.hydrationSeq` is what subscribes this view to water writes: hydration
         // deliberately never bumps `refreshSeq` (#989), so without this the row would not re-render
         // on a logged cup even though the targets memo now recomputes. It also joins the memo key,
         // so the read is load-bearing twice over — never delete it as unused.
         let hydrationSeq = repo.hydrationSeq
-        let targets = repo.cachedLiveTargets()
+        // A browsed past day takes the explicit read; today keeps the memo.
+        //
+        // A browsed day with NO row must NOT fall back to `cachedLiveTargets()`: that would print
+        // today's numbers under a past date, which is precisely the defect being fixed here (and it
+        // would look like data rather than like an absence). An empty `LiveTargets` renders every cell
+        // as "—", which is the honest read for a day the app has nothing for.
+        let targets: LiveTargets = {
+            guard let day else { return repo.cachedLiveTargets() }
+            return repo.liveTargets(forDay: day) ?? LiveTargets()
+        }()
         // 2×2 grid (260830 revision: four cells in one row collided at "1214/2075" widths) — Steps
         // and Cal on top, Effort and Sleep below, per the maintainer's slotting. One distinct data
         // colour per metric, the SAME mapping the widgets use, so the two surfaces read as one.

@@ -911,6 +911,45 @@ final class Repository: ObservableObject {
                 target: HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: basis))
     }
 
+    /// `LiveTargets` for an EXPLICIT past day — what the synthesis strip shows when the wearer
+    /// browses back through the day picker.
+    ///
+    /// Separate from `cachedLiveTargets()` on purpose, and the separation is load-bearing. That method
+    /// is what the Live Activity, the widget faces, the pacing notifications and the coach all read
+    /// (StrandiOSApp, WidgetPublish, AppModel, AICoach) — every one of those MUST stay pinned to today,
+    /// because a widget or a pace notification quoting a browsed historical day would be a worse bug
+    /// than the stale strip this fixes. So the today path keeps its memo and its defaults untouched and
+    /// past days take this road instead.
+    ///
+    /// Returns nil for a day with no row, rather than a zeroed bundle: absent is not the same as zero,
+    /// and the strip renders "—" for a day it has nothing for.
+    ///
+    /// Deliberately NOT memoized. `LiveTargetsMemo`'s key is (refreshSeq, hydrationSeq, logicalKey,
+    /// localKey) — the browsed day is not in it, so routing past days through that memo would return
+    /// today's bundle no matter what was asked for. That is half of the original defect, not a
+    /// performance detail: the call is a filter plus one pure derivation, and it runs on a day change,
+    /// not per frame.
+    ///
+    /// Mirrors `waterCupsAndTarget(forDay:)` above: filter `days` to the browsed day and earlier so the
+    /// baselines see only what was known THEN, and drive the charge band from that day's own row rather
+    /// than from `cachedWidgetAnchor`, which is anchored on today.
+    func liveTargets(forDay day: String) -> LiveTargets? {
+        let upTo = days.filter { $0.day <= day }
+        guard let row = upTo.last(where: { $0.day == day }) else { return nil }
+        let waterOn = UserDefaults.standard.bool(forKey: HydrationStore.enabledKey)
+        let profile = liveTargetsProfile?() ?? UserProfile()
+        // The per-entry hydration log, not `hydrationTodayCachedML` — that cache legitimately holds
+        // only the current day, and reading it here is exactly how water stayed stuck on today.
+        let waterML = waterOn ? HydrationStore.manualML(day: day) : nil
+        return Self.liveTargets(days: upTo,
+                                charge: row.recovery.map { Int($0.rounded()) },
+                                restScore: restScore(for: row),
+                                profile: profile,
+                                todayKey: day,
+                                waterTodayML: waterML,
+                                waterEnabled: waterOn)
+    }
+
     /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
     /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
     /// the charge band, keeping the card and the targets on one day).

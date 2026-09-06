@@ -2383,14 +2383,21 @@ struct TodayView: View {
             // 260830: today's three target numbers, big and readable BEFORE the narrative that
             // explains them — the targets analogue of the hero's Charge · Effort · Rest. Liquid twin:
             // the same strip inside LiquidTodayView's synthesis card; keep the two in step.
-            DailyTargetsStrip()
+            // Offset 0 passes nil so today keeps the memoized live path every other surface
+            // reads; a browsed day passes its key so the four n/t pairs follow the picker.
+            DailyTargetsStrip(day: selectedDayOffset == 0 ? nil : selectedDayKey)
                 .padding(.horizontal, 2)
 
             // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
             // classic/liquid divergence as a bug). Always shown — the S4 collapse is gone. When the
             // coach has written TODAY's synthesis, its prose replaces the rule-based horizons (it
             // covers the same timescales); every fallback case renders the rule-based read.
-            if let ai = coach.synthesisText,
+            // 260906: gated on offset 0 as well. The coach synthesis is always written ABOUT today
+            // ("synthesisIsCurrent" is a freshness check, not a day match), so on a browsed past day
+            // it narrated today's numbers under yesterday's date — the same stale-today class of bug
+            // as the n/t strip beside it. A past day falls through to the rule-based horizons, which
+            // read `displayDay`.
+            if selectedDayOffset == 0, let ai = coach.synthesisText,
                AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
                 aiSynthesisCard(ai)
             } else {

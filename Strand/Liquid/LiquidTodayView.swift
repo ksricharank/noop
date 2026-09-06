@@ -1207,12 +1207,18 @@ struct LiquidTodayView: View {
                         // 260830: today's three target numbers, big and readable BEFORE the narrative
                         // that explains them — the targets analogue of Charge · Effort · Rest above.
                         // Classic twin: the same strip in TodayView.synthesisSection; keep in step.
-                        DailyTargetsStrip()
+                        // Offset 0 passes nil so today keeps the memoized live path every other surface
+                        // reads; a browsed day passes its key so the four n/t pairs follow the picker.
+                        DailyTargetsStrip(day: selectedDayOffset == 0 ? nil : selectedDayKey)
                         // The coach-written synthesis, when the provider has answered TODAY, replaces
                         // the rule-based summary + horizons (its prose covers the same horizons).
                         // Unconfigured / no consent / not-yet-answered / stale-day all fall back to
                         // the rule-based read below, unchanged.
-                        if let ai = coach.synthesisText,
+                        // 260906: `selectedDayOffset == 0` matches the classic Today. The synthesis is
+                        // written ABOUT today (synthesisIsCurrent is freshness, not a day match), so a
+                        // browsed past day must fall through to the rule-based read rather than narrate
+                        // today's numbers under an older date.
+                        if selectedDayOffset == 0, let ai = coach.synthesisText,
                            AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
                             // 260903: a titled, collapsible section with a rule above it. Without
                             // the divider the coach's Markdown ran straight on from the "How these
