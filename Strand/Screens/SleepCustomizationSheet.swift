@@ -99,6 +99,7 @@ extension SleepSection {
         case .sleepDebt:       return "arrow.down.right.circle"
         case .stagesVsTypical: return "chart.bar"
         case .asleepDuration:  return "clock"
+        case .restTrend:       return "chart.line.uptrend.xyaxis"
         }
     }
 
@@ -113,6 +114,7 @@ extension SleepSection {
         case .sleepDebt:       return StrandPalette.effortColor
         case .stagesVsTypical: return StrandPalette.restColor
         case .asleepDuration:  return StrandPalette.restBright
+        case .restTrend:       return StrandPalette.restColor
         }
     }
 }

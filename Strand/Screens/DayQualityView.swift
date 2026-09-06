@@ -30,24 +30,17 @@ struct DayQualityView: View {
     @State private var scoresByDay: [String: Double] = [:]
     /// Index back through the SCORED days, newest first. 0 = the most recent scored day.
     @State private var dayIndex = 0
-    /// Which window the trend section covers. Local to this screen: the Trends page's own range
-    /// selector drives the charts over there, and sharing one selector across two screens would make
-    /// each surprise the other.
-    @State private var range = TrendWindow.month
+    /// Which window the trend section covers. Local to this screen — the Trends page has its own
+    /// selector, and sharing one across two screens would make each surprise the other.
+    @State private var window = Self.windows[1]
 
-    /// The trend windows offered. Deliberately fewer than the Trends page's: this screen is about one
-    /// score and its recent shape, and a year of day-quality is the Trends chart's job.
-    enum TrendWindow: Int, CaseIterable, Identifiable {
-        case fortnight = 14, month = 30, quarter = 90
-        var id: Int { rawValue }
-        var label: String {
-            switch self {
-            case .fortnight: return "14d"
-            case .month: return "30d"
-            case .quarter: return "90d"
-            }
-        }
-    }
+    /// 260906: day quality now owns the full span, since the Trends page no longer carries it at all
+    /// (maintainer: "remove day quality completely from the trends section"). A year is included
+    /// because the calendar strip below the chart is worth a long view.
+    static let windows: [ScoreTrendSection.Window] = [
+        .init(days: 14, label: "14d"), .init(days: 30, label: "30d"),
+        .init(days: 90, label: "90d"), .init(days: 365, label: "1y"),
+    ]
 
     /// Scored days, newest first — the axis `dayIndex` walks.
     private var scoredDays: [String] { scoresByDay.keys.sorted().reversed() }
@@ -61,8 +54,11 @@ struct DayQualityView: View {
             // The score itself, the breakdown and the narrative — the existing card, pointed at the
             // browsed day.
             DayQualityCard(scoresByDay: scoresByDay, dayIndex: dayIndex)
-            trendSection
+            ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
+                              windows: Self.windows, window: $window,
+                              lowLabel: "Light", highLabel: "Excellent")
             weekInReview
+            DayQualitySettingsCard()
         }
         .task(id: repo.days.count) { await load() }
         // A reload can shorten the series while the screen is open; an index left past the end would
@@ -126,67 +122,6 @@ struct DayQualityView: View {
         if cal.isDateInToday(d) { return String(localized: "Today") }
         if cal.isDateInYesterday(d) { return String(localized: "Yesterday") }
         return Self.dayFormatter.string(from: d)
-    }
-
-    // MARK: - Trend
-
-    /// The scored series over the selected window, newest last (chart order).
-    private var windowPoints: [TrendPoint] {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -range.rawValue, to: Date())
-        return scoresByDay.keys.sorted().compactMap { key -> TrendPoint? in
-            guard let date = Self.dayParser.date(from: key), let v = scoresByDay[key] else { return nil }
-            if let cutoff, date < cutoff { return nil }
-            return TrendPoint(date: date, value: v, segment: "day_quality")
-        }
-    }
-
-    @ViewBuilder
-    private var trendSection: some View {
-        let pts = windowPoints
-        // Same 7-vs-previous-7 comparison the Trends page's day-quality card makes, so the two agree.
-        let recent = pts.suffix(7).map(\.value)
-        let prior = pts.dropLast(7).suffix(7).map(\.value)
-        let recentAvg = recent.isEmpty ? nil : recent.reduce(0, +) / Double(recent.count)
-        let priorAvg = prior.isEmpty ? nil : prior.reduce(0, +) / Double(prior.count)
-        let delta: Double? = (recentAvg != nil && priorAvg != nil) ? recentAvg! - priorAvg! : nil
-
-        VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-            Picker("Window", selection: $range) {
-                ForEach(TrendWindow.allCases) { w in Text(w.label).tag(w) }
-            }
-            .pickerStyle(.segmented)
-
-            if pts.count >= 2 {
-                ChartCard(
-                    title: "Day quality trend",
-                    subtitle: "Last \(range.rawValue) days",
-                    trailing: recentAvg.map { "\(Int($0.rounded()))" },
-                    height: NoopMetrics.chartHeight,
-                    chart: {
-                        TrendChart(points: pts,
-                                   gradient: StrandPalette.recoveryGradient,
-                                   valueRange: 0...106,
-                                   accessibilityLabel: String(localized: "Day quality trend"),
-                                   nowCapColor: StrandPalette.chargeBright)
-                    },
-                    footer: {
-                        ChartFooter([
-                            ("Last 7", recentAvg.map { "\(Int($0.rounded()))" } ?? "—"),
-                            ("vs prev 7", delta.map { String(format: "%+.0f", $0) } ?? "—"),
-                            ("Best", pts.map(\.value).max().map { "\(Int($0.rounded()))" } ?? "—"),
-                            ("Days", "\(pts.count)"),
-                        ])
-                    })
-                .accessibilityElement(children: .contain)
-            } else {
-                NoopCard {
-                    Text("Not enough scored days in this window to draw a trend yet.")
-                        .font(StrandFont.footnote)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
     }
 
     // MARK: - Week in review
