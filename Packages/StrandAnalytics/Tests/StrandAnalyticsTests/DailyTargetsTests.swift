@@ -105,8 +105,10 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertLessThan(sessionTarget, 4_000)
     }
 
-    /// The step target is bands + notches, never history: charge band sets 6/8/10k (unknown = 8k),
-    /// rundown −2k / strained −1k, clamped 4k–12k. Pinned across the ladder.
+    /// The step target is charge + notches, never history. 260906: the charge term is now CONTINUOUS
+    /// (was three bands), but the three published anchors are unchanged — recover ceiling → 6k, the
+    /// midpoint → 8k, push floor → 10k — so this ladder still pins the same numbers it always did.
+    /// Rundown −2k / strained −1k, clamped 4k–12k.
     func testStepsTargetLadder() {
         XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .balanced), 10_000)
         XCTAssertEqual(DailyTargets.stepsTarget(charge: 50, readiness: .balanced), 8_000)
@@ -117,6 +119,54 @@ final class DailyTargetsTests: XCTestCase {
                        "recover base minus the rundown notch pins to the floor")
         XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .primed), 10_000,
                        "primed adds nothing — the session is where primed headroom goes")
+    }
+
+    /// The anchors the continuous curve must reproduce EXACTLY, stated separately from the ladder
+    /// above so the intent is explicit: this change refines the curve BETWEEN the published points,
+    /// it does not move the points. A day that previously sat on a band edge keeps its number.
+    func testTheContinuousCurveKeepsThePublishedAnchors() {
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: DailyTargets.recoverChargeCeiling,
+                                                readiness: .balanced), 6_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: DailyTargets.pushChargeFloor,
+                                                readiness: .balanced), 10_000)
+        let mid = (DailyTargets.recoverChargeCeiling + DailyTargets.pushChargeFloor) / 2
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: mid, readiness: .balanced), 8_000)
+    }
+
+    /// The point of the change: the target must actually vary inside the old bands. Charge 34 and 66
+    /// both asked for exactly 8,000 before, and 66→67 jumped 2,000 steps in a single point.
+    func testTheTargetVariesInsideTheOldBands() {
+        let a = DailyTargets.stepsTarget(charge: 40, readiness: .balanced)
+        let b = DailyTargets.stepsTarget(charge: 60, readiness: .balanced)
+        XCTAssertNotEqual(a, b, "two mid-charge days must no longer share one target")
+        XCTAssertGreaterThan(b, a, "more charge asks for more walking")
+        // No single point of charge may move the ask by a band-sized jump any more.
+        for c in 1...100 {
+            let step = abs(DailyTargets.stepsTarget(charge: c, readiness: .balanced)
+                           - DailyTargets.stepsTarget(charge: c - 1, readiness: .balanced))
+            XCTAssertLessThanOrEqual(step, 200,
+                                     "charge \(c-1)→\(c) moved the target by \(step); the cliff is back")
+        }
+    }
+
+    /// Monotonic across the whole charge range: more charge never asks for LESS walking. A curve that
+    /// dipped anywhere would be incoherent as an ask regardless of how smooth it looked.
+    func testTheCurveIsMonotonicInCharge() {
+        var previous = 0
+        for c in 0...100 {
+            let t = DailyTargets.stepsTarget(charge: c, readiness: .balanced)
+            XCTAssertGreaterThanOrEqual(t, previous, "target dipped at charge \(c)")
+            previous = t
+        }
+    }
+
+    /// Outside the anchors the value is HELD, not extrapolated — charge 5 and charge 33 are both
+    /// "recover", and the readiness notch is what handles a genuinely rundown body. Extrapolating
+    /// would drive the ask below the recover figure purely because a score approached zero.
+    func testTheCurveIsHeldOutsideTheAnchors() {
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 0, readiness: .balanced), 6_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 5, readiness: .balanced), 6_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 100, readiness: .balanced), 10_000)
     }
 
     // MARK: - Tonight's sleep need (population base + the body's day)
