@@ -34,6 +34,11 @@ enum SleepSection: String, CaseIterable, Identifiable {
     case sleepDebt
     case stagesVsTypical
     case asleepDuration
+    /// 260906: the Rest-score trend — window selector, like-for-like comparison and calendar strip,
+    /// the same block the Day tab carries. Sleep previously had only a fixed 30-day duration chart
+    /// and no way to widen it (maintainer: "do the same thing wrt trends on sleep in the dedicated
+    /// sleep tab").
+    case restTrend
 
     var id: String { rawValue }
 
@@ -47,6 +52,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
         case .sleepDebt:       return String(localized: "Sleep-debt ledger")
         case .stagesVsTypical: return String(localized: "Stages vs typical")
         case .asleepDuration:  return String(localized: "Asleep duration")
+        case .restTrend:       return String(localized: "Rest trend")
         }
     }
 
@@ -56,6 +62,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// card is a follow-up that requires hoisting the hero's edit/delete callbacks.)
     static let defaultOrder: [SleepSection] = [
         .sleepMarks, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
+        .restTrend,
     ]
 }
 
