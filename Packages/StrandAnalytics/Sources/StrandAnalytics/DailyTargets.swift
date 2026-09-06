@@ -254,7 +254,7 @@ public enum DailyTargets {
     /// extrapolated — charge 5 and charge 33 are both "recover", and there is no evidence for asking
     /// less than the recover figure as charge approaches zero (the readiness notch is what handles a
     /// body that is genuinely rundown).
-    static func stepsBaseForCharge(_ charge: Int?) -> Int {
+    public static func stepsBaseForCharge(_ charge: Int?) -> Int {
         guard let c = charge else { return stepsBaseMaintainPerDay }
         let mid = Double(recoverChargeCeiling + pushChargeFloor) / 2.0
         let v: Double

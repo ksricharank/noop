@@ -197,29 +197,59 @@ enum TargetsExplainer {
             out.append(c.joined(separator: "\n"))
         }
 
-        // ── STEPS: charge band base, body-check reduction, bounds ────────────────────────────
+        // ── STEPS: the charge scale, body-check reduction, bounds ───────────────────────────
+        //
+        // 260906: rewritten with the target itself. The block used to name a "base 8000" from the
+        // old three-band formula and then print a different final number — the arithmetic in the
+        // text did not reach the answer beside it, which is worse than no explanation. It now states
+        // the base the CODE derived (`stepsBaseForCharge`) and shows base − reduction = target, the
+        // same shape the Calorie block uses.
         if let stepsTarget {
+            let base = DailyTargets.stepsBaseForCharge(charge)
             var st: [String] = ["STEP TARGET → \(stepsTarget)"]
-            st.append(chargeRung(charge,
-                                 low: "base \(DailyTargets.stepsBaseRecoverPerDay) steps",
-                                 mid: "base \(DailyTargets.stepsBaseMaintainPerDay) steps",
-                                 high: "base \(DailyTargets.stepsBasePushPerDay) steps"))
-            st.append("   (Charge ≤\(DailyTargets.recoverChargeCeiling) → \(DailyTargets.stepsBaseRecoverPerDay)"
-                      + " · \(DailyTargets.recoverChargeCeiling + 1)–\(DailyTargets.pushChargeFloor - 1)"
-                      + " → \(DailyTargets.stepsBaseMaintainPerDay)"
-                      + " · ≥\(DailyTargets.pushChargeFloor) → \(DailyTargets.stepsBasePushPerDay))")
+            if let charge {
+                st.append("Charge \(charge) → \(base) steps")
+            } else {
+                st.append("Charge not scored yet → \(base) steps")
+            }
+            // The scale, as two endpoints and the slope between them — the honest description of a
+            // continuous curve. Listing three bands would re-describe the formula this replaced.
+            st.append("   (the scale runs Charge \(DailyTargets.recoverChargeCeiling) →"
+                      + " \(DailyTargets.stepsBaseRecoverPerDay) up to Charge \(DailyTargets.pushChargeFloor) →"
+                      + " \(DailyTargets.stepsBasePushPerDay), sliding with every point in between)")
+            let reduction: Int
             switch readiness.level {
-            case .rundown:
-                st.append(bodyCheck(readiness, compact: true) + " → \(DailyTargets.stepsRundownAdj)")
-            case .strained:
-                st.append(bodyCheck(readiness, compact: true) + " → \(DailyTargets.stepsStrainedAdj)")
-            default:
+            case .rundown: reduction = DailyTargets.stepsRundownAdj
+            case .strained: reduction = DailyTargets.stepsStrainedAdj
+            default: reduction = 0
+            }
+            // `bodyCheck` already ENDS in its own verdict ("→ all normal" / "→ one signal down"),
+            // so the reduction is appended as a further arrow rather than as a second verdict —
+            // gluing another clause on produced "→ all normal, nothing taken off", two verdicts in
+            // one line.
+            if reduction != 0 {
+                st.append(bodyCheck(readiness, compact: true) + " → \(reduction) steps")
+            } else {
                 st.append(bodyCheck(readiness, compact: true) + " → no reduction")
             }
             st.append("   (several signals down → \(DailyTargets.stepsRundownAdj)"
                       + " · one down → \(DailyTargets.stepsStrainedAdj))")
-            st.append("never set below \(DailyTargets.stepsFloorPerDay) or above"
-                      + " \(DailyTargets.stepsCapPerDay) → \(stepsTarget)")
+            // Only mention the bounds when one ACTUALLY bit. "never set below 4000 or above 12000 →
+            // 9200" invited the reader to hunt for where 9200 came from and find nothing.
+            //
+            // Compared against the ROUNDED figure, not the raw base: `stepsTarget` has been through
+            // `stepsRoundPerDay`, so comparing it with the unrounded sum made the clamp line fire on
+            // ordinary days that were never clamped.
+            let beforeBounds = Int((Double(base + reduction) / Double(DailyTargets.stepsRoundPerDay))
+                                   .rounded()) * DailyTargets.stepsRoundPerDay
+            if beforeBounds != stepsTarget {
+                st.append("kept inside \(DailyTargets.stepsFloorPerDay)–\(DailyTargets.stepsCapPerDay)"
+                          + " → \(stepsTarget)")
+            } else {
+                st.append("target = \(stepsTarget)"
+                          + " (rounded to the nearest \(DailyTargets.stepsRoundPerDay)"
+                          + " so the number doesn't pretend to be exact)")
+            }
             out.append(st.joined(separator: "\n"))
         }
 

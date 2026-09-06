@@ -81,14 +81,20 @@ final class TargetsExplainerTests: XCTestCase {
                                          + " ≈ \(sessionKcal) kcal more"), blocks[1])
         XCTAssertTrue(blocks[1].contains("\(kcalTarget - sessionKcal) + \(sessionKcal) = \(kcalTarget)"),
                       blocks[1])
-        // STEPS: base rung, compact body check, plain bounds line ending in the target.
+        // STEPS: the charge-derived base, compact body check, and a closing line that lands on the
+        // target. 260906: the block used to name a "base 8000" from the retired three-band formula
+        // and then print a different final number, so the arithmetic in the text did not reach the
+        // answer beside it.
         XCTAssertTrue(blocks[2].hasPrefix("STEP TARGET → \(stepsTarget)"), blocks[2])
-        XCTAssertTrue(blocks[2].contains("→ base \(DailyTargets.stepsBasePushPerDay) steps"), blocks[2])
-        XCTAssertTrue(blocks[2].contains("body check: HRV 62 ≈ your usual 60,"
-                                         + " resting HR 55 ≈ your usual 56 → all normal → no reduction"),
+        XCTAssertTrue(blocks[2].contains("Charge 80 → \(DailyTargets.stepsBaseForCharge(80)) steps"),
                       blocks[2])
-        XCTAssertTrue(blocks[2].contains("never set below \(DailyTargets.stepsFloorPerDay) or above"
-                                         + " \(DailyTargets.stepsCapPerDay) → \(stepsTarget)"), blocks[2])
+        XCTAssertTrue(blocks[2].contains("body check: HRV 62 ≈ your usual 60,"
+                                         + " resting HR 55 ≈ your usual 56 → all normal"
+                                         + " → no reduction"),
+                      blocks[2])
+        XCTAssertTrue(blocks[2].contains("target = \(stepsTarget)"), blocks[2])
+        XCTAssertFalse(blocks[2].contains("base 8000"),
+                       "the retired band language must not reappear: " + blocks[2])
         // SLEEP: standard need, +0 rungs still printed, the debt payback in plain words.
         XCTAssertTrue(blocks[3].hasPrefix("SLEEP TARGET → "), blocks[3])
         XCTAssertTrue(blocks[3].contains("standard need for a 34-year-old:"), blocks[3])
@@ -176,9 +182,18 @@ final class TargetsExplainerTests: XCTestCase {
         // CAL: the resting day alone, the no-workout line explicit, sum still exact.
         XCTAssertTrue(blocks[1].contains("no workout today → nothing added"), blocks[1])
         XCTAssertTrue(blocks[1].contains("target = \(kcalTarget)"), blocks[1])
-        // STEPS: recover base and the several-signals reduction.
-        XCTAssertTrue(blocks[2].contains("base \(DailyTargets.stepsBaseRecoverPerDay) steps"), blocks[2])
-        XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj)"), blocks[2])
+        // STEPS: the charge-derived base and the several-signals reduction.
+        //
+        // The recover base minus the rundown notch lands EXACTLY on the floor (6000 − 2000 = 4000),
+        // so the clamp does not bite and the block closes with the plain "target =" line. That is
+        // the point of the 260906 change: the bounds are cited only when they actually moved the
+        // number, and here they did not — they merely coincide with it.
+        let restDayTarget = DailyTargets.stepsTarget(charge: 20, readiness: .rundown)
+        XCTAssertEqual(restDayTarget, DailyTargets.stepsFloorPerDay)
+        XCTAssertTrue(blocks[2].contains("Charge 20 → \(DailyTargets.stepsBaseForCharge(20)) steps"),
+                      blocks[2])
+        XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj) steps"), blocks[2])
+        XCTAssertTrue(blocks[2].contains("target = \(restDayTarget)"), blocks[2])
         // SLEEP: a balanced ledger still prints its rung.
         XCTAssertTrue(blocks[3].contains("your sleep ledger is even (within"
                                          + " \(Int(DailyTargets.debtDeadbandMin)) min) → +0 min"), blocks[3])
@@ -200,5 +215,59 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertTrue(blocks[0].contains("→ no workout today"), blocks[0])
         XCTAssertTrue(blocks[0].contains("last night's Rest 90 is great (\(DailyTargets.greatRestScore)"
                                          + " or above) → back on for \(session!.minutes) min"), blocks[0])
+    }
+}
+
+/// The step block must ARRIVE at the number it is explaining.
+///
+/// 260906, reported as "the new steps count logic doesn't make sense (at least the explanation
+/// doesn't)". The screenshot showed "Charge 60 is mid-range (34–66) → base 8000 steps" above a
+/// "STEP TARGET → 9200": the continuous curve had shipped in the previous build but the explainer
+/// still described the three bands it replaced, so the stated arithmetic could not reach the
+/// printed answer.
+@MainActor
+final class StepExplainerCoherenceTests: XCTestCase {
+
+    private func stepsBlock(charge: Int) -> String {
+        let readiness = ReadinessEngine.Readiness(level: .balanced, headline: "", summary: "",
+                                                  signals: [], acwr: nil, monotony: nil)
+        let target = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
+        let blocks = TargetsExplainer.lines(
+            charge: charge, readiness: readiness, restScore: nil, session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: target, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: UserProfile(), debtBalanceMin: 0)
+        return blocks.first { $0.hasPrefix("STEP TARGET") } ?? ""
+    }
+
+    /// Across the whole charge range the base the text names must be the base the CODE used, and the
+    /// block must state the final target. A mismatch is the exact defect reported.
+    func testTheStatedBaseMatchesTheDerivedBaseAtEveryCharge() {
+        for charge in stride(from: 0, through: 100, by: 5) {
+            let block = stepsBlock(charge: charge)
+            let base = DailyTargets.stepsBaseForCharge(charge)
+            let target = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
+            XCTAssertTrue(block.contains("Charge \(charge) → \(base) steps"),
+                          "charge \(charge): the named base must be the derived one — \(block)")
+            XCTAssertTrue(block.contains("\(target)"),
+                          "charge \(charge): the block must state the target it explains — \(block)")
+        }
+    }
+
+    /// The retired band vocabulary must be gone. Leaving "mid-range (34–66)" in place would keep
+    /// describing a formula the app no longer runs.
+    func testTheRetiredBandLanguageIsGone() {
+        for charge in [20, 50, 60, 80] {
+            let block = stepsBlock(charge: charge)
+            XCTAssertFalse(block.contains("mid-range"), "charge \(charge): \(block)")
+            XCTAssertFalse(block.contains("is high (≥"), "charge \(charge): \(block)")
+            XCTAssertFalse(block.contains("is low (≤"), "charge \(charge): \(block)")
+        }
+    }
+
+    /// The bounds line is only worth printing when a bound actually bit. "never set below 4000 or
+    /// above 12000 → 9200" invited the reader to hunt for where 9200 came from and find nothing.
+    func testTheBoundsAreOnlyMentionedWhenTheyBite() {
+        XCTAssertFalse(stepsBlock(charge: 60).contains("kept inside"),
+                       "an unclamped target must not cite the clamp")
     }
 }
