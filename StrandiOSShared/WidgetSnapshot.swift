@@ -372,8 +372,45 @@ public struct WidgetSnapshot: Codable, Equatable {
         private static let servedKey = "wps.ext.served"
         private static let servedDayKey = "wps.ext.servedDay"
         private static let lastServedKey = "wps.ext.lastServedAt"
+        /// 260906: when the APP last requested a reload, written by the app and read by the
+        /// extension. The pair (this, the moment getTimeline runs) is the only way to see the half of
+        /// the pipeline the app cannot observe on its own.
+        private static let reloadRequestedAtKey = "wps.ext.reloadRequestedAt"
+        /// Cumulative and worst-case milliseconds between a reload request and the extension actually
+        /// being asked to build. Day-keyed alongside `served`.
+        private static let lagSumMsKey = "wps.ext.lagSumMs"
+        private static let lagCountKey = "wps.ext.lagCount"
+        private static let lagMaxMsKey = "wps.ext.lagMaxMs"
 
         private static var store: UserDefaults? { UserDefaults(suiteName: WidgetSnapshot.suiteName) }
+
+        /// Called by the APP the moment it asks WidgetKit for a reload.
+        ///
+        /// 260906. The 260906 log proved our side of the pipeline is healthy — `unseen=0` (we never
+        /// sat on a change) and `served=60` against `requested=28` (iOS built MORE timelines than we
+        /// asked for) — and yet the faces still visibly trail the app. That leaves exactly two places
+        /// the delay can live, and the existing counters cannot tell them apart:
+        ///
+        ///   1. between our reload request and `getTimeline` running (WidgetKit scheduling), or
+        ///   2. between `getTimeline` returning and the system compositing the new view.
+        ///
+        /// Stamping the request here and measuring against the moment the extension runs settles (1)
+        /// directly. A small average with a stale-looking widget then points at (2), which is outside
+        /// anything the app controls and would end the search honestly rather than inviting another
+        /// speculative fix.
+        ///
+        /// One `Double` write on a path that already talks to the App Group.
+        public static func recordReloadRequested(now: Date = Date()) {
+            store?.set(now.timeIntervalSince1970, forKey: reloadRequestedAtKey)
+        }
+
+        /// The lag stats for the day, or nil when nothing has been measured yet.
+        public static func lag(dayKey: String) -> (count: Int, meanMs: Int, maxMs: Int)? {
+            guard let d = store, d.string(forKey: servedDayKey) == dayKey else { return nil }
+            let n = d.integer(forKey: lagCountKey)
+            guard n > 0 else { return nil }
+            return (n, d.integer(forKey: lagSumMsKey) / n, d.integer(forKey: lagMaxMsKey))
+        }
 
         /// Called from `getTimeline`. Day-keyed like the app-side counters so the two lines describe
         /// the same window.
@@ -382,9 +419,28 @@ public struct WidgetSnapshot: Codable, Equatable {
             if d.string(forKey: servedDayKey) != dayKey {
                 d.set(dayKey, forKey: servedDayKey)
                 d.set(0, forKey: servedKey)
+                // The lag accumulators are day-keyed with the counter they sit beside, or a single
+                // overnight outlier would follow the mean around for the rest of the week.
+                for k in [lagSumMsKey, lagCountKey, lagMaxMsKey] { d.set(0, forKey: k) }
             }
             d.set(d.integer(forKey: servedKey) + 1, forKey: servedKey)
             d.set(now.timeIntervalSince1970, forKey: lastServedKey)
+            // 260906: how long WidgetKit took to act on the app's request. Only measured when a
+            // request is actually outstanding — WidgetKit also refreshes on its own schedule (the
+            // `.after` policy), and timing those against a stale request would invent a lag that
+            // nobody waited on. The stamp is consumed so each request is counted at most once.
+            let requestedAt = d.double(forKey: reloadRequestedAtKey)
+            if requestedAt > 0 {
+                let ms = Int((now.timeIntervalSince1970 - requestedAt) * 1000)
+                // A negative or absurd value means the clock moved or the stamp outlived its request
+                // (a day roll, a restore). Discard rather than bank a number that cannot be true.
+                if ms >= 0, ms < 6 * 60 * 60 * 1000 {
+                    d.set(d.integer(forKey: lagSumMsKey) + ms, forKey: lagSumMsKey)
+                    d.set(d.integer(forKey: lagCountKey) + 1, forKey: lagCountKey)
+                    if ms > d.integer(forKey: lagMaxMsKey) { d.set(ms, forKey: lagMaxMsKey) }
+                }
+                d.removeObject(forKey: reloadRequestedAtKey)
+            }
         }
 
         /// Read back by the app for the log header.
@@ -396,7 +452,8 @@ public struct WidgetSnapshot: Codable, Equatable {
 
         public static func reset() {
             guard let d = store else { return }
-            for k in [servedKey, servedDayKey, lastServedKey] { d.removeObject(forKey: k) }
+            for k in [servedKey, servedDayKey, lastServedKey, reloadRequestedAtKey,
+                      lagSumMsKey, lagCountKey, lagMaxMsKey] { d.removeObject(forKey: k) }
         }
     }
 
