@@ -37,6 +37,10 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = 0
+
+    /// Index of the last tab (More). Named so the swipe clamp and the tab list cannot disagree — the
+    /// two drifting apart is exactly what a hard-coded bound does silently when a tab is inserted.
+    static let lastTabIndex = 4
     /// One `NavigationPath` per tab, indexed by tab tag. Re-tapping the already-active tab pops
     /// that tab's stack to its root (#135) by clearing its path — an animated pop that leaves the
     /// root view alive, so an at-root re-tap keeps scroll position and never re-runs `.task`
@@ -105,7 +109,10 @@ struct RootTabView: View {
                 guard selectedTab != 0 else { return }
                 let dx = v.translation.width, dy = v.translation.height
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                // 260906: the clamp is the LAST tab index, which moved with the Day-quality
+                // insertion. Left as a literal 3 it would have made the More tab unreachable by swipe
+                // while every other route still worked — a silent half-failure.
+                let next = min(Self.lastTabIndex, max(0, selectedTab + (dx < 0 ? 1 : -1)))
                 if next != selectedTab {
                     withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                 }
@@ -119,10 +126,12 @@ struct RootTabView: View {
         TabView(selection: nativeTabSelection) {
             tab(todayTabRoot, "Today", "square.grid.2x2", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
             tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
-            tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
-            // K3: Coach promoted to a top-level tab (was behind the More list). The sparkles icon
-            // matches the More-tab row and the macOS sidebar entry.
-            tab(CoachView(), "Coach", "sparkles", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
+            // 260906: Day quality sits between Trends and Sleep at the maintainer's request — it is the
+            // retrospective read on a finished day, so it belongs beside the other two retrospective
+            // tabs rather than in the More list. Adding a slot here renumbers every tag below it, so
+            // `tabPaths`/`scrollTop` were widened to 5 and `TabRoute.sleep` re-pointed accordingly.
+            tab(DayQualityView(), "Day", "checkmark.seal", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
+            tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
             moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
         }
         .tint(StrandPalette.accent)
@@ -223,8 +232,8 @@ struct RootTabView: View {
                 // Coach has no tab of its own — it is a More row. Switch to More and PUSH the coach
                 // destination onto that tab's stack, so the user lands in the chat itself rather than on
                 // the More menu, and the system back button returns them the way they came.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
-                tabPaths[3] = NavigationPath([MoreDestination.coach])
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 4 }
+                tabPaths[4] = NavigationPath([MoreDestination.coach])
                 router.requestedDestination = nil
             case nil:
                 break

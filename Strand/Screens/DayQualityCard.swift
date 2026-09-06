@@ -41,9 +41,24 @@ struct DayQualityCard: View {
     @State private var narrativeDay: String?
     @State private var narrativeInFlight = false
 
-    /// The most recent day that HAS a score — normally yesterday, but a day the strap missed should
-    /// show the last real score rather than an empty card.
-    private var day: String? { scoresByDay.keys.sorted().last }
+    /// Which scored day to show, as an index back through the scored days — 0 is the most recent, 1
+    /// the one before it. Not a calendar offset: unscored days are skipped, so stepping back always
+    /// lands on a day that HAS a score rather than on a blank card the wearer has to step past.
+    ///
+    /// A plain value with a default rather than state, so the compact card on Trends keeps its
+    /// existing "latest scored day" behaviour untouched and the detail screen drives the same view
+    /// through a binding it owns.
+    var dayIndex: Int = 0
+
+    /// Scored days, newest first — the axis `dayIndex` walks.
+    private var scoredDays: [String] { scoresByDay.keys.sorted().reversed() }
+
+    /// The day on show. Clamped rather than trapping: the series reloads while the screen is open, so
+    /// an index can briefly outrun it.
+    private var day: String? {
+        guard !scoredDays.isEmpty else { return nil }
+        return scoredDays[min(max(0, dayIndex), scoredDays.count - 1)]
+    }
     private var score: Int? { day.flatMap { scoresByDay[$0] }.map { Int($0.rounded()) } }
 
     var body: some View {
@@ -69,8 +84,21 @@ struct DayQualityCard: View {
         .task(id: day) { await load() }
     }
 
+    /// "Yesterday" only when the day on show actually IS yesterday. The card can now be pointed at any
+    /// scored day, and a hard-coded "Yesterday" over a day three weeks back would be a plain lie —
+    /// the same stale-label class of bug as the synthesis strip. Older days name their weekday instead.
     private var overline: LocalizedStringKey {
-        score == nil ? "Yesterday" : "Yesterday · \(DayQualityScore.band(score ?? 0))"
+        let band = score.map { " · \(DayQualityScore.band($0))" } ?? ""
+        return LocalizedStringKey(relativeDayName + band)
+    }
+
+    /// "Yesterday" / "Today" where those are true, else the weekday ("Monday").
+    private var relativeDayName: String {
+        guard let day, let d = Self.dayParser.date(from: day) else { return String(localized: "Yesterday") }
+        let cal = Calendar.current
+        if cal.isDateInYesterday(d) { return String(localized: "Yesterday") }
+        if cal.isDateInToday(d) { return String(localized: "Today") }
+        return d.formatted(.dateTime.weekday(.wide).locale(AppLanguage.activeLocale))
     }
 
     /// "Mon 2 Sep" — the day being summarised, so the card cannot be mistaken for a live number.
