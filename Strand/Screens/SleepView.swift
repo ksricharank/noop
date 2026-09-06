@@ -55,6 +55,19 @@ struct SleepView: View {
     /// at a different session after a sync. The memoized trend `model` stays cached since
     /// the trends are night-independent. (#160)
     @State private var nightOffset = 0
+
+    /// 260906: the Rest-score series ("yyyy-MM-dd" → 0–100) and the window its trend covers, for the
+    /// `restTrend` section. Loaded here rather than derived from `model` because the trend plots the
+    /// STORED score — the same series the Rest hero reads — so the two cannot disagree.
+    @State private var restByDay: [String: Double] = [:]
+    @State private var restWindow = SleepView.restWindows[1]
+
+    /// Windows offered for the Rest trend. Matches the Day tab's set so the two per-metric tabs
+    /// behave identically; a year is included because the calendar strip rewards a long view.
+    static let restWindows: [ScoreTrendSection.Window] = [
+        .init(days: 14, label: "14d"), .init(days: 30, label: "30d"),
+        .init(days: 90, label: "90d"), .init(days: 365, label: "1y"),
+    ]
     /// Memoized decode of the NAVIGATED night (nil when `nightOffset == 0` — the hero reads
     /// `model.night` then). Rebuilt only in the `nightOffset` / data-key onChange handlers;
     /// `decodedNight` JSON-decodes, which must never run per body pass (1Hz HR ticks). (#160)
@@ -225,6 +238,11 @@ struct SleepView: View {
                 modelKey = dataKey
                 navDaysCache = SleepModel.navDays(navSessions: navSessions)
                 model = buildModel()
+                // 260906: the stored Rest series for the trend section, on the same trigger — a
+                // freshly scored night re-reads it, exactly like the Trends page's own series loads.
+                let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+                restByDay = Dictionary(rest.map { ($0.day, $0.value) },
+                                       uniquingKeysWith: { _, last in last })
             }
             .sheet(item: $wakeEdit) { edit in
                 // The night's RECORDED coverage for the #940 guards: from the immutable detected
@@ -425,6 +443,7 @@ struct SleepView: View {
         case .sleepDebt:       SleepDebtLedgerCard(model: model)
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
+        case .restTrend:       restTrend
         }
     }
 
@@ -1731,6 +1750,24 @@ struct SleepView: View {
     // `SleepDebtLedgerCard` directly; the card body, its `debtDeltaBars` strip and the debt-only
     // formatters (`debtHeadline` / `debtTag` / `debtRead` / `debtBalanceColor` / `debtSigned`) moved there
     // with it — they had no other caller in SleepView.
+
+    // MARK: - 5. Rest-score trend (260906)
+
+    /// The same trend block the Day tab carries, pointed at the stored Rest score.
+    ///
+    /// Sleep previously had one fixed 30-day duration chart and no way to widen it, while the Trends
+    /// page carried the windowed views for every other metric. This brings the per-metric trend home
+    /// to the tab that owns the metric: window selector, a like-for-like comparison that scales with
+    /// the window, and the calendar strip that reads consistency at a glance.
+    ///
+    /// Reads `sleep_performance` — the SAME stored series the Rest hero at the top of this screen
+    /// shows — so the hero and the trend cannot disagree about a night.
+    @ViewBuilder
+    private var restTrend: some View {
+        ScoreTrendSection(title: "Rest trend", valuesByDay: restByDay,
+                          windows: Self.restWindows, window: $restWindow,
+                          lowLabel: "Poor", highLabel: "Excellent")
+    }
 
     // MARK: - 4. 30-day asleep-hours trend
 

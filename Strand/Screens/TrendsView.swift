@@ -44,9 +44,6 @@ struct TrendsView: View {
     }
 
     @State private var range: Range = .quarter
-    /// The day-quality series, keyed "yyyy-MM-dd" → 0–100. One read serves both the card at the top
-    /// and its trend chart (index 1), so the two can never disagree about a day.
-    @State private var dayQualityByDay: [String: Double] = [:]
 
     // #436 — shareable offline trends report (PDF over a date range). The sheet owns its
     // own range picker; this just presents it with the loaded history.
@@ -276,27 +273,16 @@ struct TrendsView: View {
                     Group {
                         // Week-in-review digest (#208) with prev/next week browsing (#710) — self-hides
                         // only when NO week in history has data. Past weeks render in the same format.
-                        // TOP OF TRENDS (260904, maintainer instruction): yesterday's day-quality
-                        // score and the trend it belongs to. The long-run motivation surface — the
-                        // number to keep pointing upward — so it leads rather than sits among the
-                        // per-metric charts below it.
-                        DayQualityCard(scoresByDay: dayQualityByDay)
-                            .staggeredAppear(index: 0)
-                        // The range control sits ABOVE the day-quality trend (260904), because it
-                        // GOVERNS it: `dayQualityTrend` already windows on `range`, so leaving the
-                        // selector further down put the control after the first chart it drives —
-                        // the maintainer read the span as fixed. Moving it up needed no new state
-                        // and no second control; the one shared selector now precedes every chart
-                        // it applies to, which is also why the day-quality span "just works" at
-                        // W / M / 3M / 6M / 1Y / ALL.
-                        //
-                        // Deliberately still BELOW the day-quality CARD: that card is a single
-                        // finished number for yesterday, not a windowed series, so a range control
-                        // above it would imply it responds to the span. It does not.
+                        // 260906: day quality has LEFT this page entirely (maintainer: "remove day
+                        // quality completely from the trends section, and include all the trends
+                        // type info for day quality in the day quality tab"). The card, its trend
+                        // and its settings now live on the Day tab, which owns the whole story —
+                        // score, breakdown, narrative, window selector, calendar strip and digest.
+                        // Keeping a second copy here is exactly the divergence the parity rule warns
+                        // about, and the Trends page is the poorer place for it: it cannot browse
+                        // days.
                         rangeBar(recovery: recovery)
                             .staggeredAppear(index: 1)
-                        dayQualityTrend
-                            .staggeredAppear(index: 2)
                         weeklyDigestNav
                             .staggeredAppear(index: 3)
                         // The Charge / Effort / Rest trio, presented in NOOP's pip language.
@@ -315,10 +301,9 @@ struct TrendsView: View {
                             .staggeredAppear(index: 8)
                         exportReportRow
                             .staggeredAppear(index: 9)
-                        // Score settings last: the knobs belong near the bottom, out of the way of
-                        // the numbers they tune (maintainer: "at the bottom of the trends page").
-                        DayQualitySettingsCard()
-                            .staggeredAppear(index: 10)
+                        // 260906: DayQualitySettingsCard moved to the Day tab with the score it
+                        // tunes — the knobs belong beside the number they move, not on a page that
+                        // no longer shows it.
                     }
                 }
             }
@@ -334,11 +319,6 @@ struct TrendsView: View {
         .task(id: repo.days.count) {
             let s = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
             sleepPerfByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
-        }
-        // The day-quality series, same idiom and same trigger: a freshly scored night re-reads it.
-        .task(id: repo.days.count) {
-            let s = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
-            dayQualityByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
         }
     }
 
@@ -602,52 +582,6 @@ struct TrendsView: View {
     }
 
     // MARK: Hero — recovery over time
-
-    /// The day-quality trend — the series the whole card exists to move.
-    ///
-    /// Reads the STORED series rather than the live rows, so it plots the same numbers the card
-    /// headline shows. Self-hides until there are two points: a single dot is not a trend, and an
-    /// empty chart frame reads as broken rather than as new.
-    ///
-    /// A DIRECTION rather than an average is the footer's lead figure, because the stated purpose is
-    /// "keep this trending upward" — the last-7 vs previous-7 delta answers that; a 90-day mean does
-    /// not.
-    private var dayQualityTrend: some View {
-        let pts = points(days(for: range)) { dayQualityByDay[$0.day] }
-        let recent = pts.suffix(7).map(\.value)
-        let prior = pts.dropLast(7).suffix(7).map(\.value)
-        let recentAvg = recent.isEmpty ? nil : recent.reduce(0, +) / Double(recent.count)
-        let priorAvg = prior.isEmpty ? nil : prior.reduce(0, +) / Double(prior.count)
-        let delta: Double? = (recentAvg != nil && priorAvg != nil) ? recentAvg! - priorAvg! : nil
-
-        return Group {
-            if pts.count >= 2 {
-                ChartCard(
-                    title: "Day quality trend",
-                    subtitle: rangeSubtitle,
-                    trailing: recentAvg.map { "\(Int($0.rounded()))" },
-                    height: NoopMetrics.chartHeight,
-                    chart: {
-                        glowChart(points: pts,
-                                  gradient: StrandPalette.recoveryGradient,
-                                  valueRange: 0...106,
-                                  tip: StrandPalette.chargeBright,
-                                  valueFormat: { "\(Int($0.rounded()))" },
-                                  accessibilityLabel: String(localized: "Day quality trend"))
-                    },
-                    footer: {
-                        ChartFooter([
-                            ("Last 7", recentAvg.map { "\(Int($0.rounded()))" } ?? "—"),
-                            // The direction, signed, because that is the thing to keep positive.
-                            ("vs prev 7", delta.map { String(format: "%+.0f", $0) } ?? "—"),
-                            ("Best", pts.map(\.value).max().map { "\(Int($0.rounded()))" } ?? "—"),
-                            ("Days", "\(pts.count)"),
-                        ])
-                    })
-                .accessibilityElement(children: .contain)
-            }
-        }
-    }
 
     @ViewBuilder
     private func heroRecovery(recovery: ResolvedMetric) -> some View {
