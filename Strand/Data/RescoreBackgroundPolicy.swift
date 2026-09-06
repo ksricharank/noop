@@ -34,7 +34,10 @@ enum RescoreBackgroundPolicy {
         /// Do not start it; leave the work marked pending and let a background-processing task (or the
         /// next foreground) run it. The reason is logged verbatim to the strap log — #1538 was three
         /// nights of chasing BLE precisely because the log did not say why scoring had not happened.
-        case deferToBackgroundTask(reason: String)
+        /// `cause` is the same decision in one stable token, for the day tally (`RescoreStats`). The
+        /// reason string stays the human-readable log line; a token beside it means a reworded reason
+        /// cannot silently split one counter bucket into two.
+        case deferToBackgroundTask(reason: String, cause: RescoreStats.DeferralCause)
         /// Do not start it and do NOT hand it to a background task either; leave the work marked pending
         /// for the first trigger after the sleep window ends (the offload cadence resumes scoring on its
         /// own) or the next foreground, whichever comes first. Sleep-window deferrals get their own case
@@ -42,7 +45,7 @@ enum RescoreBackgroundPolicy {
         /// processing tasks, and "idle" on a phone worn to bed is 3 a.m. — the pass would run mid-night
         /// after all, just under a different trigger (13 of the 22 passes in the overnight log that
         /// motivated this arrived exactly that way). The reason is logged verbatim, same as the case above.
-        case deferUntilSleepWindowEnds(reason: String)
+        case deferUntilSleepWindowEnds(reason: String, cause: RescoreStats.DeferralCause)
     }
 
     /// How long a backgrounded pass rests per second of work it just did.
@@ -157,12 +160,14 @@ enum RescoreBackgroundPolicy {
         // trigger, never to a background task — falling through to the owed rule would schedule one.
         if inSleepWindow {
             return .deferUntilSleepWindowEnds(
-                reason: "inside the sleep window — scoring pauses for the night and settles once after it ends (or on next foreground)")
+                reason: "inside the sleep window — scoring pauses for the night and settles once after it ends (or on next foreground)",
+                cause: .sleepWindow)
         }
 
         guard isRealUpdate else {
             return .deferToBackgroundTask(
-                reason: "the backstop tick does not re-score while backgrounded; offloads run their own")
+                reason: "the backstop tick does not re-score while backgrounded; offloads run their own",
+                cause: .backstopSkipped)
         }
 
         // A debt with ATTEMPT EVIDENCE behind it keeps the #1538 rule: don't re-attempt in the
@@ -171,7 +176,8 @@ enum RescoreBackgroundPolicy {
         // first post-window trigger runs it, and that pass IS the morning settle.
         if rescoreAlreadyOwed, !owedByWindowDeferralOnly, !passInProgress {
             return .deferToBackgroundTask(
-                reason: "a re-score is already outstanding from an earlier trigger")
+                reason: "a re-score is already outstanding from an earlier trigger",
+                cause: .alreadyOutstanding)
         }
 
         return .run

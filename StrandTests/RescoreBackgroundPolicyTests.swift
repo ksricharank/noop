@@ -203,4 +203,25 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
         XCTAssertTrue(reason.contains("sleep window"))
         XCTAssertEqual(retry, 3600)
     }
+    // MARK: - Deferral cause tokens (260906)
+
+    /// The reason string stays the human-readable log line; the cause is the stable token a counter can
+    /// be keyed on without breaking when the wording changes. These are the tokens that appear on the
+    /// strap log's "Re-score dropped:" line, so a rename here silently renames a field someone reads.
+    func testEachDeferralCarriesItsStableCauseToken() {
+        guard case .deferUntilSleepWindowEnds(_, let windowCause) = decide(inWindow: true) else {
+            return XCTFail("expected a window deferral")
+        }
+        XCTAssertEqual(windowCause, .sleepWindow)
+
+        guard case .deferToBackgroundTask(_, let backstopCause) = decide(realUpdate: false) else {
+            return XCTFail("expected a backstop deferral")
+        }
+        XCTAssertEqual(backstopCause, .backstopSkipped)
+
+        guard case .deferToBackgroundTask(_, let owedCause) = decide(unfinished: true) else {
+            return XCTFail("expected an owed deferral")
+        }
+        XCTAssertEqual(owedCause, .alreadyOutstanding)
+    }
 }
