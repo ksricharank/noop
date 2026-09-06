@@ -27,6 +27,86 @@ final class DayQualityComputerTests: XCTestCase {
         UserProfile(weightKg: 78, heightCm: 178, age: 40, sex: "male")
     }
 
+    // MARK: - Which night the recovery half grades (260906)
+
+    /// The reported bug: "the day quality score seems to use yesterday night's sleep instead of
+    /// tonight's sleep (which I count as part of yesterday — i.e., the sleep is the conclusion of the
+    /// day)".
+    ///
+    /// A sleep session is attributed to the day its END falls on, so row D holds the night D-1→D —
+    /// the night BEFORE day D's waking hours. Grading day D's steps and effort against that night
+    /// graded the work against the sleep that preceded it. The recovery half must read row D+1.
+    ///
+    /// Distinct sleep values per day make the assertion unambiguous: if the wrong row were read the
+    /// value would be 400, not 500.
+    func testTheRecoveryHalfGradesTheNightThatConcludesTheDay() {
+        let history = [metric(day: "2026-09-01", sleep: 300),
+                       metric(day: "2026-09-02", sleep: 400),   // the night that OPENED 09-02
+                       metric(day: "2026-09-03", sleep: 500)]   // the night that CONCLUDED it
+        let input = DayQualityComputer.input(for: "2026-09-02", history: history, profile: profile,
+                                             targetsByDay: [:], waterCups: nil, waterTargetCups: nil)
+        XCTAssertEqual(input?.sleepMin, 500,
+                       "day 09-02 must be graded against the night that closed it (row 09-03)")
+    }
+
+    /// HRV and resting HR are measured during that same night, so they move with it. Leaving them on
+    /// row D would make the recovery half incoherent — the sleep after the day against the autonomic
+    /// response to the day before it.
+    func testHrvAndRestingHrComeFromTheSameConcludingNight() {
+        let history = [metric(day: "2026-09-01", hrv: 30, rhr: 70),
+                       metric(day: "2026-09-02", hrv: 40, rhr: 60),
+                       metric(day: "2026-09-03", hrv: 50, rhr: 50)]
+        let input = DayQualityComputer.input(for: "2026-09-02", history: history, profile: profile,
+                                             targetsByDay: [:], waterCups: nil, waterTargetCups: nil)
+        XCTAssertEqual(input?.hrv, 50, "HRV must come from the concluding night")
+        XCTAssertEqual(input?.restingHr, 50, "resting HR must come from the concluding night")
+    }
+
+    /// The EXECUTION half stays on the day itself — that is the day's own work, and it was never
+    /// wrong. A change that moved everything forward by a day would grade the wrong day entirely.
+    func testTheExecutionHalfStaysOnTheDayItself() {
+        let history = [metric(day: "2026-09-02", strain: 30, steps: 8_000),
+                       metric(day: "2026-09-03", strain: 99, steps: 99_000)]
+        let input = DayQualityComputer.input(for: "2026-09-02", history: history, profile: profile,
+                                             targetsByDay: [:], waterCups: nil, waterTargetCups: nil)
+        XCTAssertEqual(input?.steps, 8_000, "steps are the day's own work")
+        XCTAssertEqual(input?.effort, 30, "effort is the day's own work")
+    }
+
+    /// With no following row the concluding night has not landed. Every recovery component reports
+    /// ABSENT (the scorer renormalises over what is present) rather than the day being graded against
+    /// the wrong night — absent is not the same as zero, and not the same as "use yesterday's".
+    func testAMissingConcludingNightLeavesTheRecoveryHalfAbsent() {
+        let history = [metric(day: "2026-09-01", sleep: 300), metric(day: "2026-09-02", sleep: 400)]
+        let input = DayQualityComputer.input(for: "2026-09-02", history: history, profile: profile,
+                                             targetsByDay: [:], waterCups: nil, waterTargetCups: nil)
+        XCTAssertNil(input?.sleepMin, "no concluding night → absent, never the preceding one")
+        XCTAssertNil(input?.hrv)
+        XCTAssertNil(input?.restingHr)
+        XCTAssertEqual(input?.steps, 8_000, "the execution half is still gradeable")
+    }
+
+    /// The baseline must exclude the night being graded, or a night becomes its own yardstick and the
+    /// recovery half flattens to the baseline for every day.
+    func testTheBaselineExcludesTheNightBeingGraded() {
+        let history = [metric(day: "2026-09-01", hrv: 30),
+                       metric(day: "2026-09-02", hrv: 30),
+                       metric(day: "2026-09-03", hrv: 90)]   // the graded night, a big outlier
+        let input = DayQualityComputer.input(for: "2026-09-02", history: history, profile: profile,
+                                             targetsByDay: [:], waterCups: nil, waterTargetCups: nil)
+        XCTAssertEqual(input?.hrv, 90, "the graded value is the concluding night's")
+        XCTAssertEqual(input?.hrvBaseline, 30,
+                       "the 90 must not be inside its own baseline — that would flatten the score")
+    }
+
+    /// Day arithmetic across a month boundary, where a naive string increment breaks.
+    func testTheConcludingNightCrossesAMonthBoundary() {
+        XCTAssertEqual(DayQualityComputer.nextDayKey("2026-09-30"), "2026-10-01")
+        XCTAssertEqual(DayQualityComputer.nextDayKey("2026-12-31"), "2027-01-01")
+        XCTAssertEqual(DayQualityComputer.nextDayKey("2028-02-28"), "2028-02-29", "leap year")
+        XCTAssertNil(DayQualityComputer.nextDayKey("not-a-day"))
+    }
+
     // MARK: - Which days get scored
 
     /// The score is a closed book about a FINISHED day. Today must never be scored: a partial day
@@ -36,22 +116,31 @@ final class DayQualityComputerTests: XCTestCase {
         let picked = DayQualityComputer.daysToScore(
             scoredDays: ["2026-09-01", "2026-09-02", "2026-09-03"],
             todayKey: "2026-09-03")
+        // 260906: 09-02 is still scorable — the night that CONCLUDES it is the one that ENDED on
+        // the morning of 09-03, and that row exists even though 09-03's own day is in progress. The
+        // concluding night is banked at wake-up, hours before the day it is dated to is finished.
         XCTAssertEqual(picked, ["2026-09-01", "2026-09-02"])
         XCTAssertFalse(picked.contains("2026-09-03"), "today is still in progress")
     }
 
     /// A future-dated row (a strap clock that ran ahead, an import) must not be scored either.
     func testFutureDaysAreNotScored() {
+        // 09-02's concluding night would sit on 09-03, which is absent from the history here, so
+        // nothing is scorable — the future-dated 09-09 row is no help to it.
         let picked = DayQualityComputer.daysToScore(
             scoredDays: ["2026-09-02", "2026-09-09"], todayKey: "2026-09-03")
-        XCTAssertEqual(picked, ["2026-09-02"])
+        XCTAssertEqual(picked, [])
+        XCTAssertFalse(picked.contains("2026-09-09"), "a future-dated row is never scored")
     }
 
     /// Duplicates collapse and the result is ordered, so a caller handing over the same day twice
     /// writes one point rather than two.
     func testDaysAreDedupedAndOrdered() {
+        // 09-03 is present so 09-02's concluding night exists; 09-03 itself has no 09-04 row and is
+        // therefore not yet scorable. Duplicates of 09-02 must still collapse to one entry.
         let picked = DayQualityComputer.daysToScore(
-            scoredDays: ["2026-09-02", "2026-09-01", "2026-09-02"], todayKey: "2026-09-05")
+            scoredDays: ["2026-09-02", "2026-09-01", "2026-09-02", "2026-09-03"],
+            todayKey: "2026-09-05")
         XCTAssertEqual(picked, ["2026-09-01", "2026-09-02"])
     }
 
@@ -64,17 +153,25 @@ final class DayQualityComputerTests: XCTestCase {
         let history = (1...10).map { String(format: "2026-09-%02d", $0) }
 
         // First run: empty series → the whole finished history.
+        // 260906: the LAST day of the run (09-10) has no 09-11 row, so its concluding night has not
+        // landed — nine of the ten backfill, not ten.
         let first = DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
                                                    alreadyScored: [])
-        XCTAssertEqual(first.count, 10, "the first pass must backfill every finished day")
+        XCTAssertEqual(first, Array(history.dropLast()),
+                       "the first pass backfills every day whose concluding night is in")
 
-        // Next day, with those ten stored: exactly the newly finished one.
+        // Next day, with those nine stored and the 09-11 row landed: 09-10 becomes scorable, because
+        // its concluding night now exists. Still exactly one new day per day.
+        let stored = Set(history.dropLast())
         let second = DayQualityComputer.daysToScore(scoredDays: history + ["2026-09-11"],
                                                     todayKey: "2026-09-12",
-                                                    alreadyScored: Set(history))
-        XCTAssertEqual(second, ["2026-09-11"], "steady state is one new day, not a re-score")
+                                                    alreadyScored: stored)
+        // 09-11 itself is NOT scorable yet: its own concluding night would sit on a 09-12 row that
+        // does not exist. Exactly one new day per day, just shifted back by one.
+        XCTAssertEqual(second, ["2026-09-10"],
+                       "the day whose concluding night has just landed")
 
-        // Same day again (a second full pass): nothing at all.
+        // Same inputs again (a second full pass): nothing at all.
         XCTAssertTrue(DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
                                                      alreadyScored: Set(history)).isEmpty)
     }
@@ -82,9 +179,11 @@ final class DayQualityComputerTests: XCTestCase {
     /// A gap in the middle is filled without re-scoring its neighbours — a day the strap missed and
     /// that later gained data must not require redoing the history around it.
     func testAGapIsFilledWithoutRescoringItsNeighbours() {
-        let history = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04"]
+        let history = ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"]
         let stored: Set<String> = ["2026-09-01", "2026-09-02", "2026-09-04"]
-        XCTAssertEqual(DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-05",
+        // 09-05 is not scorable here — its concluding night would be on a 09-06 row that does not
+        // exist yet — so the gap fill is 09-03 alone.
+        XCTAssertEqual(DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-06",
                                                       alreadyScored: stored),
                        ["2026-09-03"])
     }
@@ -95,23 +194,28 @@ final class DayQualityComputerTests: XCTestCase {
         let history = (1...10).map { String(format: "2026-09-%02d", $0) }
         let picked = DayQualityComputer.daysToScore(scoredDays: history, todayKey: "2026-09-11",
                                                     alreadyScored: Set(history), rescoreAll: true)
-        XCTAssertEqual(picked.count, 10,
-                       "moving a knob must re-score the history it applies to, not just new days")
+        XCTAssertEqual(picked.count, 9,
+                       "moving a knob re-scores every day whose concluding night is in (09-10's is not)")
     }
 
     // MARK: - The day is graded against its OWN context
 
-    /// A past day must not be graded against a readiness read that includes days AFTER it — that
-    /// would grade Monday using Wednesday's data, which the wearer could never have acted on.
+    /// A past day must not be graded against a readiness read that includes days after its
+    /// CONCLUDING NIGHT — that would grade Monday using Wednesday's data, which the wearer could
+    /// never have acted on.
     ///
-    /// Asserted by consequence: the same day scored against a history that stops at it, and against
-    /// one that continues past it with wildly different rows, must produce the same input.
+    /// 260906: the boundary moved by exactly one day with the recovery half. Day D legitimately
+    /// reads row D+1 (that row IS the night that closed day D), so the invariant is now "nothing
+    /// after D+1 leaks in", not "nothing after D". Asserted by consequence: the same day scored
+    /// against a history that stops at its concluding night, and against one that continues past it
+    /// with wildly different rows, must produce the same input.
     func testAPastDayIsNotGradedUsingLaterDays() throws {
-        let upToDay = history(["2026-08-28", "2026-08-29", "2026-08-30"])
+        // Ends at 08-31 — the row carrying the night that concluded 08-30, which the grade needs.
+        let upToDay = history(["2026-08-28", "2026-08-29", "2026-08-30", "2026-08-31"])
         var withFuture = upToDay
-        // Days after the graded one, deliberately extreme.
-        withFuture.append(metric(day: "2026-08-31", recovery: 5, strain: 99, hrv: 10, rhr: 90))
+        // Days after the concluding night, deliberately extreme.
         withFuture.append(metric(day: "2026-09-01", recovery: 5, strain: 99, hrv: 10, rhr: 90))
+        withFuture.append(metric(day: "2026-09-02", recovery: 5, strain: 99, hrv: 10, rhr: 90))
 
         let targetsA = DayQualityComputer.targetsByDay(
             history: upToDay, profile: profile,
@@ -129,18 +233,22 @@ final class DayQualityComputerTests: XCTestCase {
         XCTAssertEqual(a, b, "later days leaked into an earlier day's grade")
     }
 
-    /// A day must not be its own baseline. If the graded day were included in its own HRV/RHR
+    /// A night must not be its own baseline. If the graded night were included in its own HRV/RHR
     /// median, every day would sit at its own centre and the whole recovery half would go inert.
+    ///
+    /// 260906: the standout row is now the day AFTER the one being graded, because that is the row
+    /// the recovery half reads.
     func testTheGradedDayIsExcludedFromItsOwnBaseline() throws {
         var rows = history(["2026-08-25", "2026-08-26", "2026-08-27"])   // hrv 58 throughout
-        rows.append(metric(day: "2026-08-28", hrv: 100, rhr: 40))        // a standout day
+        rows.append(metric(day: "2026-08-28", hrv: 58, rhr: 52))         // the day being graded
+        rows.append(metric(day: "2026-08-29", hrv: 100, rhr: 40))        // its concluding night
         let targets = DayQualityComputer.targetsByDay(
             history: rows, profile: profile,
             onlyDays: DayQualityComputer.targetDaysNeeded(toScore: ["2026-08-28"], history: rows))
         let input = try XCTUnwrap(DayQualityComputer.input(for: "2026-08-28", history: rows,
                                                           profile: profile, targetsByDay: targets,
                                                           waterCups: nil, waterTargetCups: nil))
-        XCTAssertEqual(input.hrv, 100)
+        XCTAssertEqual(input.hrv, 100, "the graded value is the concluding night's")
         XCTAssertEqual(try XCTUnwrap(input.hrvBaseline), 58, accuracy: 0.001,
                        "the baseline must be the PRIOR days, not including the day being graded")
         XCTAssertEqual(try XCTUnwrap(input.restingHrBaseline), 52, accuracy: 0.001)
