@@ -720,6 +720,10 @@ final class IntelligenceEngine: ObservableObject {
         let hadNew = wmKey.isEmpty || storedWatermark != wmKey
         diagnosticSink?("re-score: trigger=\(trigger) "
                         + "newData=\(hadNew ? "yes" : "no (nothing changed since last run)")", nil)
+        // 260906: the same attribution, tallied for the whole day. The per-pass line above answers
+        // "why did THIS pass run"; the day tally answers "which trigger keeps starting passes", which
+        // is the question the 260906 log (9 full passes, 41 dropped triggers) could not settle.
+        RescoreStats.recordStarted(trigger: trigger)
 
         // #1005: time the whole pass — the trigger line above records WHY; this records how many nights
         // and how long (the CPU cost per run), so a re-score STORM is visible in the strap log.
@@ -2796,6 +2800,8 @@ final class IntelligenceEngine: ObservableObject {
             let elapsed = Date().timeIntervalSince(reScoreStart)
             diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
                             + "\(Int(elapsed * 1000)) ms", nil)
+            RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
+                                        inBackground: RescoreBackgroundScheduler.isBackgrounded)
             return
         }
         if !wmKey.isEmpty { UserDefaults.standard.set(wmKey, forKey: Self.analyzeWatermarkKey) }
@@ -2808,12 +2814,15 @@ final class IntelligenceEngine: ObservableObject {
         let elapsed = Date().timeIntervalSince(reScoreStart)
         let settled = RescoreBackgroundScheduler.markRescoreCompleted(seconds: elapsed, owedToken: owedToken)
         diagnosticSink?("re-score: done — scored \(scoredNights.count) night(s) in \(Int(elapsed * 1000)) ms (#1005)", nil)
+        RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
+                                    inBackground: RescoreBackgroundScheduler.isBackgrounded)
         // #1681: a pass that completes while leaving the mark SET looks identical in a capture to one that
         // cleared it. Rare-event evidence, so always-on: it costs a line only when it actually happens,
         // and it is exactly what is missing when someone reports the app re-scoring on every launch.
         if !settled {
             diagnosticSink?("re-score: debt NOT settled — a newer re-score was recorded while this pass "
                             + "was running, so the mark stays and another pass will run (#1681)", nil)
+            RescoreStats.recordDebtUnsettled()
         }
     }
 

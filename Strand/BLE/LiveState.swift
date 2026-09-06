@@ -1034,6 +1034,12 @@ public final class LiveState: ObservableObject {
         // never connected this session.
         let batteryLines = BatteryDiag.summaryLines()
         if !batteryLines.isEmpty { header += batteryLines.joined(separator: "\n") + "\n" }
+        // 260906: the re-score path's daily bill and its attribution — beside the battery block
+        // because that is what it is. The 260906 log showed 9 full 21-night passes (two ~3 min) and
+        // 41 dropped triggers against MetricKit's bg=151m, with no way to tell which trigger kept
+        // starting work that was then thrown away. Silent until a pass runs.
+        let rescoreLines = RescoreStats.summaryLines()
+        if !rescoreLines.isEmpty { header += rescoreLines.joined(separator: "\n") + "\n" }
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
         // for a re-added or second strap. Same redactor, so one export cannot be safe while the other leaks.

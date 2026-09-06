@@ -32,7 +32,10 @@ enum RescoreBackgroundPolicy {
         /// Do not start it; leave the work marked pending and let a background-processing task (or the
         /// next foreground) run it. The reason is logged verbatim to the strap log — #1538 was three
         /// nights of chasing BLE precisely because the log did not say why scoring had not happened.
-        case deferToBackgroundTask(reason: String)
+        /// `cause` is the same decision in one stable token, for the day tally (`RescoreStats`). The
+        /// reason string stays the human-readable log line; a token beside it means a reworded reason
+        /// cannot silently split one counter bucket into two.
+        case deferToBackgroundTask(reason: String, cause: RescoreStats.DeferralCause)
         /// Do not start it and do NOT hand it to a background task either; leave the work marked pending
         /// for the first trigger after the sleep window ends (the offload cadence resumes scoring on its
         /// own) or the next foreground, whichever comes first. Sleep-window deferrals get their own case
@@ -184,7 +187,8 @@ enum RescoreBackgroundPolicy {
         // measured rule below, and that pass IS the morning settle.
         if rescoreAlreadyOwed, !owedByWindowDeferralOnly {
             return .deferToBackgroundTask(
-                reason: "a re-score is already outstanding from an earlier trigger")
+                reason: "a re-score is already outstanding from an earlier trigger",
+                cause: .alreadyOutstanding)
         }
 
         // Locked ⇒ defer, whatever the measurement says (see the `isDeviceLocked` parameter doc): the
@@ -193,7 +197,8 @@ enum RescoreBackgroundPolicy {
         if isDeviceLocked {
             return .deferToBackgroundTask(
                 reason: "the phone is locked — a locked background pass runs I/O-throttled and unseen; "
-                        + "the background task or the next unlock settles it")
+                        + "the background task or the next unlock settles it",
+                cause: .locked)
         }
 
         // Only a FINITE, positive measurement can justify deferring. A nil (nothing has ever completed),
@@ -206,7 +211,8 @@ enum RescoreBackgroundPolicy {
            measured > budgetSeconds {
             return .deferToBackgroundTask(
                 reason: "last completed pass took \(Int(measured.rounded()))s, over the "
-                        + "\(Int(budgetSeconds.rounded()))s a background wake can be relied on for")
+                        + "\(Int(budgetSeconds.rounded()))s a background wake can be relied on for",
+                cause: .tooSlow)
         }
 
         return .run

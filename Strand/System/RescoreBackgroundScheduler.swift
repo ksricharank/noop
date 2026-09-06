@@ -273,7 +273,11 @@ enum RescoreBackgroundScheduler {
             lastCompletedPassSeconds: lastCompletedPassSeconds)
 
         switch decision {
-        case .deferToBackgroundTask(let reason):
+        case .deferToBackgroundTask(let reason, let cause):
+            // 260906: tally the drop. A deferral is work that was asked for and thrown away, so the
+            // day's count of these is the measure of self-inflicted churn — 41 of them in the 260906
+            // log, against 9 completed full passes.
+            RescoreStats.recordDeferred(cause: owesOnDefer ? cause : .backstopSkipped)
             guard owesOnDefer else {
                 // Nothing is queued and nothing is owed: the backstop simply does not run here. Said
                 // plainly in the log, because "deferred" would promise a background task that is not
@@ -289,6 +293,7 @@ enum RescoreBackgroundScheduler {
             schedule()
         case .deferUntilSleepWindowEnds(let reason):
             guard owesOnDefer else {
+                RescoreStats.recordDeferred(cause: .backstopSkipped)
                 log("re-score: backstop tick skipped during the sleep window — \(reason)")
                 return
             }
@@ -300,6 +305,7 @@ enum RescoreBackgroundScheduler {
             // entry. Repeated in-window deferrals only re-set the same mark, so a whole night coalesces
             // into one pass.
             markRescoreDeferredForSleepWindow()
+            RescoreStats.recordDeferred(cause: .sleepWindow)
             log("re-score: deferred to the end of the sleep window — \(reason)")
         case .run:
             await withAssertion(log: log, work: work)

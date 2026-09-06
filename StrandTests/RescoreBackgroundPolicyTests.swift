@@ -80,11 +80,15 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// #1538 was three nights of chasing BLE because the log recorded that scoring had not happened
     /// without ever recording why.
     func testTheDeferralReasonNamesTheMeasurementAndTheBudget() {
-        guard case .deferToBackgroundTask(let reason) = decide(lastSeconds: 475, budget: 20) else {
+        guard case .deferToBackgroundTask(let reason, let cause) = decide(lastSeconds: 475, budget: 20) else {
             return XCTFail("expected a deferral")
         }
         XCTAssertTrue(reason.contains("475"), reason)
         XCTAssertTrue(reason.contains("20"), reason)
+        // 260906: the same decision also carries a stable token for the day tally. The reason string
+        // stays the human-readable line; the token is what a counter can be keyed on without breaking
+        // when the wording changes.
+        XCTAssertEqual(cause, .tooSlow)
     }
 
     // MARK: - Unknown is not "too slow"
