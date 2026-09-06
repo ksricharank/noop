@@ -135,8 +135,10 @@ enum WidgetPublishStats {
         // target, which has no widgets to serve).
         #if os(iOS)
         let served = WidgetSnapshot.ExtensionStats.served(dayKey: Self.dayKey(now))
+        let lag = WidgetSnapshot.ExtensionStats.lag(dayKey: Self.dayKey(now))
         #else
         let served: (count: Int, lastAt: Date?) = (0, nil)
+        let lag: (count: Int, meanMs: Int, maxMs: Int)? = nil
         #endif
         let firstBg = d.double(forKey: K.firstBgReloadAt)
         let lastBg = d.double(forKey: K.lastBgReloadAt)
@@ -154,7 +156,7 @@ enum WidgetPublishStats {
                     firstBg: firstBg > 0 ? Self.clock(Date(timeIntervalSince1970: firstBg)) : nil,
                     lastBg: lastBg > 0 ? Self.clock(Date(timeIntervalSince1970: lastBg)) : nil),
                 Self.servedLine(requested: d.integer(forKey: K.reloads), served: served.count,
-                                lastServed: served.lastAt.map(Self.clock))]
+                                lastServed: served.lastAt.map(Self.clock), lag: lag)]
             .filter { !$0.isEmpty }
     }
 
@@ -209,12 +211,19 @@ enum WidgetPublishStats {
     ///
     /// Note the extension is a separate process that iOS may never launch; a zero here with a live
     /// widget on screen is itself the finding.
-    nonisolated static func servedLine(requested: Int, served: Int, lastServed: String?) -> String {
+    nonisolated static func servedLine(requested: Int, served: Int, lastServed: String?,
+                                       lag: (count: Int, meanMs: Int, maxMs: Int)? = nil) -> String {
         #if !os(iOS)
         return ""   // no widgets on macOS; an always-zero line would read as a fault
         #else
         let last = lastServed.map { " last=\($0)" } ?? ""
-        return "Widget timelines: requested=\(requested) served=\(served)\(last) "
+        // 260906: how long WidgetKit took to act on OUR reload requests. This is the half of the
+        // pipeline the app cannot see on its own, and it splits the two remaining explanations for a
+        // trailing widget: a large mean here means the request sits queued (schedulingapp-side
+        // levers might help); a small mean with a visibly stale face means the delay is after the
+        // timeline was built, in compositing, which is outside anything the app controls.
+        let lagPart = lag.map { " reqToBuild=\($0.meanMs / 1000)s avg / \($0.maxMs / 1000)s max over \($0.count)" } ?? ""
+        return "Widget timelines: requested=\(requested) served=\(served)\(last)\(lagPart) "
             + "(served counts what the widget extension was actually asked to build)"
         #endif
     }

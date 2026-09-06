@@ -119,4 +119,25 @@ final class WidgetPublishBackgroundStatsTests: XCTestCase {
         XCTAssertTrue(line.isEmpty, "macOS has no widgets; an always-zero line would read as a fault")
         #endif
     }
+
+    /// 260906: the request→build lag. The 260906 log proved our side is healthy (`unseen=0`, and
+    /// `served` ABOVE `requested`) while the faces still trailed, which left two possible homes for
+    /// the delay and no way to tell them apart. This measures the first one directly.
+    func testTheServedLineCarriesTheRequestToBuildLag() {
+        let line = WidgetPublishStats.servedLine(requested: 28, served: 60, lastServed: "09:11",
+                                                 lag: (count: 12, meanMs: 4_200, maxMs: 31_000))
+        #if os(iOS)
+        XCTAssertTrue(line.contains("reqToBuild=4s avg"), line)
+        XCTAssertTrue(line.contains("31s max"), line)
+        XCTAssertTrue(line.contains("over 12"), line)
+        #endif
+    }
+
+    /// Absent until something is measured — a "0s avg" printed before any reload has been served
+    /// would read as "WidgetKit is instant", which is a claim the counter has not earned.
+    func testTheLagIsOmittedWhenNothingHasBeenMeasured() {
+        let line = WidgetPublishStats.servedLine(requested: 28, served: 60, lastServed: "09:11",
+                                                 lag: nil)
+        XCTAssertFalse(line.contains("reqToBuild"), line)
+    }
 }

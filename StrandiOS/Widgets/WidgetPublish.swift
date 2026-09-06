@@ -224,6 +224,10 @@ extension WidgetSnapshot {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
             snap.save(previousSeries: previous?.hrSeries ?? [])
+            // 260906: stamp the request so the extension can measure how long WidgetKit took to act
+            // on it. Written BEFORE the call, so a fast turnaround cannot be missed. See
+            // `ExtensionStats.recordReloadRequested` for why this is the missing half.
+            WidgetSnapshot.ExtensionStats.recordReloadRequested()
             WidgetCenter.shared.reloadAllTimelines()
             // Android skips the update entirely when no widget is placed; WidgetKit offers no
             // synchronous way to know, so the reload still goes out and is instead recorded honestly.
