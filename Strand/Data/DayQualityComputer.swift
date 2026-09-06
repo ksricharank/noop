@@ -48,6 +48,28 @@ enum DayQualityComputer {
     /// row at all — there is nothing to grade, which is different from a day that scored badly.
     /// `targetsByDay` comes from `targetsByDay(history:profile:)`, built ONCE by the caller and
     /// reused across every day being scored — see that function on why it is not derived here.
+    /// The day AFTER `day`, as a `yyyy-MM-dd` key — the row that carries the night CONCLUDING `day`.
+    ///
+    /// 260906, maintainer: "the day quality score seems to use yesterday night's sleep instead of
+    /// tonight's sleep (which I count as part of yesterday — i.e., the sleep is the conclusion of the
+    /// day)". Correct, and the mismatch was real: a sleep session is attributed to the day its END
+    /// falls on (`AnalyticsEngine.analyzeDay`), so row D holds the night D-1→D — the night that
+    /// PRECEDED day D's waking hours. Grading day D's steps/effort/calories against that night graded
+    /// the work against the sleep that came before it.
+    ///
+    /// Nil when the key cannot be parsed, which fails the recovery half closed (absent, not wrong).
+    static func nextDayKey(_ day: String) -> String? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        guard let d = f.date(from: day),
+              let next = Calendar(identifier: .gregorian).date(byAdding: .day, value: 1, to: d) else {
+            return nil
+        }
+        return f.string(from: next)
+    }
+
     static func input(for day: String,
                       history: [DailyMetric],
                       profile: UserProfile,
@@ -55,6 +77,15 @@ enum DayQualityComputer {
                       waterCups: Int?,
                       waterTargetCups: Int?) -> DayQualityScore.DayInput? {
         guard let row = history.last(where: { $0.day == day }) else { return nil }
+        // The recovery half reads the CONCLUDING night — sleep, HRV and resting HR together, because
+        // all three are measured during that same night. Splitting them across two nights would make
+        // the half incoherent: it would grade the sleep after the day against the autonomic response
+        // to the day before it.
+        //
+        // Nil when tomorrow's row has not landed yet. Every recovery component then reports ABSENT
+        // and the weights renormalise over the execution half (the scorer's rule 2), rather than the
+        // day being scored against the wrong night.
+        let nightRow = nextDayKey(day).flatMap { key in history.last(where: { $0.day == key }) }
 
         // The targets AS THE DAY SET THEM. `liveTargets` reads the trailing history for its
         // readiness evaluation, so the slice must END at the day being graded — feeding it the full
@@ -67,8 +98,14 @@ enum DayQualityComputer {
                                              waterTodayML: nil, waterEnabled: false)
 
         // Baselines for the autonomic half: the wearer's own recent central tendency, EXCLUDING the
-        // day being graded so a day cannot be its own yardstick (which would flatten every score to
-        // the baseline value and make the whole recovery half inert).
+        // night being graded so a night cannot be its own yardstick (which would flatten every score
+        // to the baseline value and make the whole recovery half inert).
+        //
+        // `< day` is what does that, and it still does after the 260906 shift: the graded night now
+        // lives on row `day + 1`, which this bound excludes along with the day itself. Note the
+        // baseline window and the graded night are deliberately drawn from DIFFERENT rows now — the
+        // baseline is every night up to and including the one that opened the day, the graded value
+        // is the one that closed it.
         let prior = upToDay.filter { $0.day < day }
         let hrvBaseline = median(prior.compactMap { $0.avgHrv })
         let rhrBaseline = median(prior.compactMap { $0.restingHr }.map(Double.init))
@@ -82,11 +119,11 @@ enum DayQualityComputer {
             effortTarget: targets.effortTarget,
             waterCups: waterCups,
             waterTargetCups: waterTargetCups,
-            sleepMin: row.totalSleepMin,
+            sleepMin: nightRow?.totalSleepMin,
             sleepNeedMin: targets.sleepNeedTonightMin,
-            hrv: row.avgHrv,
+            hrv: nightRow?.avgHrv,
             hrvBaseline: hrvBaseline,
-            restingHr: row.restingHr,
+            restingHr: nightRow?.restingHr,
             restingHrBaseline: rhrBaseline,
             recentAvgEffortTarget: recentAvgEffortTarget(before: day, targetsByDay: targetsByDay)
         )
@@ -190,9 +227,24 @@ enum DayQualityComputer {
     /// — a finished day's inputs are fixed. The one case that DOES need a full re-score is a config
     /// change, and that is handled where it belongs: `rescoreAll` forces it, driven by the latch's
     /// config fingerprint rather than by re-deriving unconditionally.
+    /// 260906: a day is scorable only once the night that CONCLUDES it has landed — that night lives
+    /// on the FOLLOWING day's row, so `day + 1` must be present in the history. In practice the newest
+    /// score is therefore the day before yesterday rather than yesterday, which is the accepted cost of
+    /// grading a day against the sleep that closed it (maintainer's call: publish complete, not early).
+    ///
+    /// This keeps the scorer's rule 3 intact — nothing is published until it is complete — rather than
+    /// emitting a recovery-less score at breakfast and revising it the next morning. A day whose
+    /// concluding night never arrives (the strap was off) simply stays unscored until it does; it is
+    /// not scored on execution alone, because a score missing half its inputs is not comparable with
+    /// the series around it.
     static func daysToScore(scoredDays: [String], todayKey: String,
                             alreadyScored: Set<String> = [], rescoreAll: Bool = false) -> [String] {
-        let finished = Set(scoredDays.filter { $0 < todayKey })
+        let available = Set(scoredDays)
+        let finished = available.filter { day in
+            guard day < todayKey else { return false }
+            guard let next = nextDayKey(day) else { return false }
+            return available.contains(next)
+        }
         return (rescoreAll ? finished : finished.subtracting(alreadyScored)).sorted()
     }
 }
