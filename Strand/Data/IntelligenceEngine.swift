@@ -883,6 +883,10 @@ final class IntelligenceEngine: ObservableObject {
         let hadNew = wmKey.isEmpty || storedWatermark != wmKey
         diagnosticSink?("re-score: trigger=\(trigger) "
                         + "newData=\(hadNew ? "yes" : "no (nothing changed since last run)")", nil)
+        // 260906: the same attribution, tallied for the whole day. The per-pass line above answers
+        // "why did THIS pass run"; the day tally answers "which trigger keeps starting passes", which
+        // is the question the 260906 log (9 full passes, 41 dropped triggers) could not settle.
+        RescoreStats.recordStarted(trigger: trigger)
 
         // #1005: time the whole pass — the trigger line above records WHY; this records how many nights
         // and how long (the CPU cost per run), so a re-score STORM is visible in the strap log.
@@ -2637,9 +2641,6 @@ final class IntelligenceEngine: ObservableObject {
         // covers the window, so eviction runs exactly as before; `persistComputedScores` is guarded the
         // same way, so an empty pass leaves the persisted window untouched. Twin of the Android
         // WhoopDao.replaceComputedScoreWindow empty guard.
-<<<<<<< HEAD
-        if !preserveUnscoredHistory && !persistedDailies.isEmpty {
-=======
         //
         // A LIGHT PASS NEVER EVICTS (260902, the target-reversion bug). Eviction is a
         // WINDOW-WIDE RECONCILIATION: "every computed day in [oldestDay, newestDay] that this pass
@@ -2653,8 +2654,7 @@ final class IntelligenceEngine: ObservableObject {
         // off a much older carried day until the next full pass restored the row. The light pass's
         // entire job is to advance TODAY's accumulators; deciding what is stale is not its
         // business, and the full pass still reconciles the whole window at the morning open.
-        if !persistedDailies.isEmpty, !lightPass {
->>>>>>> ce19f6d3c (Light pass never reconciles: no window eviction, no wide provenance delete)
+        if !preserveUnscoredHistory, !persistedDailies.isEmpty, !lightPass {
             let freshKeys = Set(persistedDailies.map { $0.day })
             let existingWindow = (try? await store.dailyMetrics(deviceId: computedId, from: oldestDay, to: newestDay)) ?? []
             for stale in existingWindow where !freshKeys.contains(stale.day) {
@@ -3025,6 +3025,8 @@ final class IntelligenceEngine: ObservableObject {
             let elapsed = Date().timeIntervalSince(reScoreStart)
             diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
                             + "\(Int(elapsed * 1000)) ms", nil)
+            RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
+                                        inBackground: RescoreBackgroundScheduler.isBackgrounded)
             return
         }
         if !wmKey.isEmpty { UserDefaults.standard.set(wmKey, forKey: Self.analyzeWatermarkKey) }
@@ -3042,12 +3044,15 @@ final class IntelligenceEngine: ObservableObject {
             elapsedSeconds: elapsed,
             assertionExpiries: RescoreBackgroundScheduler.assertionExpiries - reScoreExpiriesAtStart,
             backgroundedAtEnd: RescoreBackgroundScheduler.isBackgrounded), nil)
+        RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
+                                    inBackground: RescoreBackgroundScheduler.isBackgrounded)
         // #1681: a pass that completes while leaving the mark SET looks identical in a capture to one that
         // cleared it. Rare-event evidence, so always-on: it costs a line only when it actually happens,
         // and it is exactly what is missing when someone reports the app re-scoring on every launch.
         if !settled {
             diagnosticSink?("re-score: debt NOT settled — a newer re-score was recorded while this pass "
                             + "was running, so the mark stays and another pass will run (#1681)", nil)
+            RescoreStats.recordDebtUnsettled()
         }
         // New-data debt does not invalidate the repair writes that just succeeded (#2606).
         // Cancellation and persistence failures still leave the repair flags unset.
