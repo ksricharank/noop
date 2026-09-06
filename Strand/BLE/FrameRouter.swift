@@ -23,6 +23,42 @@ public final class FrameRouter {
     /// nil in pure/unit contexts, which the verdict treats as unattributed rather than guessing.
     var deviceId: String?
 
+    /// #1712: the `event_timestamp` of the last physical gesture already acted on, per event name.
+    ///
+    /// One physical double-tap reaches the handlers through TWO independent paths whenever an offload
+    /// is running: `handle(parsed:)` (the live path) and `dispatchLiveGestureIfFresh` (the mid-offload
+    /// carve-out, #69). The strap also re-sends the EVENT inside its 45 s freshness window, so the same
+    /// tap can arrive several seconds apart. That is exactly what the 260906 log caught: the strap
+    /// reported ONE `SENSORS: IMU double tap detected` and the app logged TWO cups of water, 1.3 s apart
+    /// — just past AppModel's 1.2 s wall-clock debounce.
+    ///
+    /// Deduping on the event's OWN timestamp instead of on arrival time makes the duplicate structurally
+    /// impossible rather than merely unlikely: `event_timestamp` is the strap RTC's real-unix second and
+    /// is the gesture's identity, whereas a debounce only guesses at identity from timing and fails as
+    /// soon as an offload chunk pushes the second delivery past whatever window was chosen.
+    ///
+    /// Keyed by event name so a double-tap can never suppress a wrist change that shares its second.
+    /// Per connection (cleared with the rest of the routing state) — a reconnect legitimately re-reads
+    /// the strap's recent events, and a stale key must not swallow the first real gesture after it.
+    private var lastGestureEventTs: [String: Int] = [:]
+
+    /// True the FIRST time a given gesture event+timestamp is seen, false for every repeat.
+    ///
+    /// Fails OPEN when the frame carries no usable timestamp: a gesture with no identity is passed
+    /// through rather than dropped, because silently swallowing a real tap is the worse failure —
+    /// the wearer has no on-screen feedback to tell them it was missed. The live path's frames are
+    /// already `ts > 0`-gated on the offload side; this keeps the live side honest without making a
+    /// missing field mean "ignore".
+    private func isFirstDelivery(event: String, ts: Int?) -> Bool {
+        guard let ts, ts > 0 else { return true }
+        // Normalise "DOUBLE_TAP(12)" → "DOUBLE_TAP" so the two paths agree on the key even if one
+        // ever renders the raw value differently.
+        let key = String(event.prefix(while: { $0 != "(" }))
+        if lastGestureEventTs[key] == ts { return false }
+        lastGestureEventTs[key] = ts
+        return true
+    }
+
     /// Which family's framing to decode with. Set per connection by BLEManager. WHOOP 5.0/MG frames
     /// use the CRC16/offset-8 envelope; the biometric field decode for puffin is still a stub, so
     /// WHOOP 5 custom frames currently surface only their envelope (live HR/battery come from the
@@ -31,7 +67,10 @@ public final class FrameRouter {
         // #900: a fresh connection is a fresh capture session — re-arm the per-command raw-frame dump so
         // each connect can re-capture the disputed COMMAND_RESPONSE prefix once. `family` is set fresh per
         // connection by BLEManager (connectCore), so this is the per-session reset hook.
-        didSet { rawDumpedRespCmds.removeAll(); loggedFirmwareGate = nil; deviceId = nil }
+        didSet {
+            rawDumpedRespCmds.removeAll(); loggedFirmwareGate = nil; deviceId = nil
+            lastGestureEventTs.removeAll()
+        }
     }
 
     /// #900: resp command names (e.g. "GET_BATTERY_LEVEL(26)") whose raw COMMAND_RESPONSE frame has already
@@ -464,8 +503,13 @@ public final class FrameRouter {
                 }
                 // Physical inputs the strap exposes — live only (this path never sees historical
                 // replay, which goes through the Backfiller). Event strings are "NAME(rawValue)".
+                //
+                // #1712: gated on the event's own timestamp, not on arrival — mid-offload this SAME
+                // gesture is also delivered by `dispatchLiveGestureIfFresh`, and the strap re-sends it
+                // within its freshness window. See `lastGestureEventTs`.
+                let gestureTs = parsed.parsed["event_timestamp"]?.intValue
                 if ev.hasPrefix("DOUBLE_TAP") {
-                    state.onDoubleTap?()
+                    if isFirstDelivery(event: ev, ts: gestureTs) { state.onDoubleTap?() }
                 } else if ev.hasPrefix("WRIST_ON") {
                     if !state.worn { state.worn = true; state.onWristChange?(true) }
                 } else if ev.hasPrefix("WRIST_OFF") {
@@ -699,8 +743,10 @@ public final class FrameRouter {
         guard parsed.typeName == "EVENT", let ev = parsed.parsed["event"]?.stringValue else { return }
         guard let ts = parsed.parsed["event_timestamp"]?.intValue, ts > 0 else { return }   // fail closed
         guard abs(now - ts) <= FrameRouter.liveGestureWindowSeconds else { return }
+        // #1712: same timestamp-keyed guard the live path uses — this is the OTHER half of the
+        // duplicate, so both must consult the same map for either to be effective.
         if ev.hasPrefix("DOUBLE_TAP") {
-            state.onDoubleTap?()
+            if isFirstDelivery(event: ev, ts: ts) { state.onDoubleTap?() }
         } else if ev.hasPrefix("WRIST_ON") {
             if !state.worn { state.worn = true; state.onWristChange?(true) }
         } else if ev.hasPrefix("WRIST_OFF") {
