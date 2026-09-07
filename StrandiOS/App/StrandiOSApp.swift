@@ -397,6 +397,11 @@ struct StrandiOSApp: App {
         // HealthKitBridge.sync guards on `auth == .authorized`, so the scenePhase trigger stays a
         // safe no-op until the user opts in.
         .onChange(of: scenePhase) { _, phase in
+            // 260906: keep the nonisolated background mirror in step with the transition itself, not
+            // merely with whenever someone next asks the main-actor question. The long re-score's
+            // per-night abort reads that mirror from a detached task, and the case it exists for is
+            // exactly "the app went away and nothing else asked".
+            RescoreBackgroundScheduler.noteScenePhase(isActive: phase == .active)
             if phase == .active {
                 // Live Activity resurrection kick. The island cannot be (re)started from the
                 // background, so a legitimate end while away — the sleep-window pause, a long

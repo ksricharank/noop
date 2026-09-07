@@ -166,11 +166,57 @@ enum RescoreBackgroundScheduler {
     /// an incoming call — therefore self-correct within seconds, and the case that matters is never missed.
     static var isBackgrounded: Bool {
         #if os(iOS)
-        return UIApplication.shared.applicationState != .active
+        let backgrounded = UIApplication.shared.applicationState != .active
+        // Mirror it for readers that are NOT on the main actor — see `isBackgroundedSnapshot`. Kept
+        // in step here, on the main-actor read, so the mirror can never be staler than the last time
+        // anyone asked the authoritative question.
+        setBackgroundedMirror(backgrounded)
+        return backgrounded
         #else
         return false
         #endif
     }
+
+    /// A nonisolated view of `isBackgrounded`, for code running OFF the main actor.
+    ///
+    /// 260906: the long re-score runs inside a `Task.detached`, and its per-night abort check needs
+    /// to know whether the app has gone away mid-pass. `UIApplication.shared.applicationState` is
+    /// main-actor-isolated, and hopping to the main actor 21 times inside a background scan to ask
+    /// would both serialise against the UI and defeat the point.
+    ///
+    /// Updated from the main-actor property above, and — importantly — by the scene-phase hook, so it
+    /// tracks the transition that matters even when nothing else is asking. Conservative when never
+    /// written: `false` (foreground), so a pass on a fresh launch runs rather than aborting on a
+    /// mirror nobody has populated yet.
+    ///
+    /// Lock-guarded rather than a plain `static var`: a detached task reads it while the main actor
+    /// writes it, which is a data race by definition however benign the values look. `NSLock` is the
+    /// primitive the rest of this file already uses for exactly this.
+    nonisolated static var isBackgroundedSnapshot: Bool {
+        #if os(iOS)
+        mirrorLock.lock(); defer { mirrorLock.unlock() }
+        return backgroundedMirror
+        #else
+        return false
+        #endif
+    }
+
+    #if os(iOS)
+    nonisolated private static let mirrorLock = NSLock()
+    nonisolated(unsafe) private static var backgroundedMirror = false
+
+    nonisolated private static func setBackgroundedMirror(_ value: Bool) {
+        mirrorLock.lock(); defer { mirrorLock.unlock() }
+        backgroundedMirror = value
+    }
+
+    /// Called by the scene-phase hook so the mirror follows the app even when no main-actor reader
+    /// happens to ask. Without this the mirror would only be as fresh as the last `isBackgrounded`
+    /// call, and the case this exists for is precisely "the app went away and nobody asked".
+    nonisolated static func noteScenePhase(isActive: Bool) { setBackgroundedMirror(!isActive) }
+    #else
+    nonisolated static func noteScenePhase(isActive: Bool) {}
+    #endif
 
     /// Whether the phone is locked (protected data unavailable) — the same read the Live Activity's
     /// cadence and the stream duty cycle use; the keybag tracks the passcode lock and follows the

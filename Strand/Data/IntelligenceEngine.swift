@@ -1076,7 +1076,32 @@ final class IntelligenceEngine: ObservableObject {
                 return r
             }
             await store.perfReset()
+            // 260906 BATTERY: the pass gives up when the app it started in FRONT of has gone to the
+            // background, and it is not the light pass.
+            //
+            // The 260906-2052 log's whole background re-score bill was 6946 s, and a SINGLE pass was
+            // 4214 s of it (82% of all full-pass time; the 56 light passes were 7% of the bill
+            // between them). That pass logged `trigger=forced where=foreground` — it began while the
+            // app was open, then the app went to the background and it kept grinding, I/O-throttled,
+            // for seventy minutes. `RescoreBackgroundPolicy` cannot help: its first line is
+            // `guard isBackground else { return .run }`, so a foreground start is waved through once
+            // and never re-examined.
+            //
+            // Checked per DAY rather than once, because the transition happens mid-pass by definition.
+            // Abandoning is safe and is the cheap option: the watermark is written only at the END of
+            // a completed pass, so nothing is marked done, the debt mark stays set, and the next
+            // trigger re-runs it under a policy that CAN defer it properly. A partial pass has
+            // already persisted the days it finished, so the work is not lost either.
+            //
+            // The light pass is exempt: it is today-only, its median is 8.4 s, and it is what keeps
+            // the numerators moving in the background — aborting it would trade a real feature for
+            // almost none of the bill. Never fires at offset 0: a pass that scores nothing is waste.
+            var abandonedAtOffset: Int?
             for offset in 0..<maxDays {
+                if !lightPass, offset > 0, RescoreBackgroundScheduler.isBackgroundedSnapshot {
+                    abandonedAtOffset = offset
+                    break
+                }
                 let dayStart = nowLocalMidnight - offset * 86_400
                 let day = AnalyticsEngine.dayString(dayStart, offsetSec: tzOffset)
                 // Read a generous window around the night that ends on `day`; the stager finds the span.
@@ -1705,6 +1730,21 @@ final class IntelligenceEngine: ObservableObject {
                     dayCacheCacheable += 1
                 }
                 out.append(scan)
+            }
+            // 260906: carry the abandonment out on the SAME channel the other in-task diagnostics
+            // use (`skippedDayLines` is replayed through `diagnosticSink` on the main actor below).
+            // The prefix is what the caller matches on to skip the watermark — a string sentinel
+            // rather than a wider tuple, so the detached task's signature is untouched.
+            //
+            // Always-on: a silent abandonment looks exactly like a completed pass in a log, and "why
+            // is yesterday unscored" would be unanswerable — the mistake the #1635 diagnostic rules
+            // exist to prevent.
+            if let at = abandonedAtOffset {
+                skippedDayLines.append(Self.abandonedLinePrefix
+                                       + " after \(at)/\(maxDays) night(s) — the app backgrounded"
+                                       + " mid-pass and a throttled full pass burns minutes for work"
+                                       + " nobody can see; the debt stays set and the next trigger"
+                                       + " re-runs it under the deferral policy")
             }
             // #1005: prune the reuse cache to the current 21-day window (the oldest day ages out at
             // midnight) and carry a one-line reuse diagnostic on the same channel as the skipped-day lines.
@@ -2804,6 +2844,19 @@ final class IntelligenceEngine: ObservableObject {
                                         inBackground: RescoreBackgroundScheduler.isBackgrounded)
             return
         }
+        // 260906: an ABANDONED pass must not advance the watermark or settle the debt. Both are the
+        // record that the 21-night window is scored; writing them after a pass that stopped at, say,
+        // night 3 would mark eighteen unscored nights as done and no later trigger would revisit
+        // them. Skipping both leaves the state exactly as an interrupted pass already leaves it — the
+        // debt mark stays set, and the next trigger re-runs under a policy that can defer properly.
+        let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
+        if wasAbandoned {
+            RescoreStats.recordAbandoned()
+            let elapsed = Date().timeIntervalSince(reScoreStart)
+            diagnosticSink?("re-score: gave up after \(Int(elapsed)) s of a full pass rather than "
+                            + "grind on in the background (260906)", nil)
+            return
+        }
         if !wmKey.isEmpty { UserDefaults.standard.set(wmKey, forKey: Self.analyzeWatermarkKey) }
         markPostLoopPhase("tail")
         diagnosticSink?(AnalysisPhaseTally.logLine(scope: "postLoop", postLoopPhases), nil)
@@ -2830,6 +2883,11 @@ final class IntelligenceEngine: ObservableObject {
     /// `analyzeRecent` scored against. A non-forced tick whose current fingerprint equals this skips the
     /// 21-day rescore; cleared implicitly by any scoring-stream insert (the fingerprint moves), so it self-heals.
     private static let analyzeWatermarkKey = "noop.analyzeWatermark"
+
+    /// 260906: the prefix of the diagnostic line an ABANDONED pass carries out of the detached scan
+    /// task. The caller matches it to skip the watermark write, so an abandoned pass cannot mark days
+    /// done that it never scored.
+    static let abandonedLinePrefix = "re-score: ABANDONED"
 
     /// CAPTURE-B (#814/#799): build the universal `dayOwner …` self-diagnostic line VERBATIM (the Test
     /// Centre export parser depends on this exact shape). `readId` is the owner this day was read+scored
