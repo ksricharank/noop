@@ -31,13 +31,24 @@ struct NOOPProvider: TimelineProvider {
         // Gallery previews use `placeholder(in:)` / getSnapshot's preview branch. A real timeline
         // with no shared snapshot must show missing data honestly, never plausible sample numbers.
         let snap = WidgetSnapshot.load() ?? .unavailable
-        // Refresh roughly every 15 minutes; the app also forces a reload when it publishes fresh data.
-        let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date().addingTimeInterval(900)
+        // 260906: the self-refresh interval now ADAPTS to how much of the app's background-reload
+        // budget is left.
+        //
+        // These `.after` builds are not charged against that budget, but each is a process wake, and
+        // the 260906 log served 224 timelines against 108 requested — roughly 116 self-scheduled
+        // builds a day at the old flat 15 min. While the app still has budget, a SHORTER interval
+        // (10 min) fills the gaps between coalesced reloads, which is what makes the face feel live.
+        // Once the budget is spent these builds are the only thing keeping it current, and stretching
+        // them saves wakes on a day where nothing more will be requested anyway.
+        let dayKey = Self.localDayKey()
+        let spent = WidgetSnapshot.ExtensionStats.budgetSpent(dayKey: dayKey)
+        let interval = WidgetReloadBudget.nextTimelineInterval(usedToday: spent)
+        let next = Date().addingTimeInterval(interval)
         // 260905: record that WidgetKit actually ASKED for a timeline. The app already counts the
         // reloads it requests; this is the other half — without it, "the widget lags behind the
         // app" cannot distinguish iOS dropping our requests from our snapshot being stale when
         // read. Two integers into the shared App Group, on a path that was already running.
-        WidgetSnapshot.ExtensionStats.recordTimelineServed(dayKey: Self.localDayKey())
+        WidgetSnapshot.ExtensionStats.recordTimelineServed(dayKey: dayKey)
         completion(Timeline(entries: [NOOPEntry(date: Date(), snapshot: snap)], policy: .after(next)))
     }
 }

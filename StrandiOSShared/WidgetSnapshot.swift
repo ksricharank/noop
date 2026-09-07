@@ -404,6 +404,29 @@ public struct WidgetSnapshot: Codable, Equatable {
             store?.set(now.timeIntervalSince1970, forKey: reloadRequestedAtKey)
         }
 
+        /// 260906: how many BACKGROUND reloads the app has spent today, written by the app so the
+        /// EXTENSION can pace its own `.after` interval against the same budget.
+        ///
+        /// The extension cannot link the app module, so this rides the App Group the two already
+        /// share — the same arrangement `recordTimelineServed` uses in the other direction. Only the
+        /// count crosses; the policy that reads it lives in `WidgetReloadBudget`, compiled into both.
+        private static let bgSpentKey = "wps.ext.bgSpent"
+        private static let bgSpentDayKey = "wps.ext.bgSpentDay"
+
+        /// Called by the app whenever its background-reload spend changes.
+        public static func publishBudgetSpend(_ used: Int, dayKey: String) {
+            guard let d = store else { return }
+            d.set(dayKey, forKey: bgSpentDayKey)
+            d.set(used, forKey: bgSpentKey)
+        }
+
+        /// Read by the extension. Zero when the stored day is not today — a stale count must not make
+        /// the extension think the budget is spent and stretch its interval for a fresh day.
+        public static func budgetSpent(dayKey: String) -> Int {
+            guard let d = store, d.string(forKey: bgSpentDayKey) == dayKey else { return 0 }
+            return d.integer(forKey: bgSpentKey)
+        }
+
         /// The lag stats for the day, or nil when nothing has been measured yet.
         public static func lag(dayKey: String) -> (count: Int, meanMs: Int, maxMs: Int)? {
             guard let d = store, d.string(forKey: servedDayKey) == dayKey else { return nil }
@@ -453,7 +476,8 @@ public struct WidgetSnapshot: Codable, Equatable {
         public static func reset() {
             guard let d = store else { return }
             for k in [servedKey, servedDayKey, lastServedKey, reloadRequestedAtKey,
-                      lagSumMsKey, lagCountKey, lagMaxMsKey] { d.removeObject(forKey: k) }
+                      lagSumMsKey, lagCountKey, lagMaxMsKey,
+                      bgSpentKey, bgSpentDayKey] { d.removeObject(forKey: k) }
         }
     }
 
