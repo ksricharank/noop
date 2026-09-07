@@ -223,29 +223,46 @@ extension WidgetSnapshot {
                                                previous: WidgetSnapshot? = nil) -> Bool {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
+            // ALWAYS save, even when the reload is withheld. The snapshot is the source of truth the
+            // extension reads on its NEXT build (its own `.after` schedule, or the next admitted
+            // reload), so a coalesced burst still lands its final values on the face — it just does
+            // not spend a budget reload per sync to get there.
             snap.save(previousSeries: previous?.hrSeries ?? [])
-            // 260906: stamp the request so the extension can measure how long WidgetKit took to act
-            // on it. Written BEFORE the call, so a fast turnaround cannot be missed. See
-            // `ExtensionStats.recordReloadRequested` for why this is the missing half.
-            WidgetSnapshot.ExtensionStats.recordReloadRequested()
-            WidgetCenter.shared.reloadAllTimelines()
-            // Android skips the update entirely when no widget is placed; WidgetKit offers no
-            // synchronous way to know, so the reload still goes out and is instead recorded honestly.
-            // Counting it as a reload would make a widget-removed export read exactly like a
-            // widget-installed one, which is half the comparison the counters exist for.
-            if WidgetTelemetry.widgetsInstalled {
-                WidgetTelemetry.noteReloaded()
-            } else {
-                WidgetTelemetry.noteNoWidget()
+            // 260906: foreground reloads are budget-EXEMPT, so while the app is open the widget
+            // tracks it exactly and the gate is bypassed. Only background requests are paced.
+            guard isBackground else {
+                WidgetSnapshot.ExtensionStats.recordReloadRequested()
+                WidgetCenter.shared.reloadAllTimelines()
+                return true
             }
-            return true
-        } else if WidgetSnapshot.traceNeedsPoint(previous: previous, bpm: snap.bpm, now: snap.updated) {
-            // A steady heart changes nothing the header renders, so the branch above declines — but the
-            // TRACE still wants this minute's point, or it stops advancing at rest and prunes to empty
-            // (#1957). Persist without a reload: the point is for the next timeline WidgetKit builds,
-            // and spending a reload a minute is exactly what the dedup above exists to avoid.
-            snap.save(previousSeries: previous?.hrSeries ?? [])
-            WidgetTelemetry.noteDeclined()
+            let state = WidgetPublishStats.budgetState()
+            let change = reloadChange(from: previous, to: snap)
+            switch WidgetReloadBudget.decide(change: change,
+                                             lastReloadAt: state.lastAt,
+                                             usedToday: state.usedToday) {
+            case .allow:
+                WidgetPublishStats.recordBgReloadSpent()
+                // Over-reporting reloads is the safe direction for a cost figure; a widget-removed
+                // export must not read like a widget-installed one (upstream's counters).
+                if WidgetTelemetry.widgetsInstalled { WidgetTelemetry.noteReloaded() }
+                else { WidgetTelemetry.noteNoWidget() }
+                // Stamp the request so the extension can measure how long WidgetKit took to act on
+                // it. Written BEFORE the call, so a fast turnaround cannot be missed.
+                WidgetSnapshot.ExtensionStats.recordReloadRequested()
+                WidgetCenter.shared.reloadAllTimelines()
+                return true
+            case .coalesced:
+                // The strap syncs in bursts (172 offloads → 58 distinct moments in the 260906 log).
+                // Riding out the burst and letting the LAST state be the one that reloads is both
+                // cheaper and fresher than reloading on each sync.
+                WidgetPublishStats.recordGateSkip(capped: false)
+                return false
+            case .capped:
+                // Past the daily cap a request is deferred anyway and deepens the throttle for
+                // everything after it. The extension's own timeline policy keeps the face moving.
+                WidgetPublishStats.recordGateSkip(capped: true)
+                return false
+            }
         } else if liveUpdateRequiresFullBuild(previous: previous, now: snap.updated) {
             // The rollover's visible values can legitimately match yesterday's. Persist the fresh day
             // stamp once without spending a redundant WidgetKit reload, so later live ticks stay fast.
@@ -280,6 +297,30 @@ extension WidgetSnapshot {
             }
         }
         if let installed { WidgetTelemetry.noteWidgetsInstalled(installed) }
+    }
+
+    /// Classify what moved, for the budget gate's urgency test.
+    ///
+    /// Only fields the wearer ACTS on are urgent. Water is always urgent — logging a cup is a
+    /// deliberate act (often the strap double-tap, which has no on-screen feedback at all), and the
+    /// widget is where the wearer confirms it landed. Scores move rarely. Steps must clear a
+    /// threshold, because a step count drifts continuously and re-rendering a ring for +12 steps is
+    /// exactly the spend that emptied the budget.
+    ///
+    /// Calories and effort are deliberately NOT urgent: both drift all day, and neither is a number
+    /// anyone acts on within two minutes.
+    @MainActor
+    private static func reloadChange(from previous: WidgetSnapshot?,
+                                     to snap: WidgetSnapshot) -> WidgetReloadBudget.Change {
+        guard let previous else { return .init(scoreChanged: true) }   // first publish of the day
+        // Absent → present counts as a change; absent → absent does not. A nil steps count is "not
+        // measured yet", so treating it as 0 would manufacture a large delta at first light.
+        let stepsDelta = abs((snap.steps ?? 0) - (previous.steps ?? 0))
+        return .init(stepsDelta: snap.steps == nil ? 0 : stepsDelta,
+                     waterLogged: (snap.waterHalfCups ?? 0) > (previous.waterHalfCups ?? 0),
+                     scoreChanged: snap.recovery != previous.recovery
+                                || snap.effort != previous.effort
+                                || snap.rest != previous.rest)
     }
 
     /// #114/#169: HR is the ONE high-frequency widget-publish trigger — `model.bpm` moves every few
