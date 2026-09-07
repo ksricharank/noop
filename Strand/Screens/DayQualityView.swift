@@ -54,10 +54,11 @@ struct DayQualityView: View {
             // The score itself, the breakdown and the narrative — the existing card, pointed at the
             // browsed day.
             DayQualityCard(scoresByDay: scoresByDay, dayIndex: dayIndex)
+            // The trend section carries the window selector, the chart, the week-in-review and the
+            // calendar strip — all of it shared with the Sleep tab so the two cannot drift.
             ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
                               windows: Self.windows, window: $window,
                               lowLabel: "Light", highLabel: "Excellent")
-            weekInReview
             DayQualitySettingsCard()
         }
         .task(id: repo.days.count) { await load() }
@@ -122,58 +123,6 @@ struct DayQualityView: View {
         if cal.isDateInToday(d) { return String(localized: "Today") }
         if cal.isDateInYesterday(d) { return String(localized: "Yesterday") }
         return Self.dayFormatter.string(from: d)
-    }
-
-    // MARK: - Week in review
-
-    /// The day-quality analogue of the Trends page's "Week in review": the last 7 scored days as a
-    /// band tally, so a week reads as a shape rather than one average. Bands are the score's own
-    /// (`DayQualityScore.band`), not a second scale invented here.
-    @ViewBuilder
-    private var weekInReview: some View {
-        let lastSeven = scoredDays.prefix(7).compactMap { scoresByDay[$0] }
-        if lastSeven.count >= 2 {
-            let avg = lastSeven.reduce(0, +) / Double(lastSeven.count)
-            NoopCard {
-                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                    SectionHeader("Week in review", overline: "Last \(lastSeven.count) scored days")
-                    HStack(alignment: .lastTextBaseline, spacing: 8) {
-                        Text("\(Int(avg.rounded()))")
-                            .font(.system(size: 34, weight: .bold, design: .rounded))
-                            .foregroundStyle(StrandPalette.chargeColor)
-                            .monospacedDigit()
-                        Text("average · \(DayQualityScore.band(Int(avg.rounded())))")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                    }
-                    ForEach(bandTally(lastSeven), id: \.name) { row in
-                        HStack {
-                            Text(row.name).font(StrandFont.caption)
-                                .foregroundStyle(StrandPalette.textSecondary)
-                            Spacer()
-                            Text("\(row.count)").font(StrandFont.caption).monospacedDigit()
-                                .foregroundStyle(StrandPalette.textPrimary)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Counts per band, best→worst, omitting bands with no days — a row of zeroes would pad the card
-    /// without saying anything.
-    ///
-    /// The order comes from asking `DayQualityScore.band` itself for the name of a representative
-    /// score in each tier, rather than from a second copy of the tier names here. Alphabetical would
-    /// be plainly wrong ("Excellent, Light, Mixed, Solid, Strong"), and a hard-coded list would be a
-    /// duplicate of the scale that could drift from it silently.
-    private func bandTally(_ scores: [Double]) -> [(name: String, count: Int)] {
-        var counts: [String: Int] = [:]
-        for s in scores { counts[DayQualityScore.band(Int(s.rounded())), default: 0] += 1 }
-        let order = [95, 80, 67, 52, 20].map { DayQualityScore.band($0) }
-        return order.compactMap { name in
-            counts[name].map { (name: name, count: $0) }
-        }
     }
 
     // MARK: - Load
