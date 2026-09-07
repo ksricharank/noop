@@ -48,6 +48,8 @@ enum RescoreStats {
         /// #1681 debt non-settlements: a pass finished but a newer mark had already landed, so the
         /// debt survived and another full pass is guaranteed. A high count here IS the loop.
         static let debtUnsettled = "rss.debtUnsettled"
+        /// Full passes that gave up mid-pass because the app backgrounded (260906).
+        static let abandoned = "rss.abandoned"
     }
 
     private static var d: UserDefaults { .standard }
@@ -66,7 +68,7 @@ enum RescoreStats {
             for p in [K.startedPrefix, K.donePrefix] { d.set(0, forKey: p + t) }
         }
         for c in DeferralCause.allCases { d.set(0, forKey: K.deferredPrefix + c.rawValue) }
-        for k in [K.msFg, K.msBg, K.maxMs, K.debtUnsettled] { d.set(0, forKey: k) }
+        for k in [K.msFg, K.msBg, K.maxMs, K.debtUnsettled, K.abandoned] { d.set(0, forKey: k) }
         d.removeObject(forKey: K.maxTrigger)
     }
 
@@ -138,13 +140,22 @@ enum RescoreStats {
     /// #1681: a pass finished into a debt that had already been re-marked, guaranteeing another pass.
     static func recordDebtUnsettled(now: Date = Date()) { bump(K.debtUnsettled, now: now) }
 
+    /// 260906: a full pass gave up because the app backgrounded mid-pass.
+    ///
+    /// This is a SAVING, not a fault — the 260906 log's single 4214 s pass was 82 % of all full-pass
+    /// time, and it was a foreground-started pass that kept grinding after the app went away. A
+    /// non-zero count here is the fix working; a zero count on a day with a multi-minute background
+    /// pass means the abort is not firing.
+    static func recordAbandoned(now: Date = Date()) { bump(K.abandoned, now: now) }
+
     /// Test seam: clear everything, including the day key, so a suite starts from zero.
     static func reset() {
         for t in triggers + ["other"] {
             for p in [K.startedPrefix, K.donePrefix] { d.removeObject(forKey: p + t) }
         }
         for c in DeferralCause.allCases { d.removeObject(forKey: K.deferredPrefix + c.rawValue) }
-        for k in [K.day, K.msFg, K.msBg, K.maxMs, K.maxTrigger, K.debtUnsettled] { d.removeObject(forKey: k) }
+        for k in [K.day, K.msFg, K.msBg, K.maxMs, K.maxTrigger, K.debtUnsettled,
+                  K.abandoned] { d.removeObject(forKey: k) }
     }
 
     /// One header line, or nothing when no pass ran today (a fresh install, or a quiet macOS session).
@@ -178,6 +189,8 @@ enum RescoreStats {
         }
         let unsettled = d.integer(forKey: K.debtUnsettled)
         if unsettled > 0 { line += " · debt unsettled ×\(unsettled)" }
+        let abandoned = d.integer(forKey: K.abandoned)
+        if abandoned > 0 { line += " · gave up ×\(abandoned) (backgrounded mid-pass)" }
         var out = [line]
         if !parts.isEmpty { out.append("Re-score by trigger: " + parts.joined(separator: "  ")) }
         if !causeParts.isEmpty { out.append("Re-score dropped: " + causeParts.joined(separator: "  ")) }
