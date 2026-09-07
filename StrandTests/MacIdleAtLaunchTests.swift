@@ -89,3 +89,80 @@ final class MacIdleAtLaunchTests: XCTestCase {
                        """)
     }
 }
+
+/// The macOS app must not INSTANTIATE a CoreBluetooth client just because it launched (260906).
+///
+/// The 260903 tests above pass, and the prompt still appeared. That is the lesson worth keeping: they
+/// pinned the *gate on connecting*, and the macOS Bluetooth permission prompt does not come from
+/// connecting — it comes from instantiating a `CBCentralManager`, which `init` did unconditionally.
+/// The scan and the connect attempts genuinely stopped, which is why the fix looked complete; the
+/// prompt, which was the reported symptom, did not.
+///
+/// So these assert the layer the earlier tests missed: on macOS the client is created LAZILY, on
+/// first real use. Reading the source for the same reason the tests above do — constructing a
+/// `BLEManager` in a test to observe the absence of a prompt is precisely the thing that would raise
+/// one.
+final class MacLazyCentralTests: XCTestCase {
+
+    private func bleSource() throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent("Strand/BLE/BLEManager.swift"),
+                          encoding: .utf8)
+    }
+
+    /// No initializer may construct a central OUTSIDE an `#if os(iOS)` branch. Both initializers (the
+    /// production one and the test/preview one) previously did, and the test-hosting initializer
+    /// matters just as much: `StrandTests` runs inside the macOS app, so an eager client there raised
+    /// the prompt on every test run as well as every build.
+    func testNeitherInitializerConstructsACentralOnMacOS() throws {
+        let src = try bleSource()
+        // Three sites, and the COUNT is not the property — the platform scope is. Two initializers
+        // (production and test/preview) each construct eagerly under `#if os(iOS)`, and the lazy
+        // accessor has its own fallback. Asserting a count would fail the moment a fourth legitimate
+        // site appeared while saying nothing about whether it was guarded; assert instead that every
+        // eager site assigns `centralStorage` from inside an iOS branch, which is what keeps macOS
+        // silent.
+        let eager = src.components(separatedBy: "centralStorage = CBCentralManager(").count - 1
+        XCTAssertEqual(eager, 2,
+                       "both initializers should assign centralStorage eagerly (each inside its own "
+                       + "`#if os(iOS)`); found \(eager)")
+        for part in src.components(separatedBy: "centralStorage = CBCentralManager(").dropLast() {
+            let preceding = String(part.suffix(400))
+            XCTAssertTrue(preceding.contains("#if os(iOS)"),
+                          "an eager construction outside `#if os(iOS)` puts the macOS prompt back: "
+                          + preceding.suffix(160))
+        }
+        XCTAssertTrue(src.contains("CBCentralManagerOptionRestoreIdentifierKey"),
+                      "iOS must keep its restorable client — background restoration depends on it")
+        // The macOS arm of both initializers must be inert. If either still assigns, the prompt is back.
+        XCTAssertFalse(src.contains("central = CBCentralManager("),
+                       "a direct `central = CBCentralManager(...)` assignment is the regression: the "
+                       + "client must be built through the lazy accessor, not in an initializer")
+    }
+
+    /// The storage is optional and the accessor materialises it. Without the optional there is nothing
+    /// to defer.
+    func testTheClientIsDeferredThroughOptionalStorage() throws {
+        let src = try bleSource()
+        XCTAssertTrue(src.contains("private var centralStorage: CBCentralManager?"),
+                      "deferral needs optional storage")
+        XCTAssertTrue(src.contains("private var central: CBCentralManager {"),
+                      "and a computed accessor, so all 40 existing `central.` call sites are unchanged")
+    }
+
+    /// The permission-diagnostic path must not create a client merely by asking after its state.
+    ///
+    /// This one is easy to get wrong in the obvious direction: a status read looks harmless, but on a
+    /// lazily-built client it is a construction — raising the very prompt this exists to avoid, from
+    /// the code whose whole job is to REPORT on permission.
+    func testTheUnauthorizedDiagnosticDoesNotCreateAClient() throws {
+        let src = try bleSource()
+        guard let fn = src.range(of: "func armUnauthorizedSettleDeadline()") else {
+            return XCTFail("the unauthorized diagnostic has moved; this guard needs re-pointing")
+        }
+        let body = String(src[fn.upperBound...].prefix(900))
+        XCTAssertTrue(body.contains("centralExists"),
+                      "the diagnostic must check existence before reading state, or it constructs a "
+                      + "client (and prompts) from a path that is only meant to observe: \(body.prefix(300))")
+    }
+}

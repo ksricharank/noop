@@ -938,7 +938,40 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     // MARK: CoreBluetooth
-    private var central: CBCentralManager!
+
+    /// The CoreBluetooth client, created LAZILY on macOS (260906).
+    ///
+    /// The 260903 change ("macOS: stay idle at launch") gated `connectFromSystem` — the path that
+    /// scans and connects. But the macOS Bluetooth permission prompt does not come from connecting:
+    /// it comes from INSTANTIATING a `CBCentralManager`, which `init` did unconditionally. So
+    /// building the project still raised the prompt. The gate was one layer too high, and the symptom
+    /// it was written to remove was only half removed — the scan and the connect attempts did stop,
+    /// which is why it looked fixed.
+    ///
+    /// Deferring construction is what actually leaves the radio and the prompt alone until something
+    /// asks. Every existing `central.` use site reads through the computed property below and is
+    /// unchanged, so a deliberate Connect from the UI builds the client on the spot.
+    ///
+    /// iOS constructs it eagerly in `init`, exactly as before: there, being ready to restore a
+    /// background connection at launch IS the product, and the permission is granted at install.
+    private var centralStorage: CBCentralManager?
+
+    /// The client, materialised on first touch. Reads as `central` at every existing call site.
+    private var central: CBCentralManager {
+        if let c = centralStorage { return c }
+        // No restore identifier here: that is an iOS background feature, and iOS never reaches this
+        // fallback because `init` has already assigned the restorable client.
+        let c = CBCentralManager(delegate: self, queue: .main)
+        centralStorage = c
+        #if os(macOS)
+        log("macOS: CoreBluetooth client created on first use (idle until asked)")
+        #endif
+        return c
+    }
+
+    /// Whether the client exists yet, for paths that must not bring it into being merely by asking
+    /// after its state — without this a status read would defeat the deferral.
+    private var centralExists: Bool { centralStorage != nil }
     private var peripheral: CBPeripheral?
     /// Multi-WHOOP: when non-nil, the scan/discover path connects ONLY to the peripheral whose
     /// `identifier == preferredPeripheralUUID` and ignores every other discovered WHOOP. When nil
@@ -1337,11 +1370,14 @@ public final class BLEManager: NSObject, ObservableObject {
         // iOS background state preservation/restoration: the restore identifier is what makes
         // CoreBluetooth relaunch the app into the background and deliver willRestoreState after
         // a suspend-then-jettison. Without it, willRestoreState is never called.
-        central = CBCentralManager(delegate: self, queue: .main,
-                                   options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
+        centralStorage = CBCentralManager(delegate: self, queue: .main,
+                                          options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
         #else
-        // Strand (macOS desktop): no state-restoration identifier (iOS background feature).
-        central = CBCentralManager(delegate: self, queue: .main)
+        // 260906: macOS deliberately does NOT construct the client here — see `centralStorage`.
+        // Instantiating a CBCentralManager is what raises the macOS permission prompt, so the app
+        // stays genuinely idle (no prompt, no radio) until something actually asks for Bluetooth.
+        // This matters for the TEST suite too: StrandTests is hosted by the macOS app, so an eager
+        // client raised the prompt on every test run as well as every build.
         #endif
         // Strap-as-clock: an incoming EVENT packet kicks a rate-limited catch-up sync.
         router.onSyncTrigger = { [weak self] in self?.requestSync(.strap) }
@@ -1537,11 +1573,14 @@ public final class BLEManager: NSObject, ObservableObject {
         // Restore identifier + background-capable central (mirrors the production initializer
         // so a restored manager matches by identifier; only exercised by tests/previews).
         #if os(iOS)
-        central = CBCentralManager(delegate: self, queue: .main,
-                                   options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
+        centralStorage = CBCentralManager(delegate: self, queue: .main,
+                                          options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
         #else
-        // Strand (macOS desktop): no state-restoration identifier (iOS background feature).
-        central = CBCentralManager(delegate: self, queue: .main)
+        // 260906: macOS deliberately does NOT construct the client here — see `centralStorage`.
+        // Instantiating a CBCentralManager is what raises the macOS permission prompt, so the app
+        // stays genuinely idle (no prompt, no radio) until something actually asks for Bluetooth.
+        // This matters for the TEST suite too: StrandTests is hosted by the macOS app, so an eager
+        // client raised the prompt on every test run as well as every build.
         #endif
         // Strap-as-clock: an incoming EVENT packet kicks a rate-limited catch-up sync.
         router.onSyncTrigger = { [weak self] in self?.requestSync(.strap) }
@@ -5565,7 +5604,12 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.unauthorizedSettleWork = nil
-            guard self.central?.state == .unauthorized else { return }
+            // 260906: must NOT materialise the client. This runs on a deadline, and asking a
+            // not-yet-created central for its state would construct one — raising the very macOS
+            // permission prompt the lazy construction exists to avoid, from a path whose whole job is
+            // to REPORT on permission. No client means nothing was ever asked, so there is no wedged
+            // grant to diagnose.
+            guard self.centralExists, self.central.state == .unauthorized else { return }
             self.log("Central still unauthorized \(BLEManager.unauthorizedSettleSeconds)s after a granted TCC read — not cold-start settling (#391); treating as a wedged grant (#429) and showing the re-grant banner")
             self.showBluetoothRegrantBanner()
         }
