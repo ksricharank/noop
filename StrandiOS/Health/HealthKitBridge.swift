@@ -474,6 +474,16 @@ final class HealthKitBridge: ObservableObject {
         var byDay: [String: DayAgg] = [:]
         func agg(_ day: String) -> DayAgg { byDay[day] ?? DayAgg() }
 
+        // 260906: time the READ phase — the sixteen sequential HealthKit statistics queries. The
+        // aggregate `avgSyncMs` (27 s in the 260906 log) cannot say whether these or the write-back
+        // dominate, and the two call for opposite fixes: gather the reads concurrently vs write back
+        // less often. Measured before changed. Wall time, so mostly `await` — a big number here is
+        // latency, not necessarily battery, which is exactly why the total could not pick the fix.
+        //
+        // Stamped and recorded at explicit boundaries rather than with `defer`: a `defer` here would
+        // fire at FUNCTION exit and silently time the whole pass, reporting the read phase as 100% of
+        // a number it is only part of. A measurement that lies is worse than none.
+        let readStart = Date()
         // Quantity aggregates per day.
         await collect(.restingHeartRate, unit: HKUnit.count().unitDivided(by: .minute()), start: start, end: end, op: .discreteAverage) { day, v in
             var a = agg(day); a.restingHr = v; byDay[day] = a
@@ -664,7 +674,11 @@ final class HealthKitBridge: ObservableObject {
                     UserDefaults.standard.set(true, forKey: Self.hourlyStepsBackfilledKey)
                 }
             }
+            HealthSyncStats.recordReadPhase(millis: Int(Date().timeIntervalSince(readStart) * 1000))
+            let writeBackStart = Date()
             try await writeBack(whoopStore: store)
+            HealthSyncStats.recordWriteBackPhase(
+                millis: Int(Date().timeIntervalSince(writeBackStart) * 1000))
             lastSync = Date()
             // Record the window alongside the time: an observer wake may only stand down for a sync that
             // actually covered ITS days (see `observerCoalesceWindow`). Set on the success path only.
@@ -672,6 +686,10 @@ final class HealthKitBridge: ObservableObject {
             lastError = nil
             return true
         } catch {
+            // 260906: a pass that spent time and then FAILED is exactly the one a drain report needs
+            // to show, so the read phase is banked here too. Recorded on both arms rather than in a
+            // `defer`, which would have timed the whole function instead of the phase.
+            HealthSyncStats.recordReadPhase(millis: Int(Date().timeIntervalSince(readStart) * 1000))
             // A failed sync must never let a later wake skip on the strength of it — the rows it would
             // have written are not there. Clearing the window means `window <= lastSyncDays` cannot hold.
             lastSyncDays = 0
