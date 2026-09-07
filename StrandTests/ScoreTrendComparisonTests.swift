@@ -84,3 +84,57 @@ final class ScoreTrendComparisonTests: XCTestCase {
         XCTAssertNil(ScoreTrendSection.comparison(valuesByDay: series(reported), windowDays: 3))
     }
 }
+
+/// The "Week in review" card must mean a WEEK.
+///
+/// 260906. The chart footer's comparison deliberately scales with the selected window (30d compares
+/// 15 vs 15), which is right for a footer that sits under a 30-day chart. But a card headed "Week in
+/// review" reading fifteen days because the picker moved would be the same class of mislabelling as
+/// the "prev 7" bug this file exists for — the label and the arithmetic have to agree.
+///
+/// So the card asks over a fixed 14-day window regardless of the chart's selection, and self-hides
+/// unless both weeks are complete.
+@MainActor
+final class WeekInReviewScopeTests: XCTestCase {
+
+    private func series(_ values: [Double]) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for (i, v) in values.enumerated() {
+            let daysAgo = values.count - 1 - i
+            let d = Calendar.current.date(byAdding: .day, value: -daysAgo, to: Date())!
+            let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+            f.locale = Locale(identifier: "en_US_POSIX")
+            out[f.string(from: d)] = v
+        }
+        return out
+    }
+
+    /// Fourteen days give exactly two full weeks: 7 vs 7, whatever the chart is showing.
+    func testTheCardComparesSevenAgainstSeven() {
+        let values = series((0..<14).map { Double(50 + $0) })
+        let c = ScoreTrendSection.comparison(valuesByDay: values, windowDays: 14)
+        XCTAssertEqual(c?.n, 7, "a week-in-review card must compare a week against a week")
+        // recent = the last seven (57...63), prior = the seven before (50...56).
+        XCTAssertEqual(c?.recent ?? 0, (57.0 + 58 + 59 + 60 + 61 + 62 + 63) / 7, accuracy: 0.001)
+        XCTAssertEqual(c?.prior ?? 0, (50.0 + 51 + 52 + 53 + 54 + 55 + 56) / 7, accuracy: 0.001)
+    }
+
+    /// Under two full weeks, the card shows nothing rather than comparing a short week to a long one.
+    func testThirteenDaysIsNotTwoWeeks() {
+        XCTAssertNil(ScoreTrendSection.comparison(valuesByDay: series((0..<13).map { _ in 60.0 }),
+                                                  windowDays: 14),
+                     "13 days cannot fill two weeks; the card must hide rather than mislabel")
+    }
+
+    /// The card's own window is INDEPENDENT of the chart's selection. This is the property that keeps
+    /// the heading honest: selecting 90d must not turn "this week" into "this month".
+    func testTheCardsWindowIsIndependentOfTheChartSelection() {
+        let values = series((0..<120).map { Double(50 + $0 % 20) })
+        let weekly = ScoreTrendSection.comparison(valuesByDay: values, windowDays: 14)
+        let quarterly = ScoreTrendSection.comparison(valuesByDay: values, windowDays: 90)
+        XCTAssertEqual(weekly?.n, 7, "the card always asks over 14 days")
+        XCTAssertEqual(quarterly?.n, 30, "the chart footer legitimately scales with its own window")
+        XCTAssertNotEqual(weekly?.n, quarterly?.n,
+                          "if these matched, the card could not be showing a week")
+    }
+}
