@@ -47,8 +47,103 @@ struct ScoreTrendSection: View {
             SegmentedPillControl(windows, selection: $window,
                                  adaptsToAvailableWidth: true) { $0.label }
             chart
+            weekInReview
             heatStrip
         }
+    }
+
+    // MARK: - Week in review
+
+    /// The Trends page's "Week in review", for one metric.
+    ///
+    /// 260906, maintainer: "can you add a week in review for day quality and sleep like how the
+    /// trends page has?" Same visual language as `TrendsView.pipScoreRow` — the liquid vessel, the
+    /// count-up number and the pip bar — so the three surfaces read as one idea rather than three
+    /// dialects of it.
+    ///
+    /// Three rows instead of Trends' Charge/Effort/Rest trio, because there is only one metric here:
+    /// this week, the week before, and the change. That is the comparison the card is for, and it is
+    /// the same like-for-like arithmetic the chart footer uses (`comparison`), so the two cannot
+    /// disagree about a delta on the same screen.
+    ///
+    /// Self-hides unless BOTH weeks are complete. A "this week vs last week" card that quietly
+    /// compared seven days against three would be the defect this file was written to fix, in a new
+    /// place.
+    @ViewBuilder
+    private var weekInReview: some View {
+        if let week = weekComparison {
+            NoopCard {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                    SectionHeader("Week in review", overline: "This week vs last")
+                    pipRow(label: "This week", value: week.recent)
+                    pipRow(label: "Last week", value: week.prior)
+                    deltaRow(week.recent - week.prior)
+                }
+            }
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    /// Always seven days a side, whatever the chart's window is showing.
+    ///
+    /// Deliberately NOT `comparison`, which scales with the selected window (15 vs 15 at 30d). A card
+    /// titled "Week in review" must mean a week — reading 15 days under that heading because the
+    /// picker moved would be the same class of mislabelling as the "prev 7" bug.
+    private var weekComparison: (recent: Double, prior: Double)? {
+        // Ask over a 14-day window so exactly two weeks are in scope regardless of the selection.
+        guard let c = Self.comparison(valuesByDay: valuesByDay, windowDays: 14) else { return nil }
+        return (c.recent, c.prior)
+    }
+
+    /// One pip row, matching `TrendsView.pipScoreRow`'s layout.
+    private func pipRow(label: LocalizedStringKey, value: Double) -> some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            Text(label)
+                .font(StrandFont.overline)
+                .tracking(StrandFont.overlineTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(StrandPalette.textSecondary)
+            HStack(spacing: NoopMetrics.space3) {
+                // Static (posed) vessel, as on Trends: a cached frame each, not a live canvas.
+                LiquidVessel(value: fill(value), tint: StrandPalette.chargeColor, animated: false)
+                    .frame(width: 30, height: 30)
+                    .accessibilityHidden(true)
+                CountUpText(value: value, format: format,
+                            font: StrandFont.number(30, weight: .bold),
+                            color: StrandPalette.textPrimary)
+            }
+            PipBar(value: value, range: valueRange.lowerBound...min(valueRange.upperBound, 100),
+                   tint: StrandPalette.chargeColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text(format(value)))
+    }
+
+    /// The change, signed and coloured by direction — the thing the card exists to show.
+    private func deltaRow(_ delta: Double) -> some View {
+        let up = delta.rounded() > 0
+        let flat = delta.rounded() == 0
+        return HStack(spacing: NoopMetrics.space2) {
+            Image(systemName: flat ? "equal" : (up ? "arrow.up.right" : "arrow.down.right"))
+                .font(StrandFont.footnote)
+            Text(flat ? String(localized: "No change")
+                      : String(localized: "\(signed(delta)) vs last week"))
+                .font(StrandFont.footnote)
+        }
+        // Neutral for flat, and the domain colours otherwise. Not red-for-down: a quieter week is
+        // not a failure, and the palette should not scold.
+        .foregroundStyle(flat ? StrandPalette.textTertiary
+                              : (up ? StrandPalette.chargeColor : StrandPalette.textSecondary))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The vessel fill, 0…1 on the metric's own scale.
+    private func fill(_ value: Double) -> Double {
+        let span = min(valueRange.upperBound, 100) - valueRange.lowerBound
+        guard span > 0 else { return 0 }
+        return max(0, min(1, (value - valueRange.lowerBound) / span))
     }
 
     // MARK: - Points
