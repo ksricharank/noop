@@ -176,6 +176,10 @@ targets:
       # And the widget cost counters, for the same reason again: pure, iOS-only, and the arithmetic is
       # exactly the part that has been wrong twice on the Android side.
       - StrandiOSShared/WidgetTelemetry.swift
+      # 260906: the background-reload budget policy. Pure (no WidgetKit, no UserDefaults, no clock of
+      # its own), so it tests on macOS exactly as it runs on iOS — same reasoning as the snapshot
+      # source above.
+      - StrandiOSShared/WidgetReloadBudget.swift
     # Same wrapper as the app target, so the OURA_CLOUD_IMPORT-gated Oura tests compile exactly
     # when the app's Oura lane does (flag + creds both come from the untracked OuraSecrets.xcconfig).
     configFiles:

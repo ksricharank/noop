@@ -47,6 +47,15 @@ enum WidgetPublishStats {
         /// morning cluster followed by silence is the deferral signature.
         static let firstBgReloadAt = "wps.firstBgReloadAt"
         static let lastBgReloadAt = "wps.lastBgReloadAt"
+        /// 260906: the budget gate's state — when a BACKGROUND reload was last actually requested,
+        /// and how many have been spent today. Day-keyed with everything else here, so the cap is a
+        /// per-day cap and a new day starts clean.
+        static let lastBgReloadRequestedAt = "wps.lastBgReloadReqAt"
+        static let bgReloadsSpent = "wps.bgReloadsSpent"
+        /// Background reloads NOT requested because a burst was coalesced, or the cap was spent —
+        /// counted so the log can show the gate working rather than leaving a silent skip.
+        static let coalesced = "wps.coalesced"
+        static let cappedSkips = "wps.cappedSkips"
         static let lastAt = "wps.lastAt"          // epoch seconds of the last COMPLETED publish
         static let lastGlance = "wps.lastGlance"  // "steps=… cal=… effort=… sleep=…" of that publish
     }
@@ -59,8 +68,10 @@ enum WidgetPublishStats {
         if d.string(forKey: K.day) != today {
             d.set(today, forKey: K.day)
             for k in [K.fullBegun, K.fullFinished, K.live, K.reloads, K.dedup,
-                      K.reloadsBg, K.dedupBg, K.reloadsBgUnseen, K.publishesBg] { d.set(0, forKey: k) }
-            for k in [K.firstBgReloadAt, K.lastBgReloadAt] { d.removeObject(forKey: k) }
+                      K.reloadsBg, K.dedupBg, K.reloadsBgUnseen, K.publishesBg,
+                      K.bgReloadsSpent, K.coalesced, K.cappedSkips] { d.set(0, forKey: k) }
+            for k in [K.firstBgReloadAt, K.lastBgReloadAt,
+                      K.lastBgReloadRequestedAt] { d.removeObject(forKey: k) }
             // lastAt/lastGlance deliberately survive the roll: "last publish was yesterday 23:58"
             // is exactly the evidence a frozen morning widget needs.
         }
@@ -105,6 +116,34 @@ enum WidgetPublishStats {
         d.set(now.timeIntervalSince1970, forKey: K.lastBgReloadAt)
     }
 
+    // MARK: - The background-reload budget gate (260906)
+
+    /// State the gate needs: when a background reload was last requested, and how many today.
+    static func budgetState(now: Date = Date()) -> (lastAt: Date?, usedToday: Int) {
+        rollIfNeeded(now: now)
+        let ts = d.double(forKey: K.lastBgReloadRequestedAt)
+        return (ts > 0 ? Date(timeIntervalSince1970: ts) : nil, d.integer(forKey: K.bgReloadsSpent))
+    }
+
+    /// Record that a background reload WAS requested — the spend the cap counts.
+    static func recordBgReloadSpent(now: Date = Date()) {
+        rollIfNeeded(now: now)
+        d.set(now.timeIntervalSince1970, forKey: K.lastBgReloadRequestedAt)
+        let used = d.integer(forKey: K.bgReloadsSpent) + 1
+        d.set(used, forKey: K.bgReloadsSpent)
+        // Mirror the spend into the App Group so the EXTENSION can pace its own `.after` interval
+        // against the same budget (it cannot link this module). iOS-only: no widgets on macOS.
+        #if os(iOS)
+        WidgetSnapshot.ExtensionStats.publishBudgetSpend(used, dayKey: Self.dayKey(now))
+        #endif
+    }
+
+    /// Record a reload the gate withheld. Counted, not silent: a skip nobody can see is what made the
+    /// original frozen-widget report unanswerable.
+    static func recordGateSkip(capped: Bool, now: Date = Date()) {
+        bump(capped ? K.cappedSkips : K.coalesced, now: now)
+    }
+
     /// A live-only fast-path publish ran (bpm/battery/bonded only). `reloadRequested` as above.
     static func recordLive(reloadRequested: Bool, now: Date = Date(), inBackground: Bool = false) {
         bump(K.live, now: now)
@@ -119,7 +158,9 @@ enum WidgetPublishStats {
     static func reset() {
         for k in [K.day, K.fullBegun, K.fullFinished, K.live, K.reloads, K.dedup,
                   K.lastAt, K.lastGlance, K.reloadsBg, K.dedupBg, K.reloadsBgUnseen,
-                  K.publishesBg, K.firstBgReloadAt, K.lastBgReloadAt] { d.removeObject(forKey: k) }
+                  K.publishesBg, K.firstBgReloadAt, K.lastBgReloadAt,
+                  K.lastBgReloadRequestedAt, K.bgReloadsSpent, K.coalesced,
+                  K.cappedSkips] { d.removeObject(forKey: k) }
     }
 
     /// One header line, or nothing when no publish ever ran (macOS, fresh installs).
@@ -156,7 +197,10 @@ enum WidgetPublishStats {
                     firstBg: firstBg > 0 ? Self.clock(Date(timeIntervalSince1970: firstBg)) : nil,
                     lastBg: lastBg > 0 ? Self.clock(Date(timeIntervalSince1970: lastBg)) : nil),
                 Self.servedLine(requested: d.integer(forKey: K.reloads), served: served.count,
-                                lastServed: served.lastAt.map(Self.clock), lag: lag)]
+                                lastServed: served.lastAt.map(Self.clock), lag: lag),
+                Self.gateLine(spent: d.integer(forKey: K.bgReloadsSpent),
+                              coalesced: d.integer(forKey: K.coalesced),
+                              capped: d.integer(forKey: K.cappedSkips))]
             .filter { !$0.isEmpty }
     }
 
@@ -185,6 +229,26 @@ enum WidgetPublishStats {
     /// Reads as "none" rather than being omitted when nothing ran in the background: the ABSENCE of
     /// background publishes is itself an answer (it would mean the gating, not the budget, is what
     /// keeps the widget stale), and a missing line cannot say that.
+    /// 260906: what the budget gate did today — the line that says whether the pacing is working.
+    ///
+    /// `spent/cap` against `coalesced` is the whole story: a healthy day shows the spend comfortably
+    /// under the cap with most bursts coalesced, and `capped` at zero. A non-zero `capped` means the
+    /// day genuinely wanted more reloads than the budget allows, which is the signal to revisit the
+    /// urgency rules rather than the cap (raising the cap is what produced the 169 s deferral).
+    nonisolated static func gateLine(spent: Int, coalesced: Int, capped: Int) -> String {
+        #if !os(iOS)
+        return ""
+        #else
+        guard spent > 0 || coalesced > 0 || capped > 0 else { return "" }
+        var line = "Widget budget: spent=\(spent)/\(WidgetReloadBudget.dailyCap)"
+            + " coalesced=\(coalesced)"
+        if capped > 0 { line += " capped=\(capped)" }
+        line += " (background reloads only; a coalesced burst still SAVED its snapshot,"
+        line += " so the next build shows it)"
+        return line
+        #endif
+    }
+
     nonisolated static func backgroundLine(publishesBg: Int, reloadsBg: Int, dedupBg: Int,
                                            unseenBg: Int, firstBg: String?, lastBg: String?) -> String {
         guard publishesBg > 0 else {
