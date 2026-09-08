@@ -264,7 +264,8 @@ public struct DayQualityScore: Equatable, Sendable {
         // strong day and room to fall. Full marks need a clear improvement on baseline.
         if config.hrvWeight > 0 {
             if let hrv = input.hrv, let base = input.hrvBaseline, base > 0 {
-                let achieved = baselineAchievement(ratio: hrv / base, higherIsBetter: true)
+                let achieved = baselineAchievement(ratio: hrv / base, higherIsBetter: true,
+                                                   downsideTolerance: hrvDownsideTolerance)
                 recovery.append((Component(
                     label: "HRV", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%.0f ms vs %.0f ms baseline", hrv, base)
@@ -275,7 +276,8 @@ public struct DayQualityScore: Equatable, Sendable {
         }
         if config.restingHrWeight > 0 {
             if let rhr = input.restingHr, let base = input.restingHrBaseline, base > 0 {
-                let achieved = baselineAchievement(ratio: Double(rhr) / base, higherIsBetter: false)
+                let achieved = baselineAchievement(ratio: Double(rhr) / base, higherIsBetter: false,
+                                                   downsideTolerance: restingHrDownsideTolerance)
                 recovery.append((Component(
                     label: "Resting HR", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%d bpm vs %.0f bpm baseline", rhr, base)
@@ -334,17 +336,48 @@ public struct DayQualityScore: Equatable, Sendable {
     /// The asymmetry is deliberate: normal is genuinely good (most days should sit near baseline and
     /// score well), but "normal" must not be full marks or the recovery half would be pinned at its
     /// ceiling and the score would move only with execution.
-    public static func baselineAchievement(ratio: Double, higherIsBetter: Bool) -> Double {
+    /// How far below baseline a signal must fall to score ZERO, per signal (260907).
+    ///
+    /// The reported symptom: a day-quality card showing `HRV 30 ms vs 36 ms baseline → 1.7/15`, which
+    /// reads as a broken or missing signal. It was neither — the arithmetic was exactly right. The
+    /// CALIBRATION was wrong: a single downside slope of 0.20 was applied to every signal, so 17 %
+    /// below baseline scored 11 % of the available points.
+    ///
+    /// The correction comes from the wearer's own measured spread rather than from taste. Across 23
+    /// banked nights the night-to-night HRV deviation from its own median was 7 % (median), 21 %
+    /// (p75), 34 % (p90) — so a slope zeroing at 20 % put a ROUTINE night at the bottom of the scale.
+    /// HRV is simply that volatile; that is a fact about the signal, not about the day.
+    ///
+    /// Resting heart rate is a different signal and keeps the tighter slope. It genuinely varies far
+    /// less night to night — the same nights that swung HRV 34 % moved RHR by a handful of bpm — so
+    /// widening it too would have flattened a signal that carries real information when it does move.
+    /// One constant for both was the actual bug; the fix is per-signal, not merely bigger.
+    public static let hrvDownsideTolerance = 0.40
+    public static let restingHrDownsideTolerance = 0.20
+    /// The default for any other baseline-scored signal, unchanged from the original.
+    public static let defaultDownsideTolerance = 0.20
+
+    /// Score a signal against the wearer's own baseline.
+    ///
+    /// `downsideTolerance` is the fractional shortfall that scores zero — see the constants above for
+    /// why it is per-signal. The UPSIDE stays at +10 % for full marks: beating your own baseline by a
+    /// tenth is a genuinely good day for any of these signals, and the asymmetry is deliberate rather
+    /// than an oversight (a bad night should be recoverable; a great one should be reachable).
+    public static func baselineAchievement(ratio: Double, higherIsBetter: Bool,
+                                           downsideTolerance: Double = defaultDownsideTolerance) -> Double {
         // Non-finite is BAD DATA, not a perfect day: an infinite ratio would otherwise sail through
         // the improvement branch below and score full marks off a divide-by-almost-zero baseline.
         guard ratio.isFinite, ratio > 0 else { return 0 }
+        // A zero or negative tolerance would divide by zero (or invert the slope). Fall back rather
+        // than produce a score nobody could explain.
+        let tolerance = downsideTolerance > 0 ? downsideTolerance : defaultDownsideTolerance
         // Express every signal as "fractional improvement", so one formula serves both directions.
         let improvement = higherIsBetter ? (ratio - 1) : (1 - ratio)
-        // -0.20 → 0.0, 0.0 → 0.75, +0.10 → 1.0
+        // 0.0 → 0.75, +0.10 → 1.0, −tolerance → 0.0
         if improvement >= 0 {
             return min(1.0, 0.75 + (improvement / 0.10) * 0.25)
         }
-        return max(0.0, 0.75 + (improvement / 0.20) * 0.75)
+        return max(0.0, 0.75 + (improvement / tolerance) * 0.75)
     }
 
     /// How demanding the day's targets were, relative to the wearer's own recent average.
