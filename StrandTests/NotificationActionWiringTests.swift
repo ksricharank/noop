@@ -39,8 +39,18 @@ final class NotificationActionWiringTests: XCTestCase {
         let required = [
             ("UNUserNotificationCenter.current().delegate = NotificationPresenter.shared",
              "without the delegate, no action response is ever delivered"),
-            ("setNotificationCategories([HydrationReminder.category])",
+            // 260907: matched as two needles rather than one literal. The call now registers TWO
+            // categories (the hydration reminder and the strap-tap confirmation's Undo) and spans
+            // several lines, so the old single-line literal no longer appears — while the property
+            // that matters, "the hydration category is registered at launch", still holds.
+            ("setNotificationCategories(",
              "without the category registered at launch, a reminder can post with its buttons dropped"),
+            ("HydrationReminder.category",
+             "the hydration category itself must be in the registered set"),
+            // setNotificationCategories REPLACES the whole set, so the tap confirmation has to ride
+            // the SAME call — a second call would silently drop the reminder's own actions.
+            ("WaterTapConfirmation.category",
+             "the strap-tap Undo category must be registered in the same call, not a second one"),
             ("installHydrationReminderSink()",
              "without the sink, a tapped button reaches a nil handler and logs nothing"),
         ]
