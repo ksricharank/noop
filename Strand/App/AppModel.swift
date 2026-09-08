@@ -795,8 +795,24 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             let total = await repo.logHydration(amountMl: HydrationGoal.cupML)
             buzzForNudgeIfEnabled(.water)
-            live.append(log: "Double-tap: logged a cup "
-                        + "(\(HydrationGoal.cups(fromML: total)) cups today)")
+            let cups = HydrationGoal.cups(fromML: total)
+            live.append(log: "Double-tap: logged a cup (\(cups) cups today)")
+            // 260907: confirm on screen, with an Undo. The buzz says "something happened" but cannot
+            // say WHAT — and on a gesture with no on-screen feedback that is the whole question. The
+            // undo is the half that answers the over-sensitivity report: it makes a false positive
+            // costless rather than merely visible. iOS-only (UserNotifications on macOS has no
+            // equivalent surface here, and the strap double-tap is a phone feature).
+            #if os(iOS)
+            // The entry id is read back so Undo removes THIS cup specifically. "Undo the most recent
+            // entry" would be wrong: a reminder-driven cup or an in-app +Cup landing in between would
+            // become the thing deleted instead of the accidental tap.
+            let day = Repository.localDayKey(Date())
+            if let goal = repo.cachedLiveTargets().waterTargetCups,
+               let entry = repo.hydrationEntries(day: day).max(by: { $0.loggedAt < $1.loggedAt }) {
+                WaterTapConfirmation.post(cups: cups, goalCups: goal,
+                                          entryId: entry.id, day: day)
+            }
+            #endif
             // Refresh the widget faces so the new count is on the Lock Screen too. iOS-only —
             // `WidgetSnapshot` is excluded from the macOS target.
             #if os(iOS)
@@ -833,6 +849,20 @@ final class AppModel: ObservableObject {
     /// the new count.
     func installHydrationReminderSink() {
         Self.titleCoach = coach
+        // 260907: Undo for a strap-tap confirmation. Deletes the exact entry the notification was
+        // posted for (by id), through the SAME per-entry delete the hydration detail screen uses, so
+        // an undone cup cannot leave the total and the entry list disagreeing.
+        NotificationPresenter.shared.waterUndoSink = { [weak self] entryId, day, done in
+            Task { @MainActor in
+                guard let self else { done(); return }
+                _ = await self.repo.deleteHydrationEntry(id: entryId, day: day)
+                self.live.append(log: "Double-tap: cup undone from the confirmation notification")
+                #if os(iOS)
+                await WidgetSnapshot.publish(from: self)
+                #endif
+                done()
+            }
+        }
         NotificationPresenter.shared.hydrationActionSink = { [weak self] amountMl, done in
             Task { @MainActor in
                 guard let self else { done(); return }
@@ -2027,7 +2057,12 @@ final class AppModel: ObservableObject {
 
     private func handleDoubleTap() {
         let now = Date()
-        guard now.timeIntervalSince(lastDoubleTapAt) > 1.2 else { return }   // debounce repeats
+        // 260907: the window is user-configurable (Automations → Double-tap). The old 1.2 s constant
+        // is what the "still feels sensitive" report was raised against, so the default moved to 2 s
+        // and the knob lets the wearer trade sensitivity for certainty themselves. This is the
+        // SEPARATE-taps guard; one physical tap firing once is handled structurally by the 16.13
+        // event-timestamp dedup in FrameRouter and is not a knob.
+        guard now.timeIntervalSince(lastDoubleTapAt) > Double(WaterTapPrefs.window) else { return }
         lastDoubleTapAt = now
         live.append(log: "Double-tap → \(behavior.doubleTapAction.label)")
         runMacAction(behavior.doubleTapAction, shortcut: behavior.doubleTapShortcut)

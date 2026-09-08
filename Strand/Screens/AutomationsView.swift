@@ -159,6 +159,10 @@ struct AutomationsView: View {
         }
     }
 
+    /// The double-tap gesture window, in seconds (260907). `@AppStorage` so the stepper writes
+    /// straight through to the key `WaterTapPrefs.window` reads — no second source of truth.
+    @AppStorage(WaterTapPrefs.windowKey) private var tapWindowSeconds = WaterTapPrefs.defaultWindow
+
     // MARK: - Double tap
 
     private var doubleTapCard: some View {
@@ -176,6 +180,35 @@ struct AutomationsView: View {
                 }
                 if behavior.doubleTapAction == .runShortcut {
                     shortcutField(String(localized: "Shortcut name"), text: $behavior.doubleTapShortcut)
+                }
+                // 260907, maintainer's ask: the gesture window, configurable, at the top of this
+                // page. Shown for EVERY action, not only water: it governs how far apart two taps
+                // must be to count as two separate acts, whatever the action is.
+                //
+                // This is NOT the duplicate guard. One physical tap firing exactly once is handled
+                // structurally by the event-timestamp dedup (16.13) and is not a knob — turning that
+                // into a setting would invite someone to break it. This knob answers the different
+                // question the "still feels sensitive" report raises: how long to ignore a SECOND
+                // tap, so a bump moments after a real one does not log twice.
+                Divider().overlay(StrandPalette.hairline)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ignore another tap for").font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Raise this if a knock logs an extra cup; lower it to log two in a row.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: NoopMetrics.space2)
+                    Stepper(value: $tapWindowSeconds,
+                            in: WaterTapPrefs.minWindow...WaterTapPrefs.maxWindow) {
+                        Text("\(tapWindowSeconds)s")
+                            .font(StrandFont.bodyNumber)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .monospacedDigit()
+                    }
+                    .fixedSize()
                 }
                 HStack {
                     Button {
