@@ -29,7 +29,13 @@ struct StrandApp: App {
         // Register the hydration reminder's action category up front, so a reminder that fires
         // before any Settings visit still carries its "Logged a cup" button (a category unknown at
         // fire time silently drops the actions).
-        UNUserNotificationCenter.current().setNotificationCategories([HydrationReminder.category])
+        UNUserNotificationCenter.current().setNotificationCategories([
+            HydrationReminder.category,
+            // 260907: the strap-tap confirmation's Undo action. Registered alongside, because
+            // setNotificationCategories REPLACES the whole set — adding one in a second call would
+            // silently drop the hydration reminder's own actions.
+            WaterTapConfirmation.category,
+        ])
         // Retire the pre-260903 repeating water reminders (260904). They were scheduled as
         // `repeats: true` calendar triggers carrying a SNAPSHOT of the cup count, so iOS kept
         // firing the same frozen "5 of 21 cups" daily — followed seconds later by the correct

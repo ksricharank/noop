@@ -44,6 +44,11 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// missed cup is a smaller wrong than a phantom one logged minutes later against the wrong day.
     var hydrationActionSink: ((Int, @escaping () -> Void) -> Void)?
 
+    /// 260907: Undo for a strap-tap water confirmation. Carries the ENTRY ID the notification was
+    /// posted for, not an amount, so the exact cup is removed rather than "the latest" — which could
+    /// be a different drink by the time the wearer taps Undo.
+    var waterUndoSink: ((UUID, String, @escaping () -> Void) -> Void)?
+
     /// Handle a tap on a delivered notification. Only the scheduled morning-brief category (K5) routes
     /// anywhere; every other notification (wind-down, smart-alarm, battery/illness) just opens the app
     /// to wherever it was, matching the pre-K5 behaviour.
@@ -53,9 +58,25 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         // A scheduled morning-brief tap routes to Coach. It does not consume the response, so the
-        // hydration-action check below still runs for any other category.
+        // water/hydration checks below still run for any other category.
         if response.notification.request.content.categoryIdentifier == CoachBriefScheduler.notificationCategoryId {
             onCoachBriefTapped?()
+        }
+        // 260907: the strap-tap confirmation's Undo, handled before the add actions — it carries an
+        // entry id in userInfo rather than an amount, so it cannot be expressed through the same sink.
+        if response.actionIdentifier == WaterTapConfirmation.undoActionId {
+            let info = response.notification.request.content.userInfo
+            guard let raw = info[WaterTapConfirmation.entryIdKey] as? String,
+                  let id = UUID(uuidString: raw),
+                  let day = info[WaterTapConfirmation.dayKey] as? String,
+                  let undo = waterUndoSink else {
+                // A malformed or unroutable undo does NOTHING rather than guessing at which cup was
+                // meant — deleting the wrong drink is worse than leaving the accidental one.
+                completionHandler()
+                return
+            }
+            undo(id, day, completionHandler)
+            return
         }
         let amount: Int?
         switch response.actionIdentifier {
