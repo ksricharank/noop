@@ -34,6 +34,10 @@ struct ScoreTrendSection: View {
     let valuesByDay: [String: Double]
     let windows: [Window]
     @Binding var window: Window
+    /// Which week the summary card is showing: 0 = this week, -1 = last week. Local to the card, so
+    /// stepping weeks does not disturb the chart's own window selection.
+    @State private var weekOffset = 0
+
     /// The value scale the gradient is anchored to, and the axis ceiling.
     var valueRange: ClosedRange<Double> = 0...106
     /// Formats a value for the footer and the heat-strip tooltip.
@@ -71,17 +75,149 @@ struct ScoreTrendSection: View {
     /// place.
     @ViewBuilder
     private var weekInReview: some View {
-        if let week = weekComparison {
-            NoopCard {
-                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                    SectionHeader("Week in review", overline: "This week vs last")
-                    pipRow(label: "This week", value: week.recent)
-                    pipRow(label: "Last week", value: week.prior)
-                    deltaRow(week.recent - week.prior)
+        // 260907, maintainer's ask: "copy over the weekly summary view from the trends page". The
+        // Trends digest itself cannot be reused as-is — it is built from `WeeklyMetric` over
+        // `DailyMetric` rows (Charge/Effort/Rest/HRV/RHR), and day quality is a separate stored
+        // series that has no `DailyMetric` column. What generalises is its SHAPE: a browsable week
+        // with prev/next chevrons, the day count, and a shareable recap.
+        //
+        // So this is the same interaction over a day-keyed series, which is what both tabs have.
+        let week = weekSummary(offset: weekOffset)
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                weekNavBar(week: week)
+                if week.days.isEmpty {
+                    // An empty PAST week keeps the chevrons above it, so the wearer can step on
+                    // rather than being stranded — the same choice the Trends digest makes.
+                    Text("No scored days this week. Step to another week with the arrows above.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Divider().overlay(StrandPalette.hairline)
+                    pipRow(label: "This week", value: week.mean)
+                    if let prior = week.priorMean {
+                        pipRow(label: "Week before", value: prior)
+                        deltaRow(week.mean - prior)
+                    } else {
+                        Text("No complete week before this one to compare against.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    footerStats(week)
                 }
             }
-            .accessibilityElement(children: .contain)
         }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// One week's summary over the day-keyed series.
+    struct WeekSummary: Equatable {
+        /// Monday..Sunday keys that actually carried a score.
+        var days: [String]
+        var mean: Double
+        var best: Double
+        var worst: Double
+        /// The previous week's mean, or nil when that week holds nothing.
+        var priorMean: Double?
+        var startKey: String
+        var endKey: String
+    }
+
+    /// Build the summary for the week `offset` weeks back (0 = the current week).
+    ///
+    /// Weeks are Monday-anchored to match the Trends digest, so "this week" means the same span on
+    /// both screens — a different anchor would have the two disagree about which days belong to a
+    /// week, which is the kind of quiet divergence the shared section exists to prevent.
+    func weekSummary(offset: Int) -> WeekSummary {
+        let (start, end) = Self.weekBounds(offset: offset)
+        let inWeek = valuesByDay.filter { $0.key >= start && $0.key <= end }
+        let (pStart, pEnd) = Self.weekBounds(offset: offset - 1)
+        let prior = valuesByDay.filter { $0.key >= pStart && $0.key <= pEnd }.values
+        let vals = Array(inWeek.values)
+        return WeekSummary(
+            days: inWeek.keys.sorted(),
+            mean: vals.isEmpty ? 0 : vals.reduce(0, +) / Double(vals.count),
+            best: vals.max() ?? 0,
+            worst: vals.min() ?? 0,
+            priorMean: prior.isEmpty ? nil : prior.reduce(0, +) / Double(prior.count),
+            startKey: start, endKey: end)
+    }
+
+    /// Monday..Sunday keys for the week `offset` weeks back.
+    static func weekBounds(offset: Int) -> (String, String) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.firstWeekday = 2   // Monday, matching WeeklyDigestEngine
+        let now = Date()
+        let startOfWeek = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        let start = cal.date(byAdding: .day, value: offset * 7, to: startOfWeek) ?? startOfWeek
+        let end = cal.date(byAdding: .day, value: 6, to: start) ?? start
+        return (parser.string(from: start), parser.string(from: end))
+    }
+
+    /// Prev/next chevrons with the week named between them. Never steps into a future week; stops
+    /// once there is no earlier scored day to reach.
+    @ViewBuilder
+    private func weekNavBar(week: WeekSummary) -> some View {
+        let atNewest = weekOffset >= 0
+        let earliest = valuesByDay.keys.min()
+        // At the oldest week the series reaches: stepping further would show empty weeks forever.
+        let atOldest = earliest.map { week.startKey <= $0 } ?? true
+        HStack(spacing: NoopMetrics.cardInnerSpacing) {
+            Button { weekOffset = max(weekOffset - 1, -520) } label: {
+                Image(systemName: "chevron.left").font(StrandFont.headline.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(atOldest ? StrandPalette.textTertiary : StrandPalette.accent)
+            .disabled(atOldest)
+            .accessibilityLabel("Previous week")
+            Spacer()
+            VStack(spacing: 2) {
+                Text(weekOffset == 0 ? String(localized: "This week")
+                     : (weekOffset == -1 ? String(localized: "Last week")
+                        : String(localized: "\(-weekOffset) weeks ago")))
+                    .font(StrandFont.headline)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text("\(Self.rangeLabel(week)) · \(week.days.count)/7 days")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            Spacer()
+            Button { weekOffset = min(weekOffset + 1, 0) } label: {
+                Image(systemName: "chevron.right").font(StrandFont.headline.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(atNewest ? StrandPalette.textTertiary : StrandPalette.accent)
+            .disabled(atNewest)
+            .accessibilityLabel("Next week")
+        }
+        .padding(.horizontal, NoopMetrics.space1)
+    }
+
+    /// Best / worst / days — the spread the two pip rows cannot show.
+    private func footerStats(_ week: WeekSummary) -> some View {
+        // The divider is part of the returned view, not a discarded statement above the return — an
+        // earlier cut built one and dropped it on the floor, which compiled fine and rendered nothing.
+        VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+            Divider().overlay(StrandPalette.hairline)
+            ChartFooter([
+                ("Best", format(week.best)),
+                ("Worst", format(week.worst)),
+                ("Days", "\(week.days.count)"),
+            ])
+        }
+    }
+
+    /// "Sep 1 – Sep 7"
+    static func rangeLabel(_ week: WeekSummary) -> String {
+        guard let s = parser.date(from: week.startKey),
+              let e = parser.date(from: week.endKey) else { return "" }
+        let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d")
+        return "\(f.string(from: s)) – \(f.string(from: e))"
     }
 
     /// Always seven days a side, whatever the chart's window is showing.
@@ -294,7 +430,7 @@ struct ScoreTrendSection: View {
         }
     }
 
-    private static let parser: DateFormatter = {
+    static let parser: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
         f.locale = Locale(identifier: "en_US_POSIX"); return f
     }()

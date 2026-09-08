@@ -143,7 +143,16 @@ struct RootTabView: View {
             // v18 uplift: upstream's #2269 promoted Coach to its own tag-3 tab behind a master switch.
             // The fork already occupies tag 3 with Sleep and reaches Coach from the More list, so the
             // Coach tab is not taken; the master switch itself still applies and is honoured there.
-            tab(DayQualityView(), "Day", "checkmark.seal", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
+            //
+            // 260907: `medal` rather than `checkmark.seal`. The seal reads as a verification badge —
+            // "this day is certified" — which is not what a 0–100 quality score says. A medal is a
+            // GRADE, which is exactly what the tab shows, and it carries the retrospective sense the
+            // screen is built around ("how did that day go") rather than a live reading.
+            //
+            // Deliberately NOT `sparkles`: that is already the Coach's mark, on the More row and in
+            // RootView's sidebar, and reusing it here would make this tab look like a second door to
+            // the coach. Distinct from its neighbours too — a grid, a line chart, a bed.
+            tab(DayQualityView(), "Day", "medal", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
             tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
             moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
         }

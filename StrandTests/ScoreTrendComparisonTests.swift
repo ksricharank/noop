@@ -138,3 +138,80 @@ final class WeekInReviewScopeTests: XCTestCase {
                           "if these matched, the card could not be showing a week")
     }
 }
+
+/// The week-navigable summary card's week arithmetic (260907).
+///
+/// Requested: "copy over the weekly summary view from the trends page into the day quality and the
+/// sleep page". The Trends digest itself could not be reused — it is built from `WeeklyMetric` over
+/// `DailyMetric` rows, and day quality is a separate stored series with no such column. What carries
+/// over is its shape: a browsable week with chevrons, a day count, and the week-over-week read.
+///
+/// So the arithmetic is new, and these pin it. Monday-anchored to match `WeeklyDigestEngine`: a
+/// different anchor would have the two screens disagree about which days belong to a week, which is
+/// exactly the quiet divergence the shared section exists to prevent.
+@MainActor
+final class ScoreTrendWeekSummaryTests: XCTestCase {
+
+    /// Weeks run Monday → Sunday, and each offset is exactly seven days earlier.
+    func testWeeksAreMondayAnchoredAndSevenDaysApart() {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        var cal = Calendar(identifier: .gregorian); cal.firstWeekday = 2
+
+        let (thisStart, thisEnd) = ScoreTrendSection.weekBounds(offset: 0)
+        let start = try? XCTUnwrap(f.date(from: thisStart))
+        XCTAssertEqual(cal.component(.weekday, from: start!), 2, "a week must start on Monday")
+        let end = try? XCTUnwrap(f.date(from: thisEnd))
+        XCTAssertEqual(cal.component(.weekday, from: end!), 1, "and end on Sunday")
+
+        let (lastStart, _) = ScoreTrendSection.weekBounds(offset: -1)
+        let gap = cal.dateComponents([.day], from: f.date(from: lastStart)!,
+                                     to: start!).day
+        XCTAssertEqual(gap, 7, "each offset steps exactly one week")
+    }
+
+    /// A week with no scored days reports empty rather than a mean of zero — a zero would render as
+    /// a real, terrible week.
+    func testAnEmptyWeekIsEmptyNotZero() {
+        let section = ScoreTrendSection(
+            title: "T", valuesByDay: [:], windows: [.init(days: 14, label: "14d")],
+            window: .constant(.init(days: 14, label: "14d")))
+        let week = section.weekSummary(offset: 0)
+        XCTAssertTrue(week.days.isEmpty)
+        XCTAssertNil(week.priorMean, "no prior week either")
+    }
+
+    /// Only days INSIDE the week count toward its mean — a neighbouring week's values must not leak.
+    func testOnlyDaysInsideTheWeekCount() {
+        let (start, end) = ScoreTrendSection.weekBounds(offset: 0)
+        let (pStart, _) = ScoreTrendSection.weekBounds(offset: -1)
+        // 100 inside this week, 20 in the previous one.
+        let values = [start: 100.0, end: 100.0, pStart: 20.0]
+        let section = ScoreTrendSection(
+            title: "T", valuesByDay: values, windows: [.init(days: 14, label: "14d")],
+            window: .constant(.init(days: 14, label: "14d")))
+        let week = section.weekSummary(offset: 0)
+        XCTAssertEqual(week.mean, 100, accuracy: 0.001, "the prior week's 20 must not leak in")
+        XCTAssertEqual(week.days.count, 2)
+        XCTAssertEqual(week.priorMean ?? 0, 20, accuracy: 0.001, "and must be the prior week's own")
+    }
+
+    /// Best and worst are the week's spread, which the two mean rows cannot show.
+    func testBestAndWorstCoverTheWeeksSpread() {
+        let (start, _) = ScoreTrendSection.weekBounds(offset: 0)
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        let d0 = f.date(from: start)!
+        var values: [String: Double] = [:]
+        for (i, v) in [40.0, 90.0, 65.0].enumerated() {
+            values[f.string(from: Calendar.current.date(byAdding: .day, value: i, to: d0)!)] = v
+        }
+        let section = ScoreTrendSection(
+            title: "T", valuesByDay: values, windows: [.init(days: 14, label: "14d")],
+            window: .constant(.init(days: 14, label: "14d")))
+        let week = section.weekSummary(offset: 0)
+        XCTAssertEqual(week.best, 90)
+        XCTAssertEqual(week.worst, 40)
+        XCTAssertEqual(week.mean, 65, accuracy: 0.001)
+    }
+}
