@@ -50,14 +50,35 @@ import Foundation
 /// is unit-testable with no clock, no UserDefaults and no WidgetKit.
 public enum WidgetReloadBudget {
 
-    /// The daily cap on BACKGROUND reload requests.
+    /// The daily cap on BACKGROUND reload requests — RETIRED 260907, kept only as a sanity ceiling.
     ///
-    /// 48, not 70. The OS figure is a documented-nowhere range (~40–70) that varies with how the user
-    /// interacts with the widget, and the 66 we spent bought us a 169 s average deferral. Sitting
-    /// deliberately below the bottom of the range keeps requests in the promptly-served regime; the
-    /// coalescer is what makes 48 enough, since 58 bursts × 1 reload each already fits far better than
-    /// 172 syncs × 1 each.
-    public static let dailyCap = 48
+    /// ## The 16.16 theory, and its falsification
+    ///
+    /// 16.16 set this to 48 on the theory that the 169 s `reqToBuild` deferral was WidgetKit throttling
+    /// us for spending 66 background reloads against a ~40–70/day budget. The prediction was explicit:
+    /// spend less, get served faster.
+    ///
+    /// The 260907 log falsified it. Spend fell to 42 and the deferral got WORSE:
+    ///
+    ///     before (66 spent): reqToBuild=169s avg /  946s max
+    ///     after  (42 spent): reqToBuild=186s avg / 2044s max
+    ///
+    /// So WidgetKit was never punishing us for 66. The deferral is iOS scheduling on its own terms —
+    /// system load, thermal state, its own heuristics — and promptness cannot be bought with restraint.
+    /// Holding a tight cap cost freshness and bought nothing measurable.
+    ///
+    /// ## Why a ceiling still exists at all
+    ///
+    /// Not as a budget. The COALESCER is the real limit now: the strap produces ~58 distinct sync
+    /// moments a day, so replaying any cap above ~70 yields the same ~62 reloads — there is simply
+    /// nothing left to spend on. This number is therefore a guard against a FUTURE change that starts
+    /// publishing far more often (a new high-frequency hook, a regressed dedup), not a rationing of
+    /// today's traffic. 200 is far above anything the current publish paths can generate, so it never
+    /// binds in normal operation while still bounding a runaway.
+    ///
+    /// If it ever DOES bind, that is a signal worth reading rather than a limit worth raising: the
+    /// `capped=` counter appearing in a log means something upstream started publishing unexpectedly.
+    public static let dailyCap = 200
 
     /// Minimum spacing between background reloads — the burst coalescer.
     ///
@@ -134,16 +155,17 @@ public enum WidgetReloadBudget {
         // The base rate is the burst coalescer. An URGENT change answers to that alone — a logged cup
         // must reach the face whatever the hour, and pacing an act the wearer just performed would be
         // the worst possible place to save a wake.
-        var required = change.isUrgent ? urgentMinSpacing : minSpacing
-        // Pacing is a BACKSTOP, not the primary rate: it engages only when the day's spend is running
-        // AHEAD of the clock. Replaying the 260906 log against a flat 48 exhausted it at 19:00 and
-        // left the evening stale — but making pace the primary rate over-corrects the other way (at
-        // noon with a full budget, "remaining day ÷ remaining budget" is ~14 min, throttling harder
-        // than the coalescer on a day that has spent nothing). A day has bursts and quiet stretches;
-        // spending faster during a burst is correct, and only a RUN-RATE overshoot needs correcting.
-        if !change.isUrgent, isAheadOfPace(usedToday: usedToday, now: now) {
-            required = max(required, paceSpacing(usedToday: usedToday, now: now))
-        }
+        let required = change.isUrgent ? urgentMinSpacing : minSpacing
+        // 260907: the pace backstop is GONE with the tight cap it existed to ration.
+        //
+        // It was there so a busy morning could not exhaust 48 by 19:00 and leave the evening stale.
+        // With the cap retired to a runaway guard (see `dailyCap`) there is no scarce allowance to
+        // spread, and keeping the term would throttle a normal day for no benefit — it would be the
+        // same mistake as the tight cap itself, one layer down. The coalescer alone now sets the rate,
+        // which is what the evidence supports: the deferral is iOS's, not ours to buy off.
+        //
+        // `isAheadOfPace` / `paceSpacing` are retained (and still tested) because they are the right
+        // shape if a real budget ever has to come back — but nothing consults them.
         guard elapsed < required else { return .allow(urgent: change.isUrgent) }
         return .coalesced(secondsUntilNext: Int((required - elapsed).rounded(.up)))
     }
@@ -202,9 +224,17 @@ public enum WidgetReloadBudget {
     /// the gaps between coalesced reloads — which is what actually makes the face feel live.
     public static func nextTimelineInterval(usedToday: Int, isDayComplete: Bool = false) -> TimeInterval {
         if isDayComplete { return 60 * 60 }        // the day is scored; nothing will move tonight
-        let remaining = dailyCap - usedToday
-        if remaining > 24 { return 10 * 60 }       // plenty left: rebuild often, cheaply
-        if remaining > 0 { return 15 * 60 }        // getting thin: the old cadence
-        return 30 * 60                             // budget spent: self-builds are all there is
+        // 260907: keyed on ABSOLUTE spend, not on headroom under the cap. The old form was
+        // `dailyCap - usedToday`, which with the cap retired to 200 would have reported "plenty left"
+        // every hour of every day and never reached the longer intervals at all — a threshold silently
+        // detuned by a change somewhere else. Absolute counts cannot drift that way.
+        //
+        // The 260907 log served 212 timelines against 58 requested, so these self-builds — which are
+        // NOT charged against anything — are what actually keeps the face current. 10 minutes while
+        // the day is active is the useful cadence; it stretches only once the day has produced enough
+        // reloads that little is still moving.
+        if usedToday < 60 { return 10 * 60 }
+        if usedToday < 100 { return 15 * 60 }
+        return 30 * 60
     }
 }
