@@ -83,35 +83,58 @@ final class WidgetReloadBudgetTests: XCTestCase {
         guard case .capped = d else { return XCTFail("expected capped, got \(d)") }
     }
 
-    /// The cap sits BELOW the bottom of the OS range, which is the point: the 66 spent bought a 169 s
-    /// average deferral, so the goal is to stay inside the promptly-served regime.
-    func testTheCapIsBelowTheObservedCeiling() {
-        XCTAssertLessThan(WidgetReloadBudget.dailyCap, 66,
-                          "the cap must be below the spend that produced the 169s deferral")
+    /// 260907: THIS TEST ENCODED A FALSIFIED THEORY, and is inverted rather than deleted.
+    ///
+    /// It asserted the cap must sit below 66 — the spend that "produced" the 169 s deferral. The
+    /// 260907 log disproved the causation: spend fell to 42 and the deferral got WORSE (169 s → 186 s
+    /// avg, 946 s → 2044 s max). WidgetKit was never throttling us for overspending, so a tight cap
+    /// cost freshness and bought nothing.
+    ///
+    /// The cap now exists only as a runaway guard, so what is worth pinning is the opposite: it must
+    /// be high enough NOT to ration normal traffic. The strap produces ~58 sync moments a day and the
+    /// coalescer collapses them to ~62 reloads, so anything at or above ~70 never binds.
+    ///
+    /// Kept as a test rather than removed, because the wrong version of it is exactly what a future
+    /// reader would otherwise re-derive from the 16.16 notes.
+    func testTheCapDoesNotRationNormalTraffic() {
+        XCTAssertGreaterThan(WidgetReloadBudget.dailyCap, 70,
+                             "the cap is a runaway guard, not a budget: the 260907 log showed that "
+                             + "spending less made the deferral worse, so rationing normal traffic "
+                             + "costs freshness for no measured gain")
     }
 
-    /// PACING is a BACKSTOP, not the primary rate. A day that has spent nothing by noon is BEHIND
-    /// pace, so the coalescer alone applies — making pace primary throttled a quiet day harder than
-    /// a busy one, which is backwards.
-    func testAQuietDayIsNotPaceThrottled() {
-        XCTAssertFalse(WidgetReloadBudget.isAheadOfPace(usedToday: 2, now: noon),
-                       "2 of 48 spent by noon is well behind pace")
-        let d = WidgetReloadBudget.decide(change: .init(stepsDelta: 30),
-                                          lastReloadAt: noon.addingTimeInterval(-WidgetReloadBudget.minSpacing - 1),
-                                          usedToday: 2, now: noon)
-        XCTAssertTrue(allowed(d), "a behind-pace day must not be slowed beyond the coalescer")
+    /// 260907: the pace backstop is NO LONGER CONSULTED, and this pins that.
+    ///
+    /// It existed to stop a busy morning exhausting a tight 48 by 19:00. With the cap retired to a
+    /// runaway guard there is no scarce allowance to spread, and keeping the term would throttle a
+    /// normal day for no benefit — the same mistake as the tight cap, one layer down.
+    ///
+    /// A day sitting well past an even burn must therefore still be admitted at the coalescer's rate.
+    func testTheCoalescerIsTheOnlyRateLimitNow() {
+        // Deliberately a spend that the OLD pace term would have throttled hard.
+        let d = WidgetReloadBudget.decide(
+            change: .init(stepsDelta: 30),
+            lastReloadAt: noon.addingTimeInterval(-WidgetReloadBudget.minSpacing - 1),
+            usedToday: 40, now: noon)
+        XCTAssertTrue(allowed(d),
+                      "past the coalescer's floor a reload must land; pacing is retired")
     }
 
-    /// A day burning the allowance early IS throttled — the case that exhausted a flat 48 at 19:00
-    /// and left the evening stale.
-    func testADayRunningAheadOfPaceIsThrottled() {
-        XCTAssertTrue(WidgetReloadBudget.isAheadOfPace(usedToday: WidgetReloadBudget.dailyCap - 4,
-                                                       now: noon),
-                      "44 of 48 spent by noon is far ahead of an even burn")
-        let spacing = WidgetReloadBudget.paceSpacing(usedToday: WidgetReloadBudget.dailyCap - 4,
-                                                     now: noon)
-        XCTAssertGreaterThan(spacing, WidgetReloadBudget.minSpacing,
-                             "an ahead-of-pace day must space reloads further than the coalescer")
+    /// The pace helpers are RETAINED (they are the right shape if a real budget ever returns) but
+    /// nothing consults them. Asserted on the source, because "is it wired in" is not observable
+    /// from the outputs once the answer is no.
+    func testThePaceHelpersAreNoLongerWiredIn() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let src = try String(
+            contentsOf: root.appendingPathComponent("StrandiOSShared/WidgetReloadBudget.swift"),
+            encoding: .utf8)
+        guard let decideRange = src.range(of: "public static func decide(") else {
+            return XCTFail("decide() has moved; this guard needs re-pointing")
+        }
+        let body = String(src[decideRange.upperBound...].prefix(1600))
+        XCTAssertFalse(body.contains("isAheadOfPace(usedToday:"),
+                       "decide() must not consult the pace backstop any more: \(body.prefix(200))")
     }
 
     /// Urgency is never pace-throttled: a logged cup must reach the face whatever the hour, and
@@ -139,14 +162,18 @@ final class WidgetReloadBudgetTests: XCTestCase {
         XCTAssertTrue(allowed(d), "a future lastReloadAt must not block reloads for an hour")
     }
 
-    /// The extension's self-refresh interval shortens while budget remains and stretches once spent —
-    /// those builds are not budget-charged, but each is a process wake.
-    func testTheTimelineIntervalAdaptsToRemainingBudget() {
-        let plenty = WidgetReloadBudget.nextTimelineInterval(usedToday: 0)
-        let spent = WidgetReloadBudget.nextTimelineInterval(usedToday: WidgetReloadBudget.dailyCap)
-        XCTAssertLessThan(plenty, spent, "a spent budget should lean on longer self-refreshes")
-        XCTAssertLessThanOrEqual(plenty, 15 * 60,
-                                 "while budget remains, self-builds should fill the gaps between reloads")
+    /// The extension's self-refresh interval stretches as the day accumulates reloads.
+    ///
+    /// 260907: keyed on ABSOLUTE spend, not on headroom under the cap. The old form was
+    /// `dailyCap - usedToday`, which with the cap at 200 would report "plenty left" every hour of
+    /// every day and never reach the longer intervals — a threshold silently detuned by a change
+    /// somewhere else. This test now uses absolute counts for the same reason the code does.
+    func testTheTimelineIntervalStretchesAsTheDayFills() {
+        let early = WidgetReloadBudget.nextTimelineInterval(usedToday: 0)
+        let late = WidgetReloadBudget.nextTimelineInterval(usedToday: 150)
+        XCTAssertLessThan(early, late, "a day that has already reloaded a lot can self-refresh slower")
+        XCTAssertLessThanOrEqual(early, 15 * 60,
+                                 "early in the day the self-builds fill the gaps between reloads")
         XCTAssertEqual(WidgetReloadBudget.nextTimelineInterval(usedToday: 0, isDayComplete: true),
                        60 * 60, "a finished day has nothing left to show")
     }
