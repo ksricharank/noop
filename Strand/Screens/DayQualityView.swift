@@ -217,30 +217,61 @@ struct DayQualityView: View {
     // MARK: - Load
 
     private func load() async {
-        // Read first, then RECONCILE AGAINST THE DATA (260909).
+        // Read, then verify the stored series against what the scorer produces NOW (260909).
         //
         // Everything below the score card — the trend chart, the week summary, the calendar strip and
         // the streaks — reads this stored series, while the card itself re-scores the browsed day
-        // live. After a formula change those two disagree, and that was the reported symptom twice: a
-        // −22 on the card above a trend of all-positive bars with a best of 77.
+        // live. After a formula change those two disagree, which is exactly what was reported three
+        // times: a correct current day above a chart of values from a retired formula.
         //
-        // The first attempt gated the repair on `DayQualityPrefs.configChanged`. That was the wrong
-        // signal, and it is worth naming why: the latch records that a pass RAN, not that the stored
-        // values match the current formula. A pass that latched under one formula leaves the series
-        // looking complete to the next one, so the repair never fires and the chart keeps showing
-        // numbers no current code path can even produce.
+        // Two earlier attempts failed, both because they asked an INDIRECT question. The first gated
+        // on `DayQualityPrefs.configChanged` — a latch that records a pass RAN, not that the values
+        // are current. The second guessed from the shape of the series, and its 20-day threshold sat
+        // above the real 14-day window while a single negative day defeated its other test.
         //
-        // The check is now on the VALUES. A stored score outside what the live scorer can output is
-        // proof of a stale scale — it cannot be explained by any setting — and that is a fact about
-        // the data rather than a bookkeeping flag that has already gone stale twice.
+        // This asks the question directly: re-score the days and compare. The comparison cannot go
+        // stale, cannot be defeated by the data happening to look plausible, and needs no threshold.
         var byDay = await readSeries()
-        if Self.seriesLooksStale(byDay) {
+        if let disagreement = await liveScoresForRepairCheck(stored: byDay),
+           Self.storedDisagreesWithLive(stored: byDay, live: disagreement) {
             await appModel.intelligence.rescoreDayQualityNow(force: true)
             byDay = await readSeries()
         }
         scoresByDay = byDay
         if dayIndex > max(byDay.count - 1, 0) { dayIndex = 0 }
     }
+
+    /// Re-score the stored days to compare against, or nil when there is nothing to check.
+    ///
+    /// Bounded to the most recent `repairCheckDays` scored days rather than the whole history: the
+    /// check only needs to find ONE disagreement to trigger a full forced re-score, so walking
+    /// further is wasted work on a path that runs when the tab opens.
+    private func liveScoresForRepairCheck(stored: [String: Double]) async -> [String: Int]? {
+        let history = repo.days
+        guard !history.isEmpty, !stored.isEmpty else { return nil }
+        let recent = Array(stored.keys.sorted().suffix(Self.repairCheckDays))
+        guard !recent.isEmpty else { return nil }
+        let profile = repo.liveTargetsProfile?() ?? UserProfile()
+        let needed = DayQualityComputer.targetDaysNeeded(toScore: recent, history: history)
+        let targets = DayQualityComputer.targetsByDay(history: history, profile: profile,
+                                                      onlyDays: needed)
+        let config = DayQualityPrefs.config
+        var out: [String: Int] = [:]
+        for day in recent {
+            let water = repo.waterCupsAndTarget(forDay: day)
+            guard let input = DayQualityComputer.input(for: day, history: history, profile: profile,
+                                                       targetsByDay: targets,
+                                                       waterCups: water?.cups,
+                                                       waterTargetCups: water?.target),
+                  let scored = DayQualityScore.score(input, config: config) else { continue }
+            out[day] = scored.total
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// How many recent days the repair check re-scores. Small on purpose — one disagreement is enough
+    /// to trigger the full re-derivation, so this is a detector, not the repair itself.
+    static let repairCheckDays = 5
 
     private func readSeries() async -> [String: Double] {
         let series = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
@@ -249,26 +280,29 @@ struct DayQualityView: View {
         return byDay
     }
 
-    /// True when the stored series cannot have been produced by the current formula.
+    /// True when a stored score DISAGREES with what the current scorer produces for the same day.
     ///
-    /// Two independent tells, either sufficient:
+    /// This replaced a heuristic that never fired on the reported data (260909), and the failure is
+    /// worth recording because the shape of it is instructive. The heuristic asked whether the series
+    /// "looked like" an old scale — nothing at or below zero across 20+ days, or a value out of range
+    /// — and it was tested against a 25-day synthetic fixture. The real series was 14 days, under the
+    /// gate, and contained one negative day, which defeated the other tell. So it was green on a
+    /// fixture I invented and silent on the data it existed for.
     ///
-    /// 1. **A value out of range.** The published scale is −100…+100 by construction, so anything
-    ///    outside it is from another scale entirely.
-    /// 2. **Nothing at or below zero across a long, dense stretch.** Zero is an ordinary sedentary
-    ///    day, so a real series crosses it; the retired 0–100 scale could not go below zero at all.
-    ///    Gated on a generous sample (20+ days) so a genuinely good fortnight is never mistaken for
-    ///    stale data — the false positive here costs one redundant re-score, which is idempotent, and
-    ///    the false negative costs a chart that lies.
+    /// The direct comparison has no such gap: re-score the day and see whether the stored number
+    /// matches. That is not a guess about provenance, it is the actual question — and the view
+    /// already computes these breakdowns for the Insights cards, so it costs nothing extra.
     ///
-    /// Pure and static so the rule is testable without standing up a view.
-    static func seriesLooksStale(_ byDay: [String: Double]) -> Bool {
-        guard !byDay.isEmpty else { return false }
-        let values = Array(byDay.values)
-        let lo = Double(DayQualityScore.publishedMinimum)
-        let hi = Double(DayQualityScore.publishedMaximum)
-        if values.contains(where: { $0 < lo || $0 > hi }) { return true }
-        return values.count >= 20 && !values.contains(where: { $0 <= 0 })
+    /// Tolerance is 1 point, for rounding only. Anything larger means the stored value came from a
+    /// different formula, a different config, or a different anchor — all of which are reasons to
+    /// rewrite it.
+    static func storedDisagreesWithLive(stored: [String: Double],
+                                        live: [String: Int]) -> Bool {
+        for (day, liveValue) in live {
+            guard let storedValue = stored[day] else { continue }
+            if abs(storedValue - Double(liveValue)) > 1.0 { return true }
+        }
+        return false
     }
 
     /// Re-derive the Insights inputs: the breakdowns for the window (attribution) and the browsed

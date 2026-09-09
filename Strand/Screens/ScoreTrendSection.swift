@@ -54,13 +54,28 @@ struct ScoreTrendSection: View {
     var highLabel: LocalizedStringKey = "High"
 
     var body: some View {
+        // The window selector sits directly above the chart it drives (260909, maintainer). It used
+        // to float at the section's top with full card spacing on both sides, which put it visually
+        // between the card ABOVE (an Insights card) and the chart below — belonging to neither, and
+        // implying a scope over the whole section that it never had. It only ever affected the chart
+        // and its footer.
         VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-            SegmentedPillControl(windows, selection: $window,
-                                 adaptsToAvailableWidth: true) { $0.label }
-            chart
+            // Tight spacing binds the two into one unit. The selector cannot go INSIDE `ChartCard`:
+            // that height-constrains its `chart` closure, so the selector would squeeze the plot —
+            // and adding a slot to a shared design component for one caller is the wrong trade.
+            VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                windowSelector
+                chart
+            }
             weekInReview
             heatStrip
         }
+    }
+
+    /// The window selector, drawn directly above the chart.
+    private var windowSelector: some View {
+        SegmentedPillControl(windows, selection: $window,
+                             adaptsToAvailableWidth: true) { $0.label }
     }
 
     // MARK: - Week in review
