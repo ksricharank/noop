@@ -77,9 +77,25 @@ enum DayQualityPrefs {
     // The latch is keyed on the day AND a fingerprint of the config, so the one legitimate reason
     // to re-score early — the wearer moved a slider — still applies to history immediately.
 
-    /// A short, stable fingerprint of the settings that affect the number.
+    /// The scoring SCALE's version, bumped whenever the published number means something different
+    /// for identical inputs.
+    ///
+    /// 260908: `v2` is the signed −100…+100 scale. This rides in the fingerprint so the existing
+    /// "the formula changed, so re-score history" path re-derives every stored day on first launch —
+    /// exactly the mechanism a moved slider already uses, and the reason no bespoke migration is
+    /// needed. Without it the series would mix scales: 47 days of 0–100 values under the same metric
+    /// key as the new signed ones, which would corrupt the chart, the week-in-review comparison and
+    /// the calendar strip while looking like real data.
+    ///
+    /// Bump this — never reuse a version — when a scale change lands. Re-deriving is safe because a
+    /// finished day's INPUTS are immutable: the recomputation reads the same stored rows and simply
+    /// applies the current formula, so it is idempotent and a rollback re-derives back.
+    static let scaleVersion = "v2"
+
+    /// A short, stable fingerprint of the settings that affect the number, plus the scale they are
+    /// expressed on.
     static var configFingerprint: String {
-        "\(executionSharePct)/\(loadFactorPct)/\(overshootCapPct)"
+        "\(scaleVersion)/\(executionSharePct)/\(loadFactorPct)/\(overshootCapPct)"
     }
 
     /// True when tonight's scoring has already run for `day` under the current settings.

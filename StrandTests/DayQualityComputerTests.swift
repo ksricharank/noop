@@ -467,3 +467,47 @@ final class DayQualityComputerTests: XCTestCase {
         XCTAssertNil(DayQualityComputer.median([]))
     }
 }
+
+/// The scale-version migration (260908).
+///
+/// The signed −100…+100 rescale changes what a stored `day_quality` value MEANS for identical inputs,
+/// so every day already in the series has to be re-derived. Rather than a bespoke migration, the scale
+/// version rides in the config fingerprint and reuses the path a moved slider already takes — these
+/// tests pin that it actually fires, because a silent failure here would leave two scales mixed under
+/// one metric key and look like real data.
+@MainActor
+final class DayQualityScaleMigrationTests: XCTestCase {
+
+    /// The version must be part of the fingerprint, or nothing re-scores.
+    func testScaleVersionIsPartOfTheConfigFingerprint() {
+        XCTAssertTrue(DayQualityPrefs.configFingerprint.contains(DayQualityPrefs.scaleVersion),
+                      "the scale version must ride in the fingerprint, or a rescale silently leaves "
+                      + "the old values in place under the same metric key")
+    }
+
+    /// A fingerprint recorded under the PREVIOUS scale must read as changed, which is what clears the
+    /// incremental latch and re-derives history.
+    func testAFingerprintFromTheOldScaleCountsAsChanged() {
+        let old = "60/50/125"                       // the v1 form: no scale version at all
+        XCTAssertNotEqual(old, DayQualityPrefs.configFingerprint,
+                          "a pre-rescale fingerprint cannot equal the current one")
+    }
+
+    /// `rescoreAll` must actually widen the day set to the whole history rather than the missing tail.
+    func testRescoreAllRedoesEveryFinishedDayNotJustTheMissingOnes() {
+        let days = (1...10).map { String(format: "2026-09-%02d", $0) }
+        let allButLast = Set(days.dropLast(2))      // pretend the series already holds these
+
+        let incremental = DayQualityComputer.daysToScore(
+            scoredDays: days, todayKey: "2026-09-10", alreadyScored: allButLast, rescoreAll: false)
+        let full = DayQualityComputer.daysToScore(
+            scoredDays: days, todayKey: "2026-09-10", alreadyScored: allButLast, rescoreAll: true)
+
+        XCTAssertLessThan(incremental.count, full.count,
+                          "the incremental pass must score fewer days than the full re-derivation")
+        XCTAssertEqual(full.count, 9,
+                       "every finished day with a following night re-scores: 09-01…09-09")
+        XCTAssertTrue(full.allSatisfy { $0 < "2026-09-10" },
+                      "today is never scored — the score is a closed book")
+    }
+}
