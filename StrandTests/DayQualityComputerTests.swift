@@ -562,8 +562,14 @@ final class DayQualityFieldDefectTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Strand/Data/IntelligenceEngine.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(source.contains("func rescoreDayQualityNow()"),
+        // Matches the NAME, not a full signature — the signature gained a `force:` parameter, and
+        // pinning the exact spelling made this fail on a change that strengthened the very thing it
+        // was guarding.
+        XCTAssertTrue(source.contains("func rescoreDayQualityNow("),
                       "the Day tab needs a way to reconcile a stale stored series")
+        XCTAssertTrue(source.contains("force: Bool = false) async {"),
+                      "and that path must be able to bypass the latch, which has twice been the "
+                      + "wrong signal for whether the stored values are current")
     }
 
     /// The scale version must have moved past `v2`, or the stored 0–100/first-signed values are never
