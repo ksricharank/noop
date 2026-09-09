@@ -217,28 +217,58 @@ struct DayQualityView: View {
     // MARK: - Load
 
     private func load() async {
-        // RE-SCORE FIRST when the stored series was computed under a different formula (260909).
+        // Read first, then RECONCILE AGAINST THE DATA (260909).
         //
         // Everything below the score card — the trend chart, the week summary, the calendar strip and
-        // the streaks — reads the STORED series, while the card itself re-scores the browsed day live.
-        // After a formula change those two disagree, and the reported symptom was exactly that: a
-        // −22 on the card with the old value still in the week view.
+        // the streaks — reads this stored series, while the card itself re-scores the browsed day
+        // live. After a formula change those two disagree, and that was the reported symptom twice: a
+        // −22 on the card above a trend of all-positive bars with a best of 77.
         //
-        // The scoring pass is the only writer, and it runs on the engine's schedule — so opening this
-        // tab could show the mismatch indefinitely with no way for the wearer to resolve it. Asking
-        // for the re-score here closes that: it is idempotent, latched to once per (day, config), and
-        // a no-op on every visit after the first, so this costs nothing in the steady state.
+        // The first attempt gated the repair on `DayQualityPrefs.configChanged`. That was the wrong
+        // signal, and it is worth naming why: the latch records that a pass RAN, not that the stored
+        // values match the current formula. A pass that latched under one formula leaves the series
+        // looking complete to the next one, so the repair never fires and the chart keeps showing
+        // numbers no current code path can even produce.
         //
-        // Deliberately BEFORE the read, and awaited, so the first paint already shows one formula
-        // rather than flashing the old numbers and correcting itself.
-        if DayQualityPrefs.configChanged {
-            await appModel.intelligence.rescoreDayQualityNow()
+        // The check is now on the VALUES. A stored score outside what the live scorer can output is
+        // proof of a stale scale — it cannot be explained by any setting — and that is a fact about
+        // the data rather than a bookkeeping flag that has already gone stale twice.
+        var byDay = await readSeries()
+        if Self.seriesLooksStale(byDay) {
+            await appModel.intelligence.rescoreDayQualityNow(force: true)
+            byDay = await readSeries()
         }
+        scoresByDay = byDay
+        if dayIndex > max(byDay.count - 1, 0) { dayIndex = 0 }
+    }
+
+    private func readSeries() async -> [String: Double] {
         let series = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
         var byDay: [String: Double] = [:]
         for p in series { byDay[p.day] = p.value }
-        scoresByDay = byDay
-        if dayIndex > max(byDay.count - 1, 0) { dayIndex = 0 }
+        return byDay
+    }
+
+    /// True when the stored series cannot have been produced by the current formula.
+    ///
+    /// Two independent tells, either sufficient:
+    ///
+    /// 1. **A value out of range.** The published scale is −100…+100 by construction, so anything
+    ///    outside it is from another scale entirely.
+    /// 2. **Nothing at or below zero across a long, dense stretch.** Zero is an ordinary sedentary
+    ///    day, so a real series crosses it; the retired 0–100 scale could not go below zero at all.
+    ///    Gated on a generous sample (20+ days) so a genuinely good fortnight is never mistaken for
+    ///    stale data — the false positive here costs one redundant re-score, which is idempotent, and
+    ///    the false negative costs a chart that lies.
+    ///
+    /// Pure and static so the rule is testable without standing up a view.
+    static func seriesLooksStale(_ byDay: [String: Double]) -> Bool {
+        guard !byDay.isEmpty else { return false }
+        let values = Array(byDay.values)
+        let lo = Double(DayQualityScore.publishedMinimum)
+        let hi = Double(DayQualityScore.publishedMaximum)
+        if values.contains(where: { $0 < lo || $0 > hi }) { return true }
+        return values.count >= 20 && !values.contains(where: { $0 <= 0 })
     }
 
     /// Re-derive the Insights inputs: the breakdowns for the window (attribution) and the browsed
