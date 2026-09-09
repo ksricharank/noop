@@ -203,12 +203,189 @@ public struct DayQualityScore: Equatable, Sendable {
     /// that the "score" is really one measurement wearing a percentage sign.
     public static let minimumComponents = 3
 
+    // MARK: - The signed scale (−100…+100)
+
+    /// Where a component sits when the day was UNREMARKABLE for it — the point that earns zero credit.
+    ///
+    /// 260908, maintainer's ask: "a sedentary day with no exercise and normal sleep should be a 0, a good
+    /// day should start rising and go up to a 100, a poor day should go down to −100". The old 0–100 scale
+    /// could not express that: it had no negative half at all, and its own arithmetic overflowed the top
+    /// (a merely good day already summed to 103 and was clamped, so real range was being thrown away —
+    /// the ceiling problem the HRV recalibration note warned about, applied to the total).
+    ///
+    /// The fix is to score each component as SIGNED CREDIT against a neutral point rather than as a
+    /// fraction of a maximum. Hitting a target is neutral, not full marks; beating it earns credit up to
+    /// the overshoot cap; missing it costs credit down to zero output. Nothing about the per-component
+    /// achievement math changes — `overshootCap`, the per-signal downside tolerances and the absent-is-not-
+    /// zero rule all behave exactly as before. Only the mapping from achievement to POINTS is new.
+    ///
+    /// The ratio components (steps, calories, effort, water, sleep) are neutral AT TARGET: 1.0.
+    /// The baseline-scored signals (HRV, resting HR) are neutral AT BASELINE, which
+    /// `baselineAchievement` already places at 0.75 — so they need no new constant, and the "normal is
+    /// genuinely good but must not be full marks" reasoning behind that 0.75 is what makes it the right
+    /// neutral point rather than a coincidence.
+    public static let ratioNeutral = 1.0
+    public static let baselineNeutral = 0.75
+
+    /// One component's contribution as signed credit: −1 at zero output, 0 at neutral, and at most
+    /// `(cap − neutral) / neutral` above it.
+    ///
+    /// **The upside is deliberately NOT normalised to +1.** Both directions are measured in the same
+    /// units — fractions of the neutral value — so beating a target by the full overshoot allowance
+    /// (25 % at the default cap) is worth 0.25 while skipping a component entirely costs 1.0. That 4:1
+    /// asymmetry IS the anti-gaming property: one runaway metric cannot cover a component that scored
+    /// zero, because its extra credit is worth a quarter of what the miss costs.
+    ///
+    /// Normalising the upside to +1 (the first version of this) silently destroyed that: a 40 000-step
+    /// day with no workout scored identically to a day that hit every target, because +1 and −1
+    /// cancelled exactly. The old scale's own bound came from the same 0.25-vs-1.0 spread, so keeping
+    /// the units shared is what preserves it rather than a separate rule —
+    /// `testOvershootIsBoundedSoItCannotCoverASkippedComponent` is the test that caught it.
+    public static func signedCredit(achieved: Double, neutral: Double, cap: Double) -> Double {
+        guard neutral > 0 else { return 0 }
+        let capped = min(achieved, cap)
+        return max(-1.0, (capped - neutral) / neutral)
+    }
+
+    /// The raw signed sum for the three reference days, used to place the published scale.
+    ///
+    /// These are the anchors the maintainer named, and they are computed from the SCORER rather than
+    /// written down as literals — so a change to a weight or a tolerance moves them automatically and the
+    /// published scale keeps meaning what it says. Deriving them beats hardcoding for exactly the reason
+    /// the steps explainer had to be rewritten: a named constant that silently stops matching the code it
+    /// describes is worse than no constant at all.
+    ///
+    /// `neutralDay` is the sedentary anchor: no exercise, incidental movement only, water target met, a
+    /// normal night (7 h against an 8 h need) and both autonomic signals at baseline. It maps to 0.
+    /// `bestDay` (everything past the cap) maps to +100 and `worstDay` (nothing done, both signals deep
+    /// below baseline) to −100.
+    /// The raw signed sum for one input — `executionPoints + recoveryPoints`, before the published
+    /// scale is applied. This is the quantity the anchors are expressed in.
+    ///
+    /// Computed by running the ordinary scorer and reading its two unscaled halves, so there is exactly
+    /// ONE assembly of the components and the anchors cannot drift from the day they are anchoring.
+    /// `score` returning nil (an input below `minimumComponents`) yields 0, which only the reference
+    /// inputs could trigger and all three are complete by construction.
+    public static func rawSigned(_ input: DayInput, config: Config = .default) -> Double {
+        // applyNeutralOffset: false — an anchor is an offset-FREE sum by definition, and asking for the
+        // offset here would require the anchors that are being defined.
+        guard let s = scoreUnscaled(input, config: config, applyNeutralOffset: false) else { return 0 }
+        return s.executionPoints + s.recoveryPoints
+    }
+
+    /// The three anchors, derived from the scorer rather than written down. `static let` would capture
+    /// them at first use; computed properties keep them honest if a weight or tolerance ever changes.
+    static var neutralDayRaw: Double { rawSigned(referenceNeutralDay) }
+    static var bestDayRaw: Double { rawSigned(referenceBestDay) }
+    static var worstDayRaw: Double { rawSigned(referenceWorstDay) }
+
+    /// The sedentary day the maintainer defined as zero (260908). Steps/calories/effort at the level a
+    /// day with no deliberate activity actually reaches, water target met, 7 h of an 8 h need, both
+    /// autonomic signals exactly at baseline.
+    ///
+    /// The anchor is deliberately not knife-edged on these numbers: across sleep needs from 7 h to 9 h it
+    /// moves ±2 points, and across a plausible span of "no activity" (steps 15–40 % of target) ±6. That
+    /// robustness is why a single fixed anchor is honest here rather than a fitted constant.
+    public static let referenceNeutralDay = DayInput(
+        steps: 1600, stepsTarget: 6400, kcal: 700, kcalTarget: 2000, effort: 2, effortTarget: 40,
+        waterCups: 8, waterTargetCups: 8, sleepMin: 420, sleepNeedMin: 480,
+        hrv: 40, hrvBaseline: 40, restingHr: 60, restingHrBaseline: 60)
+    /// Every component past its cap and both signals clearly above baseline — the +100 end.
+    public static let referenceBestDay = DayInput(
+        steps: 16000, stepsTarget: 6400, kcal: 4000, kcalTarget: 2000, effort: 80, effortTarget: 40,
+        waterCups: 16, waterTargetCups: 8, sleepMin: 960, sleepNeedMin: 480,
+        hrv: 60, hrvBaseline: 40, restingHr: 30, restingHrBaseline: 60)
+    /// Nothing done and both signals deep below baseline — the −100 end.
+    public static let referenceWorstDay = DayInput(
+        steps: 0, stepsTarget: 6400, kcal: 0, kcalTarget: 2000, effort: 0, effortTarget: 40,
+        waterCups: 0, waterTargetCups: 8, sleepMin: 0, sleepNeedMin: 480,
+        hrv: 12, hrvBaseline: 40, restingHr: 96, restingHrBaseline: 60)
+
+    /// Per-component share of the origin shift, in raw signed-credit points.
+    ///
+    /// The sedentary anchor is not at zero raw credit — a day with no deliberate activity misses its
+    /// execution targets, so its raw sum is about −37. Moving the published origin there means adding a
+    /// constant. That constant is folded into EACH component (spread by its weight, so a component that
+    /// can move the score more carries more of the shift) rather than added to the total, which is what
+    /// lets the published scale be a pure multiplier and keeps the breakdown panel reconciling with the
+    /// headline. Adding it to the sum instead would leave the rows summing to a number the screen never
+    /// shows — and would zero every row on a target-met day, whose raw sum is exactly 0.
+    static func neutralOffset(weight: Double) -> Double {
+        // `weight` is already the component's share of 100, so dividing by 100 turns the whole-day shift
+        // into this component's part of it.
+        -neutralDayRaw * (weight / 100)
+    }
+
+    /// The multiplier that maps offset raw credit onto −100…+100.
+    ///
+    /// Two slopes, one per side of the origin, because the raw distances to the best and worst days are
+    /// not equal — that asymmetry is what lets both ends land exactly at ±100 without distorting the
+    /// middle, and it is the reason a single bias term cannot do this job (a bias that puts the sedentary
+    /// day at 0 leaves the worst possible day at −63, so −100 becomes unreachable). Same
+    /// piecewise-linear-through-anchors technique as `stepsBaseForCharge`.
+    ///
+    /// The clamp lives here too: past either anchor the factor shrinks so the product stops at ±100,
+    /// which keeps `total`, the halves and every row clamped consistently instead of only the headline.
+    static func publishedFactor(rawSigned raw: Double) -> Double {
+        guard raw != 0 else { return 0 }
+        let span = raw > 0 ? (bestDayRaw - neutralDayRaw) : (neutralDayRaw - worstDayRaw)
+        guard span > 0 else { return 0 }
+        let unclamped = 100 / span
+        // Stop at the anchor rather than running past it.
+        let magnitude = abs(raw * unclamped)
+        return magnitude > 100 ? (100 / abs(raw)) : unclamped
+    }
+
+    /// The lowest and highest values `score(...)` can publish. UI that draws a scale reads these rather
+    /// than assuming 0…100 (which is what `ScoreTrendSection`/`band` used to do).
+    public static let publishedMinimum = -100
+    public static let publishedMaximum = 100
+
     // MARK: - Scoring
 
     /// Score one day, or nil when too little of it was recorded (see `minimumComponents`).
+    /// Score one day and publish it on the −100…+100 scale, or nil when too little of it was recorded.
+    ///
+    /// Thin wrapper over `scoreUnscaled`: the component assembly, the renormalisation and the signed
+    /// credit all happen there, and this applies `publishedScale` to the result. The split is what keeps
+    /// the anchors from recursing — `rawSigned` calls `scoreUnscaled`, which never consults the scale.
     public static func score(_ input: DayInput, config: Config = .default) -> DayQualityScore? {
+        guard let s = scoreUnscaled(input, config: config) else { return nil }
+        // Publish by scaling the parts, not the sum — the breakdown panel restates the arithmetic, so
+        // the components and the two halves must add up to the HEADLINE rather than to the raw signed sum
+        // the headline was derived from.
+        //
+        // This works because the origin shift is folded into each component BEFORE summing (see
+        // `neutralOffset`): every part already carries its own share of the sedentary anchor, so the
+        // published scale is a single MULTIPLIER on the parts and the sum of scaled parts is exactly the
+        // scaled sum. One factor, applied uniformly, sign and reconciliation both preserved — no
+        // apportionment scheme, and nothing for the panel and the headline to disagree about.
+        let raw = s.executionPoints + s.recoveryPoints
+        let factor = Self.publishedFactor(rawSigned: raw)
+        let scaled = s.components.map {
+            Component(label: $0.label, achieved: $0.achieved, weight: $0.weight * factor,
+                      points: $0.points * factor, detail: $0.detail)
+        }
+        return DayQualityScore(
+            total: Int((raw * factor).rounded()),
+            executionPoints: s.executionPoints * factor, recoveryPoints: s.recoveryPoints * factor,
+            components: scaled, loadFactor: s.loadFactor, missing: s.missing)
+    }
+
+    /// The scorer proper: components, renormalisation and signed credit, with `total` left as the raw
+    /// signed sum rounded. Internal because the published number is what callers want; exposed to tests
+    /// so the arithmetic can be pinned without the scale on top.
+    /// `applyNeutralOffset` is what breaks the recursion the anchors would otherwise cause: the anchors
+    /// are DEFINED as offset-free raw sums, and folding the offset in requires knowing them. Callers
+    /// scoring a real day pass true; `rawSigned` (which the anchors use) passes false.
+    static func scoreUnscaled(_ input: DayInput, config: Config = .default,
+                              applyNeutralOffset: Bool = true) -> DayQualityScore? {
         var execution: [(Component, Double)] = []   // (component, raw weight)
-        var recovery: [(Component, Double)] = []
+        // (component, raw weight, neutral, cap) — the yardstick travels WITH the component rather than
+        // being re-derived from its label downstream. A label compare would be exactly the scattered
+        // string match the device-family rule warns about: it silently misses when a label is
+        // localised or reworded, and the failure mode is a wrong score rather than a crash.
+        var recovery: [(Component, Double, Double, Double)] = []
         var missing: [String] = []
 
         // ---- Execution: ratio against the day's own target, capped at 1.0 ----
@@ -251,7 +428,7 @@ public struct DayQualityScore: Equatable, Sendable {
                 recovery.append((Component(
                     label: "Sleep", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%.1fh of %.1fh needed", slept / 60, Double(need) / 60)
-                ), config.sleepWeight))
+                ), config.sleepWeight, ratioNeutral, config.overshootCap))
             } else {
                 missing.append("Sleep")
             }
@@ -269,7 +446,7 @@ public struct DayQualityScore: Equatable, Sendable {
                 recovery.append((Component(
                     label: "HRV", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%.0f ms vs %.0f ms baseline", hrv, base)
-                ), config.hrvWeight))
+                ), config.hrvWeight, baselineNeutral, 1.0))
             } else {
                 missing.append("HRV")
             }
@@ -281,7 +458,7 @@ public struct DayQualityScore: Equatable, Sendable {
                 recovery.append((Component(
                     label: "Resting HR", achieved: achieved, weight: 0, points: 0,
                     detail: String(format: "%d bpm vs %.0f bpm baseline", rhr, base)
-                ), config.restingHrWeight))
+                ), config.restingHrWeight, baselineNeutral, 1.0))
             } else {
                 missing.append("Resting HR")
             }
@@ -303,26 +480,54 @@ public struct DayQualityScore: Equatable, Sendable {
         var execPoints = 0.0
         var recPoints = 0.0
 
+        // Points are SIGNED CREDIT against each component's neutral point (260908) — hitting a target
+        // contributes 0, not full marks. `weight` stays the component's full share of its half, so it
+        // still reads as "this component can move the score by up to ±N", which is what the breakdown
+        // panel needs to explain the arithmetic.
         let execWeightTotal = execution.reduce(0) { $0 + $1.1 }
         for (c, w) in execution {
             let weight = execShare * 100 * (w / execWeightTotal)
             // The load factor lands on the execution half only: recovery is not something the day's
-            // targets made easier or harder.
-            let points = weight * c.achieved * loadFactor
+            // targets made easier or harder. It scales the CREDIT, so a hard day's overshoot is worth
+            // more and a hard day's shortfall costs more — both directions, which is the honest
+            // reading of "these targets were more demanding".
+            let credit = signedCredit(achieved: c.achieved, neutral: ratioNeutral, cap: config.overshootCap)
+            // The load factor is applied as an ADDITIVE tilt, not a multiplier on the credit (260908).
+            //
+            // Multiplying was correct on the old 0–100 scale, where meeting a target scored 1.0 and there
+            // was always something to scale. On the signed scale meeting a target scores exactly ZERO
+            // credit — so a multiplier left the feature completely inert: two days that both hit 100 % of
+            // very different targets published the SAME number while correctly reporting load factors of
+            // 1.075 and 0.925. The feature was silently dead, which is worse than absent, because the
+            // load factor still appeared in the breakdown as though it had done something.
+            //
+            // A tilt proportional to how demanding the day was fixes it in the right direction: matching a
+            // hard day earns credit, matching an easy one gives some back, and a day at its own recent
+            // average is untouched (loadFactor 1.0 ⇒ zero tilt). It stays mild for the same reason the
+            // multiplier did — the factor is clamped to ±15 % and halved at default strength — so a rest
+            // day still reads as a rest day.
+            let tilt = loadFactor - 1.0
+            let points = weight * (credit + tilt)
+                + (applyNeutralOffset ? neutralOffset(weight: weight) : 0)
             execPoints += points
             out.append(Component(label: c.label, achieved: c.achieved, weight: weight,
                                  points: points, detail: c.detail))
         }
         let recWeightTotal = recovery.reduce(0) { $0 + $1.1 }
-        for (c, w) in recovery {
+        for (c, w, neutral, cap) in recovery {
             let weight = recShare * 100 * (w / recWeightTotal)
-            let points = weight * c.achieved
+            // Sleep is a ratio component living in the recovery half (neutral at target, overshoot
+            // allowed); HRV and resting HR are baseline-scored (neutral at 0.75, ceiling 1.0). Both
+            // yardsticks arrived with the component, so re-partitioning the halves cannot silently
+            // swap them.
+            let credit = signedCredit(achieved: c.achieved, neutral: neutral, cap: cap)
+            let points = weight * credit + (applyNeutralOffset ? neutralOffset(weight: weight) : 0)
             recPoints += points
             out.append(Component(label: c.label, achieved: c.achieved, weight: weight,
                                  points: points, detail: c.detail))
         }
 
-        let total = Int(min(100, max(0, execPoints + recPoints)).rounded())
+        let total = Int((execPoints + recPoints).rounded())
         return DayQualityScore(total: total, executionPoints: execPoints, recoveryPoints: recPoints,
                                components: out, loadFactor: loadFactor, missing: missing)
     }
@@ -396,13 +601,22 @@ public struct DayQualityScore: Equatable, Sendable {
 
     /// A short, plain-language band for the number — the headline the Trends card leads with.
     /// Deliberately not judgemental at the low end: a bad day is information, not a verdict.
+    /// Re-banded for the signed scale (260908). Zero is a sedentary day with a normal night, so the
+    /// bands have to place it as exactly that — unremarkable, neither good nor bad — rather than at the
+    /// bottom of a 0–100 ramp where it used to sit around 58.
+    ///
+    /// Deliberately not judgemental at the low end, and now with the room to be accurate at it: a
+    /// negative day is one the body or the day genuinely went backwards on, which the old scale could
+    /// not say at all.
     public static func band(_ total: Int) -> String {
         switch total {
-        case 90...: return "Excellent"
-        case 75..<90: return "Strong"
-        case 60..<75: return "Solid"
-        case 45..<60: return "Mixed"
-        default: return "Light"
+        case 80...: return "Excellent"
+        case 55..<80: return "Strong"
+        case 30..<55: return "Solid"
+        case 10..<30: return "Steady"
+        case -10..<10: return "Flat"
+        case -40..<(-10): return "Mixed"
+        default: return "Depleted"
         }
     }
 }
