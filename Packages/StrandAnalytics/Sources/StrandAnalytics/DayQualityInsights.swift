@@ -113,23 +113,19 @@ public enum DayQualityInsights {
     public static func counterfactuals(for score: DayQualityScore,
                                        actuals: [String: Double],
                                        targets: [String: Double],
+                                       normals: [String: Double],
                                        config: DayQualityScore.Config = .default) -> [Counterfactual] {
-        let raw = score.executionPoints + score.recoveryPoints
-        // The factor the day's own published number was produced with, so the quoted gain is in the
-        // units the reader sees. (A gain large enough to cross into the other limb of the scale would
-        // be slightly over-quoted; the components below are all sub-target, so the error is small and
-        // in the conservative direction only for days already near an anchor.)
-        let factor = DayQualityScore.publishedFactor(rawSigned: raw)
-        return score.components.compactMap { c -> Counterfactual? in
+        score.components.compactMap { c -> Counterfactual? in
             guard let actual = actuals[c.label], let target = targets[c.label], target > 0 else { return nil }
             guard actual < target else { return nil }
-            // Credit at target is 0 by definition; the component's current credit is negative. Closing
-            // the gap therefore gains exactly `weight * |credit|`, in raw points.
-            let credit = DayQualityScore.signedCredit(achieved: actual / target,
-                                                      neutral: DayQualityScore.ratioNeutral,
-                                                      cap: config.overshootCap)
-            guard credit < 0 else { return nil }
-            let gain = c.weight * abs(credit) * factor
+            guard let normal = normals[c.label] else { return nil }
+            // The gain is simply the difference between this component's points AT TARGET (which is its
+            // full weight, by the definition of the scale) and its points now. Exact arithmetic on the
+            // scorer's own ramp — no factor, no re-derivation, and directly comparable with the headline
+            // because every component's points are already published points.
+            let atTarget = DayQualityScore.componentPoints(actual: target, normal: normal,
+                                                           target: target, weight: c.weight)
+            let gain = atTarget - c.points
             guard gain > 0 else { return nil }
             return Counterfactual(label: c.label, pointsGained: gain,
                                   shortfall: target - actual, target: target)

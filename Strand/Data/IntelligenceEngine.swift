@@ -2607,23 +2607,6 @@ final class IntelligenceEngine: ObservableObject {
                 ], deviceId: computedId)
             }
 
-            // ── Day QUALITY score , DAILY, keyed to each finished day ───────────────────────────────────
-            // One number per day for "how did that day go", against both the targets the day set and
-            // what the body did with them. Fed to Trends as the top-line motivation series.
-            //
-            // Lives inside `!lightPass` for the same reason its siblings do: a 2-day window cannot
-            // compute the scored-night fields the recovery half needs, and an idempotent upsert means
-            // the next full pass rewrites the same value. Placed BEFORE `repo.refresh()` below, so a
-            // freshly written score is immediately readable by `exploreSeries`.
-            //
-            // BACKFILL: every finished day in the working set is (re)scored, not just last night.
-            // The maintainer asked for the trend to have shape the moment it appears, and re-scoring
-            // is what lets a config change (the 60/40 split, the load factor) apply to history
-            // rather than only to days scored after the change. The cost is bounded by
-            // `targetDaysNeeded` — pricing walks the days being scored plus their trailing windows,
-            // not the whole history.
-            await scoreDayQuality(dailies: dailies, store: store, computedId: computedId)
-
             // ── Steps ESTIMATE (WHOOP 4.0) , DAILY, keyed to each strap-only day ────────────────────────
             // A WHOOP 4.0 sends no step count over BLE, so for days the phone DIDN'T also count steps we
             // estimate them: calibrate the strap's daily MOTION VOLUME against the phone's real step count
@@ -2744,6 +2727,27 @@ final class IntelligenceEngine: ObservableObject {
         }
 
         markPostLoopPhase("steps")
+        // ── Day QUALITY score — DAILY, keyed to each finished day ───────────────────────────────────
+        //
+        // OUTSIDE the `!lightPass` gate (260908). It used to sit inside, and the stated reason was
+        // that "a 2-day window cannot compute the scored-night fields the recovery half needs" — which
+        // is simply not true of this function: it takes no rows from this pass at all. It reads the
+        // FULL history from `repo.days` and carries its own once-per-day latch, so the pass's own
+        // window is irrelevant to it.
+        //
+        // Being wrong about that cost the maintainer a broken screen. Full passes are the ones that
+        // get deferred and abandoned under the battery policy — the 260908 log has `forced 15/49` with
+        // repeated `gave up` — so gating day quality behind them meant the score, and any
+        // re-derivation of history after a formula change, simply never ran. Cards showed values from
+        // an older formula beside a live breakdown that disagreed with them.
+        //
+        // Cheap enough to run on the light path: one latch read, and on the days it does work the cost
+        // is bounded by `targetDaysNeeded` (the days being scored plus their trailing windows, not the
+        // whole history). Placed BEFORE `repo.refresh()` below, so a freshly written score is
+        // immediately readable by `exploreSeries`.
+        await scoreDayQuality(store: store, computedId: computedId)
+
+
         // Drop any freshly-detected session that overlaps a night the user has already hand-corrected.
         // A detected onset can drift second-to-second as more raw data arrives, so without this the
         // re-detected night would upsert as a SECOND row beside the edited one (different startTs ⇒ no
@@ -3153,8 +3157,11 @@ final class IntelligenceEngine: ObservableObject {
     /// The MainActor hop is once per pass, not once per day: the target table and every day's input
     /// are assembled inside a single hop (`DayQualityComputer` is main-actor-isolated because
     /// `Repository.liveTargets` is), then the scoring and the store write happen back out here.
-    private func scoreDayQuality(dailies: [DailyMetric], store: WhoopStore,
-                                 computedId: String) async {
+    /// Takes no rows from the calling pass — deliberately. It reads the full history from
+    /// `repo.days`, because the recovery half's baselines and the load factor's trailing window both
+    /// need days before the ones being scored. The `dailies` parameter it used to accept was never
+    /// read, and its presence is what made the `!lightPass` gate look justified.
+    private func scoreDayQuality(store: WhoopStore, computedId: String) async {
         // The full history, not just this pass's rows: the recovery half's baselines and the load
         // factor's trailing window both read days before the ones being scored.
         let history = await MainActor.run { repo.days }

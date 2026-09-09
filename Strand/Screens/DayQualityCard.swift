@@ -59,7 +59,21 @@ struct DayQualityCard: View {
         guard !scoredDays.isEmpty else { return nil }
         return scoredDays[min(max(0, dayIndex), scoredDays.count - 1)]
     }
-    private var score: Int? { day.flatMap { scoresByDay[$0] }.map { Int($0.rounded()) } }
+    /// The number on the headline.
+    ///
+    /// Prefers the LIVE breakdown over the stored series (260908). Reading the stored value while
+    /// computing the breakdown separately is what produced the reported bug: a card showing "+56" above
+    /// rows that summed to 13, because the stored series still held a value from the previous formula
+    /// and nothing on screen could reveal the disagreement. Two sources for one number is the defect —
+    /// whichever is stale, the card lies.
+    ///
+    /// The stored series remains the fallback for the window before `load()` completes, so the card
+    /// still shows something immediately rather than flashing empty; once the breakdown arrives it
+    /// wins, and the two can never be shown side by side.
+    private var score: Int? {
+        if let breakdown { return breakdown.total }
+        return day.flatMap { scoresByDay[$0] }.map { Int($0.rounded()) }
+    }
 
     var body: some View {
         NoopCard {
