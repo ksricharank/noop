@@ -57,6 +57,15 @@ struct TrendsView: View {
     /// the Today Rest score (#732). sleep_performance is a metricSeries, not a DailyMetric field, so load
     /// it once (mirroring TodayView's restScore source) and key by day for `resolve` below.
     @State private var sleepPerfByDay: [String: Double] = [:]
+    /// The stored day-quality series, keyed by day (260908). Like `sleepPerfByDay` this is a
+    /// metricSeries rather than a `DailyMetric` field, so it is loaded once and read through
+    /// `resolve` below.
+    ///
+    /// Day quality was removed from this page in 260906 as a CARD — a compact copy that could not
+    /// browse days while the Day tab could. It returns here as a SERIES, which is a different thing:
+    /// the Day tab owns the score's own story, and Trends places it beside charge, effort and rest so
+    /// the four can be read against each other. That is the one thing a dedicated tab cannot do.
+    @State private var dayQualityByDay: [String: Double] = [:]
 
     // #710 — browse previous weeks in the Week-in-review digest. 0 = the week containing today; each step
     // back is one Mon–Sun week earlier. Clamped so it never runs past the earliest day we hold (see
@@ -268,6 +277,8 @@ struct TrendsView: View {
                 // Rest = the sleep_performance composite — the same number the Today Rest score shows
                 // (#732); see sleepPerfByDay. resolve() still does the windowing/widening.
                 let rest = resolve { sleepPerfByDay[$0.day] }
+                // 260908: day quality alongside the others, so every section below can show it.
+                let dayQuality = resolve { dayQualityByDay[$0.day] }
                 VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
                     // The main card list ripples in once on appear (Reduce-Motion safe).
                     Group {
@@ -286,11 +297,13 @@ struct TrendsView: View {
                         weeklyDigestNav
                             .staggeredAppear(index: 3)
                         // The Charge / Effort / Rest trio, presented in NOOP's pip language.
-                        weekInReview(charge: recovery, effort: strain, rest: rest)
+                        weekInReview(charge: recovery, effort: strain, rest: rest,
+                                     dayQuality: dayQuality)
                             .staggeredAppear(index: 4)
                         heroRecovery(recovery: recovery)
                             .staggeredAppear(index: 5)
-                        smallMultiples(hrv: hrv, rhr: rhr, strain: strain)
+                        smallMultiples(hrv: hrv, rhr: rhr, strain: strain,
+                                       dayQuality: dayQuality, rest: rest)
                             .staggeredAppear(index: 6)
                         // Long-horizon training load (CTL/ATL/TSB). Uses the FULL history, not the
                         // range window — chronic load is inherently a 42-day horizon. Self-hides its
@@ -319,6 +332,11 @@ struct TrendsView: View {
         .task(id: repo.days.count) {
             let s = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
             sleepPerfByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
+        }
+        // 260908 — the day-quality series, for the pip row, the week digest and the daily-signals grid.
+        .task(id: repo.days.count) {
+            let s = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+            dayQualityByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
         }
     }
 
@@ -382,6 +400,16 @@ struct TrendsView: View {
                 } else {
                     WeeklyDigestContent(digest: digest, compact: true, showsHeader: false)
                         .padding(.top, NoopMetrics.space1)
+                    // 260908 — the two composite SCORES for the same week, appended here rather than
+                    // added to `WeeklyMetric`.
+                    //
+                    // `WeeklyMetric` is a SHARED analytics enum with a byte-identical Kotlin twin
+                    // (android/.../analytics/WeeklyDigest.kt), and the parity contract says a change
+                    // there must land on both platforms in the same PR. Day quality does not exist on
+                    // Android yet, so adding a case would either break parity or block this on porting
+                    // the whole feature. Computing the week's mean in the view keeps the shared
+                    // builder — and its Kotlin twin — untouched.
+                    weekScoreRows(digest: digest)
                     // Share this week's recap as an image. Renders the digest card (with its header) to a
                     // PNG off-screen and hands it to the share sheet / Save panel — reuses TrendsReport's
                     // ImageRenderer path. Only offered when the week actually holds data.
@@ -396,6 +424,67 @@ struct TrendsView: View {
                 }
             }
         }
+    }
+
+    /// Day quality and Sleep score for the digest's own week, as two compact rows.
+    ///
+    /// Deliberately mean-of-the-week, matching how `WeeklyDigestContent` reports the metrics above it,
+    /// and silent when the week holds neither — an empty row would imply a zero week rather than an
+    /// unscored one.
+    @ViewBuilder
+    private func weekScoreRows(digest: WeeklyDigest) -> some View {
+        let dayValues = Self.valuesInWeek(dayQualityByDay, start: digest.weekStart, end: digest.weekEnd)
+        let restValues = Self.valuesInWeek(sleepPerfByDay, start: digest.weekStart, end: digest.weekEnd)
+        if !dayValues.isEmpty || !restValues.isEmpty {
+            VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                Divider().overlay(StrandPalette.hairline)
+                if !dayValues.isEmpty {
+                    let mean = dayValues.reduce(0, +) / Double(dayValues.count)
+                    weekScoreRow(label: "Day quality",
+                                 value: mean > 0 ? "+\(Int(mean.rounded()))" : "\(Int(mean.rounded()))",
+                                 detail: String(localized: "\(dayValues.count) scored day\(dayValues.count == 1 ? "" : "s") · \(DayQualityScore.band(Int(mean.rounded())))"),
+                                 tint: StrandPalette.chargeBright)
+                }
+                if !restValues.isEmpty {
+                    let mean = restValues.reduce(0, +) / Double(restValues.count)
+                    weekScoreRow(label: "Sleep score",
+                                 value: "\(Int(mean.rounded()))",
+                                 detail: String(localized: "\(restValues.count) scored night\(restValues.count == 1 ? "" : "s")"),
+                                 tint: StrandPalette.restColor)
+                }
+            }
+        }
+    }
+
+    private func weekScoreRow(label: LocalizedStringKey, value: String, detail: String,
+                              tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space3) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                Text(detail)
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            Spacer()
+            Text(value)
+                .font(StrandFont.number(20, weight: .semibold))
+                .foregroundStyle(tint)
+                .monospacedDigit()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text("\(value), \(detail)"))
+    }
+
+    /// The values of a day-keyed series inside an inclusive "yyyy-MM-dd" week range.
+    ///
+    /// String comparison, not date parsing: ISO day strings sort chronologically, which is the same
+    /// property `WeeklyDigest.valuesInRange` relies on — so this matches the window the digest above it
+    /// used rather than approximating it with a locale-sensitive calendar walk.
+    static func valuesInWeek(_ series: [String: Double], start: String, end: String) -> [Double] {
+        series.keys.sorted().filter { $0 >= start && $0 <= end }.compactMap { series[$0] }
     }
 
     /// Prev/next week stepper. Back is clamped at the earliest week we hold; forward is clamped at this
@@ -457,14 +546,30 @@ struct TrendsView: View {
     /// `CountUpText`; the segmented `PipBar` cascades on appear. Self-
     /// hides when none of the three carry a window mean, so an empty history shows nothing here.
     @ViewBuilder
-    private func weekInReview(charge: ResolvedMetric, effort: ResolvedMetric, rest: ResolvedMetric) -> some View {
+    private func weekInReview(charge: ResolvedMetric, effort: ResolvedMetric, rest: ResolvedMetric,
+                              dayQuality: ResolvedMetric) -> some View {
         let chargeAvg = mean(charge.points)
         let effortAvg = mean(effort.points)   // stored 0–100 internal Effort scale
         let restAvg = mean(rest.points)
-        if chargeAvg != nil || effortAvg != nil || restAvg != nil {
+        let dayAvg = mean(dayQuality.points)
+        if chargeAvg != nil || effortAvg != nil || restAvg != nil || dayAvg != nil {
             NoopCard {
                 VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                    SectionHeader("Week in review", overline: "Charge · Effort · Rest")
+                    SectionHeader("Week in review", overline: "Day · Charge · Effort · Rest")
+                    if let v = dayAvg {
+                        // Day quality is the only SIGNED row here, so it passes its own −100…+100
+                        // range and derives the vessel fill from that range rather than from v/100 —
+                        // a negative average would otherwise read as an empty vessel identical to a
+                        // zero one, and the four rows must be comparable at a glance.
+                        pipScoreRow(label: "Day quality", value: v,
+                                    range: Double(DayQualityScore.publishedMinimum)
+                                        ... Double(DayQualityScore.publishedMaximum),
+                                    tint: StrandPalette.chargeBright,
+                                    frac: (v - Double(DayQualityScore.publishedMinimum))
+                                        / Double(DayQualityScore.publishedMaximum
+                                                 - DayQualityScore.publishedMinimum),
+                                    format: { $0 > 0 ? "+\(Int($0.rounded()))" : "\(Int($0.rounded()))" })
+                    }
                     if let v = chargeAvg {
                         pipScoreRow(label: "Charge", value: v, range: 0...100,
                                     tint: StrandPalette.chargeColor, frac: v / 100,
@@ -635,11 +740,14 @@ struct TrendsView: View {
 
     // MARK: Small multiples — HRV / Resting HR / Day Strain
 
-    private func smallMultiples(hrv: ResolvedMetric, rhr: ResolvedMetric, strain: ResolvedMetric) -> some View {
+    private func smallMultiples(hrv: ResolvedMetric, rhr: ResolvedMetric, strain: ResolvedMetric,
+                                dayQuality: ResolvedMetric, rest: ResolvedMetric) -> some View {
         let cols = [GridItem(.adaptive(minimum: 320), spacing: NoopMetrics.gap)]
         let hrvPts = hrv.points
         let rhrPts = rhr.points
         let strainPts = strain.points
+        let dayPts = dayQuality.points
+        let restPts = rest.points
 
         return VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             // No trailing window label — the range bar's overline already states it.
@@ -685,6 +793,34 @@ struct TrendsView: View {
                     higherIsBetter: nil,
                     range: valueRange(strainPts, fallback: 0...100),
                     fmt: { UnitFormatter.effortDisplay($0, scale: effortScale) }
+                )
+                // 260908 — the two composite scores, beside the raw signals they are built from. Both
+                // carry a FIXED range rather than a fitted one: they are scores on a known scale, and
+                // padding a score's axis to its own spread would make a quiet week look dramatic.
+                metricChart(
+                    title: "Day quality", unit: "/ 100",
+                    accessibilityTitle: String(localized: "Day quality"),
+                    metricKey: DayQualityComputer.metricKey,
+                    points: dayPts,
+                    gradient: gradient(StrandPalette.chargeBright),
+                    tip: StrandPalette.chargeBright,
+                    tint: StrandPalette.chargeBright,
+                    higherIsBetter: true,
+                    range: Double(DayQualityScore.publishedMinimum)
+                        ... Double(DayQualityScore.publishedMaximum),
+                    fmt: { $0 > 0 ? "+\(Int($0.rounded()))" : "\(Int($0.rounded()))" }
+                )
+                metricChart(
+                    title: "Sleep score", unit: "/ 100",
+                    accessibilityTitle: String(localized: "Sleep score"),
+                    metricKey: "sleep_performance",
+                    points: restPts,
+                    gradient: gradient(StrandPalette.restColor),
+                    tip: StrandPalette.restColor,
+                    tint: StrandPalette.restColor,
+                    higherIsBetter: true,
+                    range: 0...100,
+                    fmt: { "\(Int($0.rounded()))" }
                 )
             }
         }
@@ -754,6 +890,28 @@ struct TrendsView: View {
             return RecoveryDay(date: dt, score: d.recovery)
         }
         let title = (range == .all && repo.days.count > 365) ? String(localized: "Charge (all history)") : String(localized: "Charge (past year)")
+        // 260908 — the same calendar for the two composite scores, so a year of each can be read the
+        // way a year of charge already could.
+        //
+        // Day quality is normalised from its signed −100…+100 onto the 0–100 the strip's palette
+        // expects. `YearHeatStrip` colours cells with `recoveryColor(score)` internally, so passing
+        // signed values would paint every negative day with the bottom-of-scale colour and make a bad
+        // day indistinguishable from a terrible one. Normalising at the CALL SITE rather than adding a
+        // range parameter keeps a shared design component unchanged for one caller — and the tooltip
+        // still prints the real signed number, which is what the reader actually reads.
+        let dayCells: [RecoveryDay] = recent.compactMap { d in
+            guard let dt = date(d.day) else { return nil }
+            let raw = dayQualityByDay[d.day]
+            let normalised = raw.map { v in
+                (v - Double(DayQualityScore.publishedMinimum))
+                    / Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum) * 100
+            }
+            return RecoveryDay(date: dt, score: normalised)
+        }
+        let restCells: [RecoveryDay] = recent.compactMap { d in
+            guard let dt = date(d.day) else { return nil }
+            return RecoveryDay(date: dt, score: sleepPerfByDay[d.day])
+        }
         return NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 SectionHeader("\(title)", overline: "Calendar", trailing: String(localized: "\(recoveryDays.filter { $0.score != nil }.count) days"))
@@ -765,6 +923,32 @@ struct TrendsView: View {
                     }
                     Divider().overlay(StrandPalette.hairline)
                     legend
+                }
+                if dayCells.contains(where: { $0.score != nil }) {
+                    Divider().overlay(StrandPalette.hairline)
+                    SectionHeader("Day quality", overline: "Calendar",
+                                  trailing: String(localized: "\(dayCells.filter { $0.score != nil }.count) days"))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        // The tooltip un-normalises so it reads the real published number.
+                        YearHeatStrip(days: dayCells, valueFormat: { shown in
+                            let signed = shown / 100
+                                * Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum)
+                                + Double(DayQualityScore.publishedMinimum)
+                            let r = Int(signed.rounded())
+                            return String(localized: "Day quality \(r > 0 ? "+" : "")\(r)")
+                        })
+                        .padding(.vertical, NoopMetrics.space1 / 2)
+                    }
+                }
+                if restCells.contains(where: { $0.score != nil }) {
+                    Divider().overlay(StrandPalette.hairline)
+                    SectionHeader("Sleep score", overline: "Calendar",
+                                  trailing: String(localized: "\(restCells.filter { $0.score != nil }.count) nights"))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        YearHeatStrip(days: restCells,
+                                      valueFormat: { String(localized: "Sleep score \(Int($0.rounded()))") })
+                            .padding(.vertical, NoopMetrics.space1 / 2)
+                    }
                 }
             }
         }
