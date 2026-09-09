@@ -34,6 +34,26 @@ struct DayQualityView: View {
     /// selector, and sharing one across two screens would make each surprise the other.
     @State private var window = Self.windows[1]
 
+    // MARK: Arrangeable layout (260908)
+    //
+    // The tab went from four blocks to nine; a fixed wall of that many means scrolling past the cards
+    // you do not care about every time. Same mechanism as Sleep and Today — see `DayLayoutPrefs`.
+    @AppStorage(DayLayoutPrefs.orderKey) private var daySectionOrderRaw = ""
+    @AppStorage(DayLayoutPrefs.hiddenKey) private var dayHiddenSectionsRaw = ""
+    @State private var showDayCustomize = false
+
+    /// Re-scored breakdowns for the days inside the current window, for the attribution card. Loaded
+    /// here rather than in the card so ONE pass serves it and the counterfactual card both.
+    @State private var windowBreakdowns: [DayQualityScore] = []
+    /// The browsed day's own breakdown plus the actuals/targets behind it, for the counterfactual card.
+    @State private var browsedBreakdown: DayQualityScore?
+    @State private var browsedActuals: [String: Double] = [:]
+    @State private var browsedTargets: [String: Double] = [:]
+
+    private var visibleSections: [DaySection] {
+        DayLayoutPrefs.visibleOrder(orderRaw: daySectionOrderRaw, hiddenRaw: dayHiddenSectionsRaw)
+    }
+
     /// 260906: day quality now owns the full span, since the Trends page no longer carries it at all
     /// (maintainer: "remove day quality completely from the trends section"). A year is included
     /// because the calendar strip below the chart is worth a long view.
@@ -50,27 +70,90 @@ struct DayQualityView: View {
         ScreenScaffold(title: "Day quality",
                        subtitle: "How a finished day actually went",
                        onRefresh: { await repo.refresh() }) {
+            // The date navigator is the tab's fixed frame — pinned above the arrangeable cards,
+            // exactly as Sleep pins its hero and date nav. A tab whose subject can be hidden has no
+            // subject.
             navHeader
-            // The score itself, the breakdown and the narrative — the existing card, pointed at the
-            // browsed day.
-            DayQualityCard(scoresByDay: scoresByDay, dayIndex: dayIndex)
-            // The trend section carries the window selector, the chart, the week-in-review and the
-            // calendar strip — all of it shared with the Sleep tab so the two cannot drift.
-            ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
-                              windows: Self.windows, window: $window,
-                              // The signed range, explicitly: the section defaults to the 0…106 rest
-                              // scale, which would fold the whole negative half onto the chart's floor.
-                              valueRange: Double(DayQualityScore.publishedMinimum)
-                                  ... Double(DayQualityScore.publishedMaximum),
-                              showsBars: true,
-                              lowLabel: "Depleted", highLabel: "Excellent")
-            DayQualitySettingsCard()
+            dayArrangeAffordance
+            ForEach(visibleSections) { section in
+                daySectionView(section)
+            }
+        }
+        .sheet(isPresented: $showDayCustomize) {
+            DayCustomizationSheet(sectionOrderRaw: $daySectionOrderRaw,
+                                  hiddenSectionsRaw: $dayHiddenSectionsRaw)
         }
         .task(id: repo.days.count) { await load() }
+        // The Insights inputs. Keyed on the window AND the browsed day, so stepping either re-derives
+        // exactly once rather than on every render.
+        .task(id: "\(window.days)-\(dayIndex)-\(scoresByDay.count)") { await loadInsights() }
         // A reload can shorten the series while the screen is open; an index left past the end would
         // silently clamp to a different day than the header names. Snap back, like SleepView does.
         .onChangeCompat(of: scoresByDay.count) { _ in
             if dayIndex > lastIndex { dayIndex = 0 }
+        }
+    }
+
+    // MARK: - Arrangeable sections
+
+    /// One card per `DaySection`. Every branch is a view that already existed or a new Insights card;
+    /// this only decides which render and in what order.
+    @ViewBuilder
+    private func daySectionView(_ section: DaySection) -> some View {
+        switch section {
+        case .breakdown:
+            // The score, its halves, the component breakdown, and the coach narrative in its own
+            // collapsible section inside this card.
+            DayQualityCard(scoresByDay: scoresByDay, dayIndex: dayIndex)
+        case .attribution:
+            DayQualityAttributionCard(breakdowns: windowBreakdowns, windowLabel: window.label)
+        case .counterfactual:
+            if let b = browsedBreakdown {
+                DayQualityCounterfactualCard(score: b, actuals: browsedActuals,
+                                             targets: browsedTargets, config: DayQualityPrefs.config)
+            }
+        case .streaks:
+            DayQualityStreakCard(valuesByDay: scoresByDay, windowLabel: window.label)
+        case .weekSummary, .trend, .calendar:
+            // These three are the three halves of `ScoreTrendSection`, which is shared with Sleep so
+            // the two tabs cannot drift. It renders as one unit, so it is emitted once — on whichever
+            // of the three sits highest in the saved order — rather than being split into three
+            // copies of the same view.
+            if section == firstTrendSectionInOrder {
+                ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
+                                  windows: Self.windows, window: $window,
+                                  // The signed range, explicitly: the section defaults to the 0…106
+                                  // rest scale, which would fold the whole negative half onto the
+                                  // chart's floor.
+                                  valueRange: Double(DayQualityScore.publishedMinimum)
+                                      ... Double(DayQualityScore.publishedMaximum),
+                                  showsBars: true,
+                                  lowLabel: "Depleted", highLabel: "Excellent")
+            }
+        case .settings:
+            DayQualitySettingsCard()
+        }
+    }
+
+    /// Whichever of the three `ScoreTrendSection` cards sits highest in the saved order — the slot the
+    /// combined section renders in. Nil when all three are hidden, which correctly renders nothing.
+    private var firstTrendSectionInOrder: DaySection? {
+        visibleSections.first { $0 == .weekSummary || $0 == .trend || $0 == .calendar }
+    }
+
+    /// The compact "Customize" affordance above the arrangeable cards. Mirrors Sleep's and Today's.
+    private var dayArrangeAffordance: some View {
+        HStack(spacing: 0) {
+            Spacer()
+            Button {
+                showDayCustomize = true
+            } label: {
+                Label("Customize", systemImage: "slider.horizontal.3")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Customize the Day tab layout")
         }
     }
 
@@ -138,6 +221,68 @@ struct DayQualityView: View {
         for p in series { byDay[p.day] = p.value }
         scoresByDay = byDay
         if dayIndex > max(byDay.count - 1, 0) { dayIndex = 0 }
+    }
+
+    /// Re-derive the Insights inputs: the breakdowns for the window (attribution) and the browsed
+    /// day's actuals/targets (counterfactuals).
+    ///
+    /// One pass serves both cards. The cost is the same target walk `DayQualityCard` already does for
+    /// its own breakdown, times the window — bounded by the selector, and keyed so it runs on a
+    /// window/day change rather than per render. Nothing is stored: these are display-only reads over
+    /// rows already in memory.
+    private func loadInsights() async {
+        let history = repo.days
+        guard !history.isEmpty else {
+            windowBreakdowns = []; browsedBreakdown = nil
+            browsedActuals = [:]; browsedTargets = [:]
+            return
+        }
+        let profile = repo.liveTargetsProfile?() ?? UserProfile()
+
+        // The scored days inside the current window, newest-last so the attribution reads in order.
+        let cutoff = Calendar.current.date(byAdding: .day, value: -window.days, to: Date())
+        let windowDays = scoresByDay.keys.sorted().filter { key in
+            guard let cutoff, let d = Self.dayParser.date(from: key) else { return true }
+            return d >= cutoff
+        }
+
+        let browsed = dayIndex < scoredDays.count ? scoredDays[dayIndex] : nil
+        // One target walk covering every day either card needs.
+        let wanted = Array(Set(windowDays + (browsed.map { [$0] } ?? [])))
+        let needed = DayQualityComputer.targetDaysNeeded(toScore: wanted, history: history)
+        let targets = DayQualityComputer.targetsByDay(history: history, profile: profile,
+                                                      onlyDays: needed)
+        let config = DayQualityPrefs.config
+
+        func input(_ day: String) -> DayQualityScore.DayInput? {
+            let water = repo.waterCupsAndTarget(forDay: day)
+            return DayQualityComputer.input(for: day, history: history, profile: profile,
+                                            targetsByDay: targets,
+                                            waterCups: water?.cups,
+                                            waterTargetCups: water?.target)
+        }
+
+        windowBreakdowns = windowDays.compactMap { input($0).flatMap { DayQualityScore.score($0, config: config) } }
+
+        // The browsed day's actuals and targets, keyed by the SAME component labels the scorer emits —
+        // the counterfactual card matches on those, so they have to agree exactly.
+        guard let browsed, let i = input(browsed) else {
+            browsedBreakdown = nil; browsedActuals = [:]; browsedTargets = [:]
+            return
+        }
+        browsedBreakdown = DayQualityScore.score(i, config: config)
+        var actuals: [String: Double] = [:]
+        var tgts: [String: Double] = [:]
+        if let v = i.steps, let t = i.stepsTarget { actuals["Steps"] = Double(v); tgts["Steps"] = Double(t) }
+        if let v = i.kcal, let t = i.kcalTarget { actuals["Calories"] = Double(v); tgts["Calories"] = Double(t) }
+        if let v = i.effort, let t = i.effortTarget { actuals["Effort"] = Double(v); tgts["Effort"] = Double(t) }
+        if let v = i.waterCups, let t = i.waterTargetCups { actuals["Water"] = Double(v); tgts["Water"] = Double(t) }
+        if let v = i.sleepMin, let t = i.sleepNeedMin { actuals["Sleep"] = v; tgts["Sleep"] = Double(t) }
+        // HRV and resting HR are deliberately omitted: they are scored against a baseline rather than
+        // a target the wearer can decide to hit, so "N more ms of HRV" is not an action. The card is
+        // for gains within reach, and an autonomic signal is not one of them.
+        browsedActuals = actuals
+        browsedTargets = tgts
     }
 
     private static let dayParser: DateFormatter = {
