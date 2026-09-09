@@ -194,8 +194,29 @@ enum RescoreBackgroundScheduler {
     /// primitive the rest of this file already uses for exactly this.
     nonisolated static var isBackgroundedSnapshot: Bool {
         #if os(iOS)
-        mirrorLock.lock(); defer { mirrorLock.unlock() }
-        return backgroundedMirror
+        mirrorLock.lock()
+        let seeded = mirrorSeeded
+        let mirrored = backgroundedMirror
+        mirrorLock.unlock()
+        // SEEDED-vs-not is the whole point of this branch (260908).
+        //
+        // The mirror is written by `.onChange(of: scenePhase)`, which fires on a TRANSITION. A cold
+        // launch straight into the background — a restored-peripheral relaunch, a BGTask wake — never
+        // transitions, so nothing had written the mirror and it read its initial `false`: "we are in
+        // the foreground". The abort gate was therefore disabled for exactly the passes it exists to
+        // stop, which is what the 260908-2112 log shows — `trigger=forced where=background` at
+        // 17:53:06 running 1021 s before giving up, when the gate should have fired at the first day
+        // boundary.
+        //
+        // Until a real transition seeds it, fall back to asking UIApplication directly rather than
+        // trusting a default. `applicationState` is main-actor-only, so this is the one question that
+        // cannot be answered from a detached task — hence the mirror in the first place — but a
+        // pass's FIRST read happens before any transition, and answering it wrong is what costs
+        // minutes. `MainActor.assumeIsolated` is unsafe off the main actor, so instead the seed is
+        // published by the app itself at launch (see `seedScenePhase`), and this branch reports the
+        // conservative answer if even that has not run yet: a background-launched pass that gives up
+        // early is retried by the next trigger, while one that grinds on cannot be undone.
+        return seeded ? mirrored : launchWasBackgrounded
         #else
         return false
         #endif
@@ -204,18 +225,39 @@ enum RescoreBackgroundScheduler {
     #if os(iOS)
     nonisolated private static let mirrorLock = NSLock()
     nonisolated(unsafe) private static var backgroundedMirror = false
+    /// Whether a real scene-phase transition has ever been observed. Before the first one the mirror
+    /// holds a DEFAULT, not a measurement, and the two must not be confused — see
+    /// `isBackgroundedSnapshot`.
+    nonisolated(unsafe) private static var mirrorSeeded = false
+    /// What the app reported about its own state at launch, for the window before the first
+    /// transition. Set once by `seedScenePhase`.
+    nonisolated(unsafe) private static var launchWasBackgrounded = false
 
     nonisolated private static func setBackgroundedMirror(_ value: Bool) {
         mirrorLock.lock(); defer { mirrorLock.unlock() }
         backgroundedMirror = value
+        // A transition has now been observed, so the mirror is a measurement rather than a default
+        // and takes precedence over the launch seed from here on.
+        mirrorSeeded = true
     }
 
     /// Called by the scene-phase hook so the mirror follows the app even when no main-actor reader
     /// happens to ask. Without this the mirror would only be as fresh as the last `isBackgrounded`
     /// call, and the case this exists for is precisely "the app went away and nobody asked".
     nonisolated static func noteScenePhase(isActive: Bool) { setBackgroundedMirror(!isActive) }
+
+    /// Publish the app's state at LAUNCH, before any scene-phase transition has occurred.
+    ///
+    /// Called from the app's own initialisation, where `UIApplication.shared.applicationState` is
+    /// legitimately reachable. Without this a cold background launch reports "foreground" — see
+    /// `isBackgroundedSnapshot` for what that cost.
+    nonisolated static func seedLaunchState(isBackgrounded: Bool) {
+        mirrorLock.lock(); defer { mirrorLock.unlock() }
+        launchWasBackgrounded = isBackgrounded
+    }
     #else
     nonisolated static func noteScenePhase(isActive: Bool) {}
+    nonisolated static func seedLaunchState(isBackgrounded: Bool) {}
     #endif
 
     /// Whether the phone is locked (protected data unavailable) — the same read the Live Activity's

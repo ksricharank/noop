@@ -2,6 +2,7 @@
 import SwiftUI
 import StrandDesign
 import UserNotifications
+import UIKit
 
 /// iOS entry point. Unlike the macOS app (which adds a `MenuBarExtra` scene), iOS uses a single
 /// `WindowGroup`; the glanceable menu-bar role is filled by the Home/Lock-Screen widget instead.
@@ -45,6 +46,17 @@ struct StrandiOSApp: App {
         // collection cost — the OS records them regardless; this only parks yesterday's totals where
         // the strap-log header prints them (BatteryDiag).
         MetricKitDiag.start()
+        // 260908 BATTERY: tell the re-score abort gate what state we LAUNCHED in.
+        //
+        // The gate reads a nonisolated mirror of the scene phase, and that mirror is written by
+        // `.onChange(of: scenePhase)` — which fires on a transition. A cold launch straight into the
+        // background (a restored-peripheral relaunch, a BGTask wake) never transitions, so the mirror
+        // still held its initial "foreground" default and the gate was disabled for precisely the
+        // passes it exists to stop: the 260908-2112 log has `trigger=forced where=background` running
+        // 1021 s before giving up. `applicationState` is main-actor-only, which is why the gate cannot
+        // ask it directly from its detached task — so it is asked once, here, where it is reachable.
+        RescoreBackgroundScheduler.seedLaunchState(
+            isBackgrounded: UIApplication.shared.applicationState != .active)
         #if DEBUG
         // DEBUG-only promo-screenshot harness: when launched with `--demo-hour <Int>`, pin Today to that
         // hour's day-cycle scene + a per-hour stat frame. No-op (active stays nil) when the arg is absent.
