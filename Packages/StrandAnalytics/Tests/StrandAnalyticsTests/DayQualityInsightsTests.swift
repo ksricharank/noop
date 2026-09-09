@@ -62,16 +62,21 @@ final class DayQualityInsightsTests: XCTestCase {
         XCTAssertEqual(ranked.map(\.meanPoints), ranked.map(\.meanPoints).sorted(by: >))
     }
 
-    /// The weight coincidence above is worth pinning in its own right: if a future config change makes
-    /// the two halves' per-component weights differ, the test above stops being a within-half
-    /// comparison and this says so directly.
-    func testSleepAndWaterCarryEqualWeightUnderTheDefaultConfig() {
+    /// The five target-bearing weights must sum to `targetPointsTotal`, because that IS the
+    /// "targets met = +50" anchor. A weight change that breaks the sum would move the anchor
+    /// silently, and every card would read differently with nothing to say why.
+    func testTargetBearingWeightsSumToTheTargetTotal() {
         let s = day()
-        let sleep = try! XCTUnwrap(s.components.first { $0.label == "Sleep" })
-        let water = try! XCTUnwrap(s.components.first { $0.label == "Water" })
-        XCTAssertEqual(sleep.weight, water.weight, accuracy: 1e-9,
-                       "60/4 and 40×1.5/4 both come to 15 — a coincidence of the default config, and "
-                       + "the reason the ranking test compares within one half instead")
+        let targetBearing = s.components.filter { $0.label != "HRV" && $0.label != "Resting HR" }
+        XCTAssertEqual(targetBearing.reduce(0) { $0 + $1.weight },
+                       DayQualityScore.targetPointsTotal, accuracy: 0.01)
+        // And the two baseline signals sit OUTSIDE that total — they score 0 at baseline, so they
+        // cannot contribute to "targets met".
+        let signals = s.components.filter { $0.label == "HRV" || $0.label == "Resting HR" }
+        XCTAssertEqual(signals.count, 2)
+        for c in signals {
+            XCTAssertEqual(c.points, 0, accuracy: 1e-9, "\(c.label) at baseline must contribute nothing")
+        }
     }
 
     /// A component absent on some days is averaged over the days it appeared, never zeroed on the rest.
@@ -99,7 +104,8 @@ final class DayQualityInsightsTests: XCTestCase {
         let cf = DayQualityInsights.counterfactuals(
             for: s,
             actuals: ["Steps": 4000, "Water": 10, "Effort": 54, "Sleep": 480],
-            targets: ["Steps": 8000, "Water": 21, "Effort": 54, "Sleep": 480])
+            targets: ["Steps": 8000, "Water": 21, "Effort": 54, "Sleep": 480],
+            normals: ["Steps": 4000, "Water": 8, "Effort": 8, "Sleep": 420])
         let labels = cf.map(\.label)
         XCTAssertTrue(labels.contains("Steps"))
         XCTAssertTrue(labels.contains("Water"))
@@ -113,7 +119,8 @@ final class DayQualityInsightsTests: XCTestCase {
     func testShortfallIsTheActualDistanceToTarget() {
         let s = day(steps: 4000)
         let cf = DayQualityInsights.counterfactuals(
-            for: s, actuals: ["Steps": 4000], targets: ["Steps": 8000])
+            for: s, actuals: ["Steps": 4000], targets: ["Steps": 8000],
+            normals: ["Steps": 4000])
         let steps = try! XCTUnwrap(cf.first { $0.label == "Steps" })
         XCTAssertEqual(steps.shortfall, 4000, accuracy: 0.01)
         XCTAssertEqual(steps.target, 8000, accuracy: 0.01)
@@ -127,7 +134,8 @@ final class DayQualityInsightsTests: XCTestCase {
         let cf = DayQualityInsights.counterfactuals(
             for: s,
             actuals: ["Steps": 8000, "Water": 21, "Effort": 54, "Sleep": 480],
-            targets: ["Steps": 8000, "Water": 21, "Effort": 54, "Sleep": 480])
+            targets: ["Steps": 8000, "Water": 21, "Effort": 54, "Sleep": 480],
+            normals: ["Steps": 4000, "Water": 8, "Effort": 8, "Sleep": 420])
         XCTAssertTrue(cf.isEmpty)
     }
 
@@ -135,7 +143,8 @@ final class DayQualityInsightsTests: XCTestCase {
     func testGainIsQuotedInPublishedPoints() {
         let s = day(effort: 0)
         let cf = DayQualityInsights.counterfactuals(
-            for: s, actuals: ["Effort": 0], targets: ["Effort": 54])
+            for: s, actuals: ["Effort": 0], targets: ["Effort": 54],
+            normals: ["Effort": 8])
         let effort = try! XCTUnwrap(cf.first)
         // Doing the workout must move the day by a plausible, published-scale amount — not a raw
         // credit figure (which would be roughly a fifth of this) and not more than the whole scale.
