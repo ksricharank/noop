@@ -38,8 +38,15 @@ struct ScoreTrendSection: View {
     /// stepping weeks does not disturb the chart's own window selection.
     @State private var weekOffset = 0
 
-    /// The value scale the gradient is anchored to, and the axis ceiling.
+    /// The value scale the gradient is anchored to, and the axis extent — the chart and the pip rows
+    /// both draw against it. Defaults to the SLEEP/rest range (0…106);
+    /// the Day tab passes the signed day-quality range explicitly.
     var valueRange: ClosedRange<Double> = 0...106
+    /// Draw the series as bars from the baseline rather than as a curve (260908, maintainer's ask for
+    /// the day-quality chart). A signed score reads far better as bars: the zero line becomes visible
+    /// geometry and each day is a discrete verdict, where a curve implies a continuous quantity
+    /// interpolating between days it never measured.
+    var showsBars: Bool = false
     /// Formats a value for the footer and the heat-strip tooltip.
     var format: (Double) -> String = { "\(Int($0.rounded()))" }
     /// Shown under the heat strip's gradient, naming the two ends of the scale.
@@ -248,7 +255,7 @@ struct ScoreTrendSection: View {
                             font: StrandFont.number(30, weight: .bold),
                             color: StrandPalette.textPrimary)
             }
-            PipBar(value: value, range: valueRange.lowerBound...min(valueRange.upperBound, 100),
+            PipBar(value: value, range: valueRange.lowerBound...valueRange.upperBound,
                    tint: StrandPalette.chargeColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -277,7 +284,10 @@ struct ScoreTrendSection: View {
 
     /// The vessel fill, 0…1 on the metric's own scale.
     private func fill(_ value: Double) -> Double {
-        let span = min(valueRange.upperBound, 100) - valueRange.lowerBound
+        // 260908: was `min(upperBound, 100)`, which silently pinned every scale's top at 100 and
+        // would map the whole −100…+100 day-quality range onto its upper half. The bound belongs to
+        // the caller's range, not to a literal here.
+        let span = valueRange.upperBound - valueRange.lowerBound
         guard span > 0 else { return 0 }
         return max(0, min(1, (value - valueRange.lowerBound) / span))
     }
@@ -339,9 +349,12 @@ struct ScoreTrendSection: View {
                     TrendChart(points: pts,
                                gradient: StrandPalette.recoveryGradient,
                                valueRange: valueRange,
+                               showsBars: showsBars,
                                valueFormat: format,
                                accessibilityLabel: String(localized: "Trend"),
-                               nowCapColor: StrandPalette.chargeBright)
+                               // The "now" end-cap belongs to a line's leading point; on bars there is
+                               // no line for it to sit on.
+                               nowCapColor: showsBars ? nil : StrandPalette.chargeBright)
                 },
                 footer: { footer(pts) })
             .accessibilityElement(children: .contain)

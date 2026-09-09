@@ -119,11 +119,15 @@ struct DayQualityCard: View {
 
     private func headline(_ score: Int) -> some View {
         HStack(alignment: .lastTextBaseline, spacing: 8) {
-            Text("\(score)")
+            // Signed scale (260908): the sign is the headline's most important character, so it is
+            // always shown — "+58" and "−23" are different KINDS of day, not just different sizes.
+            // The old "/ 100" denominator is gone: on a scale whose midpoint is 0 it read as a
+            // fraction of a maximum, which is exactly the reading the rescale removed.
+            Text(score > 0 ? "+\(score)" : "\(score)")
                 .font(.system(size: 44, weight: .bold, design: .rounded))
                 .foregroundStyle(tint(for: score))
                 .monospacedDigit()
-            Text("/ 100")
+            Text(DayQualityScore.band(score))
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
             Spacer()
@@ -138,7 +142,8 @@ struct DayQualityCard: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text("Day quality"))
-        .accessibilityValue(Text("\(score) out of 100, \(DayQualityScore.band(score))"))
+        // Spoken as a signed value on a −100…+100 scale, since "58 out of 100" would misdescribe it.
+        .accessibilityValue(Text("\(score) on a scale of minus 100 to 100, \(DayQualityScore.band(score))"))
     }
 
     private func halfLabel(_ name: LocalizedStringKey, _ points: Double) -> some View {
@@ -151,12 +156,17 @@ struct DayQualityCard: View {
     }
 
     /// Colour by band, using the existing domain palette rather than a new scale.
+    ///
+    /// Re-cut for the signed range (260908). The important boundary is ZERO: a negative day is a
+    /// different kind of day, not merely a smaller number, so it gets the amber/secondary treatment
+    /// while everything at or above the sedentary anchor stays in the positive palette.
     private func tint(for score: Int) -> Color {
         switch score {
-        case 75...: return StrandPalette.chargeColor
-        case 60..<75: return StrandPalette.restColor
-        case 45..<60: return StrandPalette.metricAmber
-        default: return StrandPalette.textSecondary
+        case 80...: return StrandPalette.chargeColor
+        case 55..<80: return StrandPalette.restColor
+        case 10..<55: return StrandPalette.metricAmber
+        case (-10)..<10: return StrandPalette.textSecondary
+        default: return StrandPalette.metricAmber
         }
     }
 
