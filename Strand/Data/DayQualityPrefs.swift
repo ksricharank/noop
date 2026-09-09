@@ -19,8 +19,19 @@ enum DayQualityPrefs {
         static let executionSharePct = "dayquality.executionSharePct"
         /// Load-factor strength, stored 0…100.
         static let loadFactorPct = "dayquality.loadFactorPct"
-        /// Overshoot ceiling, stored as a whole percentage of target (125 = 1.25).
-        static let overshootCapPct = "dayquality.overshootCapPct"
+        /// Overshoot ceiling, stored as a whole percentage of the normal→target distance
+        /// (170 = 1.7). Namespaced `v3` deliberately: build 332 stored 125 here under the old
+        /// meaning, and a stale 125 silently caps the scale's ceiling at 77 instead of 100. A stored
+        /// preference that changes meaning needs a new key, not a migration guess — the old value was
+        /// a valid answer to a different question.
+        static let overshootCapPct = "dayquality.v3.overshootCapPct"
+        /// The absolute "normal day" the score's zero sits on, one key per component, in the
+        /// component's own units. Absent means "use the shipped default".
+        static let normalSteps = "dayquality.normal.steps"
+        static let normalKcal = "dayquality.normal.kcal"
+        static let normalEffort = "dayquality.normal.effort"
+        static let normalWaterCups = "dayquality.normal.waterCups"
+        static let normalSleepMin = "dayquality.normal.sleepMin"
         /// The local day on which the nightly scoring pass last ran to completion.
         static let lastScoredDay = "dayquality.lastScoredDay"
         /// The config fingerprint that pass used, so changing a knob re-scores rather than waiting
@@ -48,6 +59,61 @@ enum DayQualityPrefs {
         d.object(forKey: K.overshootCapPct) as? Int
             ?? Int((DayQualityScore.Config.default.overshootCap * 100).rounded())
     }
+
+    // MARK: - The normal-day anchor (260909)
+    //
+    // Read as Ints because that is what a stepper binds to cleanly, and clamped on READ so a corrupt
+    // or hand-edited preference cannot produce a nonsense zero point. Each falls back to the shipped
+    // default rather than to a literal, so the two cannot drift.
+
+    static var normalSteps: Int {
+        clamp(d.object(forKey: K.normalSteps) as? Int
+              ?? Int(DayQualityScore.NormalDay.default.steps), 0, 20_000)
+    }
+    static var normalKcal: Int {
+        clamp(d.object(forKey: K.normalKcal) as? Int
+              ?? Int(DayQualityScore.NormalDay.default.kcal), 0, 6000)
+    }
+    static var normalEffort: Int {
+        clamp(d.object(forKey: K.normalEffort) as? Int
+              ?? Int(DayQualityScore.NormalDay.default.effort), 0, 100)
+    }
+    static var normalWaterCups: Int {
+        clamp(d.object(forKey: K.normalWaterCups) as? Int
+              ?? Int(DayQualityScore.NormalDay.default.waterCups), 0, 40)
+    }
+    /// Stored in MINUTES; the UI presents hours.
+    static var normalSleepMin: Int {
+        clamp(d.object(forKey: K.normalSleepMin) as? Int
+              ?? Int(DayQualityScore.NormalDay.default.sleepMin), 0, 900)
+    }
+
+    static func setNormalSteps(_ v: Int) { d.set(clamp(v, 0, 20_000), forKey: K.normalSteps) }
+    static func setNormalKcal(_ v: Int) { d.set(clamp(v, 0, 6000), forKey: K.normalKcal) }
+    static func setNormalEffort(_ v: Int) { d.set(clamp(v, 0, 100), forKey: K.normalEffort) }
+    static func setNormalWaterCups(_ v: Int) { d.set(clamp(v, 0, 40), forKey: K.normalWaterCups) }
+    static func setNormalSleepMin(_ v: Int) { d.set(clamp(v, 0, 900), forKey: K.normalSleepMin) }
+
+    /// True when the normal-day anchor differs from the shipped default.
+    static var normalDayIsCustomised: Bool {
+        normalDay != .default
+    }
+
+    /// Restore the shipped anchor.
+    static func resetNormalDay() {
+        for key in [K.normalSteps, K.normalKcal, K.normalEffort, K.normalWaterCups, K.normalSleepMin] {
+            d.removeObject(forKey: key)
+        }
+    }
+
+    /// The anchor as the scorer wants it.
+    static var normalDay: DayQualityScore.NormalDay {
+        DayQualityScore.NormalDay(steps: Double(normalSteps), kcal: Double(normalKcal),
+                                  effort: Double(normalEffort), waterCups: Double(normalWaterCups),
+                                  sleepMin: Double(normalSleepMin))
+    }
+
+    private static func clamp(_ v: Int, _ lo: Int, _ hi: Int) -> Int { min(max(v, lo), hi) }
 
     static func setExecutionSharePct(_ v: Int) { d.set(min(max(v, 0), 100), forKey: K.executionSharePct) }
     static func setLoadFactorPct(_ v: Int) { d.set(min(max(v, 0), 100), forKey: K.loadFactorPct) }
@@ -97,7 +163,12 @@ enum DayQualityPrefs {
     /// A short, stable fingerprint of the settings that affect the number, plus the scale they are
     /// expressed on.
     static var configFingerprint: String {
+        // The normal-day anchor is PART of the formula, so it belongs here: without it, tuning the
+        // zero point would change every future score while leaving history on the old anchor, and the
+        // trend would mix two definitions of zero with nothing on screen to say so. Omitting an input
+        // from this string is exactly how the 260908 migration silently failed.
         "\(scaleVersion)/\(executionSharePct)/\(loadFactorPct)/\(overshootCapPct)"
+            + "/\(normalSteps),\(normalKcal),\(normalEffort),\(normalWaterCups),\(normalSleepMin)"
     }
 
     /// True when tonight's scoring has already run for `day` under the current settings.
@@ -130,6 +201,11 @@ enum DayQualityPrefs {
         c.executionShare = Double(executionSharePct) / 100
         c.loadFactorStrength = Double(loadFactorPct) / 100
         c.overshootCap = Double(overshootCapPct) / 100
+        // Was MISSING (260909): the scoring pass built its config here and never applied the anchor,
+        // so a tuned normal day moved the card (which reads the anchor directly) and not the stored
+        // series. Every input the scorer takes has to come through this one builder, or the two
+        // surfaces compute different numbers from the same day.
+        c.normalDay = normalDay
         return c
     }
 }

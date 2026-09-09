@@ -17,10 +17,15 @@ struct DayQualitySettingsCard: View {
     // and plain `@AppStorage` reads an unset key as 0 — the same trap the breathe-sensitivity params
     // documented. Seeded from the prefs (which fall back to the scorer's own defaults) and written
     // back through them on change.
-    @State private var executionPct = DayQualityPrefs.executionSharePct
     @State private var loadFactorPct = DayQualityPrefs.loadFactorPct
     @State private var overshootPct = DayQualityPrefs.overshootCapPct
     @State private var expanded = false
+    // The absolute normal-day anchor — the day the score calls zero (260909).
+    @State private var normalSteps = DayQualityPrefs.normalSteps
+    @State private var normalKcal = DayQualityPrefs.normalKcal
+    @State private var normalEffort = DayQualityPrefs.normalEffort
+    @State private var normalWater = DayQualityPrefs.normalWaterCups
+    @State private var normalSleepMin = DayQualityPrefs.normalSleepMin
 
     var body: some View {
         NoopCard {
@@ -34,6 +39,16 @@ struct DayQualitySettingsCard: View {
                             Text("How day quality is weighted")
                                 .font(StrandFont.body)
                                 .foregroundStyle(StrandPalette.textPrimary)
+                            // The zero point, visible WITHOUT expanding (260909). The maintainer
+                            // could not find these controls, and a collapsed panel is the right home
+                            // for weighting knobs but the wrong one for the definition of zero: it is
+                            // what the whole number means, and a reader needs it to interpret every
+                            // score on the page above.
+                            Text("Zero is \(normalSteps) steps · \(normalKcal) kcal · effort \(normalEffort) · \(normalWater) cups · \(Self.hours(normalSleepMin)) sleep")
+                                .font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 2)
                         }
                         Spacer()
                         Image(systemName: "chevron.down")
@@ -46,11 +61,72 @@ struct DayQualitySettingsCard: View {
                 .accessibilityLabel(expanded ? "Collapse score settings" : "Expand score settings")
 
                 if expanded {
+                    // ── The zero point ──────────────────────────────────────────────────────────────
+                    // The score's origin, stated in absolute units rather than derived from recent
+                    // history. Deliberately first: it is the setting that most changes what the
+                    // number MEANS, and the one a reader needs in order to interpret everything else.
+                    //
+                    // `Execution share` used to lead this list and has been removed. The scale no
+                    // longer splits a fixed 100 points between two halves for it to divide, so it
+                    // moved nothing — and a slider that moves nothing is worse than no slider.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("A normal day").strandOverline()
+                        Text("The day the score calls zero: no deliberate exercise, an ordinary night. Beat these and the score climbs; fall short and it goes negative.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     stepperRow(
-                        label: "Execution share",
-                        help: "How much of the score comes from hitting your targets — steps, calories, effort and water. The rest comes from how your body responded: sleep, HRV and resting heart rate.",
-                        value: $executionPct, suffix: "%", range: 0...100, step: 5
-                    ) { DayQualityPrefs.setExecutionSharePct($0) }
+                        label: "Normal steps",
+                        help: "Steps on a day with no deliberate walking or exercise — just moving around.",
+                        value: $normalSteps, suffix: "", range: 0...20_000, step: 250
+                    ) { DayQualityPrefs.setNormalSteps($0) }
+
+                    rowDivider
+                    stepperRow(
+                        label: "Normal calories",
+                        help: "Active calories burned on such a day.",
+                        value: $normalKcal, suffix: " kcal", range: 0...6000, step: 50
+                    ) { DayQualityPrefs.setNormalKcal($0) }
+
+                    rowDivider
+                    stepperRow(
+                        label: "Normal effort",
+                        help: "Effort on an ordinary day, on the 0–100 internal scale. Pottering, not training.",
+                        value: $normalEffort, suffix: "", range: 0...100, step: 1
+                    ) { DayQualityPrefs.setNormalEffort($0) }
+
+                    rowDivider
+                    stepperRow(
+                        label: "Normal water",
+                        help: "Cups you'd drink without thinking about it.",
+                        value: $normalWater, suffix: " cups", range: 0...40, step: 1
+                    ) { DayQualityPrefs.setNormalWaterCups($0) }
+
+                    rowDivider
+                    // Sleep is stored in minutes and shown in hours — a stepper in minutes would take
+                    // dozens of taps to cross a useful range.
+                    stepperRow(
+                        label: "Normal sleep",
+                        help: "A normal night, not a good one. Sleeping past this earns points; falling short costs them.",
+                        value: $normalSleepMin, suffix: "", range: 0...900, step: 15,
+                        format: { Self.hours($0) }
+                    ) { DayQualityPrefs.setNormalSleepMin($0) }
+
+                    if DayQualityPrefs.normalDayIsCustomised {
+                        Button("Reset the normal day") {
+                            DayQualityPrefs.resetNormalDay()
+                            normalSteps = DayQualityPrefs.normalSteps
+                            normalKcal = DayQualityPrefs.normalKcal
+                            normalEffort = DayQualityPrefs.normalEffort
+                            normalWater = DayQualityPrefs.normalWaterCups
+                            normalSleepMin = DayQualityPrefs.normalSleepMin
+                        }
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.accent)
+                        .buttonStyle(.plain)
+                    }
 
                     rowDivider
                     stepperRow(
@@ -62,8 +138,8 @@ struct DayQualitySettingsCard: View {
                     rowDivider
                     stepperRow(
                         label: "Overshoot credit",
-                        help: "The most a single component can score by beating its target. 125% means beating a target by a quarter earns the full bonus; 100% caps every component at its target exactly.",
-                        value: $overshootPct, suffix: "%", range: 100...200, step: 5
+                        help: "How far past a target a component keeps earning, as a share of the normal-to-target distance. 170% is what makes a fully-beaten day reach 100; 100% stops every component at its target exactly.",
+                        value: $overshootPct, suffix: "%", range: 100...300, step: 10
                     ) { DayQualityPrefs.setOvershootCapPct($0) }
 
                     rowDivider
@@ -75,7 +151,6 @@ struct DayQualitySettingsCard: View {
                     if DayQualityPrefs.isCustomised {
                         Button("Reset to defaults") {
                             DayQualityPrefs.reset()
-                            executionPct = DayQualityPrefs.executionSharePct
                             loadFactorPct = DayQualityPrefs.loadFactorPct
                             overshootPct = DayQualityPrefs.overshootCapPct
                         }
@@ -91,9 +166,13 @@ struct DayQualitySettingsCard: View {
 
     /// Same shape as `AutomationsView.stepperRow` — a Stepper, not a Slider, matching every other
     /// numeric knob in the app (and far easier to land on an exact value with a thumb).
+    /// `format` overrides the plain "value + suffix" display, for a row whose stored unit is not the
+    /// one worth reading (sleep is stored in minutes and shown in hours — a minutes stepper would
+    /// otherwise need dozens of taps to cross a useful range).
     private func stepperRow(label: LocalizedStringKey, help: LocalizedStringKey,
                             value: Binding<Int>, suffix: String,
                             range: ClosedRange<Int>, step: Int,
+                            format: ((Int) -> String)? = nil,
                             onChange: @escaping (Int) -> Void) -> some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
@@ -104,7 +183,7 @@ struct DayQualitySettingsCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Text("\(value.wrappedValue)\(suffix)")
+            Text(format?(value.wrappedValue) ?? "\(value.wrappedValue)\(suffix)")
                 .font(StrandFont.bodyNumber)
                 .foregroundStyle(StrandPalette.textSecondary)
                 .monospacedDigit()
@@ -119,5 +198,11 @@ struct DayQualitySettingsCard: View {
 
     private var rowDivider: some View {
         Divider().overlay(StrandPalette.hairline)
+    }
+
+    /// Minutes as a compact "7h 30m" / "7h".
+    static func hours(_ minutes: Int) -> String {
+        let h = minutes / 60, m = minutes % 60
+        return m == 0 ? "\(h)h" : "\(h)h \(m)m"
     }
 }
