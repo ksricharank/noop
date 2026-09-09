@@ -2,67 +2,98 @@ import XCTest
 @testable import Strand
 @testable import StrandAnalytics
 
-/// Detecting a stored series computed under a retired formula (260909).
+/// Detecting a stored day-quality series left behind by a retired formula (260909).
 ///
-/// Reported twice: the score card showed a correct value while the trend chart, week summary and
-/// calendar below it showed numbers from an older formula. The first repair gated on
-/// `DayQualityPrefs.configChanged`, which was the wrong signal — a latch records that a pass RAN, not
-/// that the stored values match the current formula, so a pass that latched under one formula leaves
-/// the series looking complete to the next one.
+/// Reported three times: the score card correct, and the trend chart / week summary / calendar below
+/// it showing values the current formula cannot produce. Two earlier repairs failed, and both failed
+/// the same way — they asked an INDIRECT question:
 ///
-/// The check is now on the VALUES, which cannot go stale the way a flag can.
-@MainActor
+/// 1. `DayQualityPrefs.configChanged` — a latch that records a pass RAN, not that the stored values
+///    are current. A pass that latched under one formula leaves the series looking complete.
+/// 2. A shape heuristic ("nothing at or below zero across 20+ days"). Tested against a 25-day
+///    synthetic fixture and green; the real series was **14 days**, under the threshold, and held one
+///    negative day which defeated the other tell. Green on data I invented, silent on the data it
+///    existed for.
+///
+/// The check now compares stored values against what the scorer produces for the same day. These
+/// tests use the REPORTED window sizes, not convenient ones — that mismatch is what let the previous
+/// version ship twice.
 final class DayQualityStaleSeriesTests: XCTestCase {
 
-    /// The reported series: 25 days, all positive, best 77 — which is exactly 50 × 1.25 + 15, the
-    /// ceiling of a retired overshoot cap. No current setting can produce a series like this.
-    func testTheReportedStaleSeriesIsDetected() {
-        var series: [String: Double] = [:]
-        let values: [Double] = [77, 62, 64, 66, 71, 65, 55, 57, 60, 60, 47, 28, 5,
-                                55, 58, 61, 63, 59, 52, 54, 56, 58, 44, 30, 12]
-        for (i, v) in values.enumerated() {
-            series[String(format: "2026-08-%02d", i + 15)] = v
-        }
-        XCTAssertTrue(DayQualityView.seriesLooksStale(series),
-                      "25 dense days with nothing at or below zero cannot come from a scale whose "
-                      + "zero is an ordinary sedentary day")
+    // MARK: - The reported case
+
+    /// The 14-day window actually on screen, with stored values from the retired formula (best 77 =
+    /// 50 × 1.25 + 15) against live values from the current one. The previous heuristic returned
+    /// false here; this must return true.
+    func testTheReportedFourteenDayWindowIsDetected() {
+        var stored: [String: Double] = [:]
+        let old: [Double] = [77, 62, 64, 66, 71, 65, 55, 57, 60, 60, 47, 28, 5, -22]
+        for (i, v) in old.enumerated() { stored[String(format: "2026-08-%02d", i + 25)] = v }
+        // What the current scorer says about the five most recent of those days.
+        let live: [String: Int] = [
+            "2026-09-07": 23, "2026-09-06": 20, "2026-09-05": 28,
+            "2026-08-31": 19, "2026-08-30": 16,
+        ]
+        var merged = stored
+        for (d, v) in live { merged[d] = Double(v == 23 ? 55 : 60) }  // stored still holds old values
+        XCTAssertTrue(DayQualityView.storedDisagreesWithLive(stored: merged, live: live),
+                      "a 14-day window with one negative day must still be detected — the previous "
+                      + "heuristic needed 20+ days and no negatives, so it was silent on exactly this")
     }
 
-    /// A value outside the published range is proof on its own, at any sample size.
-    func testAnOutOfRangeValueIsDetectedImmediately() {
-        XCTAssertTrue(DayQualityView.seriesLooksStale(["2026-09-01": 140]))
-        XCTAssertTrue(DayQualityView.seriesLooksStale(["2026-09-01": -140]))
+    /// One disagreeing day is enough. The repair is a full forced re-score, so the check is a
+    /// detector and does not need to find them all.
+    func testASingleDisagreementIsEnough() {
+        let stored = ["2026-09-01": 55.0, "2026-09-02": 20.0, "2026-09-03": 21.0]
+        let live = ["2026-09-01": 22, "2026-09-02": 20, "2026-09-03": 21]
+        XCTAssertTrue(DayQualityView.storedDisagreesWithLive(stored: stored, live: live))
     }
 
-    /// A REAL series crosses zero, so it must not be flagged — otherwise every visit re-scores.
-    func testARealSignedSeriesIsNotFlagged() {
-        var series: [String: Double] = [:]
-        for i in 0..<25 {
-            series[String(format: "2026-08-%02d", i + 5)] = i % 4 == 0 ? -18 : Double(20 + i)
-        }
-        XCTAssertFalse(DayQualityView.seriesLooksStale(series))
+    // MARK: - Must NOT fire
+
+    /// An agreeing series must not trigger a re-score, or every visit to the tab re-derives history.
+    func testAnAgreeingSeriesIsLeftAlone() {
+        let stored = ["2026-09-01": 23.0, "2026-09-02": -22.0, "2026-09-03": 0.0]
+        let live = ["2026-09-01": 23, "2026-09-02": -22, "2026-09-03": 0]
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: stored, live: live))
     }
 
-    /// A genuinely excellent SHORT stretch must not be mistaken for stale data. The all-positive tell
-    /// is gated on a generous sample for exactly this reason: a false positive costs one idempotent
-    /// re-score, but flagging a real good fortnight would re-score on every visit.
-    func testAShortAllPositiveStretchIsNotFlagged() {
-        var series: [String: Double] = [:]
-        for i in 0..<12 { series[String(format: "2026-09-%02d", i + 1)] = Double(30 + i) }
-        XCTAssertFalse(DayQualityView.seriesLooksStale(series),
-                       "twelve good days is a good fortnight, not a stale scale")
+    /// Rounding must not read as disagreement: the store holds a Double, the scorer returns an Int.
+    func testRoundingIsToleratedButRealDriftIsNot() {
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(
+            stored: ["2026-09-01": 22.6], live: ["2026-09-01": 23]))
+        XCTAssertTrue(DayQualityView.storedDisagreesWithLive(
+            stored: ["2026-09-01": 20.0], live: ["2026-09-01": 23]),
+            "3 points apart is a different formula, not a rounding artifact")
     }
 
-    /// A day sitting exactly AT zero counts as crossing it — zero is a real, reachable score (the
-    /// sedentary anchor), not a sentinel.
-    func testAZeroValueCountsAsCrossing() {
-        var series: [String: Double] = [:]
-        for i in 0..<25 { series[String(format: "2026-08-%02d", i + 5)] = i == 3 ? 0 : Double(40) }
-        XCTAssertFalse(DayQualityView.seriesLooksStale(series))
+    /// A day the scorer cannot currently score (its inputs are gone) must not be treated as a
+    /// disagreement — that would force a re-score on every visit forever.
+    func testADayMissingFromTheLiveSetIsIgnored() {
+        let stored = ["2026-09-01": 55.0, "2026-09-02": 20.0]
+        let live = ["2026-09-02": 20]      // 09-01 could not be re-scored
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: stored, live: live))
     }
 
-    func testAnEmptySeriesIsNotFlagged() {
-        XCTAssertFalse(DayQualityView.seriesLooksStale([:]),
-                       "no data is not stale data — a first run must not force a re-score")
+    /// A day the scorer produces but the store has never held is a MISSING day, not a stale one —
+    /// the ordinary incremental path writes it, so this must not force a full re-derivation.
+    func testADayMissingFromTheStoreIsIgnored() {
+        let stored = ["2026-09-02": 20.0]
+        let live = ["2026-09-01": 23, "2026-09-02": 20]
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: stored, live: live))
+    }
+
+    func testEmptyInputsAreNotStale() {
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: [:], live: [:]))
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: ["2026-09-01": 20], live: [:]))
+        XCTAssertFalse(DayQualityView.storedDisagreesWithLive(stored: [:], live: ["2026-09-01": 20]))
+    }
+
+    /// The detector is bounded, so it stays cheap on a path that runs whenever the tab opens.
+    func testTheRepairCheckIsBounded() {
+        XCTAssertLessThanOrEqual(DayQualityView.repairCheckDays, 10,
+                                 "one disagreement triggers the full repair, so this only needs to "
+                                 + "sample recent days")
+        XCTAssertGreaterThan(DayQualityView.repairCheckDays, 1)
     }
 }
