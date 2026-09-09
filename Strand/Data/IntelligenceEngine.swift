@@ -3161,11 +3161,33 @@ final class IntelligenceEngine: ObservableObject {
     /// `repo.days`, because the recovery half's baselines and the load factor's trailing window both
     /// need days before the ones being scored. The `dailies` parameter it used to accept was never
     /// read, and its presence is what made the `!lightPass` gate look justified.
+    /// Re-score day quality on demand, for the Day tab when the stored series was computed under a
+    /// different formula (260909).
+    ///
+    /// Needed because the scoring pass is the ONLY writer of `day_quality`, and it runs on the
+    /// engine's own schedule. Everything below the score card reads the stored series while the card
+    /// re-scores live, so after a formula change the tab could show two formulas at once
+    /// indefinitely, with no action available to the wearer that would reconcile them. This is that
+    /// action.
+    ///
+    /// Safe to call from a view: it is the same latched, idempotent pass, so it does real work at most
+    /// once per (day, config) and returns immediately on every later call.
+    func rescoreDayQualityNow() async {
+        guard let store = await repo.storeHandle() else {
+            diagnosticSink?("day-quality: on-demand re-score skipped — no store yet", nil)
+            return
+        }
+        await scoreDayQuality(store: store, computedId: deviceId + "-noop")
+    }
+
     private func scoreDayQuality(store: WhoopStore, computedId: String) async {
         // The full history, not just this pass's rows: the recovery half's baselines and the load
         // factor's trailing window both read days before the ones being scored.
         let history = await MainActor.run { repo.days }
-        guard !history.isEmpty else { return }
+        guard !history.isEmpty else {
+            diagnosticSink?("day-quality: skipped — no history rows", nil)
+            return
+        }
 
         let todayKey = Repository.localDayKey(Date())
 
@@ -3196,8 +3218,16 @@ final class IntelligenceEngine: ObservableObject {
         // The brief needs that test because it speaks about TODAY and must not restate a stale
         // carry. This pass scores FINISHED days only (`daysToScore` excludes today), so a fresh
         // night is not a precondition: every day it grades is already complete.
+        // Every exit from this function says why (260909). The 260908 log contains NO `day-quality:`
+        // line at all across 18 passes — the pass simply never ran, and there was no way to tell
+        // whether it was gated, latched, or finding nothing to do. A silent skip on the one path that
+        // writes the number the whole tab is built on is exactly the gap the diagnostic rules exist to
+        // close: prefer a line that names the reason over inferring it from an absence.
         guard await MainActor.run(resultType: Bool.self, body: { !DayQualityPrefs.alreadyScored(day: todayKey) })
-        else { return }
+        else {
+            diagnosticSink?("day-quality: already scored for \(todayKey) under this config", nil)
+            return
+        }
 
         // Incremental: score the finished days the series does not already hold. The first pass
         // backfills everything; afterwards it is one new day per day. A CONFIG change is the one
@@ -3214,6 +3244,8 @@ final class IntelligenceEngine: ObservableObject {
         let days = DayQualityComputer.daysToScore(scoredDays: history.map(\.day), todayKey: todayKey,
                                                   alreadyScored: existing, rescoreAll: rescoreAll)
         guard !days.isEmpty else {
+            diagnosticSink?("day-quality: nothing to score — \(history.count) history day(s), "
+                            + "\(existing.count) already stored, rescoreAll=\(rescoreAll)", nil)
             // Nothing to do, but the latch must still advance or `configChanged` stays true and the
             // next pass reconsiders the whole history again.
             await MainActor.run { DayQualityPrefs.markScored(day: todayKey) }
@@ -3243,14 +3275,19 @@ final class IntelligenceEngine: ObservableObject {
             guard let s = DayQualityScore.score(input, config: config) else { return nil }
             return MetricPoint(day: day, key: DayQualityComputer.metricKey, value: Double(s.total))
         }
-        guard !points.isEmpty else { return }
+        guard !points.isEmpty else {
+            diagnosticSink?("day-quality: \(days.count) day(s) selected but none scorable "
+                            + "(inputs incomplete)", nil)
+            return
+        }
         _ = try? await store.upsertMetricSeries(points, deviceId: computedId)
         // Latch AFTER the write succeeded: a pass that died mid-way must be retried by the next
         // one, not marked done. (The upsert is idempotent, so a retry rewrites identical values.)
         await MainActor.run { DayQualityPrefs.markScored(day: todayKey) }
         let newest = points.last
         let newestLabel = newest == nil ? "-" : newest!.day + "=" + String(Int(newest!.value))
-        diagnosticSink?("day-quality: scored \(points.count) day(s), newest \(newestLabel)", nil)
+        diagnosticSink?("day-quality: scored \(points.count) day(s), newest \(newestLabel)"
+                        + " · rescoreAll=\(rescoreAll) fp=\(await MainActor.run { DayQualityPrefs.configFingerprint })", nil)
     }
 
     /// Cups drunk and the day's cup target, per day, from ONE range read of the hydration series.

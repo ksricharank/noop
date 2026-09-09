@@ -24,6 +24,7 @@ import WhoopStore
 /// real score sits — and day quality is only defined for a finished, sufficiently-recorded day.
 struct DayQualityView: View {
     @EnvironmentObject private var repo: Repository
+    @EnvironmentObject private var appModel: AppModel
 
     /// Stored series, "yyyy-MM-dd" → score. Loaded here rather than passed in so the screen stands on
     /// its own as a tab root (Trends loads its own copy for the chart it still draws).
@@ -216,6 +217,23 @@ struct DayQualityView: View {
     // MARK: - Load
 
     private func load() async {
+        // RE-SCORE FIRST when the stored series was computed under a different formula (260909).
+        //
+        // Everything below the score card — the trend chart, the week summary, the calendar strip and
+        // the streaks — reads the STORED series, while the card itself re-scores the browsed day live.
+        // After a formula change those two disagree, and the reported symptom was exactly that: a
+        // −22 on the card with the old value still in the week view.
+        //
+        // The scoring pass is the only writer, and it runs on the engine's schedule — so opening this
+        // tab could show the mismatch indefinitely with no way for the wearer to resolve it. Asking
+        // for the re-score here closes that: it is idempotent, latched to once per (day, config), and
+        // a no-op on every visit after the first, so this costs nothing in the steady state.
+        //
+        // Deliberately BEFORE the read, and awaited, so the first paint already shows one formula
+        // rather than flashing the old numbers and correcting itself.
+        if DayQualityPrefs.configChanged {
+            await appModel.intelligence.rescoreDayQualityNow()
+        }
         let series = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
         var byDay: [String: Double] = [:]
         for p in series { byDay[p.day] = p.value }
