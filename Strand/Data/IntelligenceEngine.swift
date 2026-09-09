@@ -3172,15 +3172,28 @@ final class IntelligenceEngine: ObservableObject {
     ///
     /// Safe to call from a view: it is the same latched, idempotent pass, so it does real work at most
     /// once per (day, config) and returns immediately on every later call.
-    func rescoreDayQualityNow() async {
+    func rescoreDayQualityNow(force: Bool = false) async {
         guard let store = await repo.storeHandle() else {
             diagnosticSink?("day-quality: on-demand re-score skipped — no store yet", nil)
             return
         }
-        await scoreDayQuality(store: store, computedId: deviceId + "-noop")
+        await scoreDayQuality(store: store, computedId: deviceId + "-noop", force: force)
     }
 
-    private func scoreDayQuality(store: WhoopStore, computedId: String) async {
+    /// `force` bypasses the once-per-day latch AND the incremental "already stored" skip, re-deriving
+    /// every finished day from its own rows (260909).
+    ///
+    /// It exists because the latch has now been the wrong mechanism twice. It records that a pass RAN,
+    /// not that the stored values match the current formula — so a pass that latched under one formula
+    /// leaves the series looking complete to the next one, and the trend keeps showing numbers no
+    /// current code path can produce. The reported symptom both times was a chart whose values were
+    /// arithmetically impossible under the shipped formula (a best of 77 = 50 × 1.25 + 15, from a cap
+    /// that no longer exists).
+    ///
+    /// The Day tab passes `force` when the stored series disagrees with the scale the current formula
+    /// can produce — a check on the DATA rather than on a latch, which is the only thing that cannot
+    /// silently go stale.
+    private func scoreDayQuality(store: WhoopStore, computedId: String, force: Bool = false) async {
         // The full history, not just this pass's rows: the recovery half's baselines and the load
         // factor's trailing window both read days before the ones being scored.
         let history = await MainActor.run { repo.days }
@@ -3223,8 +3236,8 @@ final class IntelligenceEngine: ObservableObject {
         // whether it was gated, latched, or finding nothing to do. A silent skip on the one path that
         // writes the number the whole tab is built on is exactly the gap the diagnostic rules exist to
         // close: prefer a line that names the reason over inferring it from an absence.
-        guard await MainActor.run(resultType: Bool.self, body: { !DayQualityPrefs.alreadyScored(day: todayKey) })
-        else {
+        if !force,
+           await MainActor.run(resultType: Bool.self, body: { DayQualityPrefs.alreadyScored(day: todayKey) }) {
             diagnosticSink?("day-quality: already scored for \(todayKey) under this config", nil)
             return
         }
@@ -3233,7 +3246,10 @@ final class IntelligenceEngine: ObservableObject {
         // backfills everything; afterwards it is one new day per day. A CONFIG change is the one
         // reason to redo history — a finished day's inputs are fixed, so only the weighting can
         // move its score.
-        let rescoreAll = await MainActor.run { DayQualityPrefs.configChanged }
+        // Split rather than `force || await …`: Swift will not allow an await to the right of a
+        // non-assignment operator.
+        let configMoved = await MainActor.run { DayQualityPrefs.configChanged }
+        let rescoreAll = force || configMoved
         // The days the series ALREADY holds, read once. One range query over the whole history,
         // which is what makes "score only what is missing" cheaper than re-deriving everything.
         let oldest = history.first?.day ?? todayKey
