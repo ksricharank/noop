@@ -58,7 +58,12 @@ struct DayQualityView: View {
             // calendar strip — all of it shared with the Sleep tab so the two cannot drift.
             ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
                               windows: Self.windows, window: $window,
-                              lowLabel: "Light", highLabel: "Excellent")
+                              // The signed range, explicitly: the section defaults to the 0…106 rest
+                              // scale, which would fold the whole negative half onto the chart's floor.
+                              valueRange: Double(DayQualityScore.publishedMinimum)
+                                  ... Double(DayQualityScore.publishedMaximum),
+                              showsBars: true,
+                              lowLabel: "Depleted", highLabel: "Excellent")
             DayQualitySettingsCard()
         }
         .task(id: repo.days.count) { await load() }
