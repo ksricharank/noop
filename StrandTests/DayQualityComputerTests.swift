@@ -535,13 +535,35 @@ final class DayQualityFieldDefectTests: XCTestCase {
         let source = try String(contentsOf: url, encoding: .utf8)
         let callLines = source.split(separator: "\n", omittingEmptySubsequences: false)
             .filter { $0.contains("await scoreDayQuality(") }
-        XCTAssertEqual(callLines.count, 1, "expected exactly one call site")
-        let line = String(try XCTUnwrap(callLines.first))
-        let indent = line.prefix { $0 == " " }.count
-        XCTAssertEqual(indent, 8,
-                       "the call must sit OUTSIDE `if !lightPass` (8 spaces). At 12 it is nested "
-                       + "inside, which is the bug: the score stops being written whenever full "
-                       + "passes are being deferred.")
+        XCTAssertFalse(callLines.isEmpty, "the scoring pass must be called from somewhere")
+        // EVERY call site must sit at the method's own indentation (8 spaces). At 12 it is nested
+        // inside `if !lightPass`, which is the bug: the score stops being written whenever full
+        // passes are being deferred — and the 260908 log contains no `day-quality:` line at all.
+        //
+        // Asserts a property of all sites rather than a COUNT: counting broke the moment the
+        // on-demand re-score added a legitimate second caller, which is the same "counting was the
+        // wrong property" mistake the CBCentralManager test made.
+        for line in callLines {
+            let indent = String(line).prefix { $0 == " " }.count
+            XCTAssertEqual(indent, 8,
+                           "call site must not be nested inside a conditional: \(line.trimmingCharacters(in: .whitespaces))")
+        }
+    }
+
+    /// The Day tab must be able to trigger a re-score itself.
+    ///
+    /// The scoring pass is the only writer of `day_quality`, and it runs on the engine's schedule.
+    /// Everything below the score card reads the stored series while the card re-scores live, so
+    /// after a formula change the tab showed two formulas at once — reported as "the changes haven't
+    /// propagated below to the trends sections" — with no action available that would reconcile them.
+    func testTheEngineExposesAnOnDemandRescore() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Strand/Data/IntelligenceEngine.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("func rescoreDayQualityNow()"),
+                      "the Day tab needs a way to reconcile a stale stored series")
     }
 
     /// The scale version must have moved past `v2`, or the stored 0–100/first-signed values are never
