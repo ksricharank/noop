@@ -511,3 +511,46 @@ final class DayQualityScaleMigrationTests: XCTestCase {
                       "today is never scored — the score is a closed book")
     }
 }
+
+/// Two defects the field cards exposed on 260908, both of which passed every test that existed.
+@MainActor
+final class DayQualityFieldDefectTests: XCTestCase {
+
+    /// Day-quality scoring must NOT be gated behind a full pass.
+    ///
+    /// It was, and the stated reason ("a 2-day window cannot compute the scored-night fields") was
+    /// false — the function takes no rows from the calling pass, reading the full history itself. The
+    /// consequence was real: full passes are the ones deferred and abandoned under the battery policy
+    /// (`forced 15/49` with repeated `gave up` in the 260908 log), so the score and any re-derivation
+    /// of history after a formula change never ran. Cards showed values from an older formula beside a
+    /// live breakdown that disagreed with them.
+    ///
+    /// A source assertion, since the call site is inside a long async function with no seam to inject:
+    /// the call must sit at the method's own indentation, not nested inside the `if !lightPass` block.
+    func testDayQualityScoringIsNotGatedBehindAFullPass() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // StrandTests
+            .deletingLastPathComponent()      // repo root
+            .appendingPathComponent("Strand/Data/IntelligenceEngine.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let callLines = source.split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { $0.contains("await scoreDayQuality(") }
+        XCTAssertEqual(callLines.count, 1, "expected exactly one call site")
+        let line = String(try XCTUnwrap(callLines.first))
+        let indent = line.prefix { $0 == " " }.count
+        XCTAssertEqual(indent, 8,
+                       "the call must sit OUTSIDE `if !lightPass` (8 spaces). At 12 it is nested "
+                       + "inside, which is the bug: the score stops being written whenever full "
+                       + "passes are being deferred.")
+    }
+
+    /// The scale version must have moved past `v2`, or the stored 0–100/first-signed values are never
+    /// re-derived and the series mixes formulas under one metric key.
+    func testTheScaleVersionMovedPastTheRetiredScales() {
+        XCTAssertNotEqual(DayQualityPrefs.scaleVersion, "v1")
+        XCTAssertNotEqual(DayQualityPrefs.scaleVersion, "v2",
+                          "the absolute-anchor scale needs its own version, or history keeps values "
+                          + "computed by the formula it replaced")
+        XCTAssertTrue(DayQualityPrefs.configFingerprint.contains(DayQualityPrefs.scaleVersion))
+    }
+}

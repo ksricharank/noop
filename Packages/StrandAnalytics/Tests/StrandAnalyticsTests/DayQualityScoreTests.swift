@@ -22,18 +22,20 @@ final class DayQualityScoreTests: XCTestCase {
 
     // MARK: - The arithmetic
 
-    /// Hitting every target with the autonomic signals AT baseline.
+    /// Hitting every target with the autonomic signals AT baseline is exactly `targetPointsTotal`.
     ///
-    /// On the signed scale (260908) this is a clearly good day but NOT the ceiling: every ratio
-    /// component contributes zero credit (target met IS the neutral point) and the two autonomic
-    /// signals sit at their own neutral 0.75, so what lifts the day to +58 is the origin shift — the
-    /// distance between "met everything" and the sedentary day the scale calls zero. The top is
-    /// reserved for BEATING targets, which is the whole point of moving the origin.
+    /// Each component contributes precisely its own weight here — the definition of the ramp's top end
+    /// — and the two baseline signals contribute zero, since baseline is their neutral. So the total
+    /// is the sum of the five target-bearing weights and nothing else.
     func testAllTargetsMetWithSignalsAtBaseline() throws {
         let s = try XCTUnwrap(DayQualityScore.score(perfectDay()))
-        XCTAssertEqual(s.executionPoints, 34.69, accuracy: 0.01)
-        XCTAssertEqual(s.recoveryPoints, 23.13, accuracy: 0.01)
-        XCTAssertEqual(s.total, 58)
+        XCTAssertEqual(s.executionPoints, 38.0, accuracy: 0.01)
+        XCTAssertEqual(s.recoveryPoints, 12.0, accuracy: 0.01)
+        XCTAssertEqual(s.total, Int(DayQualityScore.targetPointsTotal))
+        for c in s.components where c.label != "HRV" && c.label != "Resting HR" {
+            XCTAssertEqual(c.points, c.weight, accuracy: 0.01,
+                           "\(c.label) at target must contribute exactly its weight")
+        }
         XCTAssertEqual(s.loadFactor, 1.0, accuracy: 0.001,
                        "a day whose target matches the recent average is neither hard nor easy")
         XCTAssertTrue(s.missing.isEmpty)
@@ -48,9 +50,9 @@ final class DayQualityScoreTests: XCTestCase {
         d.restingHr = 47           // ~-10% → full marks
         d.sleepMin = 485
         let s = try XCTUnwrap(DayQualityScore.score(d))
-        // A strong body lifts the day well clear of mere compliance (+58) without reaching the ceiling:
-        // the execution half still only MET its targets, and the top of the scale needs them beaten.
-        XCTAssertEqual(s.total, 71)
+        // A strong body lifts the day well clear of mere compliance (+50) without reaching the ceiling:
+        // execution still only MET its targets, and the top of the scale needs them beaten.
+        XCTAssertEqual(s.total, 65)
         XCTAssertGreaterThan(s.total, try XCTUnwrap(DayQualityScore.score(perfectDay())).total,
                              "a body better than its own baseline must score above a compliant day")
     }
@@ -67,8 +69,8 @@ final class DayQualityScoreTests: XCTestCase {
         // HRV and resting HR left AT baseline: this is a big day in a normal body, which is exactly
         // the case that used to top out at 94.
         let s = try XCTUnwrap(DayQualityScore.score(d))
-        XCTAssertEqual(s.total, 87,
-                       "exceeding every target must climb near the ceiling even with baseline signals")
+        XCTAssertEqual(s.total, 78,
+                       "exceeding every target must climb well above +50 even with baseline signals")
         XCTAssertGreaterThan(s.total, try XCTUnwrap(DayQualityScore.score(perfectDay())).total + 20,
                              "and must be clearly better than merely meeting them")
     }
@@ -87,10 +89,10 @@ final class DayQualityScoreTests: XCTestCase {
         honest.effort = 0
         let baseline = try XCTUnwrap(DayQualityScore.score(honest))
 
-        // The extra credit is real but small, and measured in the same units as the miss: beating the
-        // step target by the full 25 % allowance is worth a QUARTER of what skipping the workout costs.
-        XCTAssertEqual(s.executionPoints - baseline.executionPoints, 5.84, accuracy: 0.01)
-        XCTAssertLessThan(s.total, 58,
+        // Overshoot earns real credit but is bounded by `overshootCap`, so a runaway metric still
+        // cannot reach the score of a day that actually did the work it skipped.
+        XCTAssertEqual(s.executionPoints - baseline.executionPoints, 7.70, accuracy: 0.01)
+        XCTAssertLessThan(s.total, Int(DayQualityScore.targetPointsTotal),
                           "five times the step target must not reach the score of a day that "
                           + "actually did its workout")
         // Beyond the cap, more steps buy literally nothing.
@@ -107,7 +109,7 @@ final class DayQualityScoreTests: XCTestCase {
         var hard = DayQualityScore.Config.default
         hard.overshootCap = 1.0
         let capped = try XCTUnwrap(DayQualityScore.score(d, config: hard))
-        XCTAssertEqual(capped.executionPoints, 34.69, accuracy: 0.01,
+        XCTAssertEqual(capped.executionPoints, 38.0, accuracy: 0.01,
                        "with the cap at 1.0, overshooting earns nothing — the same execution half as a "
                        + "day that merely met every target")
         // A cap below 1.0 would mean hitting the target scored less than full marks for it.
@@ -129,9 +131,9 @@ final class DayQualityScoreTests: XCTestCase {
         d.restingHr = nil; d.restingHrBaseline = nil
         let s = try XCTUnwrap(DayQualityScore.score(d))
 
-        XCTAssertEqual(s.total, 58,
+        XCTAssertEqual(s.total, Int(DayQualityScore.targetPointsTotal),
                        "a fully-executed day with no scored night is scored out of what WAS measured — "
-                       + "the same 58 a fully-recorded compliant day earns, not a lower number that "
+                       + "the same +50 a fully-recorded compliant day earns, not a lower number that "
                        + "would report a data gap as a bad day")
         XCTAssertEqual(s.recoveryPoints, 0, accuracy: 0.01)
         XCTAssertEqual(Set(s.missing), Set(["Sleep", "HRV", "Resting HR"]))
@@ -146,10 +148,9 @@ final class DayQualityScoreTests: XCTestCase {
         d.waterCups = nil; d.waterTargetCups = nil
         let s = try XCTUnwrap(DayQualityScore.score(d))
         XCTAssertEqual(s.executionPoints, 0, accuracy: 0.01)
-        // The recovery half now carries the whole score — including the whole origin shift, which is
-        // why it lands on the same 58 the mirror case does.
-        XCTAssertEqual(s.recoveryPoints, 57.82, accuracy: 0.01)
-        XCTAssertEqual(s.total, 58)
+        // Sleep, the only remaining target-bearing component, absorbs the whole target total.
+        XCTAssertEqual(s.recoveryPoints, 50.0, accuracy: 0.01)
+        XCTAssertEqual(s.total, Int(DayQualityScore.targetPointsTotal))
     }
 
     /// Rule 3: too little data is NOT a low score, it is no score. A gap in the trend is honest; a
@@ -241,7 +242,8 @@ final class DayQualityScoreTests: XCTestCase {
         d.recentAvgEffortTarget = nil
         let s = try XCTUnwrap(DayQualityScore.score(d))
         XCTAssertEqual(s.loadFactor, 1.0, accuracy: 0.001)
-        XCTAssertEqual(s.total, 58, "same as the baseline day — no history means no adjustment")
+        XCTAssertEqual(s.total, Int(DayQualityScore.targetPointsTotal),
+                       "same as the baseline day — no history means no adjustment")
     }
 
     // MARK: - Configuration
@@ -258,11 +260,11 @@ final class DayQualityScoreTests: XCTestCase {
 
         let e = try XCTUnwrap(DayQualityScore.score(d, config: execHeavy))
         let r = try XCTUnwrap(DayQualityScore.score(d, config: recHeavy))
-        XCTAssertEqual(e.total, 58, "all-execution: targets met is the whole story, and the bad "
-                       + "autonomic day cannot touch it")
-        XCTAssertLessThan(r.total, e.total,
-                          "all-recovery: the same day reads clearly worse, since the signals now carry "
-                          + "the entire score")
+        // 260908: `executionShare` is RETIRED — the scale has no split for it to divide, so both
+        // configurations must publish the same number. This test now pins that the retired knob is
+        // genuinely inert rather than quietly half-working, which is the failure mode that matters.
+        XCTAssertEqual(e.total, r.total,
+                       "executionShare no longer affects the score; a stored preference must be inert")
     }
 
     /// Clamping must survive DIRECT ASSIGNMENT, not just the initializer.
@@ -281,7 +283,7 @@ final class DayQualityScoreTests: XCTestCase {
         c.overshootCap = 0.1
         XCTAssertEqual(c.overshootCap, 1.0, "no assignment may make meeting a target worth less than full marks")
         c.overshootCap = 50
-        XCTAssertEqual(c.overshootCap, 2.0)
+        XCTAssertEqual(c.overshootCap, 3.0, "the ceiling is now the overshoot MULTIPLE's upper bound")
     }
 
     /// Out-of-range configuration is clamped at the boundary rather than trusted.
@@ -303,9 +305,8 @@ final class DayQualityScoreTests: XCTestCase {
         let s = try XCTUnwrap(DayQualityScore.score(perfectDay(), config: c))
         XCTAssertFalse(s.missing.contains("Water"))
         XCTAssertFalse(s.components.contains { $0.label == "Water" })
-        XCTAssertEqual(s.executionPoints, 34.69, accuracy: 0.01,
-                       "the remaining three components absorb the full execution share — the same half "
-                       + "a four-component compliant day produces")
+        XCTAssertEqual(s.executionPoints, 36.67, accuracy: 0.01,
+                       "the remaining three components absorb water's share of the target total")
     }
 
     // MARK: - Presentation

@@ -80,7 +80,9 @@ enum DayQualityPrefs {
     /// The scoring SCALE's version, bumped whenever the published number means something different
     /// for identical inputs.
     ///
-    /// 260908: `v2` is the signed −100…+100 scale. This rides in the fingerprint so the existing
+    /// 260908: `v2` was the first signed scale (derived origin, spread across components); `v3` is the
+    /// absolute-anchor scale that replaced it after the field cards showed the offset dominating the
+    /// achievement. Both required re-deriving every stored day. This rides in the fingerprint so the existing
     /// "the formula changed, so re-score history" path re-derives every stored day on first launch —
     /// exactly the mechanism a moved slider already uses, and the reason no bespoke migration is
     /// needed. Without it the series would mix scales: 47 days of 0–100 values under the same metric
@@ -90,7 +92,7 @@ enum DayQualityPrefs {
     /// Bump this — never reuse a version — when a scale change lands. Re-deriving is safe because a
     /// finished day's INPUTS are immutable: the recomputation reads the same stored rows and simply
     /// applies the current formula, so it is idempotent and a rollback re-derives back.
-    static let scaleVersion = "v2"
+    static let scaleVersion = "v3"
 
     /// A short, stable fingerprint of the settings that affect the number, plus the scale they are
     /// expressed on.

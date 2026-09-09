@@ -105,8 +105,18 @@ struct DayQualityCounterfactualCard: View {
     let targets: [String: Double]
     let config: DayQualityScore.Config
 
+    /// The normal-day reference each component's ramp starts from, keyed by the SAME labels the scorer
+    /// emits. Derived from the config rather than restated here, so a tuned anchor moves the
+    /// suggestions with it.
+    private var normals: [String: Double] {
+        ["Steps": config.normalDay.steps, "Calories": config.normalDay.kcal,
+         "Effort": config.normalDay.effort, "Water": config.normalDay.waterCups,
+         "Sleep": config.normalDay.sleepMin]
+    }
+
     private var suggestions: [DayQualityInsights.Counterfactual] {
-        DayQualityInsights.counterfactuals(for: score, actuals: actuals, targets: targets, config: config)
+        DayQualityInsights.counterfactuals(for: score, actuals: actuals, targets: targets,
+                                           normals: normals, config: config)
     }
 
     var body: some View {
