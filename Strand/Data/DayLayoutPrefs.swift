@@ -20,14 +20,17 @@ import SwiftUI
 // The score card and the date navigator are NOT reorderable — they are the fixed frame of the tab, exactly
 // as the Sleep-performance hero and the Today hero are pinned above their arrangeable sections. A tab
 // whose subject can be hidden has no subject.
+//
+// The coach NARRATIVE is deliberately absent from this enum. It lives inside `DayQualityCard`'s own
+// collapsible section, so it cannot be moved or hidden independently of the score card that hosts it —
+// and a row in the Arrange sheet that does nothing when you hide it is a control that lies. Splitting it
+// into a card of its own would mean two coach calls and two caches for one piece of text.
 
 /// One reorderable Day-quality card. The rawValue is the stable persisted identifier — keep it
 /// byte-identical to any future Android `DaySection` enum so a backup/restore reads the same layout.
 enum DaySection: String, CaseIterable, Identifiable {
     /// The signed score, its two halves, and the per-component breakdown.
     case breakdown
-    /// The coach's written read on the day.
-    case narrative
     /// Which components moved the score, ranked over the window.
     case attribution
     /// "You were N steps from +M points" — the marginal value of each component, today.
@@ -49,7 +52,6 @@ enum DaySection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .breakdown:      return String(localized: "Score breakdown")
-        case .narrative:      return String(localized: "Coach narrative")
         case .attribution:    return String(localized: "What moved the score")
         case .counterfactual: return String(localized: "Closest gains")
         case .streaks:        return String(localized: "Consistency")
@@ -66,7 +68,7 @@ enum DaySection: String, CaseIterable, Identifiable {
     /// moving it, what would move it next, then the longer horizons, and the knobs last (a setting is
     /// consulted rarely and belongs below the thing it tunes).
     static let defaultOrder: [DaySection] = [
-        .breakdown, .narrative, .attribution, .counterfactual, .streaks,
+        .breakdown, .attribution, .counterfactual, .streaks,
         .weekSummary, .trend, .calendar, .settings,
     ]
 }
