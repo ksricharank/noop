@@ -94,6 +94,14 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.hrSeries = hrSeries
         self.stressSeries = stressSeries
         self.stressDay = stressDay
+        self.effortTargetDisplay = effortTargetDisplay
+        self.kcal = kcal
+        self.kcalTarget = kcalTarget
+        self.sleepNeedMin = sleepNeedMin
+        self.steps = steps
+        self.stepsTarget = stepsTarget
+        self.waterHalfCups = waterHalfCups
+        self.waterTargetCups = waterTargetCups
     }
 
     /// The curve to DRAW: what was published, unless it belongs to a day that is over.
@@ -120,14 +128,6 @@ public struct WidgetSnapshot: Codable, Equatable {
         let epoch = calendar.startOfDay(for: Date(timeIntervalSince1970: 0))
         return calendar.dateComponents([.day], from: epoch,
                                        to: calendar.startOfDay(for: date)).day ?? 0
-        self.effortTargetDisplay = effortTargetDisplay
-        self.kcal = kcal
-        self.kcalTarget = kcalTarget
-        self.sleepNeedMin = sleepNeedMin
-        self.steps = steps
-        self.stepsTarget = stepsTarget
-        self.waterHalfCups = waterHalfCups
-        self.waterTargetCups = waterTargetCups
     }
 
     // MARK: - Targets-trio display strings
