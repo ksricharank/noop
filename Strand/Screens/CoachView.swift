@@ -230,6 +230,32 @@ struct CoachView: View {
         .onChangeCompat(of: coach.dataConsent) { _ in
             Task { await coach.startBriefIfNeeded() }
         }
+        .task(id: coach.dataConsent) { await coach.startBriefIfNeeded() }
+        // The gear's destination: the same provider-configuration card, presented so it can always be
+        // left. Dismissing requires nothing — no key, no save — which is the property the old
+        // disconnect-into-the-card path lacked and the whole reason it was a dead end.
+        .sheet(isPresented: $showProviderConfig) {
+            NavigationStack {
+                ScrollView {
+                    setupCard.padding(16)
+                }
+                .background(StrandPalette.surfaceBase.ignoresSafeArea())
+                .navigationTitle("Providers")
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { showProviderConfig = false }
+                    }
+                }
+            }
+        }
+        // Saving a key from the sheet has done its job — close it and return to the chat rather than
+        // leaving the user on a configuration screen wondering whether it took.
+        .onChangeCompat(of: coach.hasKey) { hasKey in
+            if hasKey && showProviderConfig { showProviderConfig = false }
+        }
     }
 
     /// K5: the scheduled morning-brief notification settings — enable toggle, time-of-day picker, and an
@@ -281,23 +307,6 @@ struct CoachView: View {
                     .disabled(briefGenerating)
                     if let briefStatus {
                         Text(briefStatus).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-        .task(id: coach.dataConsent) { await coach.startBriefIfNeeded() }
-        // The gear's destination: the same provider-configuration card, presented so it can always be
-        // left. Dismissing requires nothing — no key, no save — which is the property the old
-        // disconnect-into-the-card path lacked and the whole reason it was a dead end.
-        .sheet(isPresented: $showProviderConfig) {
-            NavigationStack {
-                ScrollView {
-                    setupCard.padding(16)
-                }
-                .background(StrandPalette.surfaceBase.ignoresSafeArea())
-                .navigationTitle("Providers")
-                #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { showProviderConfig = false }
                     }
                 }
             }
@@ -332,10 +341,6 @@ struct CoachView: View {
             } else {
                 briefStatus = "Couldn't generate a brief right now — check your key and data access."
             }
-        // Saving a key from the sheet has done its job — close it and return to the chat rather than
-        // leaving the user on a configuration screen wondering whether it took.
-        .onChangeCompat(of: coach.hasKey) { hasKey in
-            if hasKey && showProviderConfig { showProviderConfig = false }
         }
     }
 
@@ -1112,6 +1117,8 @@ struct CoachView: View {
         guard !trimmed.isEmpty else { return }
         coach.setKey(trimmed)
         keyFix = ""
+    }
+
     /// What the last generation did. Informational, not an error — it reports a successful fallback as
     /// readily as a failed one, because an answer that quietly came from a different model than the one
     /// named in the picker is its own kind of confusion. Tertiary styling so it reads as a footnote

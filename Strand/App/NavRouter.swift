@@ -90,12 +90,6 @@ final class NavRouter: ObservableObject {
     /// consumes it on appear and clears it back to nil. nil = open at today (the default).
     @Published var pendingJournalDayOffset: Int?
 
-    /// Open the AI Coach chat. Raised by the Today synthesis card's "Ask the Coach" link, so the
-    /// follow-up questions that card provokes are one tap away instead of buried under More → Insights.
-    /// A LINK rather than an embedded chat on purpose: `AICoachEngine` is one app-lifetime instance with
-    /// a single `messages` transcript, so a second inline surface would share that transcript or force
-    /// the engine to become conversation-keyed.
-    func openCoach() { requestedDestination = .coach }
 
     /// Open the journal (hosted in the classic Insights screen). The #627 Today journal widget taps here;
     /// iOS presents InsightsView (the journal quick-action sheet), macOS selects the Insights sidebar row.

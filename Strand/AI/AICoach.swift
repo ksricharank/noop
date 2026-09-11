@@ -562,6 +562,8 @@ final class AICoachEngine: ObservableObject {
         let historyTokens = windowedMessages().reduce(0) { $0 + $1.text.count / 4 }
         let draftTokens = draft.count / 4
         return systemPromptTokens + contextTokens + historyTokens + draftTokens
+    }
+
     /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
     /// instructions own the voice and priorities, and this only names the surface and its shape.
     /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
@@ -1483,10 +1485,6 @@ final class AICoachEngine: ObservableObject {
             onDelta: onDelta
         )
     }
-    /// The model the last timeout retry fell back to, or nil if no retry has happened. Set even when
-    /// the retry itself fails, so the surfaced error can say a fallback was already tried rather than
-    /// implying the user's first choice was the only attempt.
-    private(set) var lastTimeoutFallbackModel: String?
     /// The model the last retry fell back to, or nil if no retry has happened. Set even when the retry
     /// itself fails, so the surfaced error can say a fallback was already tried rather than implying
     /// the user's first choice was the only attempt.
