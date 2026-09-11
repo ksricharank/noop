@@ -46,7 +46,9 @@ git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin
 #
 # To track upstream's main again (a future uplift), pass UPSTREAM_REF=upstream/main explicitly, or
 # move the pin. Either way it is a decision someone made, not an accident of fetch timing.
-UPSTREAM_PINNED_REF="v11.1.0"
+# MOVED 260911, v11.1.0 -> v11.6.0 (the v17 uplift). Upstream shipped 11.5.0 and 11.6.0: 271
+# commits, 715 files. A released point is still a tested one, so this is a tag, not main.
+UPSTREAM_PINNED_REF="v11.6.0"
 UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_PINNED_REF}"
 if ! UPSTREAM_SHA="$(git rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}")"; then
   echo "FATAL: UPSTREAM_REF '$UPSTREAM_REF' does not resolve to a commit." >&2
@@ -59,6 +61,19 @@ UPSTREAM="$UPSTREAM_REF"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
+  # ── v17: uplifted to upstream v11.6.0 (260911) ─────────────────────────────────────────────
+  # PURE UPLIFT. The FEATURE SET is unchanged from 16.24 — same seven branches, rebased onto the
+  # v11.6.0 tag. No new functionality; new features resume at 17.1.
+  #
+  # 271 upstream commits / 715 files, and upstream built in our territory this time: a coach with
+  # streaming + persisted history + voice (#1862), HR and stress widgets (#1957/#2044), sleep-aware
+  # physiological day cycles (#1572), per-stream read caps, and the WHOOP 5 R-R unit fix (#2046).
+  # Nothing of ours turned out to be redundant — every conflict was COMPLEMENTARY, and the
+  # resolutions keep both sides. Two checks worth repeating on the next uplift:
+  #   - our per-provider API-key slots are STILL needed: upstream v11.6.0 keeps one shared
+  #     `account = "api-key"` with an owner marker; its #2058 only repairs a REJECTED key.
+  #   - our bond-loop re-park is STILL needed: `bondLoopParkCycles` is absent at v11.6.0.
+  #
   # ── v16: uplifted to upstream v11.1.0 (260903) ─────────────────────────────────────────────
   # The FEATURE SET is unchanged — same five features, rebased onto the v11.1.0 tag rather than
   # the old 10.6.x base. Version scheme is <last upstream tag>.<fork counter>, so builds are now
