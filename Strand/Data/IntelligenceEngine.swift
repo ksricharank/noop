@@ -2159,7 +2159,7 @@ final class IntelligenceEngine: ObservableObject {
             // A light pass does not re-judge the night at all — the merge below restores every
             // scored-night field from the stored row, recovery included. Computing it here would
             // be wasted work against a baseline the light window cannot support.
-            let recovery = lightPass ? nil : recomputeRecovery(daily, baselines2)
+            let recovery = lightPass ? nil : Self.recomputeRecovery(daily, baselines2)
             let skinDev = daily.skinTempDevC
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's

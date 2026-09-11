@@ -14,6 +14,8 @@ import StrandDesign
 /// `sending`, `errorText`, `setKey(_:)`, `clearKey()`, and `send(_:)`.
 struct CoachView: View {
     @EnvironmentObject var coach: AICoachEngine
+    /// Needed by "Save to Journal" on an assistant reply (upstream K8).
+    @EnvironmentObject var repo: Repository
 
     /// Draft text in the composer (the question being typed).
     @State private var draft: String = ""
@@ -48,12 +50,6 @@ struct CoachView: View {
 
     /// Sentinel tag for the "Custom…" entry in the model Picker.
 
-    private let suggestions = [
-        String(localized: "How's my charge trending?"),
-        String(localized: "What should today's training look like?"),
-        String(localized: "Analyse my sleep"),
-        String(localized: "Why am I run down?"),
-    ]
 
     var body: some View {
         ScreenScaffold(title: "Coach",
@@ -478,7 +474,6 @@ struct CoachView: View {
 
     /// Whether the mic button is tappable: not while sending, and only if voice is either
     /// already usable or permission hasn't been asked yet (first tap triggers the prompt).
-    private var canUseVoice: Bool { voiceInput.canUseVoice }
     private var micButtonEnabled: Bool {
         !coach.sending && (canUseVoice || voiceInput.authorization == .notDetermined)
     }
@@ -515,6 +510,7 @@ struct CoachView: View {
     // `#if os(iOS)` guards — the shared file keeps compiling for both targets.
     #if os(iOS)
     @StateObject private var voiceInput = CoachVoiceInput()
+    #endif
     #endif
 
     /// Sentinel tag for the "Custom…" entry in the model Picker.
