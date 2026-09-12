@@ -499,7 +499,13 @@ struct RootTabView: View {
                 moreSection("Insights") {
                     MoreRow("What Moves You", "wand.and.sparkles", .insightsHub)
                     MoreRow("Intelligence", "brain.head.profile", .intelligence)
-                    // K3: Coach promoted to a top-level tab — no longer listed under More.
+                    // Upstream's K3 promoted Coach to a top-level tab and deleted this row. The fork
+                    // keeps its own five-tab order (Today/Day/Sleep/Trends/More), which has no Coach
+                    // tab — so taking upstream's tab layout OUT without putting this row back left
+                    // Coach with no entry point in the shell at all: reachable only from Today's
+                    // "Ask the Coach" button, and not at all once the synthesis card was hidden.
+                    // Restored here, in the section that is open by default (#v17 uplift).
+                    MoreRow("Coach", "sparkles", .coach)
                     MoreRow("Insights", "lightbulb.fill", .insights)
                     MoreRow("Explore", "square.grid.2x2.fill", .explore)
                     MoreRow("Compare", "rectangle.split.2x1.fill", .compare)
