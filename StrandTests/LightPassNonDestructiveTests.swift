@@ -160,6 +160,62 @@ final class LightPassNonDestructiveTests: XCTestCase {
         XCTAssertEqual(merged.efficiency, stored.efficiency)
     }
 
+    /// EVERY scored-night field follows the stored row — including ones added after this helper was
+    /// written.
+    ///
+    /// `lightPassMerged` rebuilds a `DailyMetric` by respelling its field list, because a Swift struct
+    /// has no `copy()`. A field added upstream and not added here is written back as nil, and the
+    /// dailyMetric upsert takes `excluded.<field>` unconditionally — so the light pass DESTROYS it on
+    /// the next sync. Upstream hit exactly this in #1572 and lost `skinTempC`/`sleepHrOnly`; the v17
+    /// uplift then hit it again, because the per-field assertions below cannot fail for a field nobody
+    /// remembered to assert.
+    ///
+    /// This test fails on the NEXT such field instead: it compares against a stored row whose every
+    /// optional is populated, and asserts that nothing scored came back nil.
+    func testEveryStoredScoredNightFieldSurvivesTheMerge() {
+        let stored = DailyMetric(
+            day: "2026-09-03", totalSleepMin: 500, efficiency: 91, deepMin: 90, remMin: 110,
+            lightMin: 300, disturbances: 4, restingHr: 62, avgHrv: 26, recovery: 22,
+            strain: 8, exerciseCount: 1, spo2Pct: 97, skinTempDevC: 0.3, respRateBpm: 14.2,
+            steps: 1200, activeKcalEst: 700, spo2Red: 1234, spo2Ir: 5678, avgSdnn: 71,
+            skinTempC: 33.4, sleepHrOnly: true)
+        // A light pass: right numerators, and every scored-night field nil (what it cannot judge).
+        let fresh = DailyMetric(
+            day: "2026-09-03", totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+            lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+            strain: 15, exerciseCount: 2, spo2Pct: nil, skinTempDevC: nil, respRateBpm: nil,
+            steps: 5342, activeKcalEst: 1306, spo2Red: nil, spo2Ir: nil, avgSdnn: nil,
+            skinTempC: nil, sleepHrOnly: nil)
+
+        let m = fresh.lightPassMerged(over: stored)
+
+        // Numerators: this pass's.
+        XCTAssertEqual(m.steps, 5342)
+        XCTAssertEqual(m.activeKcalEst, 1306)
+        XCTAssertEqual(m.strain, 15)
+        XCTAssertEqual(m.exerciseCount, 2)
+
+        // Every scored-night field: the stored row's, and NONE of them nil. Listed as (name, isNil)
+        // so a failure names the field that was dropped rather than just a line number.
+        let scored: [(String, Bool)] = [
+            ("totalSleepMin", m.totalSleepMin == nil), ("efficiency", m.efficiency == nil),
+            ("deepMin", m.deepMin == nil), ("remMin", m.remMin == nil),
+            ("lightMin", m.lightMin == nil), ("disturbances", m.disturbances == nil),
+            ("restingHr", m.restingHr == nil), ("avgHrv", m.avgHrv == nil),
+            ("recovery", m.recovery == nil), ("spo2Pct", m.spo2Pct == nil),
+            ("skinTempDevC", m.skinTempDevC == nil), ("respRateBpm", m.respRateBpm == nil),
+            ("spo2Red", m.spo2Red == nil), ("spo2Ir", m.spo2Ir == nil),
+            ("avgSdnn", m.avgSdnn == nil), ("skinTempC", m.skinTempC == nil),
+            ("sleepHrOnly", m.sleepHrOnly == nil),
+        ]
+        let dropped = scored.filter(\.1).map(\.0)
+        XCTAssertTrue(dropped.isEmpty,
+                      "lightPassMerged dropped \(dropped.joined(separator: ", ")) — a light pass "
+                      + "would write nil over the stored night on the next sync")
+        XCTAssertEqual(m.recovery, 22, "Charge must survive a light pass")
+        XCTAssertEqual(m.sleepHrOnly, true, "#1572's field must follow the stored night")
+    }
+
     /// With no stored row (a genuinely new day) the fresh values stand — preserving nil would
     /// leave the day blank, which is worse than an early estimate the next full pass corrects.
     func testLightPassKeepsFreshValuesWhenNothingIsStoredYet() {

@@ -3760,7 +3760,13 @@ extension DailyMetric {
             respRateBpm: stored.respRateBpm,
             steps: steps, activeKcalEst: activeKcalEst,
             spo2Red: stored.spo2Red, spo2Ir: stored.spo2Ir, avgSdnn: stored.avgSdnn,
-            skinTempC: stored.skinTempC)
+            skinTempC: stored.skinTempC,
+            // #1572 added this field upstream. It is part of the SCORED NIGHT, so it follows the
+            // stored row like every other night field — and it must be respelled here because a
+            // Swift struct has no `copy()`: a field omitted from this list is silently written back
+            // as nil, and the dailyMetric upsert takes `excluded.<field>` unconditionally. Upstream
+            // hit exactly this and lost `skinTempC`/`sleepHrOnly` in their own rebuild.
+            sleepHrOnly: stored.sleepHrOnly)
     }
 
     /// Rebuild with substituted sleep-derived fields (a user-corrected wake window), leaving every
