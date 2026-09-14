@@ -70,4 +70,26 @@ final class PhoneTabOrderTests: XCTestCase {
     func testNoTabReusesTheCoachIcon() {
         XCTAssertFalse(PhoneTab.allCases.map(\.systemImage).contains("sparkles"))
     }
+
+    /// The tab shell must not carry a Coach tab: routing code that switches to a tab index for Coach is
+    /// reading upstream's five-tab layout, where tag 3 was More. Here tag 3 is Trends, so such a switch
+    /// silently opens the WRONG tab — which is exactly what "Ask the Coach" did (260914). Coach is a
+    /// More ROW in this fork, reached by pushing `MoreDestination.coach` onto the More tab's stack.
+    func testNoTabIsTheCoach() {
+        XCTAssertFalse(PhoneTab.allCases.map(\.title).contains("Coach"))
+        // The trap in one assertion: anything routing Coach to a bare 3 lands on Trends.
+        XCTAssertEqual(PhoneTab(rawValue: 3), .trends,
+                       "tag 3 is Trends in this fork — a Coach route to index 3 opens Trends")
+    }
+
+    /// The retrospective tab is named for what it shows — a FINISHED day — not "Day", which read as a
+    /// near-duplicate of "Today" next to it in the bar.
+    func testTheRetrospectiveTabIsNotNamedLikeToday() {
+        XCTAssertEqual(PhoneTab.day.title, "Recap")
+        XCTAssertNotEqual(PhoneTab.day.title, PhoneTab.today.title)
+        XCTAssertFalse(PhoneTab.day.title.localizedCaseInsensitiveContains("today"),
+                       "the finished-day tab must not read like the live one")
+        XCTAssertNotEqual(PhoneTab.day.systemImage, "medal",
+                          "a medal implies an award, not a retrospective")
+    }
 }
