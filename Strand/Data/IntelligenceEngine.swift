@@ -755,10 +755,7 @@ final class IntelligenceEngine: ObservableObject {
 
         // #1005: time the whole pass — the trigger line above records WHY; this records how many nights
         // and how long (the CPU cost per run), so a re-score STORM is visible in the strap log.
-        // Uptime, not `Date()`: the elapsed figure below is banked as what a pass COSTS, and a wall clock
-        // also counts every minute the process spent suspended mid-pass. One overnight pass suspended by a
-        // sleeping phone banked 19 003 s, which then deferred every background re-score after it.
-        let reScoreStart = DispatchTime.now().uptimeNanoseconds
+        let reScoreStart = DispatchTime.now()   // monotonic: see `activeSeconds(since:)`
         computing = true
         // #1538: the pass is now past every gate and will do real work. Mark it started durably, so that a
         // process killed mid-pass leaves evidence a LATER process can read — the killed process itself gets
@@ -1102,9 +1099,9 @@ final class IntelligenceEngine: ObservableObject {
             // behind bulk writes; read ≈ sql means SQLite itself (WAL size, I/O) is the slow half.
             var dayReadSeconds = 0.0
             func timedRead<T>(_ op: () async -> T) async -> T {
-                let t0 = Date()
+                let t0 = DispatchTime.now()
                 let r = await op()
-                dayReadSeconds += Date().timeIntervalSince(t0)
+                dayReadSeconds += Self.activeSeconds(since: t0)
                 return r
             }
             await store.perfReset()
@@ -1228,12 +1225,12 @@ final class IntelligenceEngine: ObservableObject {
                 // ~2.25 windows' worth of rows or inside `analyzeDay` is unmeasured — and that split is
                 // what decides whether narrowing the read windows is worth building at all. Measured, not
                 // guessed, for the same reason the day-cache duration is.
-                let tPrep0 = Date()
+                let tPrep0 = DispatchTime.now()
                 let hr = await timedRead { await hrWindow.rows(owner: owner, from: from, to: to) }
                 guard hr.count >= IntelligenceEngine.minHrSamples else {
                     // This day still paid for its read; count it, or the tally under-reports exactly the
                     // sparse-history installs where reads dominate most.
-                    dayPrepSeconds += Date().timeIntervalSince(tPrep0)
+                    dayPrepSeconds += Self.activeSeconds(since: tPrep0)
                     skippedSleepDays.append((day: day, hrSamples: hr.count))
                     continue
                 }
@@ -1447,8 +1444,8 @@ final class IntelligenceEngine: ObservableObject {
                     providedSleep = []
                 }
 
-                let tScore0 = Date()
-                dayPrepSeconds += tScore0.timeIntervalSince(tPrep0)
+                let tScore0 = DispatchTime.now()
+                dayPrepSeconds += Self.activeSeconds(since: tPrep0)
                 // #1770 follow-up: the Effort ring's funnel. Collected here rather than sent straight
                 // to `diagnosticSink`, because that sink is main-actor isolated and this loop is not —
                 // the same reason `hrvDiag` is carried on the scan and replayed below. A local buffer
@@ -1488,7 +1485,7 @@ final class IntelligenceEngine: ObservableObject {
                                                      hrvWindowDetail: dayStart == nowLocalMidnight,
                                                      deepHrvWindow: deepHrvWindow,
                                                      effortMethod: effortMethodGlobal)
-                dayScoreSeconds += Date().timeIntervalSince(tScore0)
+                dayScoreSeconds += Self.activeSeconds(since: tScore0)
                 // #195: whole-night HRV cleaning-pipeline summary for the always-on strap log, so a "reads ~2x
                 // too high" report is triageable without the HRV test mode: RMSSD vs SDNN (rmssd >> sdnn =
                 // beat-to-beat jitter surviving the ectopic filter, not real HRV), meanNN as an HR sanity-check,
@@ -2958,7 +2955,7 @@ final class IntelligenceEngine: ObservableObject {
         // `lightPass` doc on the signature. Its done-line is labelled so trigger→done pairing in a
         // log never mistakes a 2-second today-only pass for a completed full window.
         if lightPass {
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- reScoreStart) / 1_000_000_000
+            let elapsed = Self.activeSeconds(since: reScoreStart)
             diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
                             + "\(Int(elapsed * 1000)) ms", nil)
             RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
@@ -2973,7 +2970,7 @@ final class IntelligenceEngine: ObservableObject {
         let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
         if wasAbandoned {
             RescoreStats.recordAbandoned()
-            let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- reScoreStart) / 1_000_000_000
+            let elapsed = Self.activeSeconds(since: reScoreStart)
             diagnosticSink?("re-score: gave up after \(Int(elapsed)) s of a full pass rather than "
                             + "grind on in the background (260906)", nil)
             return
@@ -2985,7 +2982,7 @@ final class IntelligenceEngine: ObservableObject {
         // measurement is what lets `RescoreBackgroundPolicy` tell an install that finishes comfortably in a
         // background wake from one that never could, instead of guessing from a constant — the cost varies
         // by more than an order of magnitude with history size.
-        let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- reScoreStart) / 1_000_000_000
+        let elapsed = Self.activeSeconds(since: reScoreStart)
         let settled = RescoreBackgroundScheduler.markRescoreCompleted(seconds: elapsed, owedToken: owedToken)
         diagnosticSink?("re-score: done — scored \(scoredNights.count) night(s) in \(Int(elapsed * 1000)) ms (#1005)", nil)
         RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
@@ -3008,6 +3005,19 @@ final class IntelligenceEngine: ObservableObject {
     /// 260906: the prefix of the diagnostic line an ABANDONED pass carries out of the detached scan
     /// task. The caller matches it to skip the watermark write, so an abandoned pass cannot mark days
     /// done that it never scored.
+    /// Seconds of ACTIVE time since `since`, excluding any stretch the device spent asleep.
+    ///
+    /// 260914: every re-score timer read `Date()`, which keeps counting while iOS suspends the app.
+    /// A pass that abandoned correctly after ONE night — the gate firing as designed, in milliseconds —
+    /// reported `gave up after 1802 s` and `prep=600775ms (read=598352ms)`, because the app had sat
+    /// suspended for half an hour between two days of the loop. Those numbers then read as a runaway
+    /// pass and a catastrophic read cost, and both were artifacts: the log line was measuring the
+    /// wrong clock. `DispatchTime` is monotonic and does not advance while the device sleeps, so what
+    /// it reports is work actually done. A diagnostic may only assert what it can attribute.
+    nonisolated static func activeSeconds(since t: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1_000_000_000
+    }
+
     static let abandonedLinePrefix = "re-score: ABANDONED"
 
     /// CAPTURE-B (#814/#799): build the universal `dayOwner …` self-diagnostic line VERBATIM (the Test

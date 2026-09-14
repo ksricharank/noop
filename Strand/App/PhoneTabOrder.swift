@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// The iPhone tab bar's order, in a file BOTH platforms compile.
 ///
@@ -31,15 +32,28 @@ enum PhoneTab: Int, CaseIterable {
     static var count: Int { allCases.count }
 
     /// The label shown in the tab bar.
+    ///
+    /// `.day` reads "Recap", not "Day": the screen is the retrospective read on a FINISHED day
+    /// ("How a finished day actually went"), which "Day" did not convey beside "Today". It is a
+    /// browsable date navigator rather than strictly yesterday, so a literal "Yesterday" would be
+    /// wrong on every other day the user scrolls to.
     var title: String {
         switch self {
         case .today: return "Today"
-        case .day: return "Day"
+        case .day: return "Recap"
         case .sleep: return "Sleep"
         case .trends: return "Trends"
         case .more: return "More"
         }
     }
+
+    /// The tab-bar label as a SwiftUI `LocalizedStringKey`, so the bar stays translatable while still
+    /// reading its text from this one enum. `title` remains a plain `String` for the tests, which run
+    /// on the macOS leg and compare text directly.
+    ///
+    /// Both spellings must stay in step: a literal in the shell is how the bar came to say "Day" while
+    /// this file said something else, with every index test still green (260914).
+    var titleKey: LocalizedStringKey { LocalizedStringKey(title) }
 
     /// The SF Symbol shown in the tab bar. Each must be distinct from its neighbours, and none may
     /// reuse `sparkles` — that is the Coach's mark, and reusing it makes a tab look like a second door
@@ -47,7 +61,7 @@ enum PhoneTab: Int, CaseIterable {
     var systemImage: String {
         switch self {
         case .today: return "square.grid.2x2"
-        case .day: return "medal"
+        case .day: return "calendar.badge.checkmark"
         case .sleep: return "bed.double"
         case .trends: return "chart.line.uptrend.xyaxis"
         case .more: return "ellipsis"

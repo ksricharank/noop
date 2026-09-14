@@ -145,7 +145,7 @@ struct RootTabView: View {
             // at the maintainer's request. The daily-use tabs now sit together on the left — today's
             // state, yesterday's grade, last night's sleep — and Trends, which is the long-horizon
             // read consulted far less often, sits beside More.
-            tab(todayTabRoot, "Today", "square.grid.2x2",
+            tab(todayTabRoot, PhoneTab.today.titleKey, PhoneTab.today.systemImage,
                 path: $tabPaths[Tab.today], scrollSignal: scrollTop[Tab.today]).tag(Tab.today)
             // 260906: Day quality earned a tab of its own rather than a More row — it is the
             // retrospective read on a finished day, so it belongs beside the other retrospective tabs.
@@ -157,11 +157,11 @@ struct RootTabView: View {
             // Deliberately NOT `sparkles`: that is already the Coach's mark, on the More row and in
             // RootView's sidebar, and reusing it here would make this tab look like a second door to
             // the coach. Distinct from its neighbours too — a grid, a bed, a line chart.
-            tab(DayQualityView(), "Day", "medal",
+            tab(DayQualityView(), PhoneTab.day.titleKey, PhoneTab.day.systemImage,
                 path: $tabPaths[Tab.day], scrollSignal: scrollTop[Tab.day]).tag(Tab.day)
-            tab(SleepView(), "Sleep", "bed.double",
+            tab(SleepView(), PhoneTab.sleep.titleKey, PhoneTab.sleep.systemImage,
                 path: $tabPaths[Tab.sleep], scrollSignal: scrollTop[Tab.sleep]).tag(Tab.sleep)
-            tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis",
+            tab(TrendsView(), PhoneTab.trends.titleKey, PhoneTab.trends.systemImage,
                 path: $tabPaths[Tab.trends], scrollSignal: scrollTop[Tab.trends]).tag(Tab.trends)
             moreTab(path: $tabPaths[Tab.more], scrollSignal: scrollTop[Tab.more]).tag(Tab.more)
         }
@@ -230,19 +230,23 @@ struct RootTabView: View {
                 routedPillar = dest
                 router.requestedDestination = nil
             case .coach:
-                // K3: Coach is now a top-level tab (tag 3) — switch to it directly instead of
-                // presenting it as a pillar sheet.
+                // Upstream's K3 made Coach tab 3 and switched to it by LITERAL. The fork's order is
+                // Today/Day/Sleep/Trends/More, so tag 3 is TRENDS here — "Ask the Coach" landed on the
+                // Trends tab. Coach has no tab of its own in this fork: switch to More and PUSH the
+                // coach destination onto that tab's stack, so the user lands in the chat itself and the
+                // system back button returns them the way they came. Named index, never a literal —
+                // that is what `PhoneTabIndex` exists for.
                 //
-                // Guarded on the master switch, because this route is reachable with Coach OFF. A brief
-                // notification already sitting in Notification Centre still calls `openCoach()` when it is
-                // tapped (StrandApp wires `onCoachBriefTapped` to it), and with no tab claiming tag 3 the
-                // wearer would land on a BLANK tab. Dropping the request leaves them where they were, which
-                // is the honest answer for a feature that is switched off.
+                // Guarded on upstream's #2269 master switch, because this route is reachable with Coach
+                // OFF: a brief notification already sitting in Notification Centre still calls
+                // `openCoach()` when tapped. Dropping the request leaves the wearer where they were,
+                // which is the honest answer for a feature that is switched off.
                 guard coachEnabled else {
                     router.requestedDestination = nil
                     break
                 }
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.more }
+                tabPaths[Tab.more] = NavigationPath([MoreDestination.coach])
                 router.requestedDestination = nil
             case .trends:
                 // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
@@ -573,7 +577,7 @@ struct RootTabView: View {
         }
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
-        .tabItem { Label("More", systemImage: "ellipsis") }
+        .tabItem { Label(PhoneTab.more.titleKey, systemImage: PhoneTab.more.systemImage) }
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a
