@@ -17,11 +17,18 @@ configFiles:
   Release: Config/BundleId.xcconfig
 settings:
   base:
-    MARKETING_VERSION: "11.8.0"
+    # Fork versioning: <last upstream tag>.<fork counter>. The counter went to 18 for the v11.8.0
+    # uplift (11.6.0 -> 11.8.0 moves the upstream base, so the fork counter takes its next major and
+    # resets its minor to 0). 18.0 carries the uplift AND the 260919 feature batch: the two Targets
+    # widget styles, the salience-led synthesis, the Recap download, and the synthesis regeneration
+    # that stops the morning summary going stale.
+    MARKETING_VERSION: "11.8.0.18.21"
     # iOS build number (CFBundleVersion). GLOBAL so the iOS app AND its widget extension inherit the
     # SAME value — they must match or iOS warns "extension version must match parent app" (#416).
     # macOS sets its own CFBundleVersion on the Strand target and is unaffected by this.
-    CURRENT_PROJECT_VERSION: "400"
+    # Resolves UPWARD past BOTH the installed 374 and upstream's own 400 — never back to either,
+    # which would make iOS refuse the install as a downgrade.
+    CURRENT_PROJECT_VERSION: "422"
     SWIFT_VERSION: "5.0"
     # Emit localizable strings so Xcode auto-extracts every LocalizedStringKey into the
     # String Catalog on build (the English (US) base entries).
