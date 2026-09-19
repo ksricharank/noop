@@ -93,9 +93,12 @@ final class AICoachSynthesisPromptTests: XCTestCase {
     func testDefaultNamesTheSurfaceAndAsksForWhatIsNotable() {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
-        XCTAssertTrue(d.contains("WORTH KNOWING"))
-        XCTAssertTrue(d.contains("MY CURRENT STATE"))
-        XCTAssertTrue(d.contains("not to summarise every metric"))
+        XCTAssertTrue(d.contains("MY BODY IN THE PRESENT"))
+        // 260919: the prompt no longer says "summarise every metric" — it now fences the targets
+        // explicitly instead, which is the stronger form of the same instruction and is what the
+        // reported failure ("a plain recap of the targets") actually needed.
+        XCTAssertTrue(d.contains("Do NOT narrate my progress against them"))
+        XCTAssertTrue(d.contains("LAST 6 HOURS"))
         // Salience, in the model's own terms: the wearer's baselines, not population norms.
         XCTAssertTrue(d.contains("z-scores"))
         XCTAssertTrue(d.contains("MY OWN baseline"))
@@ -105,7 +108,7 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         // summaries, and the multi-week read is the Trends tab's lens — pinning it on this prompt
         // would re-create the overlap the split exists to remove. Today may still reach back a few
         // days, but only far enough to explain the present.
-        XCTAssertTrue(d.contains("only far enough to make today make sense"))
+        XCTAssertTrue(d.contains("only far enough to make right"))
         // The agreement contract with the Lock-Screen card survives the rewrite untouched.
         XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("total calories"))

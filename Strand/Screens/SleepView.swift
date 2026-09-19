@@ -40,6 +40,8 @@ struct SleepView: View {
     /// For the per-tab LLM summary (260919). Observed so a provider/consent change re-renders the
     /// card's "no summary available" state without the tab needing to be re-entered.
     @EnvironmentObject var coach: AICoachEngine
+    /// For the insight card's "Ask the Coach" link.
+    @EnvironmentObject var router: NavRouter
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -187,14 +189,13 @@ struct SleepView: View {
                             .padding(.horizontal, -16)
                             .padding(.top, -24)
                             .staggeredAppear(index: 0)
-                        // #sleep-layout: the analytical cards render in the user's saved order minus the
-                        // hidden set, below the pinned Rest hero. Reordered via the Arrange sheet.
-                        ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
-                            sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
-                        }
-                        // The Sleep tab's own LLM read (260919). Its lens is THIS NIGHT's
-                        // architecture and what it means for today — deliberately not the day's
-                        // grade (Recap owns that) or the week's direction (Trends).
+                        // The Sleep tab's own LLM read (260919). Directly under the hero, like the
+                        // other tabs' summaries — at the foot of the arrangeable sections it was
+                        // several screens down, which is not where a summary belongs.
+                        //
+                        // Its lens is THIS NIGHT's architecture and what it means for today —
+                        // deliberately not the day's grade (Recap owns that) or the week's
+                        // direction (Trends).
                         NoopCard {
                             TabInsightCard(
                                 title: "What last night says",
@@ -206,10 +207,17 @@ struct SleepView: View {
                                         $0.day == nightDayKey(resolved)
                                     }) else { return nil }
                                     return await coach?.sleepNarrative(night: row)
-                                }
+                                },
+                                onAskCoach: { router.openCoach() }
                             )
                         }
-                        .staggeredAppear(index: sleepVisibleSections.count + 1)
+                        .staggeredAppear(index: 1)
+                        // #sleep-layout: the analytical cards render in the user's saved order minus the
+                        // hidden set, below the pinned Rest hero. Reordered via the Arrange sheet.
+                        ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
+                            sleepSectionView(section, resolved).staggeredAppear(index: idx + 2)
+                        }
+
                     }
                 } else {
                     emptyState

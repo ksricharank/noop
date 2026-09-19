@@ -17,6 +17,8 @@ struct TrendsView: View {
     /// For the per-tab LLM summary (260919). Observed so a provider/consent change re-renders the
     /// card's "no summary available" state without needing the tab to be re-entered.
     @EnvironmentObject var coach: AICoachEngine
+    /// For the insight card's "Ask the Coach" link.
+    @EnvironmentObject var router: NavRouter
     // NOTE: deliberately does NOT observe LiveState — Trends shows historical data only, and
     // observing it forced a full re-render of this subtree on every ~1 Hz live-HR tick.
 
@@ -309,7 +311,8 @@ struct TrendsView: View {
                                 generate: { [weak coach] in
                                     await coach?.trendsNarrative(
                                         windowDays: range.days ?? repo.days.count)
-                                }
+                                },
+                                onAskCoach: { router.openCoach() }
                             )
                         }
                         .staggeredAppear(index: 2)

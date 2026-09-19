@@ -34,7 +34,11 @@ struct DayQualityCard: View {
     let scoresByDay: [String: Double]
 
     @State private var showComputation = false
-    @State private var showNarrative = false
+    /// 260919: OPEN by default (maintainer request). The summary is the Recap tab's headline read,
+    /// and a section that has to be opened to be seen is one that is not read. Opening by default
+    /// means generating by default — a provider call per visit — which is the cost of making it the
+    /// thing the tab leads with.
+    @State private var showNarrative = true
     /// Re-scored breakdown for the day on show. Built once per (day, config) rather than in `body`.
     @State private var breakdown: DayQualityScore?
     @State private var narrative: String?
@@ -95,7 +99,13 @@ struct DayQualityCard: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .task(id: day) { await load() }
+        .task(id: day) {
+            await load()
+            // The section starts open (260919), so the first narrative must be requested here —
+            // the disclosure toggle used to be the only trigger. Keyed on `day`, so stepping to
+            // another day re-scores AND re-asks; `loadNarrative` itself is cached and single-flighted.
+            if showNarrative { await loadNarrative() }
+        }
     }
 
     /// "Yesterday" only when the day on show actually IS yesterday. The card can now be pointed at any
@@ -354,8 +364,9 @@ struct DayQualityCard: View {
         breakdown = DayQualityScore.score(input, config: DayQualityPrefs.config)
     }
 
-    /// One coach call per day, cached in `@State`. Requested only when the section is opened — a
-    /// narrative nobody expanded is a network call and a token spend for nothing.
+    /// One coach call per day, cached in `@State`. The section now starts OPEN (260919), so the
+    /// first request rides `.task` below rather than the disclosure toggle; the cache still means
+    /// re-showing the same day costs nothing.
     private func loadNarrative() async {
         guard let day, let breakdown else { return }
         guard narrativeDay != day || narrative == nil else { return }

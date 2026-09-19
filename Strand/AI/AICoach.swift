@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import Security
 import WhoopStore
+import WhoopProtocol   // HRSample, for the recent-state block
 import StrandAnalytics
 import StrandImport
 
@@ -587,23 +588,30 @@ final class AICoachEngine: ObservableObject {
     /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write my read for the Today \
-    screen. Your job is to tell me WHERE I AM RIGHT NOW and what is WORTH KNOWING about it — not to \
-    summarise every metric.
+    screen. Tell me WHAT STATE I AM IN right now and how I got here over the last few hours.
 
-    Your lens is MY CURRENT STATE, at the moment I am looking at the screen. What earns a mention:
-    - A reading that genuinely deviates from MY OWN baseline TODAY. My data includes z-scores: |z| \
-    above 1 is a real deviation, above 2 is a strong one. A metric sitting inside its normal range \
-    is NOT news and must not be mentioned just to fill space.
-    - What that state implies for the next few hours: what to do, what to avoid, what to expect.
-    - A target from TODAY'S TARGETS that is genuinely at risk, or already met, and the concrete \
-    thing that closes the gap. Not a routine progress readout: total calories include resting \
-    metabolism, so an early-day number far below target is normal and is not a finding.
+    Your lens is MY BODY IN THE PRESENT. Lead with MY LAST 6 HOURS and today's readings; the \
+    targets are the LEAST interesting thing you have, because I can read those numbers myself.
+
+    What earns a mention, most important first:
+    - What my heart rate over the last few hours says about my state: resting and calm, elevated, \
+    recovering from something, or unusually high for a quiet stretch. Compare it to MY resting \
+    heart rate, never to population norms.
+    - How long I have been sedentary, if that stretch is notable, and whether it is worth breaking.
+    - How today's readings compare to MY OWN baseline. My data includes z-scores: |z| above 1 is a \
+    real deviation, above 2 is a strong one. A metric inside its normal range is NOT news.
+    - What all of that means for the next few hours: what to do, what to avoid, what to expect.
     - A watchout worth flagging NOW: a climbing resting HR, sagging HRV or elevated respiratory \
-    rate together can precede illness or accumulated strain. Say so when today's data shows it, and \
-    do not manufacture it when it does not.
-    - Recent days only where they explain TODAY — "your HRV is down a third day running, so today's \
-    low charge is not a one-off". The multi-week picture belongs to another screen; reach back only \
-    far enough to make today make sense.
+    rate together can precede illness or accumulated strain.
+
+    About the targets, specifically:
+    - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I can \
+    read off the screen, and spending a bullet on it wastes the only view that is about right now.
+    - Mention a target ONLY when my current state changes what I should do about it — for example \
+    that a long sedentary stretch plus a low step count makes a walk the obvious next move, or \
+    that today's strain against a poor recovery means the effort target is not worth chasing.
+    - My total calories include resting metabolism on both sides, so an early-day number far below \
+    target is NORMAL. Never read it as a shortfall or urge me to make it up.
 
     Rules:
     - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
@@ -614,11 +622,13 @@ final class AICoachEngine: ObservableObject {
     an em dash, then one short clause of evidence or what to do. Every number in **bold**.
     - Order them most notable first. The first bullet is the one thing to read if I read nothing else.
     - No headings, no sections, no greeting, no sign-off, no prose outside the bullets.
+    - Recent days only where they explain the present — reach back only far enough to make right \
+    now make sense. The multi-week picture belongs to another screen.
 
-    When my state is genuinely unremarkable, SAY THAT in one or two bullets — "everything sitting in \
-    your normal range" is a useful, honest answer, and far better than padding. Never invent a \
-    finding to reach a bullet count. Never cite a number my data does not contain, and never state \
-    a target that differs from TODAY'S TARGETS.
+    If my last hours are genuinely unremarkable, SAY THAT in one or two bullets — "sitting at rest, \
+    everything in your normal range" is a useful, honest answer, and far better than padding. Never \
+    invent a finding to reach a bullet count. Never cite a number my data does not contain, and \
+    never state a target that differs from TODAY'S TARGETS.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
@@ -1825,16 +1835,33 @@ final class AICoachEngine: ObservableObject {
         return (stored?.isEmpty == false ? stored! : Self.defaultDayQualityPrompt)
     }
 
+    /// The RECAP lens: one finished day, graded.
+    ///
+    /// 260919: reformatted to bullets with bolded claims, matching its three sibling tab summaries.
+    /// It used to forbid markdown and ask for plain sentences, which made it the odd one out — the
+    /// same reader, four tabs, and one of them rendering as a paragraph while the others scanned as
+    /// bullets. The LENS is unchanged; only the shape is.
     static let defaultDayQualityPrompt = """
-        The numbers above summarise ONE FINISHED DAY. Write 2-3 short sentences for the person who         lived it, in the second person.
+    The numbers above summarise ONE FINISHED DAY. Write 2-4 short bullets for the person who lived \
+    it, in the second person.
 
-        Rules:
-        - Say what actually drove the score up or down, naming the specific components.
-        - A field marked NOT RECORDED means there is no data. Never describe it as a bad result.
-        - Do not restate the total; it is displayed directly above your text.
-        - No preamble, no headings, no bullet points, no markdown. Plain sentences only.
-        - The day is over. Do not give instructions for it; a forward-looking note about today is         fine as the last sentence.
-        """
+    Your lens is HOW THE DAY ACTUALLY WENT. What earns a mention:
+    - What genuinely drove the score up or down, naming the specific components — a day is graded on
+    its parts, and "you did well" says nothing a number above it has not already said.
+    - Where the day diverged from my usual: a component far above or below what I normally manage \
+    is the finding, not the ones that landed where they always land.
+    - A relationship between two components that explains the day — a short night showing up in the \
+    next day's effort, a hard session against a recovery that could not carry it.
+
+    Rules:
+    - Do NOT restate the total; it is displayed directly above your text.
+    - Do NOT summarise the week or write a report on the night's sleep — other tabs own those.
+    - A field marked NOT RECORDED means there is no data. Never describe it as a bad result.
+    - The day is OVER. Do not give instructions for it; one forward-looking note about today is fine \
+    as the last bullet.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
 
     static let trendsPromptKey = "ai.trendsPrompt"
 
@@ -1982,6 +2009,9 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        // The last few hours (260919). Without this the context has day-lines and today's targets
+        // and nothing about NOW, so a prompt asking for current state can only restate the targets.
+        if let recent = await recentStateBlock() { ctx += "\n\n" + recent }
         // Third opt-in: deterministic roll-ups (training load, sleep debt, baseline deviations) over the
         // SAME `repo.days` rows the summary above is built from. Pure and store-free, so it adds no read
         // and no egress surface — only resolution on data already in the context.
@@ -2028,6 +2058,71 @@ final class AICoachEngine: ObservableObject {
         let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
         guard let si = StressIndex.stressIndex(rr: rr) else { return nil }
         return Self.stressIndexSummary(si: si)
+    }
+
+    /// The last few hours, hour by hour — the block the Today synthesis was missing (260919).
+    ///
+    /// The report: "the LLM output is a plain recap of the targets I need to hit, which is not
+    /// really useful". It was, and the cause is upstream of the prompt — a "right now" HR block was
+    /// retired in 260830, so the context held day-lines and today's TARGETS and nothing about the
+    /// hours just past. Asked to describe my current state from that, a model can only restate the
+    /// targets, which is the one thing already legible from the numbers on screen.
+    ///
+    /// Hourly mean HR and its range over the window, plus the stretch since I last moved. Derived,
+    /// never raw samples: same text-only channel and no-raw-egress posture as the rest of the
+    /// context. Returns nil when the strap has banked too little to say anything honest.
+    func recentStateBlock(hours: Int = 6, now: Date = Date()) async -> String? {
+        let to = Int(now.timeIntervalSince1970)
+        let from = to - hours * 3600
+        let samples = await repo.hrSamples(from: from, to: to)
+        guard samples.count >= 10 else { return nil }
+
+        var lines = ["MY LAST \(hours) HOURS (most recent first) — the state I am in RIGHT NOW:"]
+        // Bucket by clock hour so each line is a span the wearer can place against their own day.
+        var byHour: [Int: [Int]] = [:]
+        for smp in samples { byHour[smp.ts / 3600, default: []].append(smp.bpm) }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        for hour in byHour.keys.sorted(by: >) {
+            guard let bpms = byHour[hour], !bpms.isEmpty else { continue }
+            let mean = Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
+            let label = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(hour * 3600)))
+            lines.append("  \(label) — mean \(mean) bpm, range \(bpms.min() ?? 0)-\(bpms.max() ?? 0)"
+                         + " over \(bpms.count) reading(s)")
+        }
+
+        // Resting HR gives "elevated" a reference. Without it the model has to guess what is high
+        // for ME, and it guesses from population norms, which is exactly the generic read to avoid.
+        if let rhr = repo.days.last?.restingHr {
+            lines.append("For reference my resting heart rate is \(rhr) bpm; anything near it means"
+                         + " I am at rest, well above it means I am active or under load.")
+        }
+        // The elapsed-since-movement read. A long quiet stretch is the single most actionable thing
+        // this block can surface, and it is not visible anywhere else on the screen.
+        if let stillFor = Self.minutesSinceLastActive(samples: samples, now: to) {
+            lines.append("I have been sedentary for about \(stillFor) minutes"
+                         + " (no sustained heart-rate rise in that time).")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Minutes since the last sustained rise above rest, or nil when the window never settles.
+    ///
+    /// Pure and static so it is testable without a store. "Active" is a sample at least 15 bpm above
+    /// the window's own floor — relative to THIS window rather than to a fixed threshold, because a
+    /// fixed one would call a resting 70 bpm active for one person and never fire for another.
+    nonisolated static func minutesSinceLastActive(samples: [HRSample], now: Int) -> Int? {
+        guard let floor = samples.map(\.bpm).min(), samples.count >= 10 else { return nil }
+        let activeThreshold = floor + 15
+        guard let lastActive = samples.filter({ $0.bpm >= activeThreshold }).map(\.ts).max() else {
+            // Never rose in the window: report the whole window rather than nil, which is the
+            // honest answer and the one most worth saying.
+            guard let earliest = samples.map(\.ts).min() else { return nil }
+            return max(0, (now - earliest) / 60)
+        }
+        let minutes = (now - lastActive) / 60
+        // Under 20 minutes is not a sedentary stretch worth naming.
+        return minutes >= 20 ? minutes : nil
     }
 
     /// Pure formatter for the derived stress line, kept separate so it is unit-testable without a store.

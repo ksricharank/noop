@@ -21,6 +21,15 @@ struct TabInsightCard: View {
     /// Produces the text. Returns nil on any failure — no provider, no consent, an empty reply —
     /// and the card then says so plainly rather than pretending.
     let generate: () async -> String?
+    /// Whether the section starts open. Recap's does (260919, maintainer request): it is the tab's
+    /// headline read, and a section that has to be opened to be seen is one that is not read.
+    ///
+    /// Opening by default means GENERATING by default, which is the cost — a provider call on every
+    /// visit to that tab. Worth it where the summary is the point of the screen; not worth it on a
+    /// tab the wearer opens to look at a chart, which is why it is opt-in rather than the default.
+    var startsExpanded: Bool = false
+    /// Shown under the text when set — "Ask the Coach", carrying this tab's subject into the chat.
+    var onAskCoach: (() -> Void)? = nil
 
     @State private var expanded = false
     @State private var text: String?
@@ -61,6 +70,33 @@ struct TabInsightCard: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // "Ask the Coach", mirroring the affordance the Today synthesis and the Recap card
+                // already carry. Offered only once there is something to ask ABOUT — a link under an
+                // empty section would open a chat with no shared context.
+                if let onAskCoach, text != nil {
+                    HStack {
+                        Spacer()
+                        Button(action: onAskCoach) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles").font(StrandFont.caption)
+                                Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
+                            }
+                            .foregroundStyle(StrandPalette.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint(Text("Opens the AI Coach chat"))
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .task {
+            // Applied here rather than as the @State initial value: @State initialisers run once per
+            // view identity, and this card is rebuilt as tabs and subjects change. Guarded on
+            // `text == nil` so returning to the tab does not re-open a section the wearer collapsed.
+            if startsExpanded, text == nil, !expanded {
+                expanded = true
+                await load()
             }
         }
         // A subject change while the card is OPEN must re-ask — otherwise stepping to another night
