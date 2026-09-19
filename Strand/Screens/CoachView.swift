@@ -1087,7 +1087,6 @@ struct CoachView: View {
         }
     }
     #endif
-    #endif
 
     private var privacyFootnote: some View {
         Label {
