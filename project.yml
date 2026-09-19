@@ -91,6 +91,7 @@ targets:
       # The stress screen is shared with iOS and prints levels through the widget's parity formatter,
       # so its Foundation-only trace model belongs to the macOS app module as well.
       - StrandiOSShared/StressTrace.swift
+      - StrandiOSShared/BatteryGlyph.swift
     # Oura BYO-app OAuth credentials. OuraConfig.xcconfig is a tracked wrapper that optionally
     # includes the untracked, gitignored Strand/Oura/OuraSecrets.xcconfig (template at
     # OuraSecrets.example.xcconfig) — absent secrets leave the $(OURA_*) references in the
@@ -175,6 +176,7 @@ targets:
       # geometry stays isolated from app state. This is also the only place that can compare the
       # extension-safe `StressTrace.highBandFloor` copy with the analytics package constant.
       - StrandiOSShared/StressTrace.swift
+      - StrandiOSShared/BatteryGlyph.swift
       # And the widget cost counters, for the same reason again: pure, iOS-only, and the arithmetic is
       # exactly the part that has been wrong twice on the Android side.
       - StrandiOSShared/WidgetTelemetry.swift

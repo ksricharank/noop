@@ -156,8 +156,9 @@ struct NOOPTargetsView: View {
                 .foregroundStyle(StrandPalette.textSecondary)
             Spacer()
             HStack(spacing: 3) {
-                Image(systemName: "battery.50")
+                Image(systemName: BatteryGlyph.symbol(forPercent: snap.batteryPct))
                 Text(snap.batteryPct.map { "\($0)%" } ?? "–")
+                    .lineLimit(1)
             }
             .font(.caption2)
             .foregroundStyle(StrandPalette.textSecondary)

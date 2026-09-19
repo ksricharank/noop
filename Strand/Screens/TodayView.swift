@@ -5895,15 +5895,12 @@ private struct StrapBatteryRow: View {
     }
 
     /// Level-banded battery glyph; the bolt variant when the strap reports charging.
+    ///
+    /// Delegates to `BatteryGlyph` so this and the widgets cannot drift: the widgets drew a fixed
+    /// `battery.50` beside a live percentage until 260919 precisely because this banding was not
+    /// reachable from the extension.
     private func symbol(_ pct: Double) -> String {
-        if live.charging == true { return "battery.100.bolt" }
-        switch pct {
-        case ..<13: return "battery.0"
-        case ..<38: return "battery.25"
-        case ..<63: return "battery.50"
-        case ..<88: return "battery.75"
-        default:    return "battery.100"
-        }
+        BatteryGlyph.symbol(forPercent: Int(pct.rounded(.down)), charging: live.charging == true)
     }
 
     /// #713: "~X left" runtime from `live.batteryEstimate`. Under 48 hours we show hours so a nearly-flat
