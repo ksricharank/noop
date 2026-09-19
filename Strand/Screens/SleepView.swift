@@ -37,11 +37,6 @@ struct SleepView: View {
     // their OWN `@EnvironmentObject var live`/`appModel` in a small leaf below (mirrors the Today
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
-    /// For the per-tab LLM summary (260919). Observed so a provider/consent change re-renders the
-    /// card's "no summary available" state without the tab needing to be re-entered.
-    @EnvironmentObject var coach: AICoachEngine
-    /// For the insight card's "Ask the Coach" link.
-    @EnvironmentObject var router: NavRouter
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -472,13 +467,13 @@ struct SleepView: View {
                 // Keyed on the night being VIEWED, so stepping back through nights re-asks rather
                 // than leaving the previous answer sitting under new numbers.
                 subject: "sleep-\(nightDayKey(model))",
-                generate: { [weak coach] in
+                generate: { coach in
                     guard let row = repo.days.first(where: { $0.day == nightDayKey(model) })
                     else { return nil }
-                    return await coach?.sleepNarrative(night: row)
+                    return await coach.sleepNarrative(night: row)
                 },
                 startsExpanded: true,
-                onAskCoach: { router.openCoach() }
+                showsAskCoach: true
             )
         }
     }

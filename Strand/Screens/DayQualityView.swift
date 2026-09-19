@@ -25,9 +25,6 @@ import WhoopStore
 struct DayQualityView: View {
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var appModel: AppModel
-    /// For the tab's LLM summary and its Ask-the-Coach link (260919).
-    @EnvironmentObject private var coach: AICoachEngine
-    @EnvironmentObject private var router: NavRouter
 
     /// Stored series, "yyyy-MM-dd" → score. Loaded here rather than passed in so the screen stands on
     /// its own as a tab root (Trends loads its own copy for the chart it still draws).
@@ -352,12 +349,12 @@ struct DayQualityView: View {
                     // Keyed on the BROWSED day, so stepping back re-asks rather than leaving the
                     // previous day's answer under new numbers.
                     subject: "recap-\(day)",
-                    generate: { [weak coach] in
+                    generate: { coach in
                         guard let breakdown = browsedBreakdown else { return nil }
-                        return await coach?.dayQualityNarrative(day: day, score: breakdown)
+                        return await coach.dayQualityNarrative(day: day, score: breakdown)
                     },
                     startsExpanded: true,
-                    onAskCoach: { router.openCoach() }
+                    showsAskCoach: true
                 )
             }
         }

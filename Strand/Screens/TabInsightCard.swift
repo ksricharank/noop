@@ -20,7 +20,9 @@ struct TabInsightCard: View {
     let subject: String
     /// Produces the text. Returns nil on any failure — no provider, no consent, an empty reply —
     /// and the card then says so plainly rather than pretending.
-    let generate: () async -> String?
+    /// Produces the text from the engine the card owns. Takes it as a parameter so the tab
+    /// roots do not have to hold — and therefore observe — the engine themselves.
+    let generate: (AICoachEngine) async -> String?
     /// Whether the section starts open. Recap's does (260919, maintainer request): it is the tab's
     /// headline read, and a section that has to be opened to be seen is one that is not read.
     ///
@@ -28,8 +30,22 @@ struct TabInsightCard: View {
     /// visit to that tab. Worth it where the summary is the point of the screen; not worth it on a
     /// tab the wearer opens to look at a chart, which is why it is opt-in rather than the default.
     var startsExpanded: Bool = false
-    /// Shown under the text when set — "Ask the Coach", carrying this tab's subject into the chat.
-    var onAskCoach: (() -> Void)? = nil
+    /// Whether to offer "Ask the Coach" under the text. The card opens the chat itself through the
+    /// router it owns, so a caller does not have to hold one to show the link.
+    var showsAskCoach: Bool = false
+
+    /// The coach engine, owned HERE rather than by the tab root (260919).
+    ///
+    /// `@EnvironmentObject` subscribes to the whole object's `objectWillChange`, and
+    /// `AICoachEngine` has 32 `@Published` properties — one of which, `synthesisRefreshing`,
+    /// toggles while a summary generates. Held on a tab root, every one of those re-evaluated a
+    /// ~2000-line body, which is the choppy scrolling reported on 260919. The tab roots never read
+    /// the engine in their bodies at all; they only captured it for the `generate` closure. Same
+    /// leaf-scoping SleepView already applies to LiveState and AppModel.
+    @EnvironmentObject private var coach: AICoachEngine
+    /// Owned here for the same reason as `coach`: the Ask-the-Coach button is the only consumer,
+    /// and a tab root holding it would subscribe the whole body to every navigation publish.
+    @EnvironmentObject private var router: NavRouter
 
     @State private var expanded = false
     @State private var text: String?
@@ -73,10 +89,10 @@ struct TabInsightCard: View {
                 // "Ask the Coach", mirroring the affordance the Today synthesis and the Recap card
                 // already carry. Offered only once there is something to ask ABOUT — a link under an
                 // empty section would open a chat with no shared context.
-                if let onAskCoach, text != nil {
+                if showsAskCoach, text != nil {
                     HStack {
                         Spacer()
-                        Button(action: onAskCoach) {
+                        Button { router.openCoach() } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "sparkles").font(StrandFont.caption)
                                 Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
@@ -113,7 +129,7 @@ struct TabInsightCard: View {
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false }
-        let produced = await generate()
+        let produced = await generate(coach)
         text = produced
         textSubject = produced == nil ? nil : subject
     }
