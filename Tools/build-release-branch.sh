@@ -46,9 +46,9 @@ git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin
 #
 # To track upstream's main again (a future uplift), pass UPSTREAM_REF=upstream/main explicitly, or
 # move the pin. Either way it is a decision someone made, not an accident of fetch timing.
-# MOVED 260911, v11.1.0 -> v11.6.0 (the v17 uplift). Upstream shipped 11.5.0 and 11.6.0: 271
-# commits, 715 files. A released point is still a tested one, so this is a tag, not main.
-UPSTREAM_PINNED_REF="v11.6.0"
+# MOVED 260919, v11.6.0 -> v11.8.0 (the v18 uplift). Upstream shipped 11.7.0 and 11.8.0: 160
+# commits, 454 files. A released point is still a tested one, so this is a tag, not main.
+UPSTREAM_PINNED_REF="v11.8.0"
 UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_PINNED_REF}"
 if ! UPSTREAM_SHA="$(git rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}")"; then
   echo "FATAL: UPSTREAM_REF '$UPSTREAM_REF' does not resolve to a commit." >&2
@@ -61,6 +61,26 @@ UPSTREAM="$UPSTREAM_REF"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
+  # ── v18: uplifted to upstream v11.8.0 (260919) ─────────────────────────────────────────────
+  # 160 upstream commits / 454 files. Unlike v17 this is NOT a pure uplift: 18.0 carries the
+  # uplift plus the 260919 feature batch (two Targets widget styles, the salience-led synthesis,
+  # the Recap download, synthesis regeneration on new data).
+  #
+  # Upstream built in our territory again, and two fork features were RETIRED as redundant
+  # rather than merged — check the same way on the next uplift before resolving conflicts:
+  #   - "Coach: move all configuration into Settings" (9138f1e10) is GONE: upstream's #2243 built
+  #     CoachSettingsView, a strict superset of the fork's ConfigureCoachSection. Keeping both
+  #     would have shipped two coach settings screens. The fork's four unique surfaces (the
+  #     Today-synthesis instruction, the notification-title instruction, derivedTrendsBar and the
+  #     morning brief) are grafted onto upstream's screen instead.
+  #   - The isDeviceLocked re-score rule (df60f18d5) is GONE: superseded by the fork's own
+  #     sleep-window rule, and built on the measured-duration rule upstream deleted in #2296.
+  #
+  # Still needed, re-verified at v11.8.0:
+  #   - per-provider API-key slots: upstream STILL keeps one shared `account = "api-key"`.
+  #   - the sleep-window re-score deferral: upstream's #2296 replaced duration-based deferral
+  #     with rest-pacing, which is complementary — both now run, pacing first.
+  #
   # ── v17: uplifted to upstream v11.6.0 (260911) ─────────────────────────────────────────────
   # PURE UPLIFT. The FEATURE SET is unchanged from 16.24 — same seven branches, rebased onto the
   # v11.6.0 tag. No new functionality; new features resume at 17.1.
