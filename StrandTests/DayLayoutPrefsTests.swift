@@ -11,8 +11,11 @@ final class DayLayoutPrefsTests: XCTestCase {
     }
 
     func testARoundTripPreservesACustomOrder() {
+        // Every card, so the round trip is lossless — a list missing one would exercise the
+        // insertion path instead, which `testACardMissingFromASavedOrderIsInsertedAtItsDefaultPosition`
+        // already covers.
         let reordered: [DaySection] = [
-            .settings, .streaks, .breakdown, .trend, .calendar, .weekSummary,
+            .settings, .streaks, .breakdown, .insight, .trend, .calendar, .weekSummary,
             .counterfactual, .attribution,
         ]
         XCTAssertEqual(DayLayoutPrefs.decodeOrder(DayLayoutPrefs.encode(reordered)), reordered)
@@ -91,7 +94,7 @@ final class DayLayoutPrefsTests: XCTestCase {
     /// Persisted identifiers must be stable — a rename silently discards every saved layout.
     func testRawValuesAreTheExpectedStableKeys() {
         XCTAssertEqual(Set(DaySection.allCases.map(\.rawValue)),
-                       ["breakdown", "attribution", "counterfactual", "streaks",
+                       ["breakdown", "insight", "attribution", "counterfactual", "streaks",
                         "weekSummary", "trend", "calendar", "settings"])
     }
 

@@ -25,6 +25,9 @@ import WhoopStore
 struct DayQualityView: View {
     @EnvironmentObject private var repo: Repository
     @EnvironmentObject private var appModel: AppModel
+    /// For the tab's LLM summary and its Ask-the-Coach link (260919).
+    @EnvironmentObject private var coach: AICoachEngine
+    @EnvironmentObject private var router: NavRouter
 
     /// Stored series, "yyyy-MM-dd" → score. Loaded here rather than passed in so the screen stands on
     /// its own as a tab root (Trends loads its own copy for the chart it still draws).
@@ -103,9 +106,12 @@ struct DayQualityView: View {
     private func daySectionView(_ section: DaySection) -> some View {
         switch section {
         case .breakdown:
-            // The score, its halves, the component breakdown, and the coach narrative in its own
-            // collapsible section inside this card.
+            // The score, its halves and the component breakdown. The coach narrative used to live
+            // inside this card; 260919 lifted it into `.insight` so it can be moved or hidden on
+            // its own, like every other card here.
             DayQualityCard(scoresByDay: scoresByDay, dayIndex: dayIndex)
+        case .insight:
+            insightCard
         case .attribution:
             DayQualityAttributionCard(breakdowns: windowBreakdowns, windowLabel: window.label)
         case .counterfactual:
@@ -331,6 +337,30 @@ struct DayQualityView: View {
             if abs(storedValue - Double(liveValue)) > 1.0 { return true }
         }
         return false
+    }
+
+    /// The tab's LLM read (260919). Its own arrangeable section rather than a panel inside the
+    /// breakdown card, so it can be moved or hidden independently — and open by default, because it
+    /// is the tab's headline read and a section that must be opened to be seen is not read.
+    @ViewBuilder
+    private var insightCard: some View {
+        if dayIndex < scoredDays.count {
+            let day = scoredDays[dayIndex]
+            NoopCard {
+                TabInsightCard(
+                    title: "What it means",
+                    // Keyed on the BROWSED day, so stepping back re-asks rather than leaving the
+                    // previous day's answer under new numbers.
+                    subject: "recap-\(day)",
+                    generate: { [weak coach] in
+                        guard let breakdown = browsedBreakdown else { return nil }
+                        return await coach?.dayQualityNarrative(day: day, score: breakdown)
+                    },
+                    startsExpanded: true,
+                    onAskCoach: { router.openCoach() }
+                )
+            }
+        }
     }
 
     /// Re-derive the Insights inputs: the breakdowns for the window (attribution) and the browsed

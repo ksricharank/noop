@@ -93,6 +93,7 @@ extension DaySection {
     var customizationIcon: String {
         switch self {
         case .breakdown:      return "list.bullet.rectangle"
+        case .insight:        return "sparkles"
         case .attribution:    return "arrow.up.arrow.down"
         case .counterfactual: return "target"
         case .streaks:        return "flame"
@@ -108,6 +109,7 @@ extension DaySection {
     var customizationSubtitle: String? {
         switch self {
         case .breakdown:      return String(localized: "The score, its halves, and every component")
+        case .insight:        return String(localized: "What the coach makes of the day")
         case .attribution:    return String(localized: "Which components move your score most")
         case .counterfactual: return String(localized: "The gains closest to hand today")
         case .streaks:        return String(localized: "Days above zero, and the current run")
@@ -124,6 +126,7 @@ extension DaySection {
     var customizationTint: Color {
         switch self {
         case .breakdown:      return StrandPalette.chargeColor
+        case .insight:        return StrandPalette.accent
         case .attribution:    return StrandPalette.chargeBright
         case .counterfactual: return StrandPalette.metricAmber
         case .streaks:        return StrandPalette.effortColor

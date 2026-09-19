@@ -33,11 +33,14 @@ struct NOOPTargetsWidget: Widget {
         StaticConfiguration(kind: kind, provider: NOOPProvider()) { entry in
             if #available(iOS 17.0, *) {
                 NOOPTargetsView(entry: entry)
-                    .containerBackground(StrandPalette.surfaceBase, for: .widget)
+                    // 260919: pure black, not `surfaceBase` (a near-black grey). Asked for
+                    // explicitly — it matches the Reminders widget and sits flush on a dark
+                    // wallpaper instead of reading as a lighter tile floating on top of it.
+                    .containerBackground(.black, for: .widget)
             } else {
                 NOOPTargetsView(entry: entry)
                     .padding()
-                    .background(StrandPalette.surfaceBase)
+                    .background(Color.black)
             }
         }
         .configurationDisplayName("NOOP Targets (Bars)")
@@ -70,11 +73,11 @@ struct NOOPTargetsRingsWidget: Widget {
         StaticConfiguration(kind: kind, provider: NOOPProvider()) { entry in
             if #available(iOS 17.0, *) {
                 NOOPTargetsView(entry: entry, style: .rings)
-                    .containerBackground(StrandPalette.surfaceBase, for: .widget)
+                    .containerBackground(.black, for: .widget)
             } else {
                 NOOPTargetsView(entry: entry, style: .rings)
                     .padding()
-                    .background(StrandPalette.surfaceBase)
+                    .background(Color.black)
             }
         }
         .configurationDisplayName("NOOP Targets (Rings)")
@@ -175,8 +178,11 @@ struct NOOPTargetsView: View {
             }
             .frame(maxHeight: .infinity)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        // WidgetKit already applies its own content inset, so this is the gutter ON TOP of that —
+        // 12/10 left a visibly double margin on all four sides (reported 260919 with a screenshot).
+        // Trimmed to the minimum that keeps the progress tracks off the rounded corners.
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
     }
 
     /// The RINGS variant's small face: the same four metrics as a 2x2 of progress rings (260919).
@@ -310,13 +316,13 @@ struct NOOPTargetsView: View {
     private var header: some View {
         HStack(spacing: 6) {
             NoopPulseMark()
-                .frame(width: 22, height: 22)
+                .frame(width: 27, height: 27)
             Spacer(minLength: 4)
             // Deliberately small (260919): the strap charge is an operational vital worth a corner,
             // not a headline — the four targets are what this widget is for.
             BatteryPips(percent: snap.batteryPct)
             Text(snap.batteryPct.map { "\($0)%" } ?? "–")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(StrandPalette.textSecondary)
                 .lineLimit(1)
         }
@@ -384,11 +390,11 @@ private struct ProgressTrack: View {
                         .fill(tint)
                         // At least a visible nub, so a genuine 1% does not render as nothing and read
                         // the same as no data at all.
-                        .frame(width: max(3, geo.size.width * fraction))
+                        .frame(width: max(4, geo.size.width * fraction))
                 }
             }
         }
-        .frame(height: 3)
+        .frame(height: 4)
     }
 }
 
@@ -415,11 +421,11 @@ private struct BatteryPips: View {
     }
 
     var body: some View {
-        HStack(spacing: 1.2) {
+        HStack(spacing: 1.5) {
             ForEach(0..<BatteryGlyph.barCount, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 0.8, style: .continuous)
                     .fill(i < lit ? fill : StrandPalette.textTertiary.opacity(0.25))
-                    .frame(width: 2, height: 7)
+                    .frame(width: 2.5, height: 9)
             }
         }
         // The pips ARE the battery; the percentage beside them carries the exact figure, and the
