@@ -20,7 +20,7 @@ final class TabInsightPromptTests: XCTestCase {
     /// the generic summary all four would otherwise produce.
     func testEachPromptNamesItsOwnScope() {
         XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("Today screen"))
-        XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("MY CURRENT STATE"))
+        XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("MY BODY IN THE PRESENT"))
         XCTAssertTrue(AICoachEngine.defaultDayQualityPrompt.contains("ONE FINISHED DAY"))
         XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("weeks, not one day"))
         XCTAssertTrue(AICoachEngine.defaultSleepPrompt.contains("ONE NIGHT"))
@@ -43,6 +43,10 @@ final class TabInsightPromptTests: XCTestCase {
         XCTAssertTrue(p.contains("Do NOT grade yesterday"), p)
         XCTAssertTrue(p.contains("summarise the week"), p)
         XCTAssertTrue(p.contains("last night"), p)
+        // 260919: and fenced off RECITING the targets, which is what it was actually doing — the
+        // reported failure was "a plain recap of the targets I need to hit".
+        XCTAssertTrue(p.contains("Do NOT narrate my progress against them"), p)
+        XCTAssertTrue(p.contains("LAST 6 HOURS"), p)
     }
 
     /// Sleep is fenced off day-grading and week-scale summary for the same reason.

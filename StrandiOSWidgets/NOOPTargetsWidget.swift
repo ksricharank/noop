@@ -132,7 +132,10 @@ struct NOOPTargetsView: View {
     /// labels dropped to 8pt and every spacing at minimum — the ~72pt rectangular slot fits exactly
     /// two 8+21 cells plus 2pt between rows; `minimumScaleFactor` absorbs the widest pairs.
     private var rectangular: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // 260919: row spacing 2 -> 5. The two rows sat almost touching, so Steps/Effort and
+        // Cal/Water read as one four-line block rather than as two pairs. The ~72pt slot has the
+        // room: the cells are 8+21pt, so 5pt between rows still fits without shrinking either.
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 6) {
                 targetCell("Steps", text: snap.stepsAbbrev, size: 21, labelSize: 8,
                            tint: StrandPalette.chargeColor)
@@ -153,22 +156,27 @@ struct NOOPTargetsView: View {
     /// systemSmall: header + the trio as label/value ROWS — "1830/2650" is far too wide for three
     /// columns at the narrowest small-widget content width, and rows keep every value full-size.
     private var small: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            Spacer(minLength: 0)
-            // One distinct data colour per metric (260830: a shared activity tint made the fourth
-            // cell's muted restColor read as "off" beside three identical blues).
-            targetArcRow("Steps", value: stepsText, fraction: snap.stepsFraction,
-                         tint: StrandPalette.chargeColor)
-            targetArcRow("Effort", value: effortText, fraction: snap.effortFraction,
-                         tint: StrandPalette.effortColor)
-            targetArcRow("Cal", value: calText, fraction: snap.calFraction,
-                         tint: StrandPalette.metricAmber)
-            targetArcRow("Water", value: waterText, fraction: snap.waterFraction,
-                         tint: StrandPalette.metricCyan)
-            Spacer(minLength: 0)
+            // The four rows DIVIDE the remaining height rather than sitting in a band in the middle
+            // of it (260919): the face was reading as mostly empty, with small type surrounded by
+            // padding, because two Spacers pinched the rows together and left the type behind.
+            // `maxHeight: .infinity` on each row spreads them, which is also what lets the value
+            // type grow — the space is now actually allocated to the content.
+            VStack(alignment: .leading, spacing: 0) {
+                targetArcRow("Steps", value: stepsText, fraction: snap.stepsFraction,
+                             tint: StrandPalette.chargeColor)
+                targetArcRow("Effort", value: effortText, fraction: snap.effortFraction,
+                             tint: StrandPalette.effortColor)
+                targetArcRow("Cal", value: calText, fraction: snap.calFraction,
+                             tint: StrandPalette.metricAmber)
+                targetArcRow("Water", value: waterText, fraction: snap.waterFraction,
+                             tint: StrandPalette.metricCyan)
+            }
+            .frame(maxHeight: .infinity)
         }
-        .padding(11)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     /// The RINGS variant's small face: the same four metrics as a 2x2 of progress rings (260919).
@@ -204,23 +212,26 @@ struct NOOPTargetsView: View {
     /// zero-length fill, so "not tracked" never looks like "none done".
     private func targetArcRow(_ label: String, value: String, fraction: Double?,
                               tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(label)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(StrandPalette.textTertiary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Spacer(minLength: 4)
                 Text(value)
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
                     .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
-                    // Single line with room to shrink: "11.2k/8.9k" is the widest realistic pair and
-                    // this face has truncated before.
+                    // Single line with room to shrink: "18.4k/8.9k" is the widest realistic pair and
+                    // this face has truncated before. The floor drops with the larger type.
                     .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                    .minimumScaleFactor(0.5)
             }
             ProgressTrack(fraction: fraction, tint: tint)
         }
+        // Claims an equal share of the column, which is what spreads the four rows over the face.
+        .frame(maxHeight: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
         .accessibilityValue(Text(progressSpoken(value: value, fraction: fraction)))
