@@ -12,6 +12,11 @@ import Foundation
 @MainActor
 enum RetroScanStats {
 
+    /// The prefix every key in this type carries. Exposed so a test can assert it does not collide
+    /// with `RescoreStats` — the two shared `rss.` until 260919 and silently corrupted each other's
+    /// counters (see the namespace note on `RescoreStats.K`).
+    static let keyPrefix = "rss."
+
     private enum K {
         static let day = "rss.day"
         static let runs = "rss.runs"
