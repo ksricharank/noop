@@ -48,6 +48,9 @@ public final class FrameRouter {
         didSet {
             rawDumpedRespCmds.removeAll(); loggedFirmwareGate = nil; deviceId = nil
             rejectTally = FrameRejectTally(); loggedRejectReasons.removeAll()
+            // Per connection: a reconnect re-reads recent events, so a timestamp held over from the
+            // previous link would suppress the first genuine gesture after it.
+            dispatchedDoubleTapEventTs.removeAll()
         }
     }
 
@@ -867,7 +870,9 @@ public final class FrameRouter {
     private static let dispatchedDoubleTapMemory = 32
 
     private func dispatchDoubleTapOnce(eventTimestamp ts: Int?) {
-        if let ts {
+        // `ts > 0`, not merely non-nil: a frame carrying 0 has no identity, and treating it as one
+        // makes two separate taps collapse into a single dispatch. Fails OPEN, like a missing field.
+        if let ts, ts > 0 {
             guard !dispatchedDoubleTapEventTs.contains(ts) else {
                 // Only a gesture actually held back leaves a line, so a tap reported as missing can be
                 // told apart from a replay being suppressed.
