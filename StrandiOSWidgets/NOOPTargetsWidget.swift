@@ -110,18 +110,61 @@ struct NOOPTargetsView: View {
     /// systemSmall: header + the trio as label/value ROWS — "1830/2650" is far too wide for three
     /// columns at the narrowest small-widget content width, and rows keep every value full-size.
     private var small: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             header
             Spacer(minLength: 0)
             // One distinct data colour per metric (260830: a shared activity tint made the fourth
             // cell's muted restColor read as "off" beside three identical blues).
-            targetRow("Steps", value: stepsText, tint: StrandPalette.chargeColor)
-            targetRow("Effort", value: effortText, tint: StrandPalette.effortColor)
-            targetRow("Cal", value: calText, tint: StrandPalette.metricAmber)
-            targetRow("Water", value: waterText, tint: StrandPalette.metricCyan)
+            targetArcRow("Steps", value: stepsText, fraction: snap.stepsFraction,
+                         tint: StrandPalette.chargeColor)
+            targetArcRow("Effort", value: effortText, fraction: snap.effortFraction,
+                         tint: StrandPalette.effortColor)
+            targetArcRow("Cal", value: calText, fraction: snap.calFraction,
+                         tint: StrandPalette.metricAmber)
+            targetArcRow("Water", value: waterText, fraction: snap.waterFraction,
+                         tint: StrandPalette.metricCyan)
             Spacer(minLength: 0)
         }
-        .padding(10)
+        .padding(11)
+    }
+
+    /// One metric row: label, value, and a progress track underneath (260919).
+    ///
+    /// The four pairs were four bare "now/target" strings, which is the whole number but not the
+    /// whole answer — "1.4k/8.9k" takes a beat of arithmetic to place, and the widget is a glance
+    /// surface. The track answers "how far through am I" without reading either number.
+    ///
+    /// A nil fraction (target off, or a pair that did not parse) draws the empty track rather than a
+    /// zero-length fill, so "not tracked" never looks like "none done".
+    private func targetArcRow(_ label: String, value: String, fraction: Double?,
+                              tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(label)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(value)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
+                    // Single line with room to shrink: "11.2k/8.9k" is the widest realistic pair and
+                    // this face has truncated before.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+            ProgressTrack(fraction: fraction, tint: tint)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text(progressSpoken(value: value, fraction: fraction)))
+    }
+
+    /// VoiceOver gets the pair AND the progress — the arc is the part a sighted reader gets for free.
+    private func progressSpoken(value: String, fraction: Double?) -> String {
+        guard value != "–" else { return "unavailable" }
+        guard let fraction else { return value }
+        return "\(value), \(Int((fraction * 100).rounded())) percent of target"
     }
 
     /// systemMedium: header + the trio as three big columns (the banner-card layout).
@@ -150,22 +193,20 @@ struct NOOPTargetsView: View {
     /// widget's whole point is running island-less, so the strap's remaining charge is the one
     /// operational vital worth a corner).
     private var header: some View {
-        HStack {
+        HStack(spacing: 6) {
             Text("NOOP")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(StrandPalette.textSecondary)
-            Spacer()
-            HStack(spacing: 3) {
-                Image(systemName: BatteryGlyph.symbol(forPercent: snap.batteryPct))
-                Text(snap.batteryPct.map { "\($0)%" } ?? "–")
-                    .lineLimit(1)
-            }
-            .font(.caption2)
-            .foregroundStyle(StrandPalette.textSecondary)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(Text("Strap battery"))
-            .accessibilityValue(Text(snap.batteryPct.map { "\($0) percent" } ?? "unavailable"))
+            Spacer(minLength: 4)
+            BatteryPips(percent: snap.batteryPct)
+            Text(snap.batteryPct.map { "\($0)%" } ?? "–")
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(StrandPalette.textSecondary)
+                .lineLimit(1)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Strap battery"))
+        .accessibilityValue(Text(snap.batteryPct.map { "\($0) percent" } ?? "unavailable"))
     }
 
     /// One labelled value column (value over caption), equal-width. Tint applies to the value only
@@ -205,5 +246,68 @@ struct NOOPTargetsView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
         .accessibilityValue(Text(value))
+    }
+}
+
+/// A slim progress track. Used by the Targets small face so each pair shows how far through its
+/// target the day is without the reader doing the division.
+///
+/// A nil fraction draws the EMPTY track, never a zero-length fill: "not tracked" and "none done yet"
+/// are different states and must not look identical.
+private struct ProgressTrack: View {
+    let fraction: Double?
+    let tint: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(StrandPalette.textTertiary.opacity(0.22))
+                if let fraction, fraction > 0 {
+                    Capsule()
+                        .fill(tint)
+                        // At least a visible nub, so a genuine 1% does not render as nothing and read
+                        // the same as no data at all.
+                        .frame(width: max(3, geo.size.width * fraction))
+                }
+            }
+        }
+        .frame(height: 3)
+    }
+}
+
+/// The strap battery as SIX discrete pips (maintainer's request, 260919: steps at 0/20/40/60/80/100).
+///
+/// Drawn rather than an SF Symbol because SF Symbols ships only five battery fills — `battery.0`
+/// through `battery.100` — so a sixth step is not expressible as a glyph. Pips also read better at
+/// this size than a shrunken battery outline, and the lit count is the whole message.
+///
+/// Colour carries the warning, not the count: below two pips the fill goes critical, because a strap
+/// about to die during a night's sleep is the one battery state worth interrupting a glance for.
+private struct BatteryPips: View {
+    let percent: Int?
+
+    private var lit: Int { BatteryGlyph.bars(forPercent: percent) }
+
+    private var fill: Color {
+        guard percent != nil else { return StrandPalette.textTertiary }
+        switch lit {
+        case ..<2: return StrandPalette.statusCritical
+        case 2:    return StrandPalette.metricAmber
+        default:   return StrandPalette.statusPositive
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 1.5) {
+            ForEach(0..<BatteryGlyph.barCount, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 0.8, style: .continuous)
+                    .fill(i < lit ? fill : StrandPalette.textTertiary.opacity(0.25))
+                    .frame(width: 3, height: 9)
+            }
+        }
+        // The pips ARE the battery; the percentage beside them carries the exact figure, and the
+        // header as a whole speaks one accessibility value.
+        .accessibilityHidden(true)
     }
 }

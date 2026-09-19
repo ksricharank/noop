@@ -573,37 +573,49 @@ final class AICoachEngine: ObservableObject {
     /// deterministic targets from the TODAY'S TARGETS block (the same numbers the Lock-Screen card
     /// prints) so the synthesis and the card can never disagree. Exposed like `defaultSystemPrompt`
     /// so the UI can show it and restore it.
+    /// The Today synthesis instruction.
+    ///
+    /// 260919, at the maintainer's request: this used to mandate three fixed sections — Heart,
+    /// Activity, Rest & sleep — every single day. That structure GUARANTEED a drab summary: with
+    /// three headings to fill whether or not anything had happened, the model padded the quiet ones
+    /// ("resting heart rate is normal", "sleep was adequate"), and a genuinely unusual reading sat
+    /// in the same typeface as the filler around it. A reader who sees the same shape every morning
+    /// stops reading it, which costs the one night that mattered.
+    ///
+    /// It now leads with what is ACTUALLY notable — a real deviation from the wearer's own
+    /// baselines, a streak, a sharp change — and says so plainly when nothing is. The sections are
+    /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
-    Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen as three titled sections, in this order: **Heart**, **Activity**, \
-    **Rest & sleep**. Format, strictly — the reader is scanning, not studying:
-    - Each section's bold title on its OWN line.
-    - Directly under the title, ONE bolded takeaway line of at most ten words — the verdict or \
-    instruction, readable on its own if I read nothing else.
-    - Then 2-4 sub-bullets. Each is a single short fragment (roughly twelve words or fewer), in \
-    the shape "Thing — fact or instruction", never a full flowing sentence.
-    - Every number you cite goes in **bold**. A blank line between sections. NOTHING outside this \
-    structure: no paragraphs, no prose between bullets.
-    The **Heart** section covers the overall state of my heart: my latest resting heart rate and \
-    HRV against my own personal baselines (my data includes z-scores — |z| above 1 is a real \
-    deviation), the direction they have been moving across the recent day-lines, and any watchout \
-    that trend implies (a climbing resting HR, sagging HRV, or elevated respiratory rate can flag \
-    strain, poor recovery, or oncoming illness). State the trend plainly, then what I should do \
-    about it overall — this section is about my heart's trajectory, not this minute's reading.
-    The **Activity** section covers my effort, my total calories, my steps AND my water so far \
-    against today's targets in TODAY'S TARGETS (all shown as now/target on my Lock-Screen card): \
-    what produced those numbers, then the concrete session (or rest) that closes the gap, the \
-    walking left to do, and the cups of water left to drink. Total calories include resting \
-    metabolism on both sides, so early-day numbers far below target are normal — say so rather \
-    than urging a sprint.
-    The **Rest & sleep** section covers what last night and today's load mean for resting \
-    properly today, then tonight's plan: cite the precise target bedtime and sleep target from \
-    TODAY'S TARGETS.
-    Within each section, order the sub-bullets so the ones explaining what led to the numbers come \
-    BEFORE prescribing ones, and bring in another metric from my data only when it strictly serves \
-    that section's story (for example an elevated skin temperature explaining poor rest — \
-    illustrative, not required). Cite my actual numbers; never invent targets that differ from \
-    TODAY'S TARGETS. No greeting, nothing outside the three sections.
+    Following your coaching instructions and using my data above, write today's read for my Today \
+    screen. Your job is to tell me what is WORTH KNOWING today — not to summarise every metric.
+
+    What earns a mention, in this order of priority:
+    - A reading that genuinely deviates from MY OWN baseline. My data includes z-scores: |z| above \
+    1 is a real deviation, above 2 is a strong one. A metric sitting inside its normal range is \
+    NOT news and must not be mentioned just to fill space.
+    - A trend across the recent day-lines: several days moving the same direction, a streak broken, \
+    a reversal. A direction is often more informative than today's single value.
+    - A relationship worth drawing between two things — poor sleep and an elevated resting heart \
+    rate, a hard session and a sagging HRV, a raised skin temperature alongside a poor night. Only \
+    when my actual numbers support it.
+    - A target from TODAY'S TARGETS that is genuinely at risk, or already met. Not a routine \
+    progress readout: total calories include resting metabolism, so an early-day number far below \
+    target is normal and is not a finding.
+    - A watchout worth flagging: a climbing resting HR, sagging HRV or elevated respiratory rate \
+    together can precede illness or accumulated strain. Say so when the data shows it, and do not \
+    manufacture it when it does not.
+
+    Format — the reader is scanning:
+    - 2 to 5 bullets. FEWER IS BETTER. If only two things are worth saying, write two.
+    - Each bullet starts with a **bolded claim of at most eight words** — the finding itself — then \
+    an em dash, then one short clause of evidence or what to do. Every number in **bold**.
+    - Order them most notable first. The first bullet is the one thing to read if I read nothing else.
+    - No headings, no sections, no greeting, no sign-off, no prose outside the bullets.
+
+    When the day is genuinely unremarkable, SAY THAT in one or two bullets — "Everything sitting in \
+    your normal range" is a useful, honest answer, and far better than padding. Never invent a \
+    finding to reach a bullet count. Never cite a number my data does not contain, and never state \
+    a target that differs from TODAY'S TARGETS.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the

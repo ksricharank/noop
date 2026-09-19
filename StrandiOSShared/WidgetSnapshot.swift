@@ -185,6 +185,39 @@ public struct WidgetSnapshot: Codable, Equatable {
         return "\((waterHalfCups ?? 0) / 2)/\(target)"
     }
 
+    // MARK: - Target progress (260919, the Targets widget's arcs)
+
+    /// How far through each target today is, 0...1, or nil when either side is unknown. The widget
+    /// draws these as arcs; the pre-formatted "n/t" strings remain the text beside them.
+    ///
+    /// CLAMPED at 1: an arc cannot draw past full, and a 140%-of-target day must not wrap around to
+    /// look like 40%. Over-target is still legible — the number beside the arc says 11.2k/8.9k — so
+    /// the arc saturating is the honest shape rather than a lost distinction.
+    private static func fraction(_ now: Int?, _ target: Int?) -> Double? {
+        guard let now, let target, target > 0 else { return nil }
+        return min(1, max(0, Double(now) / Double(target)))
+    }
+
+    public var stepsFraction: Double? { Self.fraction(steps, stepsTarget) }
+    public var calFraction: Double? { Self.fraction(kcal, kcalTarget) }
+
+    /// Water compares HALF-cups against a target stated in WHOLE cups, so the target doubles before
+    /// the division — comparing 15 half-cups to 19 cups directly would read as 79% when it is 39%.
+    public var waterFraction: Double? {
+        guard let target = waterTargetCups, target > 0 else { return nil }
+        return min(1, max(0, Double(waterHalfCups ?? 0) / Double(target * 2)))
+    }
+
+    /// Effort reaches the extension only as PRE-FORMATTED display strings (the scale preference
+    /// lives in the app), so its fraction is parsed back out of them rather than computed from raw
+    /// numbers like the other three. Returns nil if either side does not parse — a widget must not
+    /// invent an arc from a string it did not understand.
+    public var effortFraction: Double? {
+        guard let nowText = effortDisplay, let targetText = effortTargetDisplay,
+              let now = Double(nowText), let target = Double(targetText), target > 0 else { return nil }
+        return min(1, max(0, now / target))
+    }
+
     /// The Steps glance: today over target as FULL counts ("3205/8000") — the in-app strip and the
     /// Live Activity banner have the width for the real number. Same degrade rules as the Cal pair;
     /// a fresh day reads "0/8000".
