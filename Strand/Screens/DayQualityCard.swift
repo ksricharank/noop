@@ -37,13 +37,8 @@ struct DayQualityCard: View {
     /// 260919: OPEN by default (maintainer request). The summary is the Recap tab's headline read,
     /// and a section that has to be opened to be seen is one that is not read. Opening by default
     /// means generating by default — a provider call per visit — which is the cost of making it the
-    /// thing the tab leads with.
-    @State private var showNarrative = true
     /// Re-scored breakdown for the day on show. Built once per (day, config) rather than in `body`.
     @State private var breakdown: DayQualityScore?
-    @State private var narrative: String?
-    @State private var narrativeDay: String?
-    @State private var narrativeInFlight = false
 
     /// Which scored day to show, as an index back through the scored days — 0 is the most recent, 1
     /// the one before it. Not a calendar offset: unscored days are skipped, so stepping back always
@@ -86,7 +81,6 @@ struct DayQualityCard: View {
                 if let score {
                     headline(score)
                     computationSection
-                    narrativeSection
                     coachLink
                 } else {
                     // Honest empty state. A score needs a finished day with enough of it recorded,
@@ -101,10 +95,6 @@ struct DayQualityCard: View {
         .accessibilityElement(children: .contain)
         .task(id: day) {
             await load()
-            // The section starts open (260919), so the first narrative must be requested here —
-            // the disclosure toggle used to be the only trigger. Keyed on `day`, so stepping to
-            // another day re-scores AND re-asks; `loadNarrative` itself is cached and single-flighted.
-            if showNarrative { await loadNarrative() }
         }
     }
 
@@ -273,54 +263,6 @@ struct DayQualityCard: View {
             : "Yesterday's targets were easier than your recent average, so the execution half was scaled down \(abs(pct))%."
     }
 
-    // MARK: - Narrative (collapsible)
-
-    private var narrativeSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Divider().overlay(StrandPalette.hairline)
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showNarrative.toggle() }
-                if showNarrative { Task { await loadNarrative() } }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showNarrative ? "chevron.down" : "chevron.right")
-                        .font(StrandFont.caption)
-                    Text("What it means").font(StrandFont.caption)
-                    if narrativeInFlight {
-                        ProgressView().controlSize(.mini)
-                    }
-                }
-                .foregroundStyle(StrandPalette.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showNarrative ? "Collapse the summary" : "Expand the summary")
-
-            if showNarrative {
-                if let narrative {
-                    // MARKDOWN, not plain Text (260904). The coach replies in GitHub-flavored
-                    // Markdown — overwhelmingly bold, sometimes a list — and a plain `Text` renders
-                    // `**like this**` as literal asterisks. Every other coach surface (the Today
-                    // synthesis, the Q&A bubbles) already uses MarkdownUI; this card was the one
-                    // that did not, so it was the one showing raw syntax.
-                    //
-                    // `.strandSynthesis` rather than `.strand`: same footnote-scale secondary tone
-                    // this card already used, so only the FORMATTING changes, not the type size.
-                    Markdown(narrative)
-                        .markdownTheme(.strandSynthesis)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else if !narrativeInFlight {
-                    // No provider, no consent, or the call failed. The card says so plainly rather
-                    // than pretending — every other part of it still works.
-                    Text("No summary available. Set up a coach provider in Settings to get one.")
-                        .font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
     /// "Ask the Coach", mirroring the Today synthesis's affordance (260904, maintainer request).
     ///
     /// Worth having here specifically because the coach now receives the day-quality HISTORY — the
@@ -364,17 +306,4 @@ struct DayQualityCard: View {
         breakdown = DayQualityScore.score(input, config: DayQualityPrefs.config)
     }
 
-    /// One coach call per day, cached in `@State`. The section now starts OPEN (260919), so the
-    /// first request rides `.task` below rather than the disclosure toggle; the cache still means
-    /// re-showing the same day costs nothing.
-    private func loadNarrative() async {
-        guard let day, let breakdown else { return }
-        guard narrativeDay != day || narrative == nil else { return }
-        guard !narrativeInFlight else { return }
-        narrativeInFlight = true
-        defer { narrativeInFlight = false }
-        let text = await coach.dayQualityNarrative(day: day, score: breakdown)
-        narrative = text
-        narrativeDay = text == nil ? nil : day
-    }
 }

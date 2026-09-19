@@ -189,33 +189,10 @@ struct SleepView: View {
                             .padding(.horizontal, -16)
                             .padding(.top, -24)
                             .staggeredAppear(index: 0)
-                        // The Sleep tab's own LLM read (260919). Directly under the hero, like the
-                        // other tabs' summaries — at the foot of the arrangeable sections it was
-                        // several screens down, which is not where a summary belongs.
-                        //
-                        // Its lens is THIS NIGHT's architecture and what it means for today —
-                        // deliberately not the day's grade (Recap owns that) or the week's
-                        // direction (Trends).
-                        NoopCard {
-                            TabInsightCard(
-                                title: "What last night says",
-                                // Keyed on the night being VIEWED, so stepping back through nights
-                                // re-asks rather than leaving the previous answer under new numbers.
-                                subject: "sleep-\(nightDayKey(resolved))",
-                                generate: { [weak coach] in
-                                    guard let row = repo.days.first(where: {
-                                        $0.day == nightDayKey(resolved)
-                                    }) else { return nil }
-                                    return await coach?.sleepNarrative(night: row)
-                                },
-                                onAskCoach: { router.openCoach() }
-                            )
-                        }
-                        .staggeredAppear(index: 1)
                         // #sleep-layout: the analytical cards render in the user's saved order minus the
                         // hidden set, below the pinned Rest hero. Reordered via the Arrange sheet.
                         ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
-                            sleepSectionView(section, resolved).staggeredAppear(index: idx + 2)
+                            sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
                         }
 
                     }
@@ -472,6 +449,7 @@ struct SleepView: View {
     @ViewBuilder
     private func sleepSectionView(_ section: SleepSection, _ model: SleepModel) -> some View {
         switch section {
+        case .insight:         insightCard(model)
         case .sleepMarks:      SleepMarkCard()
         case .stages:          hero(model)
         case .bodyClock:       bodyClockDial(model)
@@ -480,6 +458,28 @@ struct SleepView: View {
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
         case .restTrend:       restTrend
+        }
+    }
+
+    /// The tab's LLM read (260919). An arrangeable section like every other card here, so it can be
+    /// moved or hidden in Arrange rather than being pinned somewhere the wearer did not choose. Its
+    /// lens is THIS NIGHT's architecture and what it means for today — deliberately not the day's
+    /// grade (Recap owns that) or the week's direction (Trends).
+    private func insightCard(_ model: SleepModel) -> some View {
+        NoopCard {
+            TabInsightCard(
+                title: "What last night says",
+                // Keyed on the night being VIEWED, so stepping back through nights re-asks rather
+                // than leaving the previous answer sitting under new numbers.
+                subject: "sleep-\(nightDayKey(model))",
+                generate: { [weak coach] in
+                    guard let row = repo.days.first(where: { $0.day == nightDayKey(model) })
+                    else { return nil }
+                    return await coach?.sleepNarrative(night: row)
+                },
+                startsExpanded: true,
+                onAskCoach: { router.openCoach() }
+            )
         }
     }
 

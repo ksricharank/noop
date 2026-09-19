@@ -297,45 +297,18 @@ struct TrendsView: View {
                         // Keeping a second copy here is exactly the divergence the parity rule warns
                         // about, and the Trends page is the poorer place for it: it cannot browse
                         // days.
-                        rangeBar(recovery: recovery)
+                        rangeBar(metrics: [recovery, hrv, rhr, strain, rest, dayQuality])
                             .staggeredAppear(index: 1)
-                        // The Trends tab's own LLM read (260919). Its lens is DIRECTION over the
-                        // selected window — deliberately not today's state (Today owns that), not a
-                        // finished day's grade (Recap), and not last night (Sleep).
-                        NoopCard {
-                            TabInsightCard(
-                                title: "What the trend says",
-                                // Re-asks when the window changes: an answer about 90 days must not
-                                // sit under a chart showing one week.
-                                subject: "trend-\(range.days.map(String.init) ?? "all")",
-                                generate: { [weak coach] in
-                                    await coach?.trendsNarrative(
-                                        windowDays: range.days ?? repo.days.count)
-                                },
-                                onAskCoach: { router.openCoach() }
-                            )
+                        trendsArrangeAffordance
+                        // 260919: the cards render in the wearer's saved order minus the hidden set,
+                        // below the pinned range bar. Same mechanism as Today, Recap and Sleep — the
+                        // range bar itself stays pinned, because a page whose window selector could
+                        // be hidden would have no way to choose a window.
+                        ForEach(Array(trendsVisibleSections.enumerated()), id: \.element) { idx, section in
+                            trendsSectionView(section, recovery: recovery, hrv: hrv, rhr: rhr,
+                                              strain: strain, rest: rest, dayQuality: dayQuality)
+                                .staggeredAppear(index: idx + 2)
                         }
-                        .staggeredAppear(index: 2)
-                        weeklyDigestNav
-                            .staggeredAppear(index: 3)
-                        // The Charge / Effort / Rest trio, presented in NOOP's pip language.
-                        weekInReview(charge: recovery, effort: strain, rest: rest,
-                                     dayQuality: dayQuality)
-                            .staggeredAppear(index: 4)
-                        heroRecovery(recovery: recovery)
-                            .staggeredAppear(index: 5)
-                        smallMultiples(hrv: hrv, rhr: rhr, strain: strain,
-                                       dayQuality: dayQuality, rest: rest)
-                            .staggeredAppear(index: 6)
-                        // Long-horizon training load (CTL/ATL/TSB). Uses the FULL history, not the
-                        // range window — chronic load is inherently a 42-day horizon. Self-hides its
-                        // chart behind an honest "needs N more days" state until enough history exists.
-                        TrainingLoadCard(days: repo.days)
-                            .staggeredAppear(index: 7)
-                        yearStrip
-                            .staggeredAppear(index: 8)
-                        exportReportRow
-                            .staggeredAppear(index: 9)
                         // 260906: DayQualitySettingsCard moved to the Day tab with the score it
                         // tunes — the knobs belong beside the number they move, not on a page that
                         // no longer shows it.
@@ -344,6 +317,10 @@ struct TrendsView: View {
             }
         }
         // #436 — present the offline trends-report exporter (range picker + PDF export).
+        .sheet(isPresented: $showTrendsCustomize) {
+            TrendsCustomizationSheet(sectionOrderRaw: $trendsSectionOrderRaw,
+                                     hiddenSectionsRaw: $trendsHiddenSectionsRaw)
+        }
         .sheet(isPresented: $showingReport) {
             TrendsReportSheet(days: repo.days)
         }
@@ -684,11 +661,102 @@ struct TrendsView: View {
         .accessibilityElement(children: .contain)
     }
 
+    // MARK: - Arrangeable cards (260919)
+
+    @AppStorage(TrendsLayoutPrefs.orderKey) private var trendsSectionOrderRaw = ""
+    @AppStorage(TrendsLayoutPrefs.hiddenKey) private var trendsHiddenSectionsRaw = ""
+    @State private var showTrendsCustomize = false
+
+    private var trendsVisibleSections: [TrendsSection] {
+        TrendsLayoutPrefs.visibleOrder(orderRaw: trendsSectionOrderRaw,
+                                       hiddenRaw: trendsHiddenSectionsRaw)
+    }
+
+    private var trendsArrangeAffordance: some View {
+        HStack(spacing: 0) {
+            Spacer()
+            Button {
+                showTrendsCustomize = true
+            } label: {
+                Label("Customize", systemImage: "slider.horizontal.3")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Customize the Trends tab layout")
+        }
+    }
+
+    /// One card per `TrendsSection`. Every branch is a view that already existed; this only decides
+    /// which render and in what order.
+    @ViewBuilder
+    private func trendsSectionView(_ section: TrendsSection,
+                                   recovery: ResolvedMetric, hrv: ResolvedMetric,
+                                   rhr: ResolvedMetric, strain: ResolvedMetric,
+                                   rest: ResolvedMetric, dayQuality: ResolvedMetric) -> some View {
+        switch section {
+        case .insight:
+            // The Trends tab's own LLM read. Its lens is DIRECTION over the selected window —
+            // deliberately not today's state (Today owns that), not a finished day's grade (Recap),
+            // and not last night (Sleep).
+            NoopCard {
+                TabInsightCard(
+                    title: "What the trend says",
+                    // Re-asks when the window changes: an answer about 90 days must not sit under
+                    // a chart showing one week.
+                    subject: "trend-\(range.days.map(String.init) ?? "all")",
+                    generate: { [weak coach] in
+                        await coach?.trendsNarrative(windowDays: range.days ?? repo.days.count)
+                    },
+                    startsExpanded: true,
+                    onAskCoach: { router.openCoach() }
+                )
+            }
+        case .weeklyDigest:
+            weeklyDigestNav
+        case .weekInReview:
+            // The Charge / Effort / Rest trio, presented in NOOP's pip language.
+            weekInReview(charge: recovery, effort: strain, rest: rest, dayQuality: dayQuality)
+        case .recoveryHero:
+            heroRecovery(recovery: recovery)
+        case .smallMultiples:
+            smallMultiples(hrv: hrv, rhr: rhr, strain: strain, dayQuality: dayQuality, rest: rest)
+        case .trainingLoad:
+            // Long-horizon training load (CTL/ATL/TSB). Uses the FULL history, not the range window
+            // — chronic load is inherently a 42-day horizon. Self-hides its chart behind an honest
+            // "needs N more days" state until enough history exists.
+            TrainingLoadCard(days: repo.days)
+        case .yearStrip:
+            yearStrip
+        case .exportReport:
+            exportReportRow
+        }
+    }
+
     // MARK: Range control
 
-    private func rangeBar(recovery: ResolvedMetric) -> some View {
-        let cap = recovery.caption
-        let isWide = recovery.widened
+    /// 260919: the caption used to be `recovery`'s alone while sitting above SIX metrics. On an
+    /// install whose Charge is sparse but whose HRV, strain and rest are not, the page announced
+    /// "3 readings · sparse, widened to 3 months" over charts plotting a full month — which reads
+    /// as a glitch, and was reported as one.
+    ///
+    /// It now describes the page: the widest window any metric had to widen to, and the count from
+    /// the metric with the MOST readings, so the line matches the densest chart under it rather
+    /// than the emptiest. A per-metric shortfall is still visible on that metric's own card.
+    private func rangeBar(metrics: [ResolvedMetric]) -> some View {
+        let widest = metrics.filter(\.widened).max { lhs, rhs in
+            (lhs.effective.days ?? Int.max) < (rhs.effective.days ?? Int.max)
+        }
+        let densest = metrics.max { $0.points.count < $1.points.count }
+        let isWide = widest != nil
+        let cap: String = {
+            guard let densest else { return "" }
+            // Widened: name the window the page actually settled on, with the densest metric's count.
+            if let widest {
+                return caption(count: densest.points.count, eff: widest.effective)
+            }
+            return caption(count: densest.points.count, eff: range)
+        }()
         return VStack(alignment: .leading, spacing: NoopMetrics.space2) {
             HStack(spacing: NoopMetrics.space2) {
                 // Six ranges plus the trailing-window caption need to share a compact iPhone row.

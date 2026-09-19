@@ -27,6 +27,9 @@ import SwiftUI
 /// One reorderable Sleep card. The rawValue is the stable persisted identifier — keep it byte-identical to
 /// the Android `SleepSection` enum so a backup/restore reads the same layout on either OS.
 enum SleepSection: String, CaseIterable, Identifiable {
+    /// 260919: the tab's LLM read, arrangeable like every other card so it can be moved or hidden.
+    /// Defaults to sitting just before Stages, at the maintainer's request.
+    case insight
     case sleepMarks
     case stages
     case bodyClock
@@ -45,6 +48,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// The card's display label in the Arrange sheet — matches the Android `SleepSection.title`.
     var title: String {
         switch self {
+        case .insight:         return String(localized: "What last night says")
         case .sleepMarks:      return String(localized: "Sleep marks")
         case .stages:          return String(localized: "Stages")
         case .bodyClock:       return String(localized: "Body clock")
@@ -61,7 +65,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// with Stages for now — it's drawn inside the stages hero; making it an independently arrangeable
     /// card is a follow-up that requires hoisting the hero's edit/delete callbacks.)
     static let defaultOrder: [SleepSection] = [
-        .sleepMarks, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
+        .sleepMarks, .insight, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
         .restTrend,
     ]
 }

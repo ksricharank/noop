@@ -31,6 +31,9 @@ import SwiftUI
 enum DaySection: String, CaseIterable, Identifiable {
     /// The signed score, its two halves, and the per-component breakdown.
     case breakdown
+    /// 260919: the tab's LLM read, lifted OUT of the breakdown card so it can be moved or hidden
+    /// independently like every other card here.
+    case insight
     /// Which components moved the score, ranked over the window.
     case attribution
     /// "You were N steps from +M points" — the marginal value of each component, today.
@@ -52,6 +55,7 @@ enum DaySection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .breakdown:      return String(localized: "Score breakdown")
+        case .insight:        return String(localized: "What it means")
         case .attribution:    return String(localized: "What moved the score")
         case .counterfactual: return String(localized: "Closest gains")
         case .streaks:        return String(localized: "Consistency")
@@ -68,7 +72,7 @@ enum DaySection: String, CaseIterable, Identifiable {
     /// moving it, what would move it next, then the longer horizons, and the knobs last (a setting is
     /// consulted rarely and belongs below the thing it tunes).
     static let defaultOrder: [DaySection] = [
-        .breakdown, .attribution, .counterfactual, .streaks,
+        .breakdown, .insight, .attribution, .counterfactual, .streaks,
         .weekSummary, .trend, .calendar, .settings,
     ]
 }

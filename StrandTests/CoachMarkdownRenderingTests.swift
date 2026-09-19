@@ -34,7 +34,11 @@ final class CoachMarkdownRenderingTests: XCTestCase {
     /// Kept as a LIST rather than a single check so that adding a coach surface without Markdown
     /// fails here — which is exactly how the day-quality card slipped through.
     private let coachProseSurfaces = [
-        ("the day-quality narrative", "Strand/Screens/DayQualityCard.swift", "Markdown(narrative)"),
+        // 260919: the day-quality narrative moved OUT of DayQualityCard into the shared
+        // `TabInsightCard`, which now backs the Recap, Trends and Sleep summaries. One surface
+        // instead of three copies — so this entry covers all three, and a fourth tab adding a
+        // summary inherits the guarantee rather than needing a new line here.
+        ("the shared tab insight card", "Strand/Screens/TabInsightCard.swift", "Markdown(text)"),
         ("the coach Q&A reply", "Strand/Screens/CoachView.swift", "Markdown(message.text)"),
         ("the Today synthesis", "Strand/Screens/TodayView.swift", "Markdown(text)"),
         ("the Liquid Today synthesis", "Strand/Liquid/LiquidTodayView.swift", "Markdown(ai)"),
@@ -52,11 +56,12 @@ final class CoachMarkdownRenderingTests: XCTestCase {
         }
     }
 
-    /// The day-quality card is the specific regression: assert it does NOT go back to a plain Text
-    /// for the narrative, which is a different statement from "it contains a Markdown call".
-    func testTheDayQualityNarrativeIsNotPlainText() throws {
-        let src = try source("Strand/Screens/DayQualityCard.swift")
-        XCTAssertFalse(src.contains("Text(narrative)"),
+    /// The original regression, restated for where the narrative lives now: assert the shared card
+    /// does NOT fall back to a plain Text, which is a different statement from "it contains a
+    /// Markdown call somewhere".
+    func testTheTabInsightNarrativeIsNotPlainText() throws {
+        let src = try source("Strand/Screens/TabInsightCard.swift")
+        XCTAssertFalse(src.contains("Text(text)"),
                        "the narrative regressed to a plain Text — the model's bold will render as "
                        + "literal ** asterisks, which is the reported bug")
     }
