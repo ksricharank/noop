@@ -15,7 +15,7 @@ final class TrendsLayoutPrefsTests: XCTestCase {
     /// a missing one would be unreachable.
     func testDecodeAlwaysYieldsEveryCardExactlyOnce() {
         for raw in ["", "insight", "yearStrip,insight", "bogus,insight,bogus",
-                    "insight,insight,weeklyDigest"] {
+                    "insight,insight,weekInReview"] {
             let decoded = TrendsLayoutPrefs.decodeOrder(raw)
             XCTAssertEqual(Set(decoded).count, decoded.count, "duplicate in \(raw)")
             XCTAssertEqual(Set(decoded), Set(TrendsSection.allCases), "missing card in \(raw)")
@@ -47,7 +47,7 @@ final class TrendsLayoutPrefsTests: XCTestCase {
     /// The round trip is lossless, which is what lets the sheet store "shown ++ hidden" and read
     /// back the same arrangement.
     func testEncodeDecodeRoundTrips() {
-        let order: [TrendsSection] = [.yearStrip, .insight, .trainingLoad, .weeklyDigest,
+        let order: [TrendsSection] = [.yearStrip, .insight, .trainingLoad,
                                       .weekInReview, .recoveryHero, .smallMultiples, .exportReport]
         XCTAssertEqual(TrendsLayoutPrefs.decodeOrder(TrendsLayoutPrefs.encode(order)), order)
     }
@@ -56,7 +56,7 @@ final class TrendsLayoutPrefsTests: XCTestCase {
     /// opens Arrange sees precisely what it saw before this shipped.
     func testTheDefaultOrderMatchesTheOriginalHardCodedOrder() {
         XCTAssertEqual(TrendsSection.defaultOrder,
-                       [.insight, .weeklyDigest, .weekInReview, .recoveryHero, .smallMultiples,
+                       [.insight, .weekInReview, .recoveryHero, .smallMultiples,
                         .trainingLoad, .yearStrip, .exportReport])
     }
 

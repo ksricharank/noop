@@ -13,8 +13,6 @@ import Foundation
 enum TrendsSection: String, CaseIterable, Identifiable {
     /// The tab's LLM read of the selected window.
     case insight
-    /// Browsable week-over-week digest.
-    case weeklyDigest
     /// The Charge / Effort / Rest trio in pip language.
     case weekInReview
     /// The big recovery-over-time chart.
@@ -34,7 +32,6 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .insight:        return String(localized: "What the trend says")
-        case .weeklyDigest:   return String(localized: "Weekly digest")
         case .weekInReview:   return String(localized: "Week in review")
         case .recoveryHero:   return String(localized: "Charge over time")
         case .smallMultiples: return String(localized: "Metric trends")
@@ -47,7 +44,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// The original hard-coded order — the default when the layout is not customised, so an install
     /// that never opens Arrange sees exactly what it saw before this became arrangeable.
     static let defaultOrder: [TrendsSection] = [
-        .insight, .weeklyDigest, .weekInReview, .recoveryHero, .smallMultiples,
+        .insight, .weekInReview, .recoveryHero, .smallMultiples,
         .trainingLoad, .yearStrip, .exportReport,
     ]
 }

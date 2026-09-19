@@ -72,12 +72,6 @@ struct TrendsView: View {
     /// the four can be read against each other. That is the one thing a dedicated tab cannot do.
     @State private var dayQualityByDay: [String: Double] = [:]
 
-    // #710 — browse previous weeks in the Week-in-review digest. 0 = the week containing today; each step
-    // back is one Mon–Sun week earlier. Clamped so it never runs past the earliest day we hold (see
-    // `weekAnchorDay` / `stepWeek`). The Trends RANGE control below is independent of this — it scopes the
-    // long-form charts; this only moves the weekly digest at the top.
-    @State private var weekOffset = 0
-
     // Effort display scale (#268) — routes the Effort small-multiple's numbers + unit. Display-only.
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
     // Trend chart style (line vs bar) — display-only; flips every trend card between the gradient line
@@ -339,202 +333,17 @@ struct TrendsView: View {
         }
     }
 
-    // MARK: Week-in-review digest with prev/next week browsing (#710)
+    // MARK: Day-keyed series helpers
 
-    /// The earliest "yyyy-MM-dd" we hold (history is oldest → newest), used to clamp how far back the
-    /// week stepper can go.
-    private var earliestDay: String? { repo.days.first?.day }
-
-    /// The most negative `weekOffset` allowed: the number of whole weeks between the earliest day's week
-    /// and this week. Beyond that there's no data to digest, so the back chevron disables. 0 when history
-    /// is empty or unparseable (so we stay on this week).
-    private var minWeekOffset: Int {
-        guard
-            let earliest = earliestDay,
-            let earliestMon = WeeklyDigestEngine.mondayOfWeek(containing: earliest),
-            let thisMon = WeeklyDigestEngine.mondayOfWeek(containing: Repository.localDayKey(Date()))
-        else { return 0 }
-        // Walk weeks back from this Monday until we pass the earliest week. Bounded by history length.
-        var off = 0
-        var mon = thisMon
-        while mon > earliestMon && off > -520 {           // hard cap ~10 years so a bad date can't spin
-            mon = WeeklyDigestEngine.addDays(mon, -7)
-            off -= 1
-        }
-        return off
-    }
-
-    /// The anchor day (any day in the target week) for the current `weekOffset`: today shifted back by
-    /// `weekOffset` whole weeks. The engine snaps it to that week's Monday.
-    private var weekAnchorDay: String {
-        WeeklyDigestEngine.addDays(Repository.localDayKey(Date()), weekOffset * 7)
-    }
-
-    /// Move the digest one week earlier (-1) or later (+1), clamped to [minWeekOffset, 0] — never into a
-    /// future week, never past the earliest week we hold.
-    private func stepWeek(_ delta: Int) {
-        let next = weekOffset + delta
-        weekOffset = max(minWeekOffset, min(0, next))
-    }
-
-    /// The week-in-review digest for the selected week, with prev/next chevrons in its header. The digest
-    /// for `weekAnchorDay` is built straight from the shared `WeeklyDigestSource` (the same builder the
-    /// standalone WeeklyDigestCard uses) so past weeks render in the identical format. The whole block
-    /// self-hides only when there's no data in ANY week (an all-empty history), matching the old card.
-    @ViewBuilder
-    private var weeklyDigestNav: some View {
-        let digest = WeeklyDigestSource.digest(from: repo.days, anchorDay: weekAnchorDay)
-        // Only hide the navigation entirely when the WHOLE history is empty — an empty PAST week still
-        // shows the header + chevrons so the user can step to a week that does hold data.
-        if repo.days.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                weekNavBar(digest: digest)
-                if digest.isEmpty {
-                    // This particular week had no readings — keep the chevrons above so the user can move on.
-                    DataPendingNote(
-                        title: "No readings this week",
-                        message: "Step to another week with the arrows above to see its review.")
-                } else {
-                    WeeklyDigestContent(digest: digest, compact: true, showsHeader: false)
-                        .padding(.top, NoopMetrics.space1)
-                    // 260908 — the two composite SCORES for the same week, appended here rather than
-                    // added to `WeeklyMetric`.
-                    //
-                    // `WeeklyMetric` is a SHARED analytics enum with a byte-identical Kotlin twin
-                    // (android/.../analytics/WeeklyDigest.kt), and the parity contract says a change
-                    // there must land on both platforms in the same PR. Day quality does not exist on
-                    // Android yet, so adding a case would either break parity or block this on porting
-                    // the whole feature. Computing the week's mean in the view keeps the shared
-                    // builder — and its Kotlin twin — untouched.
-                    weekScoreRows(digest: digest)
-                    // Share this week's recap as an image. Renders the digest card (with its header) to a
-                    // PNG off-screen and hands it to the share sheet / Save panel — reuses TrendsReport's
-                    // ImageRenderer path. Only offered when the week actually holds data.
-                    NoopButton("Share recap", systemImage: "square.and.arrow.up", kind: .secondary) {
-                        let page = WeeklyDigestContent(digest: digest, compact: true, showsHeader: true)
-                            .frame(width: 380)
-                            .padding(24)
-                            .background(StrandPalette.surfaceBase)
-                            .environment(\.colorScheme, colorScheme)
-                        TrendsReportRenderer.exportPNG(page: page, suggestedName: "noop-recap-\(weekAnchorDay).png")
-                    }
-                }
-            }
-        }
-    }
-
-    /// Day quality and Sleep score for the digest's own week, as two compact rows.
-    ///
-    /// Deliberately mean-of-the-week, matching how `WeeklyDigestContent` reports the metrics above it,
-    /// and silent when the week holds neither — an empty row would imply a zero week rather than an
-    /// unscored one.
-    @ViewBuilder
-    private func weekScoreRows(digest: WeeklyDigest) -> some View {
-        let dayValues = Self.valuesInWeek(dayQualityByDay, start: digest.weekStart, end: digest.weekEnd)
-        let restValues = Self.valuesInWeek(sleepPerfByDay, start: digest.weekStart, end: digest.weekEnd)
-        if !dayValues.isEmpty || !restValues.isEmpty {
-            VStack(alignment: .leading, spacing: NoopMetrics.space2) {
-                Divider().overlay(StrandPalette.hairline)
-                if !dayValues.isEmpty {
-                    let mean = dayValues.reduce(0, +) / Double(dayValues.count)
-                    weekScoreRow(label: "Day quality",
-                                 value: mean > 0 ? "+\(Int(mean.rounded()))" : "\(Int(mean.rounded()))",
-                                 detail: String(localized: "\(dayValues.count) scored day\(dayValues.count == 1 ? "" : "s") · \(DayQualityScore.band(Int(mean.rounded())))"),
-                                 tint: StrandPalette.chargeBright)
-                }
-                if !restValues.isEmpty {
-                    let mean = restValues.reduce(0, +) / Double(restValues.count)
-                    weekScoreRow(label: "Sleep score",
-                                 value: "\(Int(mean.rounded()))",
-                                 detail: String(localized: "\(restValues.count) scored night\(restValues.count == 1 ? "" : "s")"),
-                                 tint: StrandPalette.restColor)
-                }
-            }
-        }
-    }
-
-    private func weekScoreRow(label: LocalizedStringKey, value: String, detail: String,
-                              tint: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: NoopMetrics.space3) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                Text(detail)
-                    .font(StrandFont.caption)
-                    .foregroundStyle(StrandPalette.textTertiary)
-            }
-            Spacer()
-            Text(value)
-                .font(StrandFont.number(20, weight: .semibold))
-                .foregroundStyle(tint)
-                .monospacedDigit()
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(label))
-        .accessibilityValue(Text("\(value), \(detail)"))
-    }
-
-    /// The values of a day-keyed series inside an inclusive "yyyy-MM-dd" week range.
+    /// The values of a day-keyed series inside an inclusive "yyyy-MM-dd" range.
     ///
     /// String comparison, not date parsing: ISO day strings sort chronologically, which is the same
-    /// property `WeeklyDigest.valuesInRange` relies on — so this matches the window the digest above it
-    /// used rather than approximating it with a locale-sensitive calendar walk.
+    /// property `WeeklyDigest.valuesInRange` relies on, rather than approximating it with a
+    /// locale-sensitive calendar walk. Pure and static, so it is pinned by `TrendsScoreSeriesTests`
+    /// without a view; kept after the weekly digest was removed (260919) because that test is the
+    /// only guard on the comparison rule.
     static func valuesInWeek(_ series: [String: Double], start: String, end: String) -> [Double] {
         series.keys.sorted().filter { $0 >= start && $0 <= end }.compactMap { series[$0] }
-    }
-
-    /// Prev/next week stepper. Back is clamped at the earliest week we hold; forward is clamped at this
-    /// week (no future weeks). Mirrors the FullDayChartView day stepper's flat accent chevrons (#597).
-    private func weekNavBar(digest: WeeklyDigest) -> some View {
-        let atOldest = weekOffset <= minWeekOffset
-        let atNewest = weekOffset >= 0
-        let daysSummary = String(localized: "\(digest.daysWithData)/7 days")
-        let daysAccessibility = String(localized: "\(digest.daysWithData) of 7 days had data")
-        return HStack(spacing: NoopMetrics.cardInnerSpacing) {
-            Button { stepWeek(-1) } label: {
-                Image(systemName: "chevron.left").font(StrandFont.headline.weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(atOldest ? StrandPalette.textTertiary : StrandPalette.accent)
-            .disabled(atOldest)
-            .accessibilityLabel("Previous week")
-
-            Spacer()
-            VStack(spacing: 2) {
-                Text(weekOffset == 0 ? String(localized: "This week") : weekOffsetLabel)
-                    .font(StrandFont.headline)
-                    .foregroundStyle(StrandPalette.textPrimary)
-                Text("\(weeklyDigestRangeLabel(digest)) · \(daysSummary)")
-                    .font(StrandFont.footnote)
-                    .foregroundStyle(StrandPalette.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .accessibilityLabel("\(weeklyDigestRangeLabel(digest)), \(daysAccessibility)")
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            Spacer()
-
-            Button { stepWeek(1) } label: {
-                Image(systemName: "chevron.right").font(StrandFont.headline.weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(atNewest ? StrandPalette.textTertiary : StrandPalette.accent)
-            .disabled(atNewest)
-            .accessibilityLabel("Next week")
-        }
-        .padding(.horizontal, NoopMetrics.space1)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// "Last week" for -1, else the count of weeks back ("3 weeks ago") for the stepper's centre label.
-    private var weekOffsetLabel: String {
-        let n = -weekOffset
-        if n == 1 { return String(localized: "Last week") }
-        return String(localized: "\(n) weeks ago")
     }
 
     // MARK: Week in Review — the Charge / Effort / Rest trio in pip language
@@ -712,8 +521,6 @@ struct TrendsView: View {
                     onAskCoach: { router.openCoach() }
                 )
             }
-        case .weeklyDigest:
-            weeklyDigestNav
         case .weekInReview:
             // The Charge / Effort / Rest trio, presented in NOOP's pip language.
             weekInReview(charge: recovery, effort: strain, rest: rest, dayQuality: dayQuality)

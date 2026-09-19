@@ -227,7 +227,7 @@ struct NOOPTargetsView: View {
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 4)
                 Text(value)
-                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .bold, design: .rounded))
                     .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
                     // Single line with room to shrink: "18.4k/8.9k" is the widest realistic pair and
                     // this face has truncated before. The floor drops with the larger type.
@@ -316,7 +316,7 @@ struct NOOPTargetsView: View {
     private var header: some View {
         HStack(spacing: 6) {
             NoopPulseMark()
-                .frame(width: 27, height: 27)
+                .frame(width: 31, height: 31)
             Spacer(minLength: 4)
             // Deliberately small (260919): the strap charge is an operational vital worth a corner,
             // not a headline — the four targets are what this widget is for.
