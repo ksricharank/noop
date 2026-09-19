@@ -93,7 +93,6 @@ extension TrendsSection {
     var customizationIcon: String {
         switch self {
         case .insight:        return "sparkles"
-        case .weeklyDigest:   return "calendar"
         case .weekInReview:   return "square.grid.2x2"
         case .recoveryHero:   return "chart.line.uptrend.xyaxis"
         case .smallMultiples: return "chart.bar"
@@ -106,7 +105,6 @@ extension TrendsSection {
     var customizationSubtitle: String {
         switch self {
         case .insight:        return String(localized: "What the coach makes of the window")
-        case .weeklyDigest:   return String(localized: "Week over week, browsable back through history")
         case .weekInReview:   return String(localized: "Charge, Effort and Rest for the week")
         case .recoveryHero:   return String(localized: "Charge over the selected range")
         case .smallMultiples: return String(localized: "HRV, resting HR, effort, rest and day quality")
@@ -119,7 +117,6 @@ extension TrendsSection {
     var customizationTint: Color {
         switch self {
         case .insight:        return StrandPalette.accent
-        case .weeklyDigest:   return StrandPalette.chargeColor
         case .weekInReview:   return StrandPalette.chargeColor
         case .recoveryHero:   return StrandPalette.chargeColor
         case .smallMultiples: return StrandPalette.restColor
