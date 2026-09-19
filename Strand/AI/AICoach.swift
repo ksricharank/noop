@@ -1425,6 +1425,16 @@ final class AICoachEngine: ObservableObject {
     /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
     /// read by the next morning rather than pinning yesterday's narrative to today's numbers.
     @Published var synthesisGeneratedAt: Date?
+    /// The repository refresh sequence the current `synthesisText` was generated FROM (260919).
+    ///
+    /// The stale-morning-summary bug: the app opens, the scenePhase handler generates a synthesis
+    /// immediately, and the strap sync that is still in flight lands its rows a few seconds later.
+    /// The paragraph then describes the data as it was BEFORE the night's offload — written about
+    /// yesterday, sitting on today's screen — and nothing regenerated it, because the only triggers
+    /// were an app open (already spent) and a manual tap. Recording the sequence it was written from
+    /// lets `refreshSynthesisIfDataChanged` recognise exactly that.
+    @Published private(set) var synthesisDataSeq: Int?
+
     /// True while a generation is running — drives the refresh button's spinner on the Today cards.
     @Published var synthesisRefreshing = false
     private var synthesisInFlight = false
@@ -1485,6 +1495,8 @@ final class AICoachEngine: ObservableObject {
             if !clean.isEmpty {
                 synthesisText = clean
                 synthesisGeneratedAt = Date()
+                // Which data this paragraph describes — see `synthesisDataSeq`.
+                synthesisDataSeq = repo.refreshSeq
                 // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
                 // for the retry made its absence carry the hidden meaning "your chosen model", which
                 // is legible only to someone who already knows the rule.
@@ -1501,6 +1513,29 @@ final class AICoachEngine: ObservableObject {
             // exists and belongs.
             lastSynthesisError = (error as? AICoachError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    /// Regenerate the Today synthesis IF new data has landed since the one on screen was written
+    /// (260919, the stale-morning-summary report: "when I wake up in the morning, the app takes a
+    /// while to update with the strap data — but the coach summary is already generated and then is
+    /// stale").
+    ///
+    /// Pure gate, then delegate. Call it wherever a sync completes; it is a no-op in every case
+    /// except the one it exists for, so the caller does not need to reason about provider state,
+    /// consent, throttling or the day rollover — `refreshSynthesis` already owns all of that.
+    ///
+    /// `force: true` on the delegated call is deliberate and is the whole point: the one-minute
+    /// freshness keep exists to absorb foreground FLAPS, where nothing has changed. Here something
+    /// demonstrably has — the numbers the paragraph describes — and the flap guard would swallow
+    /// exactly the regeneration the wearer is waiting for, since a morning sync lands seconds after
+    /// the app open that generated the stale text.
+    func refreshSynthesisIfDataChanged() async {
+        // No text yet: the ordinary open-triggered path owns the first generation. Regenerating here
+        // too would race it and spend two provider calls to produce one paragraph.
+        guard synthesisText != nil, let writtenFrom = synthesisDataSeq else { return }
+        // Same data the paragraph already describes.
+        guard repo.refreshSeq != writtenFrom else { return }
+        await refreshSynthesis(force: true)
     }
 
     /// A one-line, coach-written TITLE for any of NOOP's nudge notifications (260902, generalised

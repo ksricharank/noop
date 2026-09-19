@@ -144,8 +144,22 @@ struct DayQualityView: View {
 
     /// The compact "Customize" affordance above the arrangeable cards. Mirrors Sleep's and Today's.
     private var dayArrangeAffordance: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: NoopMetrics.space3) {
             Spacer()
+            // 260919: the Recap's own download, the Trends page's affordance brought to this tab.
+            // TEXT rather than the PDF Trends exports — the stated destination is another LLM, and a
+            // PDF of a rendered card arrives there as pixels.
+            Button {
+                exportRecap()
+            } label: {
+                Label("Download", systemImage: "square.and.arrow.down")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .disabled(dayIndex >= scoredDays.count)
+            .accessibilityLabel("Download this day's recap")
+            .accessibilityHint("Saves a Markdown summary you can share or paste into another app")
             Button {
                 showDayCustomize = true
             } label: {
@@ -156,6 +170,20 @@ struct DayQualityView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Customize the Day tab layout")
         }
+    }
+
+    /// Build the browsed day's recap and hand it to the share sheet (iOS) / save panel (macOS).
+    ///
+    /// Reads only what the screen has already loaded — no store round-trip, so the button responds
+    /// immediately and cannot disagree with what is on screen.
+    private func exportRecap() {
+        guard dayIndex < scoredDays.count else { return }
+        let day = scoredDays[dayIndex]
+        let text = DayRecapExport.markdown(day: day,
+                                           score: browsedBreakdown,
+                                           metric: repo.days.first { $0.day == day },
+                                           recentScores: scoresByDay)
+        FileExport.exportText(text, suggestedName: DayRecapExport.filename(day: day))
     }
 
     // MARK: - Day navigation

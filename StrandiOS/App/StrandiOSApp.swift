@@ -538,6 +538,11 @@ struct StrandiOSApp: App {
                                 authorized: health.auth == .authorized)
                         }
                     )
+                    // 260919: same stale-summary race as the strap path. The synthesis is generated
+                    // by the scenePhase handler above, and THIS sync lands its rows afterwards — so
+                    // a paragraph written seconds ago can already be describing the wrong numbers.
+                    // A no-op unless the data actually moved under an existing paragraph.
+                    await model.coach.refreshSynthesisIfDataChanged()
                     await WidgetSnapshot.publish(from: model)
                     // Push the wrist on the SAME refresh as the Home-screen widget so the watch, the
                     // widget and Today never disagree about which day they describe. Without this the

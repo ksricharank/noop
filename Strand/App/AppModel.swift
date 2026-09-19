@@ -1061,6 +1061,15 @@ final class AppModel: ObservableObject {
             }
         }
         await refreshV5Signals()
+        // 260919: the freshly-landed rows may have moved the very numbers the Today synthesis is
+        // describing. The report: "when I wake up in the morning, the app takes a while to update
+        // with the strap data — but the coach summary is already generated and then is stale."
+        // Exactly that — the open-triggered generation wins the race against the morning sync, and
+        // nothing regenerated it afterwards. A no-op unless the data actually changed under a
+        // paragraph that already exists (see `refreshSynthesisIfDataChanged`), so a sync that banks
+        // nothing new costs no provider call. Its own task: this is a network round-trip, and the
+        // widget publish and automations below must not queue behind it.
+        Task { [coach] in await coach.refreshSynthesisIfDataChanged() }
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
         // bluetooth-central, so it stays alive to receive the offload). The only other widget-publish

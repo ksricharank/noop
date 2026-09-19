@@ -40,8 +40,45 @@ struct NOOPTargetsWidget: Widget {
                     .background(StrandPalette.surfaceBase)
             }
         }
-        .configurationDisplayName("NOOP Targets")
+        .configurationDisplayName("NOOP Targets (Bars)")
         .description("Effort, calories, steps and water against today's targets — updated with each strap sync, no Live Activity needed.")
+        .supportedFamilies([
+            .systemSmall, .systemMedium,
+            .accessoryInline, .accessoryRectangular
+        ])
+    }
+}
+
+/// Which shape the four targets take on the Home-Screen faces. Two widgets, one view: the numbers,
+/// colours, accessibility and every other family are identical, so a style flag is the whole
+/// difference rather than a second copy to keep in sync (260919, maintainer wanted both offered so
+/// the choice can be made on the phone).
+enum TargetsStyle {
+    /// Four rows, label left and pair right, with a progress track under each.
+    case bars
+    /// A 2x2 of progress rings, the metric named inside the arc and the pair beneath it.
+    case rings
+}
+
+/// The rings variant of `NOOPTargetsWidget` — same data, same provider, same snapshot, drawn as a
+/// 2x2 of progress rings instead of four bars. A separate `kind` so BOTH appear in the widget
+/// gallery and the choice is made on the phone rather than in a build.
+struct NOOPTargetsRingsWidget: Widget {
+    let kind = "NOOPTargetsRingsWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: NOOPProvider()) { entry in
+            if #available(iOS 17.0, *) {
+                NOOPTargetsView(entry: entry, style: .rings)
+                    .containerBackground(StrandPalette.surfaceBase, for: .widget)
+            } else {
+                NOOPTargetsView(entry: entry, style: .rings)
+                    .padding()
+                    .background(StrandPalette.surfaceBase)
+            }
+        }
+        .configurationDisplayName("NOOP Targets (Rings)")
+        .description("The same four targets as NOOP Targets, drawn as progress rings.")
         .supportedFamilies([
             .systemSmall, .systemMedium,
             .accessoryInline, .accessoryRectangular
@@ -52,6 +89,7 @@ struct NOOPTargetsWidget: Widget {
 struct NOOPTargetsView: View {
     @Environment(\.widgetFamily) private var family
     let entry: NOOPEntry
+    var style: TargetsStyle = .bars
 
     private var snap: WidgetSnapshot { entry.snapshot }
 
@@ -75,7 +113,12 @@ struct NOOPTargetsView: View {
         case .systemMedium:
             medium
         default:
-            small
+            // Only the Home-Screen small face differs between the two widgets; every other family
+            // (medium, and both Lock-Screen accessories) is shape-agnostic and shared verbatim.
+            switch style {
+            case .bars:  small
+            case .rings: smallRings
+            }
         }
     }
 
@@ -128,6 +171,29 @@ struct NOOPTargetsView: View {
         .padding(11)
     }
 
+    /// The RINGS variant's small face: the same four metrics as a 2x2 of progress rings (260919).
+    /// Shares this view's header, colours, text and accessibility — only the shape differs.
+    var smallRings: some View {
+        VStack(spacing: 8) {
+            header
+            Spacer(minLength: 0)
+            HStack(spacing: 8) {
+                targetRing("Steps", value: stepsText, fraction: snap.stepsFraction,
+                           tint: StrandPalette.chargeColor)
+                targetRing("Effort", value: effortText, fraction: snap.effortFraction,
+                           tint: StrandPalette.effortColor)
+            }
+            HStack(spacing: 8) {
+                targetRing("Cal", value: calText, fraction: snap.calFraction,
+                           tint: StrandPalette.metricAmber)
+                targetRing("Water", value: waterText, fraction: snap.waterFraction,
+                           tint: StrandPalette.metricCyan)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+    }
+
     /// One metric row: label, value, and a progress track underneath (260919).
     ///
     /// The four pairs were four bare "now/target" strings, which is the whole number but not the
@@ -154,6 +220,44 @@ struct NOOPTargetsView: View {
                     .minimumScaleFactor(0.6)
             }
             ProgressTrack(fraction: fraction, tint: tint)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text(progressSpoken(value: value, fraction: fraction)))
+    }
+
+    /// One metric as a progress ring with its pair inside it (260919).
+    ///
+    /// The pair stays the text — "1.4k/8.9k" is the number the maintainer reads — and the ring
+    /// answers "how far through am I" without the division. A nil fraction draws the EMPTY ring
+    /// rather than a zero-length arc, so "not tracked" never looks like "none done yet".
+    ///
+    /// OVERFLOW: the pair sits INSIDE the ring, which is the tightest space on this face, so it is
+    /// single-line at a small size with a generous scale floor. "18.4k/8.9k" is the widest realistic
+    /// case and is checked by rendering.
+    private func targetRing(_ label: String, value: String, fraction: Double?,
+                            tint: Color) -> some View {
+        VStack(spacing: 2) {
+            ZStack {
+                Circle()
+                    .stroke(StrandPalette.textTertiary.opacity(0.22), lineWidth: 4)
+                if let fraction, fraction > 0 {
+                    Circle()
+                        .trim(from: 0, to: fraction)
+                        .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                Text(value)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .padding(.horizontal, 5)
+            }
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(StrandPalette.textTertiary)
+                .lineLimit(1)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
@@ -194,13 +298,14 @@ struct NOOPTargetsView: View {
     /// operational vital worth a corner).
     private var header: some View {
         HStack(spacing: 6) {
-            Text("NOOP")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(StrandPalette.textSecondary)
+            NoopPulseMark()
+                .frame(width: 22, height: 22)
             Spacer(minLength: 4)
+            // Deliberately small (260919): the strap charge is an operational vital worth a corner,
+            // not a headline — the four targets are what this widget is for.
             BatteryPips(percent: snap.batteryPct)
             Text(snap.batteryPct.map { "\($0)%" } ?? "–")
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
                 .foregroundStyle(StrandPalette.textSecondary)
                 .lineLimit(1)
         }
@@ -299,11 +404,11 @@ private struct BatteryPips: View {
     }
 
     var body: some View {
-        HStack(spacing: 1.5) {
+        HStack(spacing: 1.2) {
             ForEach(0..<BatteryGlyph.barCount, id: \.self) { i in
                 RoundedRectangle(cornerRadius: 0.8, style: .continuous)
                     .fill(i < lit ? fill : StrandPalette.textTertiary.opacity(0.25))
-                    .frame(width: 3, height: 9)
+                    .frame(width: 2, height: 7)
             }
         }
         // The pips ARE the battery; the percentage beside them carries the exact figure, and the
@@ -311,3 +416,46 @@ private struct BatteryPips: View {
         .accessibilityHidden(true)
     }
 }
+
+/// The NOOP mark — the app icon's broken ring and centre dot, drawn as a path rather than shipped
+/// as a bitmap: the widget extension has no asset catalogue of its own, and a stroked arc stays
+/// crisp at any size.
+///
+/// Geometry MEASURED from `StrandiOS/Resources/Assets.xcassets/AppIcon.appiconset/icon_1024.png`
+/// rather than eyeballed — an earlier attempt drew the `docs/assets/logo.svg` pulse trace, which is
+/// a different, older mark and is not what the app wears. In that 1024pt artwork: centre 512,512;
+/// ring mid-radius 300 with a 72pt stroke; a 58° gap running 205°→262° measured clockwise from
+/// east; white centre dot radius 87.5. Expressed here as fractions of the view so it scales.
+private struct NoopPulseMark: View {
+    /// The arc SWEEPS from the gap's end back round to its start — 302° of ring.
+    private let gapStart: Double = 205
+    private let gapEnd: Double = 262
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            let c = CGPoint(x: side / 2, y: side / 2)
+            // Fractions of the 1024pt source: 300/512 mid-radius, 72/1024 stroke, 87.5/512 dot.
+            let radius = side * (300.0 / 1024.0)
+            let stroke = side * (72.0 / 1024.0)
+            let dot = side * (87.5 / 1024.0)
+            ZStack {
+                Path { p in
+                    p.addArc(center: c, radius: radius,
+                             startAngle: .degrees(gapEnd), endAngle: .degrees(gapStart + 360),
+                             clockwise: false)
+                }
+                .stroke(StrandPalette.chargeColor,
+                        style: StrokeStyle(lineWidth: stroke, lineCap: .round))
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: dot * 2, height: dot * 2)
+                    .position(c)
+            }
+            .frame(width: side, height: side)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .accessibilityHidden(true)
+    }
+}
+
