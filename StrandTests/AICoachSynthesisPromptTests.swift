@@ -83,40 +83,45 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertEqual(engine.systemPrompt, AICoachEngine.defaultSystemPrompt)
     }
 
-    /// The default names the surface and its three-bullet shape (260829): the card-mirroring labels
-    /// in their stated order, explain-before-prescribe, other metrics only when strictly relevant,
-    /// and the instruction to cite the deterministic TODAY'S TARGETS rather than invent parallel
-    /// numbers — the agreement contract with the Lock-Screen card.
-    func testDefaultNamesTheSurfaceAndItsShape() {
+    /// 260919: the three mandated sections are GONE. They guaranteed a drab summary — three
+    /// headings to fill whether or not anything had happened, so the model padded the quiet ones
+    /// and a genuinely unusual reading sat in the same typeface as the filler around it.
+    ///
+    /// What replaces them is salience: lead with what actually deviates from the wearer's own
+    /// baselines, and say plainly when nothing does. These pin that intent, because a future edit
+    /// that quietly reintroduces a fixed template would restore exactly the behaviour complained of.
+    func testDefaultNamesTheSurfaceAndAsksForWhatIsNotable() {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
-        XCTAssertTrue(d.contains("**Heart**"))
-        XCTAssertTrue(d.contains("**Activity**"))
-        XCTAssertTrue(d.contains("**Rest & sleep**"))
-        XCTAssertTrue(d.contains("BEFORE prescribing"))
-        XCTAssertTrue(d.contains("only when it strictly serves"))
-        XCTAssertTrue(d.contains("TODAY'S TARGETS"))
-        XCTAssertTrue(d.contains("No greeting"))
-        // The Heart section is about the heart's TRAJECTORY (260830, second revision): overall
-        // state, trends vs personal baselines, watchouts — never a this-minute verdict. The
-        // live-read vocabulary (calm/STRESSED/not judgeable, the red digits) left with the card's
-        // HR column; the z-score framing is explained so the model can actually use the baselines.
-        XCTAssertTrue(d.contains("resting heart rate"))
+        XCTAssertTrue(d.contains("WORTH KNOWING"))
+        XCTAssertTrue(d.contains("not to summarise every metric"))
+        // Salience, in the model's own terms: the wearer's baselines, not population norms.
         XCTAssertTrue(d.contains("z-scores"))
+        XCTAssertTrue(d.contains("MY OWN baseline"))
+        XCTAssertTrue(d.contains("NOT news"))
+        XCTAssertTrue(d.contains("trend"))
         XCTAssertTrue(d.contains("watchout"))
+        // The agreement contract with the Lock-Screen card survives the rewrite untouched.
+        XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("total calories"))
-        // Fourth revision (260830 night — prose sections still read as "a wall of text"): each
-        // section is a bold title, ONE ten-word bolded takeaway line, then 2-4 fragment sub-bullets
-        // ("Thing — fact"), numbers bolded. The format rules are stated to the model verbatim.
-        XCTAssertTrue(d.contains("OWN line"))
-        XCTAssertTrue(d.contains("takeaway line"))
-        XCTAssertTrue(d.contains("sub-bullets"))
-        XCTAssertTrue(d.contains("never a full flowing sentence"))
-        XCTAssertTrue(d.contains("blank line between sections"))
-        XCTAssertFalse(d.contains("markdown bullets"), "the retired everything-is-one-bullet shape must not linger")
+        XCTAssertTrue(d.contains("No headings"))
+        // A quiet day must be ALLOWED to be quiet. Without this the model pads to reach a count,
+        // which is the failure the rewrite exists to fix.
+        XCTAssertTrue(d.contains("FEWER IS BETTER"))
+        XCTAssertTrue(d.contains("Never invent a finding"))
+        XCTAssertTrue(d.contains("unremarkable"))
+    }
+
+    /// The retired three-section template must not creep back. Each of these strings was load-
+    /// bearing in the shape the maintainer asked to be rid of.
+    func testTheRetiredFixedSectionTemplateIsGone() {
+        let d = AICoachEngine.defaultSynthesisPrompt
+        XCTAssertFalse(d.contains("**Heart**"), "the mandated Heart section must not return")
+        XCTAssertFalse(d.contains("**Activity**"), "the mandated Activity section must not return")
+        XCTAssertFalse(d.contains("**Rest & sleep**"), "the mandated Rest & sleep section must not return")
+        XCTAssertFalse(d.contains("three titled sections"))
+        XCTAssertFalse(d.contains("blank line between sections"))
         XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
-        XCTAssertFalse(d.contains("calm ceiling"), "the retired ceiling must not linger in the prompt")
-        XCTAssertFalse(d.contains("elevated,"), "undefined 'elevated' phrasing must not return")
     }
 }

@@ -74,4 +74,39 @@ final class BatteryGlyphTests: XCTestCase {
             #endif
         }
     }
+    // MARK: - The six pips (260919)
+
+    /// The maintainer asked for six steps: 0 · 20 · 40 · 60 · 80 · 100. SF Symbols ships only five
+    /// battery fills, which is why the widget draws its own pips and this is a count, not a glyph.
+    func testSixDistinctStepsAcrossTheRange() {
+        let counts = [0, 20, 40, 60, 80, 100].map { BatteryGlyph.bars(forPercent: $0) }
+        XCTAssertEqual(counts, [0, 2, 3, 4, 5, 6])
+    }
+
+    /// Any charge at all lights the first pip, and only a genuinely empty or absent reading lights
+    /// none — otherwise a strap on 1% and a strap that has not reported look identical.
+    func testOnlyEmptyOrAbsentLightsNothing() {
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: nil), 0)
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: 0), 0)
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: 1), 1)
+    }
+
+    /// Only 100 lights all six: a nearly-full strap must not read as fully charged.
+    func testOnlyFullLightsEveryPip() {
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: 100), 6)
+        XCTAssertLessThan(BatteryGlyph.bars(forPercent: 99), 6)
+    }
+
+    /// Monotonic and clamped: more charge never lights fewer pips, and nonsense still draws.
+    func testTheCountIsMonotonicAndClamped() {
+        var previous = 0
+        for pct in 0...100 {
+            let bars = BatteryGlyph.bars(forPercent: pct)
+            XCTAssertGreaterThanOrEqual(bars, previous, "pip count went backwards at \(pct)%")
+            XCTAssertTrue((0...BatteryGlyph.barCount).contains(bars), "out of range at \(pct)%")
+            previous = bars
+        }
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: -10), 0)
+        XCTAssertEqual(BatteryGlyph.bars(forPercent: 150), BatteryGlyph.barCount)
+    }
 }

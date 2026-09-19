@@ -205,71 +205,14 @@ struct NOOPWidgetView: View {
     /// Compact three-ring hero. Diameter is capped so three hard-framed circles fit the narrowest
     /// systemSmall content width (SE ~128pt after padding) without overlapping — see review on #1022.
     private var small: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(spacing: 6) {
             headerRow
-            // Charge leads: it is the number the wearer opens the app for, and at 58pt it reads at a
-            // glance rather than being one of three equal 40pt rings.
-            HStack(alignment: .center, spacing: 10) {
-                WidgetScoreRing(
-                    text: snap.recovery.map(String.init),
-                    fraction: snap.recovery.map { Double($0) / 100 },
-                    label: "Charge",
-                    color: chargeColor,
-                    diameter: 58,
-                    lineWidth: 6,
-                    labelFont: .system(size: 9, weight: .semibold),
-                    accessibilityOutOf: 100
-                )
-                // Effort and Rest as a stacked pair: same information, a third of the width, and each
-                // line is free to scale rather than truncate.
-                VStack(alignment: .leading, spacing: 5) {
-                    compactStat("Effort", value: effortText, tint: effortColor)
-                    compactStat("Rest", value: snap.rest.map { "\($0)%" }, tint: restColor)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // 40pt × 3 = 120 ≤ 128 (SE) / 138 (15 Pro) content widths after 10pt padding.
+            scoreRings(diameter: 40, lineWidth: 4, labelFont: .system(size: 9, weight: .medium))
             Spacer(minLength: 0)
-            smallFooter
+            vitalsFooter(compact: true)
         }
-        .padding(11)
-    }
-
-    /// One compact labelled value for the square face. Fixed to a single line with room to shrink —
-    /// the square widget has truncated numbers before, and a clipped score is worse than a small one.
-    private func compactStat(_ label: String, value: String?, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(StrandPalette.textTertiary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(value ?? "–")
-                .font(.system(size: 19, weight: .semibold, design: .rounded))
-                .foregroundStyle(value != nil ? tint : StrandPalette.textTertiary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(label))
-        .accessibilityValue(Text(value ?? "No data"))
-    }
-
-    /// Square-face footer: heart rate and strap battery only. The medium face still shows HRV as
-    /// well — at this width a third item made all three shrink rather than one read clearly.
-    private var smallFooter: some View {
-        HStack(spacing: 0) {
-            vital(symbol: "heart.fill", text: snap.bpm.map(String.init),
-                  name: "Heart rate", spoken: snap.bpm.map { "\($0) beats per minute" })
-            Spacer(minLength: 6)
-            vital(symbol: BatteryGlyph.symbol(forPercent: snap.batteryPct),
-                  text: snap.batteryPct.map { "\($0)%" },
-                  name: "Strap battery", spoken: snap.batteryPct.map { "\($0) percent" })
-        }
-        .font(.caption2)
-        .foregroundStyle(StrandPalette.textSecondary)
-        .labelStyle(.titleAndIcon)
-        .lineLimit(1)
-        .minimumScaleFactor(0.75)
+        .padding(10)
     }
 
     // MARK: - Home Screen: systemMedium
