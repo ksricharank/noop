@@ -36,6 +36,14 @@ struct CoachSettingsView: View {
     @State private var synthesisPromptDraft: String = ""
     /// 260903: the editable instruction behind every coach-written notification title.
     @State private var notifTitlePromptExpanded: Bool = false
+    /// 260919: the per-tab LLM instructions. Each tab's summary has its own lens, so each has its
+    /// own editable prompt.
+    @State private var dayQualityPromptExpanded: Bool = false
+    @State private var dayQualityPromptDraft: String = ""
+    @State private var trendsPromptExpanded: Bool = false
+    @State private var trendsPromptDraft: String = ""
+    @State private var sleepPromptExpanded: Bool = false
+    @State private var sleepPromptDraft: String = ""
     @State private var notifTitlePromptDraft: String = ""
 
     var body: some View {
@@ -69,7 +77,12 @@ struct CoachSettingsView: View {
             if coach.dataConsent { derivedTrendsBar }
             systemPromptBar
             morningBriefBar
+            // The four per-tab LLM instructions, in tab order (260919). Today's is the synthesis
+            // bar above; these are its siblings for Recap, Trends and Sleep.
             synthesisPromptBar
+            dayQualityPromptBar
+            trendsPromptBar
+            sleepPromptBar
             notifTitlePromptBar
         }
         // Opening this screen is the moment a stale catalogue is worth refreshing: a key exists here by
@@ -354,6 +367,126 @@ struct CoachSettingsView: View {
                 }
             }
         }
+    }
+
+    /// One editable prompt row, for the per-tab LLM instructions (260919).
+    ///
+    /// Four tabs now carry an LLM summary and each has its own instruction; hand-writing four more
+    /// copies of the same disclosure + TextEditor + reset would be four places for them to drift.
+    /// The differences are the title, the copy, and which accessor trio it reads — everything else
+    /// is identical by construction.
+    private func promptEditorBar(title: String,
+                                 icon: String,
+                                 customisedNote: String,
+                                 defaultNote: String,
+                                 expanded: Binding<Bool>,
+                                 draft: Binding<String>,
+                                 isCustomised: Bool,
+                                 current: @escaping () -> String,
+                                 commit: @escaping (String) -> Void,
+                                 reset: @escaping () -> Void) -> some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: expanded.wrappedValue ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        expanded.wrappedValue.toggle()
+                        if expanded.wrappedValue { draft.wrappedValue = current() }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: icon)
+                            .foregroundStyle(isCustomised ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(isCustomised ? customisedNote : defaultNote)
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: expanded.wrappedValue ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded.wrappedValue ? "Collapse \(title)" : "Edit \(title)")
+
+                if expanded.wrappedValue {
+                    TextEditor(text: draft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: draft.wrappedValue) { newValue in commit(newValue) }
+                        .accessibilityLabel("\(title) editor")
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            reset()
+                            draft.wrappedValue = current()
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!isCustomised)
+                        .accessibilityLabel("Reset \(title) to default")
+                    }
+                }
+            }
+        }
+    }
+
+    private var dayQualityPromptBar: some View {
+        promptEditorBar(
+            title: "Recap summary instructions",
+            icon: "calendar.badge.checkmark",
+            customisedNote: "Customised. Your instructions shape the Recap tab's summary.",
+            defaultNote: "Edit what the coach says about a finished day on the Recap tab.",
+            expanded: $dayQualityPromptExpanded,
+            draft: $dayQualityPromptDraft,
+            isCustomised: coach.hasCustomDayQualityPrompt,
+            current: { coach.customDayQualityPrompt },
+            commit: { coach.customDayQualityPrompt = $0 },
+            reset: { coach.resetDayQualityPrompt() })
+    }
+
+    private var trendsPromptBar: some View {
+        promptEditorBar(
+            title: "Trends summary instructions",
+            icon: "chart.line.uptrend.xyaxis",
+            customisedNote: "Customised. Your instructions shape the Trends tab's summary.",
+            defaultNote: "Edit what the coach says about the long-horizon trend on the Trends tab.",
+            expanded: $trendsPromptExpanded,
+            draft: $trendsPromptDraft,
+            isCustomised: coach.hasCustomTrendsPrompt,
+            current: { coach.customTrendsPrompt },
+            commit: { coach.customTrendsPrompt = $0 },
+            reset: { coach.resetTrendsPrompt() })
+    }
+
+    private var sleepPromptBar: some View {
+        promptEditorBar(
+            title: "Sleep summary instructions",
+            icon: "bed.double",
+            customisedNote: "Customised. Your instructions shape the Sleep tab's summary.",
+            defaultNote: "Edit what the coach says about last night on the Sleep tab.",
+            expanded: $sleepPromptExpanded,
+            draft: $sleepPromptDraft,
+            isCustomised: coach.hasCustomSleepPrompt,
+            current: { coach.customSleepPrompt },
+            commit: { coach.customSleepPrompt = $0 },
+            reset: { coach.resetSleepPrompt() })
     }
 
     private var synthesisPromptBar: some View {

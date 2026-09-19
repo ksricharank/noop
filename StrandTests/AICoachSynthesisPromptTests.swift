@@ -94,13 +94,18 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("Today screen"))
         XCTAssertTrue(d.contains("WORTH KNOWING"))
+        XCTAssertTrue(d.contains("MY CURRENT STATE"))
         XCTAssertTrue(d.contains("not to summarise every metric"))
         // Salience, in the model's own terms: the wearer's baselines, not population norms.
         XCTAssertTrue(d.contains("z-scores"))
         XCTAssertTrue(d.contains("MY OWN baseline"))
         XCTAssertTrue(d.contains("NOT news"))
-        XCTAssertTrue(d.contains("trend"))
         XCTAssertTrue(d.contains("watchout"))
+        // 260919: "trend" is deliberately NOT pinned here any more. Today gained three sibling
+        // summaries, and the multi-week read is the Trends tab's lens — pinning it on this prompt
+        // would re-create the overlap the split exists to remove. Today may still reach back a few
+        // days, but only far enough to explain the present.
+        XCTAssertTrue(d.contains("only far enough to make today make sense"))
         // The agreement contract with the Lock-Screen card survives the rewrite untouched.
         XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("total calories"))
@@ -120,6 +125,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertFalse(d.contains("**Activity**"), "the mandated Activity section must not return")
         XCTAssertFalse(d.contains("**Rest & sleep**"), "the mandated Rest & sleep section must not return")
         XCTAssertFalse(d.contains("three titled sections"))
+        // 260919: fenced off the other three tabs' lenses, now that each has its own summary.
+        XCTAssertFalse(d.contains("grade yesterday as a finished day") == false && d.contains("Do NOT") == false,
+                       "Today must be fenced off the other tabs")
         XCTAssertFalse(d.contains("blank line between sections"))
         XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")

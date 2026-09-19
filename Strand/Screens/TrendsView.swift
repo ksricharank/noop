@@ -14,6 +14,9 @@ import Foundation
 
 struct TrendsView: View {
     @EnvironmentObject var repo: Repository
+    /// For the per-tab LLM summary (260919). Observed so a provider/consent change re-renders the
+    /// card's "no summary available" state without needing the tab to be re-entered.
+    @EnvironmentObject var coach: AICoachEngine
     // NOTE: deliberately does NOT observe LiveState — Trends shows historical data only, and
     // observing it forced a full re-render of this subtree on every ~1 Hz live-HR tick.
 
@@ -294,6 +297,22 @@ struct TrendsView: View {
                         // days.
                         rangeBar(recovery: recovery)
                             .staggeredAppear(index: 1)
+                        // The Trends tab's own LLM read (260919). Its lens is DIRECTION over the
+                        // selected window — deliberately not today's state (Today owns that), not a
+                        // finished day's grade (Recap), and not last night (Sleep).
+                        NoopCard {
+                            TabInsightCard(
+                                title: "What the trend says",
+                                // Re-asks when the window changes: an answer about 90 days must not
+                                // sit under a chart showing one week.
+                                subject: "trend-\(range.days.map(String.init) ?? "all")",
+                                generate: { [weak coach] in
+                                    await coach?.trendsNarrative(
+                                        windowDays: range.days ?? repo.days.count)
+                                }
+                            )
+                        }
+                        .staggeredAppear(index: 2)
                         weeklyDigestNav
                             .staggeredAppear(index: 3)
                         // The Charge / Effort / Rest trio, presented in NOOP's pip language.

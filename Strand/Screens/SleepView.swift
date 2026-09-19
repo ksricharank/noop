@@ -37,6 +37,9 @@ struct SleepView: View {
     // their OWN `@EnvironmentObject var live`/`appModel` in a small leaf below (mirrors the Today
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
+    /// For the per-tab LLM summary (260919). Observed so a provider/consent change re-renders the
+    /// card's "no summary available" state without the tab needing to be re-entered.
+    @EnvironmentObject var coach: AICoachEngine
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -189,6 +192,24 @@ struct SleepView: View {
                         ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
                             sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
                         }
+                        // The Sleep tab's own LLM read (260919). Its lens is THIS NIGHT's
+                        // architecture and what it means for today — deliberately not the day's
+                        // grade (Recap owns that) or the week's direction (Trends).
+                        NoopCard {
+                            TabInsightCard(
+                                title: "What last night says",
+                                // Keyed on the night being VIEWED, so stepping back through nights
+                                // re-asks rather than leaving the previous answer under new numbers.
+                                subject: "sleep-\(nightDayKey(resolved))",
+                                generate: { [weak coach] in
+                                    guard let row = repo.days.first(where: {
+                                        $0.day == nightDayKey(resolved)
+                                    }) else { return nil }
+                                    return await coach?.sleepNarrative(night: row)
+                                }
+                            )
+                        }
+                        .staggeredAppear(index: sleepVisibleSections.count + 1)
                     }
                 } else {
                     emptyState
@@ -417,6 +438,13 @@ struct SleepView: View {
     /// hypnogram shows — the fix for the score freezing on last night's value during navigation.
     private func heroNight(_ model: SleepModel) -> Night {
         (nightOffset == 0 ? model.night : navNight) ?? model.night
+    }
+
+    /// The "yyyy-MM-dd" key for the night currently on screen, derived from its WAKE time — the
+    /// same convention `repo.days` rows are keyed by, so the two cannot disagree about which night
+    /// is being described.
+    private func nightDayKey(_ model: SleepModel) -> String {
+        Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(model.night.session.endTs)))
     }
 
     /// The sleep-performance score (0–100) for a SPECIFIC night: the imported WHOOP figure for that

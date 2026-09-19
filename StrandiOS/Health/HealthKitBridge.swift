@@ -814,6 +814,16 @@ final class HealthKitBridge: ObservableObject {
         defer { finishHealthPass() }
         guard let store = await repo.storeHandle() else { return false }
         do {
+            // 260919: THE dominant write-back path, and it was the unmeasured one. `sync()` timed
+            // its write-back; this one — which runs after every completed strap backfill, ~37 times
+            // in the motivating log against two full syncs — did not, so the header reported the
+            // cost of two write-backs while ~37 more went unrecorded. Timed on BOTH arms, because a
+            // write-back that spent time and then threw is exactly the one a battery report needs.
+            let writeBackStart = Date()
+            defer {
+                HealthSyncStats.recordWriteBackPhase(
+                    millis: Int(Date().timeIntervalSince(writeBackStart) * 1000))
+            }
             try await writeBack(whoopStore: store)
             lastError = nil
             return true

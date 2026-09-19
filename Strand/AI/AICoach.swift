@@ -586,33 +586,36 @@ final class AICoachEngine: ObservableObject {
     /// baselines, a streak, a sharp change — and says so plainly when nothing is. The sections are
     /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
-    Following your coaching instructions and using my data above, write today's read for my Today \
-    screen. Your job is to tell me what is WORTH KNOWING today — not to summarise every metric.
+    Following your coaching instructions and using my data above, write my read for the Today \
+    screen. Your job is to tell me WHERE I AM RIGHT NOW and what is WORTH KNOWING about it — not to \
+    summarise every metric.
 
-    What earns a mention, in this order of priority:
-    - A reading that genuinely deviates from MY OWN baseline. My data includes z-scores: |z| above \
-    1 is a real deviation, above 2 is a strong one. A metric sitting inside its normal range is \
-    NOT news and must not be mentioned just to fill space.
-    - A trend across the recent day-lines: several days moving the same direction, a streak broken, \
-    a reversal. A direction is often more informative than today's single value.
-    - A relationship worth drawing between two things — poor sleep and an elevated resting heart \
-    rate, a hard session and a sagging HRV, a raised skin temperature alongside a poor night. Only \
-    when my actual numbers support it.
-    - A target from TODAY'S TARGETS that is genuinely at risk, or already met. Not a routine \
-    progress readout: total calories include resting metabolism, so an early-day number far below \
-    target is normal and is not a finding.
-    - A watchout worth flagging: a climbing resting HR, sagging HRV or elevated respiratory rate \
-    together can precede illness or accumulated strain. Say so when the data shows it, and do not \
-    manufacture it when it does not.
+    Your lens is MY CURRENT STATE, at the moment I am looking at the screen. What earns a mention:
+    - A reading that genuinely deviates from MY OWN baseline TODAY. My data includes z-scores: |z| \
+    above 1 is a real deviation, above 2 is a strong one. A metric sitting inside its normal range \
+    is NOT news and must not be mentioned just to fill space.
+    - What that state implies for the next few hours: what to do, what to avoid, what to expect.
+    - A target from TODAY'S TARGETS that is genuinely at risk, or already met, and the concrete \
+    thing that closes the gap. Not a routine progress readout: total calories include resting \
+    metabolism, so an early-day number far below target is normal and is not a finding.
+    - A watchout worth flagging NOW: a climbing resting HR, sagging HRV or elevated respiratory \
+    rate together can precede illness or accumulated strain. Say so when today's data shows it, and \
+    do not manufacture it when it does not.
+    - Recent days only where they explain TODAY — "your HRV is down a third day running, so today's \
+    low charge is not a one-off". The multi-week picture belongs to another screen; reach back only \
+    far enough to make today make sense.
 
-    Format — the reader is scanning:
+    Rules:
+    - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
+    night's sleep. Other screens own each of those, and repeating them here costs me the one view \
+    that is about right now.
     - 2 to 5 bullets. FEWER IS BETTER. If only two things are worth saying, write two.
     - Each bullet starts with a **bolded claim of at most eight words** — the finding itself — then \
     an em dash, then one short clause of evidence or what to do. Every number in **bold**.
     - Order them most notable first. The first bullet is the one thing to read if I read nothing else.
     - No headings, no sections, no greeting, no sign-off, no prose outside the bullets.
 
-    When the day is genuinely unremarkable, SAY THAT in one or two bullets — "Everything sitting in \
+    When my state is genuinely unremarkable, SAY THAT in one or two bullets — "everything sitting in \
     your normal range" is a useful, honest answer, and far better than padding. Never invent a \
     finding to reach a bullet count. Never cite a number my data does not contain, and never state \
     a target that differs from TODAY'S TARGETS.
@@ -714,6 +717,56 @@ final class AICoachEngine: ObservableObject {
 
     func resetDayQualityPrompt() {
         UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
+        objectWillChange.send()
+    }
+
+    // The trend narrative's instruction (260919). Same three accessors as its siblings.
+    var customTrendsPrompt: String {
+        get { trendsPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultTrendsPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.trendsPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.trendsPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomTrendsPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultTrendsPrompt
+    }
+
+    func resetTrendsPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.trendsPromptKey)
+        objectWillChange.send()
+    }
+
+    // The sleep narrative's instruction (260919). Same three accessors as its siblings.
+    var customSleepPrompt: String {
+        get { sleepPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultSleepPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.sleepPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomSleepPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultSleepPrompt
+    }
+
+    func resetSleepPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
         objectWillChange.send()
     }
 
@@ -1621,6 +1674,85 @@ final class AICoachEngine: ObservableObject {
 
     @Published private(set) var lastDayQualityOutcome: String?
 
+    // MARK: - Trends and Sleep narratives (260919)
+
+    /// The Trends tab's summary. Window-scoped: the caller says how many days it is showing, and
+    /// the model is handed exactly that span so its claims can be anchored in it.
+    ///
+    /// Same contract as `dayQualityNarrative` — nil on ANY failure, and the tab stands without it.
+    func trendsNarrative(windowDays: Int) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastTrendsOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let window = Array(repo.days.suffix(windowDays))
+        guard window.count >= 3 else {
+            // Three days is not a trend. Saying so is more useful than asking a model to find a
+            // direction in two points, which it will oblige by inventing one.
+            lastTrendsOutcome = "not enough history yet (\(window.count) day(s))"
+            return nil
+        }
+        var facts = "METRICS OVER THE LAST \(window.count) DAYS (oldest first):\n"
+        facts += window.map { "  " + dayLine($0) }.joined(separator: "\n")
+        let derived = Self.derivedTrendsBlock(days: window)
+        if !derived.isEmpty { facts += "\n\n" + derived }
+        return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
+            self.lastTrendsOutcome = outcome
+        }
+    }
+
+    @Published private(set) var lastTrendsOutcome: String?
+
+    /// The Sleep tab's summary for ONE night. The caller passes the night it is displaying, so
+    /// stepping back through nights re-asks about the night on screen rather than about today.
+    func sleepNarrative(night: DailyMetric) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastSleepOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        // The night itself, plus the recent nights it should be read against — "unusual for me"
+        // is the whole lens, and it is not answerable from a single row.
+        var facts = "THE NIGHT OF \(night.day):\n  " + dayLine(night)
+        let priorNights = repo.days.filter { $0.day < night.day }.suffix(14)
+        if priorNights.count >= 3 {
+            facts += "\n\nMY PRECEDING NIGHTS (oldest first), for comparison:\n"
+            facts += priorNights.map { "  " + dayLine($0) }.joined(separator: "\n")
+        }
+        return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
+            self.lastSleepOutcome = outcome
+        }
+    }
+
+    @Published private(set) var lastSleepOutcome: String?
+
+    /// The shared call shape behind the tab narratives: facts, a separator, the instruction — the
+    /// same wire format `refreshSynthesis` uses — and nil on every failure with the reason recorded.
+    ///
+    /// Factored out rather than copied three times: the failure contract is the part worth having
+    /// exactly one of, since a narrative that throws must never reach a tab as an error string.
+    private func runNarrative(key: String, facts: String, instruction: String,
+                              outcome: @escaping (String?) -> Void) async -> String? {
+        do {
+            let reply = try await callProvider(key: key,
+                                               messages: [(.user, facts + "\n\n---\n\n" + instruction)])
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else {
+                outcome("empty reply")
+                return nil
+            }
+            outcome("written by \(lastAnsweringModel ?? "model")")
+            return clean
+        } catch {
+            outcome("request failed: "
+                    + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription))
+            return nil
+        }
+    }
+
     /// The facts handed to the model: the total, both halves, and every component with its evidence.
     /// Deterministic and pure, so the prompt's factual half is testable without a provider.
     static func dayQualityStatus(day: String, score: DayQualityScore) -> String {
@@ -1703,6 +1835,73 @@ final class AICoachEngine: ObservableObject {
         - No preamble, no headings, no bullet points, no markdown. Plain sentences only.
         - The day is over. Do not give instructions for it; a forward-looking note about today is         fine as the last sentence.
         """
+
+    static let trendsPromptKey = "ai.trendsPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var trendsPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultTrendsPrompt)
+    }
+
+    /// The TRENDS lens (260919). Deliberately the long horizon and nothing else: the four tab
+    /// summaries are one UI with four prompts, and the whole point is that each one says something
+    /// the others cannot. Today reads the current moment, Recap grades a finished day, Sleep reads
+    /// last night — so this one is banned from all three and must talk about DIRECTION over weeks.
+    static let defaultTrendsPrompt = """
+    The numbers above are my metrics over an extended window — weeks, not one day. Write 2-4 short \
+    bullets about the TREND, for the person whose body it is, in the second person.
+
+    Your lens is DIRECTION AND DURATION. What earns a mention:
+    - A metric that has moved consistently across the window, with roughly how long it has been \
+    moving. A direction sustained for two weeks is a finding; one bad day inside it is not.
+    - A reversal or a plateau after a run — the point where something stopped doing what it was \
+    doing is often the most informative thing in a window.
+    - A relationship that only a long window shows: training load accumulating ahead of recovery, \
+    sleep debt building, a baseline itself drifting.
+
+    Rules:
+    - Do NOT report today's values, grade a single day, or discuss last night. Other screens own \
+    those, and repeating them here wastes the only view that can see weeks.
+    - Anchor claims in the window: say "over the last three weeks", not "recently".
+    - A field marked NOT RECORDED means no data. Never describe it as a bad result.
+    - If the window genuinely holds no trend worth reporting, say so in one line. A flat period is \
+    a real finding and padding it is worse than brevity.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
+
+    static let sleepPromptKey = "ai.sleepPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var sleepPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultSleepPrompt)
+    }
+
+    /// The SLEEP lens (260919): one night's architecture, and what it means for today. Banned from
+    /// the day-grading Recap owns and the week-scale direction Trends owns.
+    static let defaultSleepPrompt = """
+    The numbers above describe ONE NIGHT of sleep. Write 2-4 short bullets for the person who slept \
+    it, in the second person.
+
+    Your lens is THIS NIGHT'S ARCHITECTURE and what it means for today. What earns a mention:
+    - How the night was actually built — duration against need, the deep and REM split, efficiency, \
+    disturbances — and specifically which part of it was unusual for me.
+    - What the overnight vitals say about how the night went: resting heart rate, HRV, respiratory \
+    rate and skin temperature during sleep are the body's own report on it.
+    - What this night implies for today: what to expect, and what would help tonight.
+
+    Rules:
+    - Do NOT grade the day, summarise the week, or restate a sleep score shown above you.
+    - A short night is not automatically a bad one, and a long one is not automatically good — say \
+    what the architecture shows, not what the duration implies.
+    - A field marked NOT RECORDED means no data. Never describe it as a bad result.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
 
     /// Canned lines that are REJECTED as titles: a model echoing one has told us nothing about the
     /// day. Originally the verbatim examples from `defaultNotificationTitlePrompt` — the 260903
