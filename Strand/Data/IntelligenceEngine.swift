@@ -2886,7 +2886,7 @@ final class IntelligenceEngine: ObservableObject {
         // `lightPass` doc on the signature. Its done-line is labelled so trigger→done pairing in a
         // log never mistakes a 2-second today-only pass for a completed full window.
         if lightPass {
-            let elapsed = Date().timeIntervalSince(reScoreStart)
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- reScoreStart) / 1_000_000_000
             diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
                             + "\(Int(elapsed * 1000)) ms", nil)
             RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
@@ -2901,7 +2901,7 @@ final class IntelligenceEngine: ObservableObject {
         let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
         if wasAbandoned {
             RescoreStats.recordAbandoned()
-            let elapsed = Date().timeIntervalSince(reScoreStart)
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- reScoreStart) / 1_000_000_000
             diagnosticSink?("re-score: gave up after \(Int(elapsed)) s of a full pass rather than "
                             + "grind on in the background (260906)", nil)
             return
