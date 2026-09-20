@@ -1726,7 +1726,13 @@ final class AICoachEngine: ObservableObject {
         }
         // The night itself, plus the recent nights it should be read against — "unusual for me"
         // is the whole lens, and it is not answerable from a single row.
-        var facts = "THE NIGHT OF \(night.day):\n  " + dayLine(night)
+        // The row is keyed by the night's WAKE day (`AnalyticsEngine.analyzeDay` attributes a
+        // session to the day its END falls on), so "the night of 09-20" is the night that ENDED on
+        // the 20th — i.e. slept on the 19th. Said out loud because the model otherwise reads the
+        // key as the evening the night began and describes the wrong calendar day back to the
+        // wearer, which is exactly how a correct 7.9h row gets narrated against the wrong date.
+        var facts = "THE NIGHT THAT ENDED ON THE MORNING OF \(night.day) "
+            + "(these are that night's own figures):\n  " + dayLine(night)
         let priorNights = repo.days.filter { $0.day < night.day }.suffix(14)
         if priorNights.count >= 3 {
             facts += "\n\nMY PRECEDING NIGHTS (oldest first), for comparison:\n"
@@ -1854,6 +1860,10 @@ final class AICoachEngine: ObservableObject {
     next day's effort, a hard session against a recovery that could not carry it.
 
     Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all. A number you \
+    invented is worse than no bullet: it describes a day I did not live.
     - Do NOT restate the total; it is displayed directly above your text.
     - Do NOT summarise the week or write a report on the night's sleep — other tabs own those.
     - A field marked NOT RECORDED means there is no data. Never describe it as a bad result.
@@ -1889,6 +1899,9 @@ final class AICoachEngine: ObservableObject {
     sleep debt building, a baseline itself drifting.
 
     Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all.
     - Do NOT report today's values, grade a single day, or discuss last night. Other screens own \
     those, and repeating them here wastes the only view that can see weeks.
     - Anchor claims in the window: say "over the last three weeks", not "recently".
@@ -1922,6 +1935,9 @@ final class AICoachEngine: ObservableObject {
     - What this night implies for today: what to expect, and what would help tonight.
 
     Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all.
     - Do NOT grade the day, summarise the week, or restate a sleep score shown above you.
     - A short night is not automatically a bad one, and a long one is not automatically good — say \
     what the architecture shows, not what the duration implies.

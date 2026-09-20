@@ -473,7 +473,18 @@ struct SleepView: View {
                     return await coach.sleepNarrative(night: row)
                 },
                 startsExpanded: true,
-                showsAskCoach: true
+                showsAskCoach: true,
+                coachFollowUp: { summary in
+                    """
+                    I am looking at the Sleep tab for the night that ended on the morning of \
+                    \(nightDayKey(model)). It shows me this summary:
+
+                    \(summary)
+
+                    Treat this as the start of the conversation and answer follow-ups about that \
+                    night. Do not repeat the summary back to me.
+                    """
+                }
             )
         }
     }

@@ -355,7 +355,18 @@ struct DayQualityView: View {
                         return await coach.dayQualityNarrative(day: day, score: breakdown)
                     },
                     startsExpanded: true,
-                    showsAskCoach: true
+                    showsAskCoach: true,
+                    coachFollowUp: { summary in
+                        """
+                        I am looking at the Recap tab for \(day), my day-quality grade. It shows \
+                        me this summary:
+
+                        \(summary)
+
+                        Treat this as the start of the conversation and answer follow-ups about \
+                        that day. Do not repeat the summary back to me.
+                        """
+                    }
                 )
             }
         }

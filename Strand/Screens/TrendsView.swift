@@ -513,7 +513,18 @@ struct TrendsView: View {
                         await coach.trendsNarrative(windowDays: range.days ?? repo.days.count)
                     },
                     startsExpanded: true,
-                    showsAskCoach: true
+                    showsAskCoach: true,
+                    coachFollowUp: { summary in
+                        let span = range.days.map { "the last \($0) days" } ?? "my whole history"
+                        return """
+                        I am looking at the Trends tab for \(span). It shows me this summary:
+
+                        \(summary)
+
+                        Treat this as the start of the conversation and answer follow-ups about \
+                        these trends. Do not repeat the summary back to me.
+                        """
+                    }
                 )
             }
         case .weekInReview:
