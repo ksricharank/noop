@@ -92,6 +92,7 @@ extension SleepSection {
     /// SF Symbol shown beside the card's name in the Arrange sheet.
     var customizationIcon: String {
         switch self {
+        case .insight:         return "sparkles"
         case .sleepMarks:      return "bed.double"
         case .stages:          return "chart.bar.xaxis"
         case .bodyClock:       return "clock.badge.checkmark"
@@ -99,6 +100,7 @@ extension SleepSection {
         case .sleepDebt:       return "arrow.down.right.circle"
         case .stagesVsTypical: return "chart.bar"
         case .asleepDuration:  return "clock"
+        case .restTrend:       return "chart.line.uptrend.xyaxis"
         }
     }
 
@@ -106,6 +108,7 @@ extension SleepSection {
     /// rest palette with the accent for the log/marks entry.
     var customizationTint: Color {
         switch self {
+        case .insight:         return StrandPalette.accent
         case .sleepMarks:      return StrandPalette.accent
         case .stages:          return StrandPalette.restColor
         case .bodyClock:       return StrandPalette.restColor
@@ -113,6 +116,7 @@ extension SleepSection {
         case .sleepDebt:       return StrandPalette.effortColor
         case .stagesVsTypical: return StrandPalette.restColor
         case .asleepDuration:  return StrandPalette.restBright
+        case .restTrend:       return StrandPalette.restColor
         }
     }
 }

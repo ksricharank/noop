@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import Security
 import WhoopStore
+import WhoopProtocol   // HRSample, for the recent-state block
 import StrandAnalytics
 import StrandImport
 
@@ -467,6 +468,8 @@ final class AICoachEngine: ObservableObject {
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
     static let systemPromptKey = "ai.systemPrompt"
     static let synthesisPromptKey = "ai.synthesisPrompt"
+    /// The editable instruction behind every coach-written NOTIFICATION TITLE (260903).
+    static let notificationTitlePromptKey = "ai.notificationTitlePrompt"
 
     /// The built-in system prompt that frames every request. Anonymous, frames the assistant only as a
     /// coach. Exposed (read-only) so the UI's "Reset to default" can restore it and show it when nothing
@@ -565,14 +568,102 @@ final class AICoachEngine: ObservableObject {
         return systemPromptTokens + contextTokens + historyTokens + draftTokens
     }
 
-    /// The built-in instruction for the Today synthesis turn. Deliberately thin: the coach's own
-    /// instructions own the voice and priorities, and this only names the surface and its shape.
-    /// Exposed like `defaultSystemPrompt` so the UI can show it and restore it.
+
+    /// The built-in instruction for the Today synthesis turn. The coach's own instructions still own
+    /// the voice; this names the surface and its SHAPE — three pillars, one line each, citing the
+    /// deterministic targets from the TODAY'S TARGETS block (the same numbers the Lock-Screen card
+    /// prints) so the synthesis and the card can never disagree. Exposed like `defaultSystemPrompt`
+    /// so the UI can show it and restore it.
+    /// The Today synthesis instruction.
+    ///
+    /// 260919, at the maintainer's request: this used to mandate three fixed sections — Heart,
+    /// Activity, Rest & sleep — every single day. That structure GUARANTEED a drab summary: with
+    /// three headings to fill whether or not anything had happened, the model padded the quiet ones
+    /// ("resting heart rate is normal", "sleep was adequate"), and a genuinely unusual reading sat
+    /// in the same typeface as the filler around it. A reader who sees the same shape every morning
+    /// stops reading it, which costs the one night that mattered.
+    ///
+    /// It now leads with what is ACTUALLY notable — a real deviation from the wearer's own
+    /// baselines, a streak, a sharp change — and says so plainly when nothing is. The sections are
+    /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
-    Following your coaching instructions and using my data above, write today's synthesis for my \
-    Today screen: one short plain-prose paragraph on how I'm doing today and what to do next. \
-    No headings, no lists, no greeting.
+    Following your coaching instructions and using my data above, write my read for the Today \
+    screen. Tell me WHAT STATE I AM IN right now and how I got here over the last few hours.
+
+    Your lens is MY BODY IN THE PRESENT. Lead with MY LAST 6 HOURS and today's readings; the \
+    targets are the LEAST interesting thing you have, because I can read those numbers myself.
+
+    What earns a mention, most important first:
+    - What my heart rate over the last few hours says about my state: resting and calm, elevated, \
+    recovering from something, or unusually high for a quiet stretch. Compare it to MY resting \
+    heart rate, never to population norms.
+    - How long I have been sedentary, if that stretch is notable, and whether it is worth breaking.
+    - How today's readings compare to MY OWN baseline. My data includes z-scores: |z| above 1 is a \
+    real deviation, above 2 is a strong one. A metric inside its normal range is NOT news.
+    - What all of that means for the next few hours: what to do, what to avoid, what to expect.
+    - A watchout worth flagging NOW: a climbing resting HR, sagging HRV or elevated respiratory \
+    rate together can precede illness or accumulated strain.
+
+    About the targets, specifically:
+    - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I can \
+    read off the screen, and spending a bullet on it wastes the only view that is about right now.
+    - Mention a target ONLY when my current state changes what I should do about it — for example \
+    that a long sedentary stretch plus a low step count makes a walk the obvious next move, or \
+    that today's strain against a poor recovery means the effort target is not worth chasing.
+    - My total calories include resting metabolism on both sides, so an early-day number far below \
+    target is NORMAL. Never read it as a shortfall or urge me to make it up.
+
+    Rules:
+    - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
+    night's sleep. Other screens own each of those, and repeating them here costs me the one view \
+    that is about right now.
+    - 2 to 5 bullets. FEWER IS BETTER. If only two things are worth saying, write two.
+    - Each bullet starts with a **bolded claim of at most eight words** — the finding itself — then \
+    an em dash, then one short clause of evidence or what to do. Every number in **bold**.
+    - Order them most notable first. The first bullet is the one thing to read if I read nothing else.
+    - No headings, no sections, no greeting, no sign-off, no prose outside the bullets.
+    - Recent days only where they explain the present — reach back only far enough to make right \
+    now make sense. The multi-week picture belongs to another screen.
+
+    If my last hours are genuinely unremarkable, SAY THAT in one or two bullets — "sitting at rest, \
+    everything in your normal range" is a useful, honest answer, and far better than padding. Never \
+    invent a finding to reach a bullet count. Never cite a number my data does not contain, and \
+    never state a target that differs from TODAY'S TARGETS.
     """
+
+    /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
+    /// water reminder and the move reminder all route through it (260903).
+    ///
+    /// The 32-character bound is stated to the model WITH worked examples, because that is what
+    /// actually produces short lines; iOS clips a Lock-Screen title around there. The bound is also
+    /// enforced in code (`notificationTitle` trims at a word boundary, then falls back to the
+    /// caller's static title) — the prompt asks, only the code can guarantee.
+    static let defaultNotificationTitlePrompt = """
+    Write ONE title for a phone notification about the status below.
+    Rules, strictly:
+    - At most 32 characters. This is a hard limit — a longer line gets thrown away.
+    - Warm, a little playful, motivating. Never scolding, never guilt-tripping.
+    - Scale it to the size of the gap: a small shortfall suggests something quick; a large one \
+    suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
+    encourage me to keep going rather than implying there is nothing left to do.
+    - No emoji, no quotation marks, no trailing period, no line breaks.
+    - Refer to MY numbers above — name the metric or the figure that is actually behind, so the \
+    line could not have been written without seeing my day.
+    - Do not write a generic line that would fit any day.
+    Shape guide, as a description rather than as text to copy: for a small gap, suggest one quick \
+    concrete action; for a large gap, suggest setting aside a block of real time; when I am at or \
+    past target, congratulate me in a few words and point forward.
+    Reply with the line only.
+    """
+
+    /// The notification-title instruction actually sent, read FRESH so a Coach-screen edit applies
+    /// to the next notification. Blank/absent falls back to the built-in.
+    var notificationTitlePrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stored, !stored.isEmpty { return stored }
+        return Self.defaultNotificationTitlePrompt
+    }
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
     /// edit takes effect on the next refresh. Blank/absent falls back to `defaultSynthesisPrompt`, so
@@ -612,6 +703,108 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
+    // The day-quality narrative's instruction (260904). Same three accessors as its siblings above:
+    // storing the DEFAULT clears the override rather than persisting a copy, so a later change to
+    // the built-in text reaches anyone who never customised it.
+    var customDayQualityPrompt: String {
+        get { dayQualityPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultDayQualityPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.dayQualityPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomDayQualityPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultDayQualityPrompt
+    }
+
+    func resetDayQualityPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
+        objectWillChange.send()
+    }
+
+    // The trend narrative's instruction (260919). Same three accessors as its siblings.
+    var customTrendsPrompt: String {
+        get { trendsPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultTrendsPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.trendsPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.trendsPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomTrendsPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultTrendsPrompt
+    }
+
+    func resetTrendsPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.trendsPromptKey)
+        objectWillChange.send()
+    }
+
+    // The sleep narrative's instruction (260919). Same three accessors as its siblings.
+    var customSleepPrompt: String {
+        get { sleepPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultSleepPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.sleepPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomSleepPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultSleepPrompt
+    }
+
+    func resetSleepPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
+        objectWillChange.send()
+    }
+
+    /// The editable notification-title instruction, same shape as `customSynthesisPrompt` (260903).
+    var customNotificationTitlePrompt: String {
+        get { notificationTitlePrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultNotificationTitlePrompt {
+                UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.notificationTitlePromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomNotificationTitlePrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultNotificationTitlePrompt
+    }
+
+    func resetNotificationTitlePrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
+        objectWillChange.send()
+    }
+
     /// Used in place of the metrics context when the user has NOT granted data access.
     private let noConsentNote = """
     NOTE: The user has not granted access to their biometric data. Coach generally and encourage \
@@ -635,12 +828,37 @@ final class AICoachEngine: ObservableObject {
     /// answer's length.
     nonisolated static let requestTimeoutSeconds: TimeInterval = 180
 
+    /// The stall budget for a NOTIFICATION TITLE, which is a different situation from the coach.
+    ///
+    /// 260904, from the 1119 log: two titles failed with "took too long", and the lines immediately
+    /// before them say why — `re-score (light): done — scored 2 night(s) in 25140 ms` and a
+    /// just-finished backfill. Titles are requested from the POST-OFFLOAD path, so they compete
+    /// with a re-score for a device that is already busy, whereas the synthesis and Ask-the-coach
+    /// run while the wearer is in the app with nothing else going on. That is exactly why the coach
+    /// screen looked healthy while every notification arrived with its static title.
+    ///
+    /// 20 s rather than 180: the nudge has a STATIC title that is already correct, so a slow
+    /// generation has nothing to win and a fast failure costs nothing. Waiting three minutes for a
+    /// decoration on a notification that has already been posted is the wrong trade on a
+    /// battery-sensitive background path — and `timeoutIntervalForRequest` is a between-bytes
+    /// stall budget, so a model that is answering steadily is not cut off by this.
+    nonisolated static let notificationTitleTimeoutSeconds: TimeInterval = 20
+
     /// A session configured for LLM latency. Used whenever a caller does not inject its own (the tests
     /// do), so the app never runs the coach on `URLSession.shared`'s 60 s default again.
     ///
     /// `nonisolated` because it builds a fresh value from constants and touches no engine state; the
     /// class's `@MainActor` isolation would otherwise ride along and force callers onto the main actor
     /// for what is a pure factory.
+    /// A session carrying the notification-title stall budget. Built once and reused, so a nudge
+    /// does not allocate a session per fire.
+    private lazy var notificationTitleSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = Self.notificationTitleTimeoutSeconds
+        config.timeoutIntervalForResource = Self.notificationTitleTimeoutSeconds * 2
+        return URLSession(configuration: config)
+    }()
+
     nonisolated static func makeDefaultSession() -> URLSession {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = requestTimeoutSeconds
@@ -1270,6 +1488,16 @@ final class AICoachEngine: ObservableObject {
     /// absent (`synthesisIsCurrent`), so a provider that stops answering degrades to the rule-based
     /// read by the next morning rather than pinning yesterday's narrative to today's numbers.
     @Published var synthesisGeneratedAt: Date?
+    /// The repository refresh sequence the current `synthesisText` was generated FROM (260919).
+    ///
+    /// The stale-morning-summary bug: the app opens, the scenePhase handler generates a synthesis
+    /// immediately, and the strap sync that is still in flight lands its rows a few seconds later.
+    /// The paragraph then describes the data as it was BEFORE the night's offload — written about
+    /// yesterday, sitting on today's screen — and nothing regenerated it, because the only triggers
+    /// were an app open (already spent) and a manual tap. Recording the sequence it was written from
+    /// lets `refreshSynthesisIfDataChanged` recognise exactly that.
+    @Published private(set) var synthesisDataSeq: Int?
+
     /// True while a generation is running — drives the refresh button's spinner on the Today cards.
     @Published var synthesisRefreshing = false
     private var synthesisInFlight = false
@@ -1330,6 +1558,8 @@ final class AICoachEngine: ObservableObject {
             if !clean.isEmpty {
                 synthesisText = clean
                 synthesisGeneratedAt = Date()
+                // Which data this paragraph describes — see `synthesisDataSeq`.
+                synthesisDataSeq = repo.refreshSeq
                 // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
                 // for the retry made its absence carry the hidden meaning "your chosen model", which
                 // is legible only to someone who already knows the rule.
@@ -1348,6 +1578,437 @@ final class AICoachEngine: ObservableObject {
         }
     }
 
+    /// Regenerate the Today synthesis IF new data has landed since the one on screen was written
+    /// (260919, the stale-morning-summary report: "when I wake up in the morning, the app takes a
+    /// while to update with the strap data — but the coach summary is already generated and then is
+    /// stale").
+    ///
+    /// Pure gate, then delegate. Call it wherever a sync completes; it is a no-op in every case
+    /// except the one it exists for, so the caller does not need to reason about provider state,
+    /// consent, throttling or the day rollover — `refreshSynthesis` already owns all of that.
+    ///
+    /// `force: true` on the delegated call is deliberate and is the whole point: the one-minute
+    /// freshness keep exists to absorb foreground FLAPS, where nothing has changed. Here something
+    /// demonstrably has — the numbers the paragraph describes — and the flap guard would swallow
+    /// exactly the regeneration the wearer is waiting for, since a morning sync lands seconds after
+    /// the app open that generated the stale text.
+    func refreshSynthesisIfDataChanged() async {
+        // No text yet: the ordinary open-triggered path owns the first generation. Regenerating here
+        // too would race it and spend two provider calls to produce one paragraph.
+        guard synthesisText != nil, let writtenFrom = synthesisDataSeq else { return }
+        // Same data the paragraph already describes.
+        guard repo.refreshSeq != writtenFrom else { return }
+        await refreshSynthesis(force: true)
+    }
+
+    /// A one-line, coach-written TITLE for any of NOOP's nudge notifications (260902, generalised
+    /// 260903): the pace check, the water reminder and the move reminder all route through here.
+    ///
+    /// `status` is the plain-language state to title — the caller's own numbers, already formatted
+    /// (e.g. "Steps: 1500 of 3750 expected by now (day goal 10000) — 60% behind pace"). The
+    /// instruction is the user-editable `notificationTitlePrompt`.
+    ///
+    /// Deliberately small and self-contained: at most one call per nudge, no history sent, one
+    /// short line back. Returns nil on ANY failure — no provider, no key, no consent, a timeout, an
+    /// empty reply, or a line that cannot be brought inside the length bound — and the caller then
+    /// uses its own static title. The notification must never wait on, or be blocked by, the
+    /// network.
+    func notificationTitle(status: String) async -> String? {
+        guard isConfigured, dataConsent, !status.isEmpty, let key = resolvedKey else {
+            lastNotificationTitleOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
+        do {
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)],
+                                               sessionOverride: notificationTitleSession)
+            let clean = Self.cleanNotificationTitle(reply)
+            // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule): a title that came
+            // back unusable is exactly what is missing when someone reports "the coach titles look
+            // generic". Costs a line only when a nudge actually fires.
+            lastNotificationTitleOutcome = clean == nil
+                ? "reply rejected (parroted example, too long, or empty): "
+                    + reply.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
+                : "written by \(lastAnsweringModel ?? "model")"
+            return clean
+        } catch {
+            lastNotificationTitleOutcome = "request failed: "
+                + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
+            return nil
+        }
+    }
+
+    /// What happened to the last notification-title generation — written on every attempt, read by
+    /// the callers for the strap log. Nil until one runs.
+    @Published private(set) var lastNotificationTitleOutcome: String?
+
+    // MARK: - Day-quality narrative (260904)
+
+    /// A short paragraph on how a finished day went, for the Trends day-quality card.
+    ///
+    /// Handed the SCORED BREAKDOWN rather than the raw day, deliberately: the components already
+    /// carry the arithmetic and its evidence ("7 412 of 8 000 steps", "HRV 62 ms vs 58 ms
+    /// baseline"), so the model is asked to interpret numbers it cannot get wrong rather than to
+    /// re-derive them. A model handed raw rows would occasionally state a different total than the
+    /// headline beside it, which is the one failure this card cannot afford.
+    ///
+    /// Returns nil on ANY failure — no provider, no consent, a timeout, an empty reply. The card
+    /// then says so plainly. Same contract as `notificationTitle`: a narrative is an enhancement,
+    /// and the score, the breakdown and the trend all stand without it.
+    func dayQualityNarrative(day: String, score: DayQualityScore) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastDayQualityOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let instruction = Self.dayQualityStatus(day: day, score: score)
+            + "\n\n---\n\n" + dayQualityPrompt
+        do {
+            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else {
+                lastDayQualityOutcome = "empty reply"
+                return nil
+            }
+            lastDayQualityOutcome = "written by \(lastAnsweringModel ?? "model")"
+            return clean
+        } catch {
+            lastDayQualityOutcome = "request failed: "
+                + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
+            return nil
+        }
+    }
+
+    @Published private(set) var lastDayQualityOutcome: String?
+
+    // MARK: - Trends and Sleep narratives (260919)
+
+    /// The Trends tab's summary. Window-scoped: the caller says how many days it is showing, and
+    /// the model is handed exactly that span so its claims can be anchored in it.
+    ///
+    /// Same contract as `dayQualityNarrative` — nil on ANY failure, and the tab stands without it.
+    func trendsNarrative(windowDays: Int) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastTrendsOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let window = Array(repo.days.suffix(windowDays))
+        guard window.count >= 3 else {
+            // Three days is not a trend. Saying so is more useful than asking a model to find a
+            // direction in two points, which it will oblige by inventing one.
+            lastTrendsOutcome = "not enough history yet (\(window.count) day(s))"
+            return nil
+        }
+        var facts = "METRICS OVER THE LAST \(window.count) DAYS (oldest first):\n"
+        facts += window.map { "  " + dayLine($0) }.joined(separator: "\n")
+        let derived = Self.derivedTrendsBlock(days: window)
+        if !derived.isEmpty { facts += "\n\n" + derived }
+        return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
+            self.lastTrendsOutcome = outcome
+        }
+    }
+
+    @Published private(set) var lastTrendsOutcome: String?
+
+    /// The Sleep tab's summary for ONE night. The caller passes the night it is displaying, so
+    /// stepping back through nights re-asks about the night on screen rather than about today.
+    func sleepNarrative(night: DailyMetric) async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastSleepOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        // The night itself, plus the recent nights it should be read against — "unusual for me"
+        // is the whole lens, and it is not answerable from a single row.
+        // The row is keyed by the night's WAKE day (`AnalyticsEngine.analyzeDay` attributes a
+        // session to the day its END falls on), so "the night of 09-20" is the night that ENDED on
+        // the 20th — i.e. slept on the 19th. Said out loud because the model otherwise reads the
+        // key as the evening the night began and describes the wrong calendar day back to the
+        // wearer, which is exactly how a correct 7.9h row gets narrated against the wrong date.
+        var facts = "THE NIGHT THAT ENDED ON THE MORNING OF \(night.day) "
+            + "(these are that night's own figures):\n  " + dayLine(night)
+        let priorNights = repo.days.filter { $0.day < night.day }.suffix(14)
+        if priorNights.count >= 3 {
+            facts += "\n\nMY PRECEDING NIGHTS (oldest first), for comparison:\n"
+            facts += priorNights.map { "  " + dayLine($0) }.joined(separator: "\n")
+        }
+        return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
+            self.lastSleepOutcome = outcome
+        }
+    }
+
+    @Published private(set) var lastSleepOutcome: String?
+
+    /// The shared call shape behind the tab narratives: facts, a separator, the instruction — the
+    /// same wire format `refreshSynthesis` uses — and nil on every failure with the reason recorded.
+    ///
+    /// Factored out rather than copied three times: the failure contract is the part worth having
+    /// exactly one of, since a narrative that throws must never reach a tab as an error string.
+    private func runNarrative(key: String, facts: String, instruction: String,
+                              outcome: @escaping (String?) -> Void) async -> String? {
+        do {
+            let reply = try await callProvider(key: key,
+                                               messages: [(.user, facts + "\n\n---\n\n" + instruction)])
+            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else {
+                outcome("empty reply")
+                return nil
+            }
+            outcome("written by \(lastAnsweringModel ?? "model")")
+            return clean
+        } catch {
+            outcome("request failed: "
+                    + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription))
+            return nil
+        }
+    }
+
+    /// The facts handed to the model: the total, both halves, and every component with its evidence.
+    /// Deterministic and pure, so the prompt's factual half is testable without a provider.
+    static func dayQualityStatus(day: String, score: DayQualityScore) -> String {
+        var lines = ["Day: \(day)",
+                     "Overall score: \(score.total) of 100 (\(DayQualityScore.band(score.total)))",
+                     "Execution half: \(Int(score.executionPoints.rounded())) points",
+                     "Recovery half: \(Int(score.recoveryPoints.rounded())) points"]
+        for c in score.components {
+            lines.append("- \(c.label): \(c.detail) — earned "
+                         + "\(Int(c.points.rounded())) of \(Int(c.weight.rounded())) points")
+        }
+        if score.loadFactor != 1.0 {
+            let pct = Int(((score.loadFactor - 1) * 100).rounded())
+            lines.append("- The day's targets were \(pct > 0 ? "harder" : "easier") than the "
+                         + "recent average, so the execution half was scaled by \(pct)%.")
+        }
+        if !score.missing.isEmpty {
+            // Stated explicitly so the model does not describe a missing signal as a bad one.
+            lines.append("- NOT RECORDED (no data, not a zero): \(score.missing.joined(separator: ", "))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// The day-quality score history, as a compact block for the coach context.
+    ///
+    /// Reads the SAME stored series the Trends card and its chart read, so all three describe one
+    /// set of numbers. Sends the recent run plus the two 7-day averages that define the trend's
+    /// direction — the thing the wearer is trying to move — rather than the whole history, which
+    /// would spend context on months the advice cannot act on.
+    ///
+    /// Nil when fewer than three days are scored: a "trend" over two points is not one, and inviting
+    /// the model to characterise it produces confident noise.
+    func dayQualityHistoryBlock() async -> String? {
+        let series = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+        return Self.dayQualityHistoryLines(series: series)
+    }
+
+    /// The pure formatter, split out so the block's content is pinned without a store or a provider.
+    nonisolated static func dayQualityHistoryLines(
+        series: [(day: String, value: Double)]
+    ) -> String? {
+        guard series.count >= 3 else { return nil }
+        let recent = series.suffix(14)
+        let last7 = series.suffix(7).map(\.value)
+        let prev7 = series.dropLast(7).suffix(7).map(\.value)
+        var lines = ["DAY QUALITY HISTORY (0-100 per finished day; the wearer's own overall score, "
+                     + "combining how well they hit that day's targets with how their body responded. "
+                     + "They are trying to keep this trending UP):"]
+        lines.append(recent.reversed().map { "\($0.day): \(Int($0.value.rounded()))" }
+            .joined(separator: ", "))
+        if !last7.isEmpty {
+            let a = last7.reduce(0, +) / Double(last7.count)
+            lines.append("Last 7 days average: \(Int(a.rounded()))")
+            if !prev7.isEmpty {
+                let b = prev7.reduce(0, +) / Double(prev7.count)
+                let delta = a - b
+                lines.append("Previous 7 days average: \(Int(b.rounded())) "
+                             + "(change: \(String(format: "%+.0f", delta)))")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static let dayQualityPromptKey = "ai.dayQualityPrompt"
+
+    /// User-overridable, read fresh on every generation like the synthesis prompt.
+    var dayQualityPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultDayQualityPrompt)
+    }
+
+    /// The RECAP lens: one finished day, graded.
+    ///
+    /// 260919: reformatted to bullets with bolded claims, matching its three sibling tab summaries.
+    /// It used to forbid markdown and ask for plain sentences, which made it the odd one out — the
+    /// same reader, four tabs, and one of them rendering as a paragraph while the others scanned as
+    /// bullets. The LENS is unchanged; only the shape is.
+    static let defaultDayQualityPrompt = """
+    The numbers above summarise ONE FINISHED DAY. Write 2-4 short bullets for the person who lived \
+    it, in the second person.
+
+    Your lens is HOW THE DAY ACTUALLY WENT. What earns a mention:
+    - What genuinely drove the score up or down, naming the specific components — a day is graded on
+    its parts, and "you did well" says nothing a number above it has not already said.
+    - Where the day diverged from my usual: a component far above or below what I normally manage \
+    is the finding, not the ones that landed where they always land.
+    - A relationship between two components that explains the day — a short night showing up in the \
+    next day's effort, a hard session against a recovery that could not carry it.
+
+    Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all. A number you \
+    invented is worse than no bullet: it describes a day I did not live.
+    - Do NOT restate the total; it is displayed directly above your text.
+    - Do NOT summarise the week or write a report on the night's sleep — other tabs own those.
+    - A field marked NOT RECORDED means there is no data. Never describe it as a bad result.
+    - The day is OVER. Do not give instructions for it; one forward-looking note about today is fine \
+    as the last bullet.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
+
+    static let trendsPromptKey = "ai.trendsPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var trendsPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultTrendsPrompt)
+    }
+
+    /// The TRENDS lens (260919). Deliberately the long horizon and nothing else: the four tab
+    /// summaries are one UI with four prompts, and the whole point is that each one says something
+    /// the others cannot. Today reads the current moment, Recap grades a finished day, Sleep reads
+    /// last night — so this one is banned from all three and must talk about DIRECTION over weeks.
+    static let defaultTrendsPrompt = """
+    The numbers above are my metrics over an extended window — weeks, not one day. Write 2-4 short \
+    bullets about the TREND, for the person whose body it is, in the second person.
+
+    Your lens is DIRECTION AND DURATION. What earns a mention:
+    - A metric that has moved consistently across the window, with roughly how long it has been \
+    moving. A direction sustained for two weeks is a finding; one bad day inside it is not.
+    - A reversal or a plateau after a run — the point where something stopped doing what it was \
+    doing is often the most informative thing in a window.
+    - A relationship that only a long window shows: training load accumulating ahead of recovery, \
+    sleep debt building, a baseline itself drifting.
+
+    Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all.
+    - Do NOT report today's values, grade a single day, or discuss last night. Other screens own \
+    those, and repeating them here wastes the only view that can see weeks.
+    - Anchor claims in the window: say "over the last three weeks", not "recently".
+    - A field marked NOT RECORDED means no data. Never describe it as a bad result.
+    - If the window genuinely holds no trend worth reporting, say so in one line. A flat period is \
+    a real finding and padding it is worse than brevity.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
+
+    static let sleepPromptKey = "ai.sleepPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var sleepPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultSleepPrompt)
+    }
+
+    /// The SLEEP lens (260919): one night's architecture, and what it means for today. Banned from
+    /// the day-grading Recap owns and the week-scale direction Trends owns.
+    static let defaultSleepPrompt = """
+    The numbers above describe ONE NIGHT of sleep. Write 2-4 short bullets for the person who slept \
+    it, in the second person.
+
+    Your lens is THIS NIGHT'S ARCHITECTURE and what it means for today. What earns a mention:
+    - How the night was actually built — duration against need, the deep and REM split, efficiency, \
+    disturbances — and specifically which part of it was unusual for me.
+    - What the overnight vitals say about how the night went: resting heart rate, HRV, respiratory \
+    rate and skin temperature during sleep are the body's own report on it.
+    - What this night implies for today: what to expect, and what would help tonight.
+
+    Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
+    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
+    figure you want is absent, describe the finding in words with no number at all.
+    - Do NOT grade the day, summarise the week, or restate a sleep score shown above you.
+    - A short night is not automatically a bad one, and a long one is not automatically good — say \
+    what the architecture shows, not what the duration implies.
+    - A field marked NOT RECORDED means no data. Never describe it as a bad result.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
+    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
+
+    /// Canned lines that are REJECTED as titles: a model echoing one has told us nothing about the
+    /// day. Originally the verbatim examples from `defaultNotificationTitlePrompt` — the 260903
+    /// failure, where every nudge arrived titled "Big push left, block an hour" (an example,
+    /// verbatim) and looked indistinguishable from a working generation.
+    ///
+    /// 260904: the prompt no longer QUOTES any of these. The 1119 log showed the rejection firing
+    /// on a title that was, by then, a reasonable answer — "Time to block out an hour" against a
+    /// genuinely large gap — so the wearer got the static "Behind pace" instead of a usable line.
+    /// Rejecting the model's best guess is worse than the parroting it was added to catch.
+    ///
+    /// The real fix is upstream of the check: the prompt now DESCRIBES the shape instead of
+    /// supplying quotable text, so there is nothing memorable to copy. The list stays as a
+    /// backstop, because a small model that has seen these strings in a previous prompt version can
+    /// still reach for them, and a verbatim canned line remains a failed generation either way.
+    nonisolated static let notificationTitleExamples = [
+        "quick lap around the block",
+        "time to block out an hour",
+        "nailed it, keep it rolling",
+    ]
+
+    /// The length/shape enforcement behind `notificationTitle`, pure so it is pinned by tests.
+    ///
+    /// The prompt asks for ≤32 characters with examples, which is what actually produces short
+    /// lines — but a model can ignore it, and a clipped Lock-Screen title is a worse outcome than a
+    /// plain one. So: strip the shapes the prompt forbids (quotes, trailing punctuation, line
+    /// breaks), then TRIM at a word boundary rather than discarding a slightly-long line, and give
+    /// up only when even the first words cannot fit. nil = the caller's static title wins.
+    nonisolated static func cleanNotificationTitle(_ raw: String) -> String? {
+        // A model that ignores "no line breaks" usually offers its best line first.
+        let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
+        var clean = firstLine
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\u{201C}", with: "")
+            .replacingOccurrences(of: "\u{201D}", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!  "))
+        guard !clean.isEmpty else { return nil }
+        // A parroted example is a failed generation, not a title.
+        let normalized = clean.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "?!.,;: "))
+        if notificationTitleExamples.contains(normalized) { return nil }
+        if clean.count > notificationTitleMaxChars {
+            // Keep whole words only — a title cut mid-word reads as a bug, not as brevity.
+            var kept: [String] = []
+            var used = 0
+            for word in clean.split(separator: " ") {
+                let cost = kept.isEmpty ? word.count : word.count + 1
+                guard used + cost <= notificationTitleMaxChars else { break }
+                kept.append(String(word))
+                used += cost
+            }
+            // One word is not a title; fall back rather than posting a fragment.
+            guard kept.count >= 2 else { return nil }
+            clean = kept.joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",;:-\u{2014} "))
+        }
+        return clean.isEmpty ? nil : clean
+    }
+
+    /// The hard title bound. iOS clips a Lock-Screen notification title around here, so a longer
+    /// line would be shown truncated — the one outcome worth failing over.
+    nonisolated static let notificationTitleMaxChars = 32
+
     /// Why the last Today-synthesis generation failed, or nil if the last one succeeded (or none has
     /// run). Surfaced in the Coach screen rather than on Today: the Today card's contract is to always
     /// show something useful, and a provider error is not that — but "synthesis is blank and I cannot
@@ -1364,6 +2025,9 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        // The last few hours (260919). Without this the context has day-lines and today's targets
+        // and nothing about NOW, so a prompt asking for current state can only restate the targets.
+        if let recent = await recentStateBlock() { ctx += "\n\n" + recent }
         // Third opt-in: deterministic roll-ups (training load, sleep debt, baseline deviations) over the
         // SAME `repo.days` rows the summary above is built from. Pure and store-free, so it adds no read
         // and no egress surface — only resolution on data already in the context.
@@ -1371,6 +2035,26 @@ final class AICoachEngine: ObservableObject {
             let trends = Self.derivedTrendsBlock(days: repo.days)
             if !trends.isEmpty { ctx += "\n\n" + trends }
         }
+        // Day-quality HISTORY (260904): the stored series behind the Trends card, so the coach can
+        // comment on the direction of travel and not only on today. Async because the scores live in
+        // `metricSeries` rather than on the daily rows — hence here, at the async call site, rather
+        // than inside the synchronous `buildContext()`.
+        if let block = await dayQualityHistoryBlock() { ctx += "\n\n" + block }
+        // The three-pillar targets — the SAME deterministic numbers the Lock-Screen card prints, so
+        // the synthesis and the card can never disagree about today's prescription. (A "right now"
+        // HR + live autonomic verdict rode here for one build, 270–271 — retired 260830 with the
+        // card's HR column; the Heart bullet reads the day-lines and baseline z-scores instead.)
+        let targets = repo.cachedLiveTargets()
+        let anchor = repo.cachedWidgetAnchor()
+        let targetsBlock = Self.dailyTargetsBlock(
+            targets: targets,
+            charge: anchor?.recovery.map { Int($0.rounded()) },
+            midsleepSec: await repo.habitualMidsleepSec(),
+            typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }),
+            effortScale: EffortScale(rawValue: UserDefaults.standard.string(
+                forKey: UnitPrefs.effortScaleKey) ?? "") ?? .hundred)
+        if !targetsBlock.isEmpty { ctx += "\n\n" + targetsBlock }
         if includeOnDeviceSignals {
             let block = await onDeviceSignalsBlock()
             if !block.isEmpty { ctx += "\n\n" + block }
@@ -1390,6 +2074,71 @@ final class AICoachEngine: ObservableObject {
         let rr = await repo.rrIntervals(from: from, to: to, limit: 200_000)
         guard let si = StressIndex.stressIndex(rr: rr) else { return nil }
         return Self.stressIndexSummary(si: si)
+    }
+
+    /// The last few hours, hour by hour — the block the Today synthesis was missing (260919).
+    ///
+    /// The report: "the LLM output is a plain recap of the targets I need to hit, which is not
+    /// really useful". It was, and the cause is upstream of the prompt — a "right now" HR block was
+    /// retired in 260830, so the context held day-lines and today's TARGETS and nothing about the
+    /// hours just past. Asked to describe my current state from that, a model can only restate the
+    /// targets, which is the one thing already legible from the numbers on screen.
+    ///
+    /// Hourly mean HR and its range over the window, plus the stretch since I last moved. Derived,
+    /// never raw samples: same text-only channel and no-raw-egress posture as the rest of the
+    /// context. Returns nil when the strap has banked too little to say anything honest.
+    func recentStateBlock(hours: Int = 6, now: Date = Date()) async -> String? {
+        let to = Int(now.timeIntervalSince1970)
+        let from = to - hours * 3600
+        let samples = await repo.hrSamples(from: from, to: to)
+        guard samples.count >= 10 else { return nil }
+
+        var lines = ["MY LAST \(hours) HOURS (most recent first) — the state I am in RIGHT NOW:"]
+        // Bucket by clock hour so each line is a span the wearer can place against their own day.
+        var byHour: [Int: [Int]] = [:]
+        for smp in samples { byHour[smp.ts / 3600, default: []].append(smp.bpm) }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "HH:mm"
+        for hour in byHour.keys.sorted(by: >) {
+            guard let bpms = byHour[hour], !bpms.isEmpty else { continue }
+            let mean = Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
+            let label = fmt.string(from: Date(timeIntervalSince1970: TimeInterval(hour * 3600)))
+            lines.append("  \(label) — mean \(mean) bpm, range \(bpms.min() ?? 0)-\(bpms.max() ?? 0)"
+                         + " over \(bpms.count) reading(s)")
+        }
+
+        // Resting HR gives "elevated" a reference. Without it the model has to guess what is high
+        // for ME, and it guesses from population norms, which is exactly the generic read to avoid.
+        if let rhr = repo.days.last?.restingHr {
+            lines.append("For reference my resting heart rate is \(rhr) bpm; anything near it means"
+                         + " I am at rest, well above it means I am active or under load.")
+        }
+        // The elapsed-since-movement read. A long quiet stretch is the single most actionable thing
+        // this block can surface, and it is not visible anywhere else on the screen.
+        if let stillFor = Self.minutesSinceLastActive(samples: samples, now: to) {
+            lines.append("I have been sedentary for about \(stillFor) minutes"
+                         + " (no sustained heart-rate rise in that time).")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Minutes since the last sustained rise above rest, or nil when the window never settles.
+    ///
+    /// Pure and static so it is testable without a store. "Active" is a sample at least 15 bpm above
+    /// the window's own floor — relative to THIS window rather than to a fixed threshold, because a
+    /// fixed one would call a resting 70 bpm active for one person and never fire for another.
+    nonisolated static func minutesSinceLastActive(samples: [HRSample], now: Int) -> Int? {
+        guard let floor = samples.map(\.bpm).min(), samples.count >= 10 else { return nil }
+        let activeThreshold = floor + 15
+        guard let lastActive = samples.filter({ $0.bpm >= activeThreshold }).map(\.ts).max() else {
+            // Never rose in the window: report the whole window rather than nil, which is the
+            // honest answer and the one most worth saying.
+            guard let earliest = samples.map(\.ts).min() else { return nil }
+            return max(0, (now - earliest) / 60)
+        }
+        let minutes = (now - lastActive) / 60
+        // Under 20 minutes is not a sedentary stretch worth naming.
+        return minutes >= 20 ? minutes : nil
     }
 
     /// Pure formatter for the derived stress line, kept separate so it is unit-testable without a store.
@@ -1472,9 +2221,13 @@ final class AICoachEngine: ObservableObject {
     ///
     /// The retry never mutates `model`. The user's chosen model is theirs; a rescued answer must not
     /// silently re-point the picker at a smaller model for every request that follows.
+    /// `sessionOverride` lets a caller impose its own stall budget without disturbing the shared
+    /// session every other call uses — see `notificationTitleSession`. Nil = the engine's session.
     private func callProvider(key: String,
-                              messages: [(role: ChatMessage.Role, content: String)]) async throws -> String {
+                              messages: [(role: ChatMessage.Role, content: String)],
+                              sessionOverride: URLSession? = nil) async throws -> String {
         let attempted = model
+        let session = sessionOverride ?? self.session
         do {
             let reply = try await provider.client.send(
                 key: key,
@@ -1704,7 +2457,7 @@ final class AICoachEngine: ObservableObject {
         // The fork's toggle-gated form is kept — it is the superset once `light` is folded in below —
         // so a narrow context stays narrow for users who have not opted into the richer prompt.
         lines.append(includeDerivedTrends
-            ? "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(sleep efficiency %), HRV(RMSSD, ms), RHR(bpm), wakes(disturbances), SDNN(broad HRV, ms), skin(skin temperature — labelled either absolute °C or a signed deviation vs baseline). A dash means NOT MEASURED, not zero; the trailing fields are omitted on nights that didn't record them:"
+            ? "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(sleep efficiency %), HRV(RMSSD, ms), RHR(bpm), wakes(disturbances), SDNN(broad HRV, ms), skin(skin temperature — labelled either absolute °C or a signed deviation vs baseline). A dash means NOT MEASURED, not zero; the wakes/SDNN/skin fields are omitted entirely on nights that didn't record them:"
             : "Recent days (newest first) — charge(0-100), effort(0-100), rest/sleep(h), deep/REM/light(h), eff(%), HRV(ms), RHR(bpm). A dash means NOT MEASURED, not zero:")
         for d in recent {
             lines.append("  " + dayLine(d))
@@ -1838,6 +2591,116 @@ final class AICoachEngine: ObservableObject {
                 + lines).joined(separator: "\n")
     }
 
+    /// The THREE-PILLAR targets block: the same deterministic numbers the Live Activity card prints
+    /// (`LiveTargets` / `DailyTargets`), stated to the coach so the synthesis cites the
+    /// figures the user is already looking at instead of inventing parallel ones. Pure and
+    /// independently nil-guarded like `derivedTrendsBlock`: a cold-start field is simply absent,
+    /// never fabricated. Returns "" when nothing qualifies.
+    nonisolated static func dailyTargetsBlock(targets: LiveTargets,
+                                              charge: Int?,
+                                              midsleepSec: Int?,
+                                              typicalSleepHours: Double?,
+                                              effortScale: EffortScale = .hundred) -> String {
+        var lines: [String] = []
+
+        // (A Heart line — a "right now" bpm plus the live autonomic verdict — led this block for one
+        // build, 270–271. Retired 260830 with the card's HR column: the Heart bullet reads the
+        // overall state from the day-lines and baseline z-scores in the wider context instead, and
+        // the live dip reaches the user through the stress check-in's buzz + notification.)
+
+        // Activity & exercise: the prescribed session and the effort/calorie targets priced FROM
+        // it, vs today so far. Effort figures render on the USER'S chosen display scale — they said
+        // "optimal effort is around 10" meaning the 0–21 axis, and a 0–100 figure under the same
+        // label reads as a different (and absurdly large) prescription. Calories are TOTAL on both
+        // sides (260830): the whole-day estimate vs a full resting day plus the priced session.
+        let scaleMax = UnitFormatter.effortScaleMax(effortScale)
+        let effortTargetText = targets.effortTarget.map {
+            UnitFormatter.effortDisplay(Double($0), scale: effortScale)
+        }
+        let todayEffortText = UnitFormatter.effortDisplay(Double(targets.effortTodayStored ?? 0),
+                                                          scale: effortScale)
+        let kcalSidesText: String? = targets.kcalTargetKcal.map { target in
+            "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
+            + "prescription through the app's own Keytel model); total burned so far: "
+            + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
+        }
+        let stepsSidesText: String? = targets.stepsTarget.map { target in
+            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+            + "readiness read — a separate ask from the session); steps so far: "
+            + "\(targets.stepsToday.map(String.init) ?? "0")."
+        }
+        if targets.restDay {
+            var line = "Today's prescription: REST — the body's readiness read says recover, so "
+                       + "there is no session; the effort target is simply to hold near "
+                       + "\(effortTargetText ?? todayEffortText) of \(scaleMax) "
+                       + "(so far today: \(todayEffortText))."
+            if let kcalSidesText {
+                line += " " + kcalSidesText + " On a rest day the target is the resting day alone —"
+                        + " reaching it asks nothing extra."
+            }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        } else if let minutes = targets.sessionMinutes {
+            let hrText = targets.sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
+            var line = "Today's prescribed session: \(minutes) min\(hrText) (from today's charge "
+                       + "band + the multi-signal readiness read + last night's Rest — the body's "
+                       + "state, never past habits)."
+            if let targetText = effortTargetText {
+                line += " Completing it lands the day at effort \(targetText) of \(scaleMax) "
+                        + "(so far today: \(todayEffortText))."
+            }
+            if let kcalSidesText { line += " " + kcalSidesText }
+            if let stepsSidesText { line += " " + stepsSidesText }
+            lines.append(line)
+        }
+
+        // Water (260903): the same cups the Today water row and the reminder show, so the
+        // Activity section can talk about hydration without inventing a number. Omitted entirely
+        // when hydration tracking is off.
+        if let goalCups = targets.waterTargetCups {
+            let drunkCups = HydrationGoal.cups(fromML: targets.waterTodayML ?? 0)
+            let left = max(0, goalCups - drunkCups)
+            lines.append("Water target: \(goalCups) cups (a baseline for the user's body plus one "
+                         + "cup per 10 points of today's effort — the prescribed target, or the "
+                         + "effort actually done if that is higher, so the ask can only grow); "
+                         + "drunk so far: \(drunkCups) cups"
+                         + (left > 0 ? ", \(left) cups left." : " — target already met."))
+        }
+
+        // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
+        if let need = targets.sleepNeedTonightMin {
+            lines.append(sleepPlanLine(needTonightMin: need, midsleepSec: midsleepSec,
+                                       typicalSleepHours: typicalSleepHours))
+        }
+
+        guard !lines.isEmpty else { return "" }
+        return (["TODAY'S TARGETS (deterministic, computed on-device from the user's own history — the "
+                 + "SAME numbers the Lock-Screen card shows; cite these, do not invent alternatives):"]
+                + lines.map { "  • " + $0 }).joined(separator: "\n")
+    }
+
+    /// Tonight's sleep prescription as one sentence: the target duration, plus the precise "asleep by"
+    /// time derived from the learned sleep model (#547 — habitual wake = midsleep + half the typical
+    /// night, the same circular arithmetic as `BatteryEstimator.bedtimeAlert`). Cold-start (no learned
+    /// midsleep or duration yet) states only the duration — a fixed-clock bedtime would be wrong for
+    /// exactly the shift/late sleepers the learner exists for.
+    nonisolated static func sleepPlanLine(needTonightMin: Int, midsleepSec: Int?,
+                                          typicalSleepHours: Double?) -> String {
+        let target = String(format: "%dh%02d", needTonightMin / 60, needTonightMin % 60)
+        guard let midsleep = midsleepSec, (0..<86_400).contains(midsleep),
+              let typical = typicalSleepHours, typical > 0 else {
+            return "Sleep tonight: target \(target) asleep."
+        }
+        func hhmm(_ secOfDay: Int) -> String {
+            let s = ((secOfDay % 86_400) + 86_400) % 86_400
+            return String(format: "%02d:%02d", s / 3600, (s % 3600) / 60)
+        }
+        let wakeSec = midsleep + Int((typical * 1800).rounded())
+        let bedSec = wakeSec - needTonightMin * 60
+        return "Sleep tonight: target \(target) asleep — aim to be asleep by \(hhmm(bedSec)) "
+               + "against the learned habitual wake of about \(hhmm(wakeSec))."
+    }
+
     // MARK: Formatting helpers
 
     /// `internal`, not private, so `AICoachSleepContextTests` can assert the emitted line directly.
@@ -1868,26 +2731,30 @@ final class AICoachEngine: ObservableObject {
         parts.append("charge " + (d.recovery.map { "\(Int($0.rounded()))" } ?? "—"))
         parts.append("effort " + (d.strain.map { String(format: "%.1f", $0) } ?? "—"))
         parts.append("rest " + (d.totalSleepMin.map { String(format: "%.1fh", $0 / 60) } ?? "—"))
-        // The stage breakdown and efficiency, which the coach could not see at all: a user asked why it
-        // said it had no access to sleep stages, and it was answering honestly — `rest 7.8h` was every
-        // word it got about a night. These four sit on the SAME DailyMetric the line already reads, so
-        // nothing new is plumbed; they were simply never included. (#124 widened this context once
-        // before, for the same reason.)
+        // The stage breakdown and efficiency, which the coach could not see at all (#1817): a user
+        // asked why it said it had no access to sleep stages, and it was answering honestly — `rest
+        // 7.5h` was every word it got about a night. These sit on the SAME DailyMetric the line
+        // already reads, so nothing new is plumbed; they were simply never included.
         //
-        // Always emitted, "—" when absent, like every other field here. A night with no staging then
-        // says so rather than going quiet, which matters more than line length: the alternative — only
-        // appending stages when present — gives the model a schema that changes shape between days and
-        // invites it to read a missing field as a zero.
-        parts.append("deep " + hoursOrDash(d.deepMin))
-        parts.append("REM " + hoursOrDash(d.remMin))
-        parts.append("light " + hoursOrDash(d.lightMin))
-        parts.append("eff " + efficiencyPercentOrDash(d.efficiency))
+        // ALWAYS emitted, "—" when absent. The v11.1.0 uplift found upstream had built the same
+        // feature with the opposite rule — stages behind the `wide` toggle, omitted when nil — and
+        // the fork's rule was kept deliberately (maintainer decision at the uplift). A fixed schema
+        // is what stops the model inferring: a line whose columns appear and vanish between days
+        // invites "no deep field" to be read as zero, which is the same misreading upstream's rule
+        // guards against, arriving by the other door. "deep —" states the absence out loud.
+        //
+        // The genuinely optional columns below keep upstream's omit-when-nil rule: they are extra
+        // detail rather than part of the night's basic shape, so their absence carries no meaning.
+        parts.append("deep " + Self.hoursOrDash(d.deepMin))
+        parts.append("REM " + Self.hoursOrDash(d.remMin))
+        parts.append("light " + Self.hoursOrDash(d.lightMin))
+        parts.append("eff " + Self.efficiencyPercentOrDash(d.efficiency))
         parts.append("HRV " + (d.avgHrv.map { "\(Int($0.rounded()))ms" } ?? "—"))
         parts.append("RHR " + (d.restingHr.map { "\($0)bpm" } ?? "—"))
         guard wide else { return parts.joined(separator: ", ") }
 
-        // deep / REM / eff are NOT re-emitted here: they are already unconditional above. Upstream's
-        // pre-merge `wide` block repeated them in minutes beside the fork's hours, which would have
+        // deep / REM / light / eff are NOT repeated here — they are unconditional above. Upstream's
+        // pre-merge wide block emitted them in minutes, which alongside the fork's hours would have
         // handed the model the same night twice in two units.
         if let dist = d.disturbances { parts.append("wakes \(dist)") }
         if let sdnn = d.avgSdnn { parts.append("SDNN \(Int(sdnn.rounded()))ms") }

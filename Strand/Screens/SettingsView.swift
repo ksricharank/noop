@@ -227,9 +227,15 @@ struct SettingsView: View {
     // tilt sensor, without needing system Low Power Mode or system Reduce Motion. Apple-only so far —
     // Android has no such toggle yet and its gate reads two signals, not three (#941).
     @AppStorage(QuietMotionPrefs.enabledKey) private var quietMotion = false
+    // "Detailed sparklines" (260920, default OFF = the cheap Canvas path). Stored INVERTED — the key
+    // means "rich" — so an untouched install gets the cheap renderer. See `SparklinePrefs`.
+    @AppStorage(SparklinePrefs.richKey) private var richSparklines = false
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
+    // 260904: the water-REMINDER controls (enable, start, stop, interval) moved to AutomationsView,
+    // which is now the single screen for notifications and nudges. Only the tracker toggle above
+    // remains here, since it gates stored data rather than a notification.
 
     /// Opt-in "Auto-detect workouts" (default OFF). When ON, Today scans the last day or two of HR for a
     /// sustained-elevated window and offers — via a single dismissible card — to save it as a workout.
@@ -356,6 +362,12 @@ struct SettingsView: View {
                 #if os(iOS)
                 syncCard.staggeredAppear(index: 6)
                 #endif
+                // 260920: Integration is a DAILY surface — the maintainer generates the digest every
+                // morning — so it sits with the everyday sections rather than inside the collapsed
+                // Advanced group, where it shipped first and where he could not find it. Backup &
+                // Sync stays under Advanced: it is set up once and then forgotten, which is the
+                // difference that decides which side of the disclosure a section belongs on.
+                integrationCard.staggeredAppear(index: 7)
 
                 // Lower-frequency sections collapse behind a single default-closed disclosure so the
                 // screen opens at ~6 sections instead of 11. Nothing is removed; every section here
@@ -1376,6 +1388,28 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 rowDivider
+                // MARK: Detailed sparklines (260920) — the inline mini-charts on the Sleep tab's
+                // Night-detail grid, the Trends tab's Daily signals and the Today tiles.
+                //
+                // OFF draws them through a fixed-size Canvas; ON restores the original
+                // GeometryReader renderer, which also carries the pointer-hover tooltip. The
+                // maintainer's own bisection identified those two grids as the scroll cost, so this
+                // is a switch rather than a silent default — it lets the two be compared directly
+                // on-device instead of taking a claim on trust.
+                Toggle(isOn: $richSparklines) {
+                    Text("Detailed sparklines")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Draws the little inline trend lines the richer way, with a hover tooltip on a Mac or iPad. On iPhone the tooltip can never appear, and the richer drawing makes pages with many of them — Sleep's Night detail, Trends' Daily signals — scroll less smoothly. Leave it off unless you want the tooltip.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                rowDivider
                 // MARK: Day-cycle background — the time-of-day scene behind Today (#698). On by default.
                 // Off swaps it for the plain dark canvas for people who find the moving scene distracting.
                 Toggle(isOn: $showDayCycleBackground) {
@@ -1812,6 +1846,17 @@ struct SettingsView: View {
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // 260904: the water REMINDER controls moved to Automations, which is now the one
+                // screen for notifications and nudges. The tracker toggle stays here — it is a data
+                // feature, not a notification — and the pointer below is what keeps the reminder
+                // discoverable from the screen it used to live on.
+                if hydrationEnabled {
+                    Text("Water reminders, including when they start and stop, are in Automations.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 rowDivider
 
@@ -2716,6 +2761,45 @@ struct SettingsView: View {
         }
     }
     #endif
+
+    /// The daily digest file (260920). A pointer section rather than the controls inline: the
+    /// screen owns a folder picker, a filename field, a cadence and a preview, which is more than a
+    /// Settings card should carry.
+    private var integrationCard: some View {
+        SettingsSection(
+            icon: "doc.text.magnifyingglass",
+            title: "Integration",
+            blurb: "A small daily file of your last 24 hours, for another app to read."
+        ) {
+            VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                Text("Writes one text file — today so far, last night, and yesterday's grade — to a folder you choose, once a day. The same file is replaced each time, so whatever reads it can point at one path.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                NavigationLink {
+                    IntegrationView()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .accessibilityHidden(true)
+                        Text(MuseIntegration.hasFolder
+                             ? "Daily digest file…"
+                             : "Set up the daily digest file…")
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(LiquidPressStyle())
+                .accessibilityLabel("Open the daily digest file settings")
+            }
+        }
+    }
 
     private var backupCard: some View {
         SettingsSection(

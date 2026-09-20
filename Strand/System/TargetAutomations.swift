@@ -1,0 +1,361 @@
+import Foundation
+import UserNotifications
+
+/// The two target-driven notification automations (260901, maintainer-picked from the automation
+/// menu): the MORNING BRIEF (A — the day's numbers arrive as a notification the moment the first
+/// post-wake score lands, before the app is ever opened) and TARGET PACING (E — proactive
+/// catch-up nudges at user-chosen afternoon/evening check-ins when the day is running behind its
+/// targets, deliberately a nudge toward action rather than a status update the widgets already
+/// give). Both default OFF, both ride the existing post-offload refresh (no new background work),
+/// both post through the OS notification center gated on each feature's own toggle plus system
+/// authorization. The wind-down reminder's dynamic sleep-target need (B) lives on the existing
+/// `WindDownNudge` — an option on that automation, never a duplicate of it.
+///
+/// The DECISIONS are pure static functions over plain values, so StrandTests pins when each fires
+/// and what it says without UserDefaults, a clock, or a notification center.
+enum TargetAutomations {
+
+    // MARK: - Prefs (UserDefaults-backed; UI in AutomationsView)
+
+    enum K {
+        static let briefEnabled = "auto.morningBrief.enabled"
+        static let briefEarliestMin = "auto.morningBrief.earliestMin"   // default 06:00
+        static let briefLastDay = "auto.morningBrief.lastDay"
+        static let pacingEnabled = "auto.pacing.enabled"
+        static let pacingIntervalHours = "auto.pacing.intervalHours"    // default 2
+        /// The earliest and latest clock times a pacing nudge may land (260904). Both ABSENT by
+        /// default, which preserves the pre-control behaviour exactly: check-ins run from the
+        /// actual wake to midnight. See `pacingWindow`.
+        static let pacingStartMin = "auto.pacing.startMin"
+        static let pacingStopMin = "auto.pacing.stopMin"
+        static let pacingDay = "auto.pacing.day"
+        // 260903: per-nudge wrist-buzz toggles. `wristBuzz` is the master; the four below are the
+        // individual cues. ALL default ON — the buzz was asked for, so the whole set arrives
+        // audible and the user switches OFF what they do not want, rather than hunting for why a
+        // feature they requested is silent. (Each underlying nudge still has its own enable
+        // toggle, so this only affects nudges already turned on.)
+        static let wristBuzz = "auto.wristBuzz.enabled"
+        static let buzzMorningBrief = "auto.wristBuzz.morningBrief"
+        static let buzzPaceCheck = "auto.wristBuzz.paceCheck"
+        static let buzzWater = "auto.wristBuzz.water"
+        static let buzzBreathe = "auto.wristBuzz.breathe"
+        static let pacingFiredMask = "auto.pacing.firedMask"
+    }
+
+    private static var d: UserDefaults { .standard }
+
+    static var briefEnabled: Bool { d.bool(forKey: K.briefEnabled) }
+    static var briefEarliestMinute: Int {
+        let v = d.object(forKey: K.briefEarliestMin) as? Int ?? 6 * 60
+        return min(max(v, 4 * 60), 12 * 60)   // 04:00 (the day-roll) … noon
+    }
+    static var pacingEnabled: Bool { d.bool(forKey: K.pacingEnabled) }
+
+    /// Whether NOOP's own nudges also buzz the strap (260903). Defaults **ON**.
+    ///
+    /// Shipped default-off for one build and that was wrong: the buzz was added on request, so
+    /// off-by-default meant the requested feature arrived silent and read as broken ("my whoop is
+    /// still not buzzing for water"). A cue nobody asked for should default off; this one was asked
+    /// for, so it defaults on and the per-cue switches below turn OFF what is not wanted.
+    ///
+    /// Safe to default on because it is self-limiting rather than merely quiet: every NOOP-posted
+    /// nudge rides the strap sync (the water reminder moved off calendar triggers on 260903
+    /// precisely so it could buzz), so the app is awake at post time in all cases, and the buzz
+    /// still requires an ENCRYPTED, BONDED link — a charging or out-of-range strap gets no cue
+    /// rather than the app pretending one landed. The nudges themselves each keep their own
+    /// enable toggle, so this cannot introduce a buzz for a nudge the user has not turned on.
+    static var wristBuzzEnabled: Bool { d.object(forKey: K.wristBuzz) as? Bool ?? true }
+
+    /// The nudges a wrist buzz can accompany. Raw values are the UserDefaults keys.
+    enum BuzzCue: String, CaseIterable {
+        case morningBrief = "auto.wristBuzz.morningBrief"
+        case paceCheck = "auto.wristBuzz.paceCheck"
+        case water = "auto.wristBuzz.water"
+        case breathe = "auto.wristBuzz.breathe"
+
+        var label: String {
+            switch self {
+            case .morningBrief: return String(localized: "Morning brief")
+            case .paceCheck: return String(localized: "Pace checks")
+            case .water: return String(localized: "Water reminders")
+            case .breathe: return String(localized: "Stress check-ins")
+            }
+        }
+    }
+
+    /// Whether a specific cue should buzz.
+    ///
+    /// Each cue defaults ON, so switching the master on is enough to feel everything and the user
+    /// turns OFF what they do not want — rather than enabling a feature and wondering why it is
+    /// silent.
+    ///
+    /// `breathe` is the exception, and deliberately: the stress check-in has buzzed since it
+    /// shipped, on its own path and with its own Automations toggle. Making it depend on the new
+    /// master would SILENCE an existing cue for anyone who leaves the master off — a regression
+    /// dressed as a feature. So its per-cue switch stands alone: on unless explicitly turned off.
+    static func buzzEnabled(_ cue: BuzzCue) -> Bool {
+        let ownSwitch = d.object(forKey: cue.rawValue) as? Bool ?? true
+        guard cue != .breathe else { return ownSwitch }
+        return wristBuzzEnabled && ownSwitch
+    }
+    /// Check-in cadence: nudge-eligible at the top of every N hours through the waking window.
+    static var pacingIntervalHours: Int {
+        let v = d.object(forKey: K.pacingIntervalHours) as? Int ?? 2
+        return min(max(v, 1), 6)
+    }
+
+    // MARK: - A: morning brief (pure decision + text)
+
+    /// Should the brief fire NOW? Exactly once per local day, only after the earliest-delivery
+    /// time, and only once the morning score has actually landed (the anchor row is TODAY's row —
+    /// before that the targets are still yesterday's carry, and a brief would restate stale
+    /// denominators the user already saw).
+    static func briefWanted(enabled: Bool, anchorDay: String?, todayKey: String,
+                            minuteOfDay: Int, earliestMinute: Int, lastFiredDay: String?) -> Bool {
+        guard enabled else { return false }
+        guard anchorDay == todayKey else { return false }
+        guard minuteOfDay >= earliestMinute else { return false }
+        return lastFiredDay != todayKey
+    }
+
+    /// The brief's copy — the same numbers the strip shows, one line. Every piece degrades alone.
+    static func briefText(charge: Int?, sessionMinutes: Int?, sessionHrBpm: Int?,
+                          restDay: Bool, sleepNeedMin: Int?, stepsTarget: Int?) -> (title: String, body: String) {
+        var parts: [String] = []
+        if let charge { parts.append("Charge \(charge)") }
+        if restDay {
+            parts.append("rest day — no workout")
+        } else if let m = sessionMinutes {
+            parts.append(sessionHrBpm.map { "\(m) min workout @ ~\($0) bpm" } ?? "\(m) min workout")
+        }
+        if let steps = stepsTarget { parts.append("\(steps) steps") }
+        if let need = sleepNeedMin, need > 0 {
+            parts.append(String(format: "sleep %dh%02d tonight", need / 60, need % 60))
+        }
+        return (title: String(localized: "Today's targets"),
+                body: parts.isEmpty ? String(localized: "Scored — open NOOP for today's plan.")
+                                    : parts.joined(separator: " · "))
+    }
+
+    // MARK: - E: target pacing (pure decision + text)
+
+    /// The waking window steps and effort prorate over. The START is the day's ACTUAL wake — the
+    /// end of the scored night's main sleep, falling back to the quiet-hours end until the night
+    /// is scored (the caller resolves it; see `AppModel.pacingWakeMinute`) — because a fixed clock
+    /// start misprices every early or late morning. The END is midnight, not the quiet-hours
+    /// start: the maintainer walks late, and quiet hours (22:00–07:00) are a BLE window, not a
+    /// claim about when movement stops. Calories are different: most of that target is resting
+    /// burn accruing around the clock, so cal prorates over the full 24 h from local midnight.
+    static let pacingDayEndMinute = 24 * 60
+
+    // MARK: - The quiet-edges window (260904)
+    //
+    // Maintainer request: a start and stop time for the check-ins. Implemented as a FLOOR AND
+    // CEILING ON DELIVERY, deliberately NOT as a replacement for the wake anchor above.
+    //
+    // The distinction is the whole point. `dayStartMinute` is doing two jobs: it is where the
+    // checkpoint grid begins AND the denominator of the pace math ("how far through my waking day
+    // am I?"). Repointing it at a clock time would silently reprice every target on an early or
+    // late morning — the exact mispricing the wake anchor exists to prevent. So the grid and the
+    // proration keep using the real wake, and these two numbers only decide which of the resulting
+    // checkpoints are allowed to speak.
+    //
+    // A suppressed checkpoint is still MARKED as handled (see `pacingDecision`), so silencing the
+    // early edge does not bank a nudge that then fires the moment the window opens.
+
+    /// The default earliest nudge: absent means "no floor", i.e. from the wake itself.
+    static var pacingStartMinute: Int? { d.object(forKey: K.pacingStartMin) as? Int }
+    /// The default latest nudge: absent means "no ceiling", i.e. through to midnight.
+    static var pacingStopMinute: Int? { d.object(forKey: K.pacingStopMin) as? Int }
+
+    static func setPacingStartMinute(_ m: Int?) {
+        guard let m else { return d.removeObject(forKey: K.pacingStartMin) }
+        d.set(min(max(m, 0), 24 * 60 - 1), forKey: K.pacingStartMin)
+    }
+
+    static func setPacingStopMinute(_ m: Int?) {
+        guard let m else { return d.removeObject(forKey: K.pacingStopMin) }
+        d.set(min(max(m, 0), 24 * 60), forKey: K.pacingStopMin)
+    }
+
+    /// Is a checkpoint at `minuteOfDay` inside the wearer's allowed delivery window?
+    ///
+    /// Pure, and nil-tolerant on both bounds so "unset" means "unbounded" rather than a magic
+    /// literal. An inverted pair (stop before start) is treated as NO WINDOW rather than as an
+    /// empty one: silently disabling every nudge is the worse failure, and the UI clamps anyway.
+    static func pacingWindowAllows(minuteOfDay: Int, startMinute: Int?, stopMinute: Int?) -> Bool {
+        if let startMinute, let stopMinute, stopMinute <= startMinute { return true }
+        if let startMinute, minuteOfDay < startMinute { return false }
+        if let stopMinute, minuteOfDay >= stopMinute { return false }
+        return true
+    }
+    /// Sanity bounds on the resolved wake minute (a mis-scored night must not produce a 2:00 or
+    /// 15:00 "wake" that poisons every pace all day).
+    static func clampWakeMinute(_ m: Int) -> Int { min(max(m, 4 * 60), 12 * 60) }
+
+    struct PacingNudge: Equatable {
+        let checkpointIndex: Int
+        let title: String
+        let body: String
+        /// The lagging targets behind this nudge, for the coach-written title (260902). Carried on
+        /// the decision rather than re-derived at the call site, so the line the model is asked to
+        /// motivate and the rows the user reads can never describe different numbers.
+        var behind: [BehindItem] = []
+    }
+
+    struct BehindItem: Equatable {
+        let label: String
+        let actual: Int
+        let pace: Int
+        let goal: Int
+    }
+
+    /// The check-in instants for a cadence: every `intervalHours` hours FROM THE WAKE ("check me
+    /// every 2 hours from when I got up"). Exclusive of the window end — a midnight checkpoint
+    /// could never fire (the day rolls first).
+    static func checkpointMinutes(intervalHours: Int, dayStartMinute: Int) -> [Int] {
+        let step = max(1, intervalHours) * 60
+        return Array(stride(from: dayStartMinute + step, to: pacingDayEndMinute, by: step))
+    }
+
+    /// Evaluate the pacing check-ins. `firedMask` is a bitmask of checkpoint indices already
+    /// handled today (fired OR evaluated-and-on-pace — one evaluation per checkpoint per day, so a
+    /// nudge can't re-fire off every later sync). Returns the nudge to post (at most one — the
+    /// LATEST due checkpoint, so a phone that slept through several evaluates today's pace once,
+    /// against now) plus the updated mask; a checkpoint that is due but ON pace is consumed
+    /// silently.
+    ///
+    /// "Behind" is the pace itself (260901 rewire, compacted 260902 to the maintainer's format):
+    /// each target prorated linearly to NOW — steps and effort over the waking window, calories
+    /// over the 24 h clock (see the window doc above) — no preset slack. One line per lagging
+    /// target, `actual/pace/goal`, with a trailing catch-up number where one exists: the walk
+    /// minutes that close the step deficit, or the still-open workout's minutes.
+    static func pacingDecision(enabled: Bool, minuteOfDay: Int, intervalHours: Int,
+                               dayStartMinute: Int,
+                               firedMask: Int,
+                               steps: Int?, stepsTarget: Int?,
+                               kcalToday: Int?, kcalTarget: Int?,
+                               effortToday: Int?, effortTarget: Int?,
+                               sessionMinutes: Int?,
+                               windowStartMinute: Int? = nil,
+                               windowStopMinute: Int? = nil) -> (nudge: PacingNudge?, newMask: Int) {
+        guard enabled else { return (nil, firedMask) }
+        let checkMinutes = checkpointMinutes(intervalHours: intervalHours, dayStartMinute: dayStartMinute)
+        var mask = firedMask
+        var due: Int?
+        for (i, checkMin) in checkMinutes.enumerated() where minuteOfDay >= checkMin && mask & (1 << i) == 0 {
+            mask |= (1 << i)   // every passed checkpoint is consumed; only the latest is evaluated
+            due = i
+        }
+        guard due != nil else { return (nil, mask) }
+        // The wearer's delivery window (260904). Checked AFTER the mask has consumed the passed
+        // checkpoints and BEFORE any evaluation, which gives the two properties that matter:
+        //   * a checkpoint outside the window is spent, not banked — so a night-time checkpoint
+        //     cannot queue up and fire the instant the morning floor opens;
+        //   * the pace math below is never reached with an out-of-window minute, so nothing is
+        //     computed to be thrown away.
+        // Note this gates on NOW, not on the checkpoint's nominal minute: a nudge lands at the
+        // first sync after its checkpoint, and it is the moment the phone buzzes that the wearer
+        // asked to bound.
+        guard pacingWindowAllows(minuteOfDay: minuteOfDay,
+                                 startMinute: windowStartMinute,
+                                 stopMinute: windowStopMinute) else { return (nil, mask) }
+        let wakingFraction = min(1.0, max(0.0, Double(minuteOfDay - dayStartMinute)
+                                               / Double(max(60, pacingDayEndMinute - dayStartMinute))))
+        let clockFraction = min(1.0, max(0.0, Double(minuteOfDay) / Double(24 * 60)))
+        var lines: [String] = []
+        var behind: [BehindItem] = []
+        if let target = stepsTarget, target > 0 {
+            let pace = Int(Double(target) * wakingFraction)
+            let actual = steps ?? 0
+            if actual < pace {
+                // Trailing figure = walk minutes that close the DEFICIT (~100 steps/min). Every
+                // trailing figure now carries its UNIT (260903): a bare number was ambiguous
+                // across the three rows even to the person who specified them.
+                let walkMin = max(5, (pace - actual) / 100)
+                lines.append("Steps \(actual)/\(pace)/\(target)  \(walkMin) min walk")
+                behind.append(BehindItem(label: "Steps", actual: actual, pace: pace, goal: target))
+            }
+        }
+        if let target = kcalTarget, target > 0 {
+            let pace = Int(Double(target) * clockFraction)
+            let actual = kcalToday ?? 0
+            if actual < pace {
+                // Trailing figure = how to close the kcal deficit. When today has a prescribed
+                // WORKOUT, that is the honest closer and the walking equivalent is absurd (a
+                // ~330 kcal gap is ~20 min of exercise or ~80 min of walking — quoting the walk
+                // reads as a punishment for a gap the plan already answers). With no workout left
+                // to do, fall back to the walk at the brisk-walk rule of thumb (~4 kcal/min).
+                // Both are coarse hints, not prescriptions; the exact per-user figure would need
+                // the Keytel chain per line.
+                let deficit = pace - actual
+                if let m = sessionMinutes, (effortToday ?? 0) < (effortTarget ?? 0) {
+                    lines.append("Cal \(actual)/\(pace)/\(target)  \(m) min workout")
+                } else {
+                    let walkMin = max(5, deficit / 4)
+                    lines.append("Cal \(actual)/\(pace)/\(target)  \(walkMin) min walk")
+                }
+                behind.append(BehindItem(label: "Calories", actual: actual, pace: pace, goal: target))
+            }
+        }
+        if let target = effortTarget, target > 0 {
+            let pace = Int(Double(target) * wakingFraction)
+            let actual = effortToday ?? 0
+            if actual < pace {
+                // Trailing number = the prescribed workout's minutes (doing it closes the gap).
+                let workout = sessionMinutes.map { "  \($0) min workout" } ?? ""
+                lines.append("Effort \(actual)/\(pace)/\(target)\(workout)")
+                behind.append(BehindItem(label: "Effort", actual: actual, pace: pace, goal: target))
+            }
+        }
+        // On pace: consumed silently. Deliberately NOT an "on pace" notification — the widgets
+        // already say so, and a nudge that fires when nothing is wanted is the fastest way to get
+        // notifications muted. The encouraging voice lives in the coach TITLE of a real nudge (and
+        // in the water reminder, which keeps firing past its goal by design).
+        guard !lines.isEmpty else { return (nil, mask) }
+        return (PacingNudge(checkpointIndex: due!,
+                            title: String(localized: "Behind pace"),
+                            body: lines.joined(separator: "\n"),
+                            behind: behind), mask)
+    }
+
+    // MARK: - Day-keyed fire bookkeeping
+
+    static func briefLastFiredDay() -> String? { d.string(forKey: K.briefLastDay) }
+    static func markBriefFired(day: String) { d.set(day, forKey: K.briefLastDay) }
+
+    static func pacingFiredMask(today: String) -> Int {
+        guard d.string(forKey: K.pacingDay) == today else { return 0 }
+        return d.integer(forKey: K.pacingFiredMask)
+    }
+    static func setPacingFiredMask(_ mask: Int, today: String) {
+        d.set(today, forKey: K.pacingDay)
+        d.set(mask, forKey: K.pacingFiredMask)
+    }
+
+    // MARK: - Posting
+
+    /// Ask for notification permission at the moment of intent (the BreatheNotifier idiom) —
+    /// called when either toggle is switched on.
+    static func requestAuthorization() {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    /// Post one automation notification. Gated on OS authorization only — the caller's own toggle
+    /// is the feature gate (deliberately NOT the wrist-alerts master: these are phone
+    /// notifications a user without wrist buzzes must still receive). A fixed identifier per
+    /// automation means a fresh alert replaces the previous one rather than stacking.
+    static func post(identifier: String, title: String, body: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+        }
+    }
+}

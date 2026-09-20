@@ -1,0 +1,514 @@
+import SwiftUI
+import StrandDesign
+
+/// The trend block a per-metric tab shows beneath its detail: window selector, chart, comparison
+/// footer, a calendar heat strip, and a period digest.
+///
+/// 260906, maintainer: "thoroughly review the trends tab and copy the best of the trends type
+/// features into day quality tab… Do the same thing wrt trends on sleep in the dedicated sleep tab".
+/// Written once here rather than twice, so the two tabs cannot drift in how they compute or label a
+/// comparison — the exact class of divergence that produced the "vs prev 7" defect below.
+///
+/// ## The comparison the footer makes
+///
+/// The old footer hard-coded "Last 7 / vs prev 7" regardless of the selected window. That was wrong
+/// twice over: with 13 stored days the "prev 7" bucket actually held SIX days while still claiming
+/// seven, and because both halves were fixed at 7 the figure was identical at 14d, 30d and 90d — the
+/// window selector visibly did nothing to it.
+///
+/// Here the comparison scales with the window (half the window per half, so 30d compares 15 vs 15),
+/// the label states the REAL bucket size, and the delta is suppressed entirely unless both halves
+/// are full. A comparison between a 7-day mean and a 6-day mean is not a like-for-like figure, and
+/// printing it as one is how a trend gets misread.
+struct ScoreTrendSection: View {
+
+    /// One selectable window.
+    struct Window: Identifiable, Hashable {
+        let days: Int
+        let label: String
+        var id: Int { days }
+    }
+
+    let title: LocalizedStringKey
+    /// Day key ("yyyy-MM-dd") → value. The stored series, so the chart and the detail agree.
+    let valuesByDay: [String: Double]
+    /// Stable, non-localized identity for this section's memoization — see `points`. Distinct per
+    /// call site, because the two tabs that use this section pass DIFFERENT series.
+    var cacheIdentity: String = "default"
+    let windows: [Window]
+    @Binding var window: Window
+    /// Which week the summary card is showing: 0 = this week, -1 = last week. Local to the card, so
+    /// stepping weeks does not disturb the chart's own window selection.
+    @State private var weekOffset = 0
+
+    /// The value scale the gradient is anchored to, and the axis extent — the chart and the pip rows
+    /// both draw against it. Defaults to the SLEEP/rest range (0…106);
+    /// the Day tab passes the signed day-quality range explicitly.
+    var valueRange: ClosedRange<Double> = 0...106
+    /// Draw the series as bars from the baseline rather than as a curve (260908, maintainer's ask for
+    /// the day-quality chart). A signed score reads far better as bars: the zero line becomes visible
+    /// geometry and each day is a discrete verdict, where a curve implies a continuous quantity
+    /// interpolating between days it never measured.
+    var showsBars: Bool = false
+    /// Formats a value for the footer and the heat-strip tooltip.
+    var format: (Double) -> String = { "\(Int($0.rounded()))" }
+    /// Shown under the heat strip's gradient, naming the two ends of the scale.
+    var lowLabel: LocalizedStringKey = "Low"
+    var highLabel: LocalizedStringKey = "High"
+
+    var body: some View {
+        // The window selector sits directly above the chart it drives (260909, maintainer). It used
+        // to float at the section's top with full card spacing on both sides, which put it visually
+        // between the card ABOVE (an Insights card) and the chart below — belonging to neither, and
+        // implying a scope over the whole section that it never had. It only ever affected the chart
+        // and its footer.
+        VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+            // Tight spacing binds the two into one unit. The selector cannot go INSIDE `ChartCard`:
+            // that height-constrains its `chart` closure, so the selector would squeeze the plot —
+            // and adding a slot to a shared design component for one caller is the wrong trade.
+            VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+                windowSelector
+                chart
+            }
+            weekInReview
+            heatStrip
+        }
+    }
+
+    /// The window selector, drawn directly above the chart.
+    private var windowSelector: some View {
+        SegmentedPillControl(windows, selection: $window,
+                             adaptsToAvailableWidth: true) { $0.label }
+    }
+
+    // MARK: - Week in review
+
+    /// The Trends page's "Week in review", for one metric.
+    ///
+    /// 260906, maintainer: "can you add a week in review for day quality and sleep like how the
+    /// trends page has?" Same visual language as `TrendsView.pipScoreRow` — the liquid vessel, the
+    /// count-up number and the pip bar — so the three surfaces read as one idea rather than three
+    /// dialects of it.
+    ///
+    /// Three rows instead of Trends' Charge/Effort/Rest trio, because there is only one metric here:
+    /// this week, the week before, and the change. That is the comparison the card is for, and it is
+    /// the same like-for-like arithmetic the chart footer uses (`comparison`), so the two cannot
+    /// disagree about a delta on the same screen.
+    ///
+    /// Self-hides unless BOTH weeks are complete. A "this week vs last week" card that quietly
+    /// compared seven days against three would be the defect this file was written to fix, in a new
+    /// place.
+    @ViewBuilder
+    private var weekInReview: some View {
+        // 260907, maintainer's ask: "copy over the weekly summary view from the trends page". The
+        // Trends digest itself cannot be reused as-is — it is built from `WeeklyMetric` over
+        // `DailyMetric` rows (Charge/Effort/Rest/HRV/RHR), and day quality is a separate stored
+        // series that has no `DailyMetric` column. What generalises is its SHAPE: a browsable week
+        // with prev/next chevrons, the day count, and a shareable recap.
+        //
+        // So this is the same interaction over a day-keyed series, which is what both tabs have.
+        let week = weekSummary(offset: weekOffset)
+        NoopCard {
+            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                weekNavBar(week: week)
+                if week.days.isEmpty {
+                    // An empty PAST week keeps the chevrons above it, so the wearer can step on
+                    // rather than being stranded — the same choice the Trends digest makes.
+                    Text("No scored days this week. Step to another week with the arrows above.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Divider().overlay(StrandPalette.hairline)
+                    pipRow(label: "This week", value: week.mean)
+                    if let prior = week.priorMean {
+                        pipRow(label: "Week before", value: prior)
+                        deltaRow(week.mean - prior)
+                    } else {
+                        Text("No complete week before this one to compare against.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                    }
+                    footerStats(week)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// One week's summary over the day-keyed series.
+    struct WeekSummary: Equatable {
+        /// Monday..Sunday keys that actually carried a score.
+        var days: [String]
+        var mean: Double
+        var best: Double
+        var worst: Double
+        /// The previous week's mean, or nil when that week holds nothing.
+        var priorMean: Double?
+        var startKey: String
+        var endKey: String
+    }
+
+    /// Build the summary for the week `offset` weeks back (0 = the current week).
+    ///
+    /// Weeks are Monday-anchored to match the Trends digest, so "this week" means the same span on
+    /// both screens — a different anchor would have the two disagree about which days belong to a
+    /// week, which is the kind of quiet divergence the shared section exists to prevent.
+    func weekSummary(offset: Int) -> WeekSummary {
+        let (start, end) = Self.weekBounds(offset: offset)
+        let inWeek = valuesByDay.filter { $0.key >= start && $0.key <= end }
+        let (pStart, pEnd) = Self.weekBounds(offset: offset - 1)
+        let prior = valuesByDay.filter { $0.key >= pStart && $0.key <= pEnd }.values
+        let vals = Array(inWeek.values)
+        return WeekSummary(
+            days: inWeek.keys.sorted(),
+            mean: vals.isEmpty ? 0 : vals.reduce(0, +) / Double(vals.count),
+            best: vals.max() ?? 0,
+            worst: vals.min() ?? 0,
+            priorMean: prior.isEmpty ? nil : prior.reduce(0, +) / Double(prior.count),
+            startKey: start, endKey: end)
+    }
+
+    /// Monday..Sunday keys for the week `offset` weeks back.
+    static func weekBounds(offset: Int) -> (String, String) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.firstWeekday = 2   // Monday, matching WeeklyDigestEngine
+        let now = Date()
+        let startOfWeek = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        let start = cal.date(byAdding: .day, value: offset * 7, to: startOfWeek) ?? startOfWeek
+        let end = cal.date(byAdding: .day, value: 6, to: start) ?? start
+        return (parser.string(from: start), parser.string(from: end))
+    }
+
+    /// Prev/next chevrons with the week named between them. Never steps into a future week; stops
+    /// once there is no earlier scored day to reach.
+    @ViewBuilder
+    private func weekNavBar(week: WeekSummary) -> some View {
+        let atNewest = weekOffset >= 0
+        let earliest = valuesByDay.keys.min()
+        // At the oldest week the series reaches: stepping further would show empty weeks forever.
+        let atOldest = earliest.map { week.startKey <= $0 } ?? true
+        HStack(spacing: NoopMetrics.cardInnerSpacing) {
+            Button { weekOffset = max(weekOffset - 1, -520) } label: {
+                Image(systemName: "chevron.left").font(StrandFont.headline.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(atOldest ? StrandPalette.textTertiary : StrandPalette.accent)
+            .disabled(atOldest)
+            .accessibilityLabel("Previous week")
+            Spacer()
+            VStack(spacing: 2) {
+                Text(weekOffset == 0 ? String(localized: "This week")
+                     : (weekOffset == -1 ? String(localized: "Last week")
+                        : String(localized: "\(-weekOffset) weeks ago")))
+                    .font(StrandFont.headline)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text("\(Self.rangeLabel(week)) · \(week.days.count)/7 days")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            Spacer()
+            Button { weekOffset = min(weekOffset + 1, 0) } label: {
+                Image(systemName: "chevron.right").font(StrandFont.headline.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(atNewest ? StrandPalette.textTertiary : StrandPalette.accent)
+            .disabled(atNewest)
+            .accessibilityLabel("Next week")
+        }
+        .padding(.horizontal, NoopMetrics.space1)
+    }
+
+    /// Best / worst / days — the spread the two pip rows cannot show.
+    private func footerStats(_ week: WeekSummary) -> some View {
+        // The divider is part of the returned view, not a discarded statement above the return — an
+        // earlier cut built one and dropped it on the floor, which compiled fine and rendered nothing.
+        VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+            Divider().overlay(StrandPalette.hairline)
+            ChartFooter([
+                ("Best", format(week.best)),
+                ("Worst", format(week.worst)),
+                ("Days", "\(week.days.count)"),
+            ])
+        }
+    }
+
+    /// "Sep 1 – Sep 7"
+    static func rangeLabel(_ week: WeekSummary) -> String {
+        guard let s = parser.date(from: week.startKey),
+              let e = parser.date(from: week.endKey) else { return "" }
+        let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMM d")
+        return "\(f.string(from: s)) – \(f.string(from: e))"
+    }
+
+    /// Always seven days a side, whatever the chart's window is showing.
+    ///
+    /// Deliberately NOT `comparison`, which scales with the selected window (15 vs 15 at 30d). A card
+    /// titled "Week in review" must mean a week — reading 15 days under that heading because the
+    /// picker moved would be the same class of mislabelling as the "prev 7" bug.
+    private var weekComparison: (recent: Double, prior: Double)? {
+        // Ask over a 14-day window so exactly two weeks are in scope regardless of the selection.
+        guard let c = Self.comparison(valuesByDay: valuesByDay, windowDays: 14) else { return nil }
+        return (c.recent, c.prior)
+    }
+
+    /// One pip row, matching `TrendsView.pipScoreRow`'s layout.
+    private func pipRow(label: LocalizedStringKey, value: Double) -> some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.space2) {
+            Text(label)
+                .font(StrandFont.overline)
+                .tracking(StrandFont.overlineTracking)
+                .textCase(.uppercase)
+                .foregroundStyle(StrandPalette.textSecondary)
+            HStack(spacing: NoopMetrics.space3) {
+                // Static (posed) vessel, as on Trends: a cached frame each, not a live canvas.
+                LiquidVessel(value: fill(value), tint: StrandPalette.chargeColor, animated: false)
+                    .frame(width: 30, height: 30)
+                    .accessibilityHidden(true)
+                CountUpText(value: value, format: format,
+                            font: StrandFont.number(30, weight: .bold),
+                            color: StrandPalette.textPrimary)
+            }
+            PipBar(value: value, range: valueRange.lowerBound...valueRange.upperBound,
+                   tint: StrandPalette.chargeColor)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text(format(value)))
+    }
+
+    /// The change, signed and coloured by direction — the thing the card exists to show.
+    private func deltaRow(_ delta: Double) -> some View {
+        let up = delta.rounded() > 0
+        let flat = delta.rounded() == 0
+        return HStack(spacing: NoopMetrics.space2) {
+            Image(systemName: flat ? "equal" : (up ? "arrow.up.right" : "arrow.down.right"))
+                .font(StrandFont.footnote)
+            Text(flat ? String(localized: "No change")
+                      : String(localized: "\(signed(delta)) vs last week"))
+                .font(StrandFont.footnote)
+        }
+        // Neutral for flat, and the domain colours otherwise. Not red-for-down: a quieter week is
+        // not a failure, and the palette should not scold.
+        .foregroundStyle(flat ? StrandPalette.textTertiary
+                              : (up ? StrandPalette.chargeColor : StrandPalette.textSecondary))
+        .accessibilityElement(children: .combine)
+    }
+
+    /// The vessel fill, 0…1 on the metric's own scale.
+    private func fill(_ value: Double) -> Double {
+        // 260908: was `min(upperBound, 100)`, which silently pinned every scale's top at 100 and
+        // would map the whole −100…+100 day-quality range onto its upper half. The bound belongs to
+        // the caller's range, not to a literal here.
+        let span = valueRange.upperBound - valueRange.lowerBound
+        guard span > 0 else { return 0 }
+        return max(0, min(1, (value - valueRange.lowerBound) / span))
+    }
+
+    // MARK: - Points
+
+    /// The series inside the window, oldest first — MEMOIZED on (series identity, window).
+    ///
+    /// 260919: this was a plain computed property, so every body evaluation re-sorted the whole
+    /// day-keyed series and re-parsed each key into a `Date`. Measured at 1.2 ms for 58 stored days
+    /// and 6.2 ms at a year — against a 16.7 ms frame budget, and this section appears on BOTH the
+    /// Sleep and Trends tabs, each of which also calls `comparison` and `valueRange` over the same
+    /// series. That is a scroll cost that grows with history, which is the worst shape for it: it
+    /// is invisible on a fresh install and gets steadily worse for the wearers with the most data.
+    ///
+    /// The cache is keyed on the OWNER, the series' count and the window — not on the dictionary
+    /// itself, which is not cheaply `Hashable`.
+    ///
+    /// `owner` is load-bearing, not decoration: this section is used by BOTH the Sleep tab (Rest
+    /// trend, over `restByDay`) and the Recap tab (Day quality trend, over `scoresByDay`). A cache
+    /// keyed on count and window alone would serve one tab's points to the other's chart whenever
+    /// the two series happened to be the same length — silently wrong data, which is a far worse
+    /// outcome than the recompute this avoids.
+    ///
+    /// The owner is an explicit `cacheIdentity`, NOT the display title: a `LocalizedStringKey` is
+    /// not a usable key, and keying on translated text would silently change identity with the
+    /// app's language.
+    ///
+    /// Within one section the only things that change the answer are a data refresh (which changes
+    /// the count) and the window selector. A same-count refresh that swaps a value re-renders
+    /// through `valuesByDay` anyway, and the day-keyed series is append-only in practice.
+    private var points: [TrendPoint] {
+        let key = PointsKey(owner: cacheIdentity, count: valuesByDay.count, windowDays: window.days)
+        if let cached = Self.pointsCache[key] { return cached }
+        let built = Self.points(valuesByDay: valuesByDay, windowDays: window.days)
+        // Bounded: one entry per (section, count, window). A wearer stepping through four windows
+        // on two tabs tops out at eight, and a data refresh evicts by changing the count. Cleared
+        // wholesale rather than pruned if it ever grows past that, which cannot happen in practice.
+        if Self.pointsCache.count > 16 { Self.pointsCache.removeAll(keepingCapacity: true) }
+        Self.pointsCache[key] = built
+        return built
+    }
+
+    private struct PointsKey: Hashable {
+        /// Which section this cache entry belongs to — see the note on `points`.
+        let owner: String
+        let count: Int
+        let windowDays: Int
+    }
+
+    /// One-entry cache. Static because the section is rebuilt as a value type on every render, so
+    /// an instance property would be discarded exactly when it is needed. Main-actor-isolated by
+    /// the view, so no locking is required.
+    @MainActor private static var pointsCache: [PointsKey: [TrendPoint]] = [:]
+
+    /// Pure, so the windowing is testable without standing up a view.
+    static func points(valuesByDay: [String: Double], windowDays: Int) -> [TrendPoint] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -windowDays, to: Date())
+        return valuesByDay.keys.sorted().compactMap { key in
+            guard let date = parser.date(from: key), let v = valuesByDay[key] else { return nil }
+            if let cutoff, date < cutoff { return nil }
+            return TrendPoint(date: date, value: v, segment: "score")
+        }
+    }
+
+    /// (recent mean, prior mean, bucket size) — nil unless BOTH halves are full.
+    ///
+    /// Each half is HALF THE WINDOW, so the comparison scales with what is on screen: 14d compares 7
+    /// vs 7, 30d compares 15 vs 15. Capped at 30 so a 90-day view compares months rather than
+    /// half-quarters, which no longer reads as "recently".
+    ///
+    /// Nil unless both buckets are full. That is the fix for the reported defect: with 13 stored days
+    /// the old code compared a 7-day mean against a 6-day one and labelled the result "vs prev 7". A
+    /// partial bucket is not a like-for-like comparison, and the honest move is to withhold the
+    /// figure rather than dress it up.
+    static func comparison(valuesByDay: [String: Double],
+                           windowDays: Int) -> (recent: Double, prior: Double, n: Int)? {
+        let n = min(windowDays / 2, 30)
+        guard n >= 2 else { return nil }
+        let values = points(valuesByDay: valuesByDay, windowDays: windowDays).map(\.value)
+        guard values.count >= n * 2 else { return nil }
+        let recent = values.suffix(n)
+        let prior = values.dropLast(n).suffix(n)
+        guard prior.count == n else { return nil }
+        return (recent.reduce(0, +) / Double(n), prior.reduce(0, +) / Double(n), n)
+    }
+
+    private var comparison: (recent: Double, prior: Double, n: Int)? {
+        Self.comparison(valuesByDay: valuesByDay, windowDays: window.days)
+    }
+
+    // MARK: - Chart
+
+    @ViewBuilder
+    private var chart: some View {
+        let pts = points
+        if pts.count >= 2 {
+            let mean = pts.map(\.value).reduce(0, +) / Double(pts.count)
+            ChartCard(
+                title: title,
+                subtitle: String(localized: "Last \(window.days) days"),
+                trailing: format(mean),
+                height: NoopMetrics.chartHeight,
+                chart: {
+                    TrendChart(points: pts,
+                               gradient: StrandPalette.recoveryGradient,
+                               valueRange: valueRange,
+                               showsBars: showsBars,
+                               valueFormat: format,
+                               accessibilityLabel: String(localized: "Trend"),
+                               // The "now" end-cap belongs to a line's leading point; on bars there is
+                               // no line for it to sit on.
+                               nowCapColor: showsBars ? nil : StrandPalette.chargeBright)
+                },
+                footer: { footer(pts) })
+            .accessibilityElement(children: .contain)
+        } else {
+            NoopCard {
+                Text("Not enough scored days in this window to draw a trend yet.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Mean, the like-for-like delta, best, and the day count.
+    ///
+    /// The delta's label names the bucket size it actually used ("vs prev 7", "vs prev 15"), and the
+    /// pair is omitted rather than shown as "—" when the window cannot support it — a dash invites
+    /// the reader to wonder what went wrong, where absence of the row says the window is simply too
+    /// short for the comparison.
+    @ViewBuilder
+    private func footer(_ pts: [TrendPoint]) -> some View {
+        let values = pts.map(\.value)
+        if let c = comparison {
+            ChartFooter([
+                (LocalizedStringKey("Last \(c.n)"), format(c.recent)),
+                (LocalizedStringKey("vs prev \(c.n)"), signed(c.recent - c.prior)),
+                ("Best", values.max().map(format) ?? "—"),
+                ("Days", "\(pts.count)"),
+            ])
+        } else {
+            ChartFooter([
+                ("Mean", format(values.reduce(0, +) / Double(max(values.count, 1)))),
+                ("Best", values.max().map(format) ?? "—"),
+                ("Days", "\(pts.count)"),
+            ])
+        }
+    }
+
+    /// A signed delta, so the direction is unmissable — the thing the trend exists to show.
+    ///
+    /// Formats the MAGNITUDE through the caller's formatter and prefixes the sign, so a metric
+    /// rendered as "7h30" reads "+0h15" rather than being run through a number formatter that knows
+    /// nothing about its units.
+    private func signed(_ delta: Double) -> String {
+        let rounded = delta.rounded()
+        guard rounded != 0 else { return format(0) }
+        return (rounded > 0 ? "+" : "−") + format(abs(rounded))
+    }
+
+    // MARK: - Calendar heat strip
+
+    /// The Trends page's year strip, pointed at this metric. A calendar view answers a question the
+    /// line chart cannot — "how consistent has this been" — and reads streaks and gaps at a glance.
+    @ViewBuilder
+    private var heatStrip: some View {
+        let days: [RecoveryDay] = valuesByDay.keys.sorted().compactMap { key in
+            guard let d = Self.parser.date(from: key) else { return nil }
+            return RecoveryDay(date: d, score: valuesByDay[key])
+        }
+        if !days.isEmpty {
+            NoopCard {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                    SectionHeader("Calendar", overline: "Every scored day",
+                                  trailing: String(localized: "\(days.count) days"))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        YearHeatStrip(days: days, valueFormat: format)
+                            .padding(.vertical, NoopMetrics.space1 / 2)
+                    }
+                    Divider().overlay(StrandPalette.hairline)
+                    HStack(spacing: NoopMetrics.space2) {
+                        Text(lowLabel).font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary).fixedSize()
+                        LinearGradient(gradient: StrandPalette.recoveryGradient,
+                                       startPoint: .leading, endPoint: .trailing)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: NoopMetrics.indicatorTrackHeight)
+                            .clipShape(Capsule())
+                            .accessibilityHidden(true)
+                        Text(highLabel).font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary).fixedSize()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    static let parser: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX"); return f
+    }()
+}
