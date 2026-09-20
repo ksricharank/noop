@@ -41,7 +41,8 @@ enum MuseIntegrationRunner {
         guard MuseIntegration.isEnabled, MuseIntegration.hasFolder else { return }
         guard MuseIntegration.isDue(now: now,
                                     lastWrittenMs: MuseIntegration.lastWrittenMs,
-                                    hourOfDay: MuseIntegration.hourOfDay) else { return }
+                                    hourOfDay: MuseIntegration.hourOfDay,
+                                    intervalHours: MuseIntegration.intervalHours) else { return }
         _ = try? await run(repo: repo, coach: coach, now: now)
     }
 

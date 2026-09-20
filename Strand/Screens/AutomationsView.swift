@@ -162,6 +162,11 @@ struct AutomationsView: View {
     /// The double-tap gesture window, in seconds (260907). `@AppStorage` so the stepper writes
     /// straight through to the key `WaterTapPrefs.window` reads — no second source of truth.
     @AppStorage(WaterTapPrefs.windowKey) private var tapWindowSeconds = WaterTapPrefs.defaultWindow
+    // 260920: how many double-tap events make one gesture, and how long they may span. 1 = the
+    // previous behaviour. See `WaterTapPrefs.gestureCompletes` for why a custom inter-TAP pattern
+    // is not expressible — the strap detects the double-tap itself and sends one event.
+    @AppStorage(WaterTapPrefs.requiredTapsKey) private var requiredTaps = WaterTapPrefs.defaultRequiredTaps
+    @AppStorage(WaterTapPrefs.gestureWindowKey) private var gestureWindowSeconds = WaterTapPrefs.defaultGestureWindow
 
     // MARK: - Double tap
 
@@ -209,6 +214,49 @@ struct AutomationsView: View {
                             .monospacedDigit()
                     }
                     .fixedSize()
+                }
+                // 260920: the anti-false-positive control. A clap produces ONE strap event; a
+                // deliberate tap-tap / pause / tap-tap produces two.
+                Divider().overlay(StrandPalette.hairline)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Taps needed").font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Set 2 if claps or knocks trigger this by accident: the strap then has to report a double-tap twice before anything happens.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: NoopMetrics.space2)
+                    Stepper(value: $requiredTaps,
+                            in: WaterTapPrefs.minRequiredTaps...WaterTapPrefs.maxRequiredTaps) {
+                        Text("\(requiredTaps)")
+                            .font(StrandFont.bodyNumber)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .monospacedDigit()
+                    }
+                    .fixedSize()
+                }
+                if requiredTaps > 1 {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Within").font(StrandFont.body)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text("How long the taps may span. Longer is easier to perform; shorter is harder to trigger by accident.")
+                                .font(StrandFont.caption)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: NoopMetrics.space2)
+                        Stepper(value: $gestureWindowSeconds,
+                                in: WaterTapPrefs.minGestureWindow...WaterTapPrefs.maxGestureWindow) {
+                            Text("\(gestureWindowSeconds)s")
+                                .font(StrandFont.bodyNumber)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                                .monospacedDigit()
+                        }
+                        .fixedSize()
+                    }
                 }
                 HStack {
                     Button {

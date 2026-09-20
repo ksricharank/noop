@@ -28,9 +28,21 @@ final class MuseIntegrationTests: XCTestCase {
         let now = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 9))!
         let beforeHour = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 5))!
 
-        // Never written: due once the hour has passed, not before.
+        // Never written: due. 260920 — this now holds BEFORE the anchor hour too, because the
+        // cadence walks back to the previous slot (yesterday's 07:00) rather than clamping to
+        // today's. The old assertion here said a never-written file at 05:00 was NOT due, which
+        // meant a fresh setup before the anchor hour sat idle until the hour came round for no
+        // reason, and — once intervals landed — a 6-hourly cadence went silent from midnight to
+        // the anchor every single day. Writing is the right answer in both cases.
         XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: 0, hourOfDay: 7))
-        XCTAssertFalse(MuseIntegration.isDue(now: beforeHour, lastWrittenMs: 0, hourOfDay: 7))
+        XCTAssertTrue(MuseIntegration.isDue(now: beforeHour, lastWrittenMs: 0, hourOfDay: 7))
+        // ...and a file already written in that earlier slot is not rewritten.
+        let writtenYesterdayEvening = cal.date(from: DateComponents(year: 2026, month: 9, day: 19,
+                                                                   hour: 20))!
+        XCTAssertFalse(MuseIntegration.isDue(
+            now: beforeHour,
+            lastWrittenMs: Int(writtenYesterdayEvening.timeIntervalSince1970 * 1000),
+            hourOfDay: 7))
 
         // Already written after today's trigger: not due again.
         let writtenAt8 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 8))!

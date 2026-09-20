@@ -67,6 +67,27 @@ struct TrendsView: View {
     /// the four can be read against each other. That is the one thing a dedicated tab cannot do.
     @State private var dayQualityByDay: [String: Double] = [:]
 
+    /// Water, as cups per day (260920) — loaded like the other stored series so the water block can
+    /// be read against the rest. Cups rather than millilitres because that is the only unit any
+    /// water surface in the app displays.
+    @State private var waterCupsByDay: [String: Double] = [:]
+
+    /// Per-metric window selections (260920). ONE dictionary keyed by section rather than seven
+    /// separate `@State`s: the set of metric blocks is a list that will grow, and seven parallel
+    /// properties would have to grow with it.
+    ///
+    /// Each block keeps its own window deliberately — the shared range bar above drives the page's
+    /// charts together, and the whole point of a per-metric block is being able to read HRV over 90
+    /// days while sleep sits at 14.
+    @State private var metricWindows: [TrendsSection: ScoreTrendSection.Window] = [:]
+
+    /// The windows offered by every per-metric block. Matches the Day and Sleep tabs' set so the
+    /// three behave identically.
+    static let metricTrendWindows: [ScoreTrendSection.Window] = [
+        .init(days: 14, label: "14d"), .init(days: 30, label: "30d"),
+        .init(days: 90, label: "90d"), .init(days: 365, label: "1y"),
+    ]
+
     // Effort display scale (#268) — routes the Effort small-multiple's numbers + unit. Display-only.
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
     // Trend chart style (line vs bar) — display-only; flips every trend card between the gradient line
@@ -326,6 +347,21 @@ struct TrendsView: View {
             let s = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
             dayQualityByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
         }
+        // 260920 — water, in CUPS, for the per-metric water block. Loaded on the same trigger as the
+        // series above. Stored in millilitres and converted here, because cups is the only unit any
+        // water surface in the app shows and a chart in millilitres would read as a different metric.
+        .task(id: repo.days.count) {
+            guard UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) else {
+                waterCupsByDay = [:]
+                return
+            }
+            var out: [String: Double] = [:]
+            for d in repo.days {
+                let ml = await repo.hydrationTotalForDisplay(day: d.day)
+                if ml > 0 { out[d.day] = Double(HydrationGoal.cups(fromML: ml)) }
+            }
+            waterCupsByDay = out
+        }
     }
 
     // MARK: Day-keyed series helpers
@@ -491,6 +527,56 @@ struct TrendsView: View {
         }
     }
 
+    /// A per-metric trend block: the shared `ScoreTrendSection` pointed at one series.
+    ///
+    /// `cacheIdentity` is the SECTION's rawValue, which is what keeps the memoized points of seven
+    /// blocks apart. Passing the title would not: it is a `LocalizedStringKey`, so it changes with
+    /// the app's language, and two equal-length series under one key would serve each other's
+    /// points — the cross-tab collision `ScoreTrendPointsCacheTests` already pins.
+    @ViewBuilder
+    private func metricTrendSection(_ section: TrendsSection,
+                                    valuesByDay: [String: Double],
+                                    range: ClosedRange<Double>,
+                                    low: LocalizedStringKey,
+                                    high: LocalizedStringKey,
+                                    unit: String,
+                                    bars: Bool = false) -> some View {
+        if valuesByDay.isEmpty {
+            // Silent rather than an empty chart frame: a block with no data at all says nothing a
+            // blank axis would not say worse.
+            EmptyView()
+        } else {
+            ScoreTrendSection(
+                title: LocalizedStringKey(section.title),
+                valuesByDay: valuesByDay,
+                cacheIdentity: section.rawValue,
+                windows: Self.metricTrendWindows,
+                window: Binding(
+                    get: { metricWindows[section] ?? Self.metricTrendWindows[1] },
+                    set: { metricWindows[section] = $0 }
+                ),
+                valueRange: range,
+                showsBars: bars,
+                format: { v in
+                    let n = Int(v.rounded())
+                    return unit.isEmpty ? "\(n)" : "\(n) \(unit)"
+                },
+                lowLabel: low,
+                highLabel: high)
+        }
+    }
+
+    /// One stored series as a day-keyed dictionary, from whatever field the caller picks. The same
+    /// `repo.days` rows every other card on this page reads, so a block cannot disagree with the
+    /// chart above it.
+    private func seriesByDay(_ pick: (DailyMetric) -> Double?) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for d in repo.days {
+            if let v = pick(d) { out[d.day] = v }
+        }
+        return out
+    }
+
     /// One card per `TrendsSection`. Every branch is a view that already existed; this only decides
     /// which render and in what order.
     @ViewBuilder
@@ -543,6 +629,38 @@ struct TrendsView: View {
             yearStrip
         case .exportReport:
             exportReportRow
+        // Per-metric blocks (260920). Each one is the SAME `ScoreTrendSection` the Sleep and Recap
+        // tabs use, pointed at a different series, with its own window selector — so a metric can be
+        // read over 90 days while another sits at 14, which the shared range bar cannot express.
+        //
+        // Every one is hidden by default and opt-in through Arrange, so the page costs only the
+        // metrics actually wanted. That is the point: `smallMultiples` renders five charts in one
+        // body whether or not all five are being read.
+        case .hrvTrend:
+            metricTrendSection(.hrvTrend, valuesByDay: seriesByDay { $0.avgHrv },
+                               range: 0...120, low: "Low", high: "High", unit: "ms")
+        case .restingHrTrend:
+            metricTrendSection(.restingHrTrend,
+                               valuesByDay: seriesByDay { $0.restingHr.map(Double.init) },
+                               range: 35...100, low: "Low", high: "High", unit: "bpm")
+        case .dayQualityTrend:
+            // Signed -100…+100, drawn as bars: the zero line is real geometry and each day is a
+            // discrete verdict, exactly as the Day tab draws it.
+            metricTrendSection(.dayQualityTrend, valuesByDay: dayQualityByDay,
+                               range: -100...100, low: "Poor", high: "Great", unit: "",
+                               bars: true)
+        case .sleepTrend:
+            metricTrendSection(.sleepTrend, valuesByDay: sleepPerfByDay,
+                               range: 0...106, low: "Poor", high: "Excellent", unit: "%")
+        case .effortTrend:
+            metricTrendSection(.effortTrend, valuesByDay: seriesByDay { $0.strain },
+                               range: 0...100, low: "Easy", high: "Hard", unit: "")
+        case .waterTrend:
+            metricTrendSection(.waterTrend, valuesByDay: waterCupsByDay,
+                               range: 0...24, low: "Dry", high: "Hydrated", unit: "cups")
+        case .respiratoryTrend:
+            metricTrendSection(.respiratoryTrend, valuesByDay: seriesByDay { $0.respRateBpm },
+                               range: 8...24, low: "Low", high: "High", unit: "rpm")
         }
     }
 

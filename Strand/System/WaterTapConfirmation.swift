@@ -114,4 +114,73 @@ enum WaterTapPrefs {
     /// Clamped on READ as well as on write: a value can arrive from a restored backup or a hand-set
     /// default, and a 0 there would disable the guard entirely rather than merely being odd.
     static func clamp(_ seconds: Int) -> Int { min(max(seconds, minWindow), maxWindow) }
+
+    // MARK: - Required tap count (260920)
+    //
+    // The maintainer's report: "when I clap my hands, it still logs a water by accident", and the
+    // ask was a custom pattern — "two taps, space, two taps, with the space configurable".
+    //
+    // WHAT THE STRAP ACTUALLY GIVES US. The double-tap is detected in WHOOP's own firmware, which
+    // sends ONE event meaning "a double-tap happened". NOOP never sees individual taps, their
+    // spacing, or how many there were, so a custom inter-tap pattern is not expressible here — it
+    // would need firmware, which is out of scope (AGENTS.md: clean-room interop, no firmware).
+    //
+    // WHAT IS EXPRESSIBLE, and is the same idea in the unit we have: require N double-tap EVENTS
+    // inside a window. A clap produces one event and is ignored. A deliberate "tap-tap, pause,
+    // tap-tap" produces two, a second or so apart, and fires. The accidental trigger has to happen
+    // twice in a row to cost anything, which is far less likely than once.
+    //
+    // `requiredTaps == 1` is the previous behaviour exactly, and stays the default: raising the bar
+    // for everyone would break the gesture for wearers who never had a false positive.
+
+    static let requiredTapsKey = "noop.water.requiredTaps"
+    static let gestureWindowKey = "noop.water.gestureWindowSeconds"
+
+    static let defaultRequiredTaps = 1
+    static let minRequiredTaps = 1
+    static let maxRequiredTaps = 3
+
+    /// How many double-tap events must land inside `gestureWindow` before the action runs.
+    static var requiredTaps: Int {
+        let stored = UserDefaults.standard.object(forKey: requiredTapsKey) as? Int
+            ?? defaultRequiredTaps
+        return clampTaps(stored)
+    }
+
+    static func clampTaps(_ n: Int) -> Int { min(max(n, minRequiredTaps), maxRequiredTaps) }
+
+    /// Seconds allowed between the events of one gesture — the maintainer's "space", in the only
+    /// unit the strap exposes. Deliberately separate from `window`, which is the opposite guard
+    /// (how long to IGNORE further taps after one fires).
+    static let defaultGestureWindow = 3
+    static let minGestureWindow = 1
+    static let maxGestureWindow = 10
+
+    static var gestureWindow: Int {
+        let stored = UserDefaults.standard.object(forKey: gestureWindowKey) as? Int
+            ?? defaultGestureWindow
+        return clampGestureWindow(stored)
+    }
+
+    static func clampGestureWindow(_ s: Int) -> Int {
+        min(max(s, minGestureWindow), maxGestureWindow)
+    }
+
+    /// Whether this event completes the gesture, given the timestamps of the events before it.
+    ///
+    /// Pure so the rule is testable without a strap or a clock. Returns the events still pending
+    /// after this one — empty when the gesture fired, so the caller resets.
+    static func gestureCompletes(now: Date,
+                                 pending: [Date],
+                                 requiredTaps: Int,
+                                 gestureWindowSeconds: Int) -> (fires: Bool, pending: [Date]) {
+        let need = clampTaps(requiredTaps)
+        guard need > 1 else { return (true, []) }
+        let cutoff = now.addingTimeInterval(-Double(clampGestureWindow(gestureWindowSeconds)))
+        // Drop events too old to be part of THIS gesture before counting.
+        var kept = pending.filter { $0 > cutoff }
+        kept.append(now)
+        if kept.count >= need { return (true, []) }
+        return (false, kept)
+    }
 }

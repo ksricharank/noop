@@ -26,6 +26,26 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// The one-page PDF export row.
     case exportReport
 
+    // Per-metric trend blocks (260920). Each is a full `ScoreTrendSection` for ONE signal —
+    // window selector, chart, comparison footer and calendar strip — the same component the Sleep
+    // and Recap tabs already use, pointed at a different series.
+    //
+    // They exist so the maintainer can retire `smallMultiples`: that card renders five charts in
+    // one body and stayed slow to scroll, while these are independently hideable, so the page costs
+    // exactly the metrics actually wanted rather than all five at once. Charge already had its own
+    // block (`recoveryHero`); this gives the other signals parity with it.
+    //
+    // NOT in `defaultOrder`: an existing layout and a fresh install both render exactly as before
+    // until these are switched on in Arrange. Adding a case to `allCases` alone cannot change what
+    // anyone already sees.
+    case hrvTrend
+    case restingHrTrend
+    case dayQualityTrend
+    case sleepTrend
+    case effortTrend
+    case waterTrend
+    case respiratoryTrend
+
     var id: String { rawValue }
 
     /// The card's display label in the Arrange sheet.
@@ -38,6 +58,13 @@ enum TrendsSection: String, CaseIterable, Identifiable {
         case .trainingLoad:   return String(localized: "Training load")
         case .yearStrip:      return String(localized: "Year strip")
         case .exportReport:   return String(localized: "Export report")
+        case .hrvTrend:         return String(localized: "HRV trend")
+        case .restingHrTrend:   return String(localized: "Resting HR trend")
+        case .dayQualityTrend:  return String(localized: "Day quality trend")
+        case .sleepTrend:       return String(localized: "Sleep trend")
+        case .effortTrend:      return String(localized: "Effort trend")
+        case .waterTrend:       return String(localized: "Water trend")
+        case .respiratoryTrend: return String(localized: "Respiratory trend")
         }
     }
 
@@ -46,6 +73,21 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     static let defaultOrder: [TrendsSection] = [
         .insight, .weekInReview, .recoveryHero, .smallMultiples,
         .trainingLoad, .yearStrip, .exportReport,
+    ]
+
+    /// Every card, in a STABLE order — `defaultOrder` first, then the per-metric blocks.
+    ///
+    /// `decodeOrder` appends from here rather than from `defaultOrder`, because a card absent from
+    /// `defaultOrder` would otherwise never be appended at all and would be unreachable in the
+    /// Arrange sheet — invisible on the page AND impossible to switch on, which is exactly the
+    /// stranding `TrendsLayoutPrefsTests` exists to catch. It caught it.
+    ///
+    /// NOT `allCases`: a CaseIterable's order is source order, which is stable today but is not a
+    /// contract anyone maintains deliberately. Writing the sequence out means a reordered enum
+    /// cannot silently shuffle a wearer's appended cards.
+    static let canonicalOrder: [TrendsSection] = defaultOrder + [
+        .hrvTrend, .restingHrTrend, .dayQualityTrend,
+        .sleepTrend, .effortTrend, .waterTrend, .respiratoryTrend,
     ]
 }
 
@@ -69,7 +111,7 @@ enum TrendsLayoutPrefs {
         var seen = Set<TrendsSection>()
         var out: [TrendsSection] = []
         for s in stored where !seen.contains(s) { out.append(s); seen.insert(s) }
-        for s in TrendsSection.defaultOrder where !seen.contains(s) { out.append(s) }
+        for s in TrendsSection.canonicalOrder where !seen.contains(s) { out.append(s) }
         return out
     }
 
@@ -82,8 +124,29 @@ enum TrendsLayoutPrefs {
     }
 
     /// The cards to render, in order, minus the hidden set.
+    /// Cards that are OFF until switched on (260920): the seven per-metric blocks.
+    ///
+    /// They must be reachable in the Arrange sheet — hence `canonicalOrder` — but must not appear
+    /// on the page uninvited. Seven extra full trend sections arriving on upgrade would be the
+    /// opposite of the ask, which was to REMOVE chart load from this page.
+    static let defaultHidden: Set<TrendsSection> = [
+        .hrvTrend, .restingHrTrend, .dayQualityTrend,
+        .sleepTrend, .effortTrend, .waterTrend, .respiratoryTrend,
+    ]
+
+    /// The hidden set actually in force. THE single definition, used by both the page and the
+    /// Arrange sheet — if the two computed this differently the sheet would list a card as "Shown"
+    /// that the page was hiding, which reads as the setting being broken.
+    ///
+    /// An untouched install (empty `hiddenRaw`) gets `defaultHidden`. Once Arrange has been saved,
+    /// the stored set is authoritative and the defaults stop applying, which is what lets a card be
+    /// switched on and stay on.
+    static func effectiveHidden(hiddenRaw: String) -> Set<TrendsSection> {
+        hiddenRaw.isEmpty ? defaultHidden : decodeHidden(hiddenRaw)
+    }
+
     static func visibleOrder(orderRaw: String, hiddenRaw: String) -> [TrendsSection] {
-        let hidden = decodeHidden(hiddenRaw)
+        let hidden = effectiveHidden(hiddenRaw: hiddenRaw)
         return decodeOrder(orderRaw).filter { !hidden.contains($0) }
     }
 }

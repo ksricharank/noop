@@ -15,6 +15,7 @@ struct IntegrationView: View {
     @State private var enabled = MuseIntegration.isEnabled
     @State private var basename = MuseIntegration.filename
     @State private var hour = MuseIntegration.hourOfDay
+    @State private var intervalHours = MuseIntegration.intervalHours
     @State private var includeCoach = MuseIntegration.includesCoachNarratives
     @State private var folderLabel = MuseIntegration.folderLabel()
     @State private var lastMs = MuseIntegration.lastWrittenMs
@@ -144,6 +145,23 @@ struct IntegrationView: View {
                     }
                     .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
                     .onChangeCompat(of: hour) { h in MuseIntegration.hourOfDay = h }
+                }
+                HStack(alignment: .center, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("How often").font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Hours between writes. The first write of each day lands at the hour above; this says how often to refresh it after that.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Picker("How often", selection: $intervalHours) {
+                        ForEach(MuseIntegration.intervalOptions, id: \.self) { h in
+                            Text(intervalLabel(h)).tag(h)
+                        }
+                    }
+                    .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
+                    .onChangeCompat(of: intervalHours) { h in MuseIntegration.intervalHours = h }
                 }
                 Text(lastMs > 0 ? "Last written: \(relativeTime(lastMs))" : "Not written yet.")
                     .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
@@ -290,6 +308,15 @@ struct IntegrationView: View {
     }
 
     // MARK: Formatting
+
+    /// "24 h — once a day", "6 h — 4× a day". Names both the interval the wearer picked and what it
+    /// means in practice, because "6" alone does not say whether it is six writes or six hours.
+    private func intervalLabel(_ h: Int) -> String {
+        let times = max(1, 24 / h)
+        if times == 1 { return String(localized: "24 h — once a day") }
+        if times == 2 { return String(localized: "12 h — twice a day") }
+        return String(localized: "\(h) h — \(times)× a day")
+    }
 
     private func hourLabel(_ h: Int) -> String {
         var c = DateComponents(); c.hour = h; c.minute = 0

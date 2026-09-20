@@ -26,7 +26,10 @@ struct TrendsCustomizationSheet: View {
         _hiddenSectionsRaw = hiddenSectionsRaw
 
         let fullOrder = TrendsLayoutPrefs.decodeOrder(sectionOrderRaw.wrappedValue)
-        let hiddenSet = TrendsLayoutPrefs.decodeHidden(hiddenSectionsRaw.wrappedValue)
+        // `effectiveHidden`, not `decodeHidden`: on an untouched install the per-metric blocks are
+        // hidden by default, and seeding this list from the raw stored set would show them here as
+        // "Shown" while the page was hiding them.
+        let hiddenSet = TrendsLayoutPrefs.effectiveHidden(hiddenRaw: hiddenSectionsRaw.wrappedValue)
         let d = EditableLayoutDraft(
             visible: fullOrder.filter { !hiddenSet.contains($0) },
             hidden: fullOrder.filter { hiddenSet.contains($0) }
@@ -99,6 +102,14 @@ extension TrendsSection {
         case .trainingLoad:   return "figure.run"
         case .yearStrip:      return "calendar.badge.clock"
         case .exportReport:   return "doc.richtext"
+        // Per-metric blocks (260920) — each takes the icon its own metric uses elsewhere in the app.
+        case .hrvTrend:         return "waveform.path.ecg"
+        case .restingHrTrend:   return "heart"
+        case .dayQualityTrend:  return "medal"
+        case .sleepTrend:       return "bed.double"
+        case .effortTrend:      return "flame"
+        case .waterTrend:       return "drop"
+        case .respiratoryTrend: return "lungs"
         }
     }
 
@@ -111,6 +122,15 @@ extension TrendsSection {
         case .trainingLoad:   return String(localized: "Chronic and acute load over the full history")
         case .yearStrip:      return String(localized: "Every scored day of the year")
         case .exportReport:   return String(localized: "A shareable one-page PDF")
+        // Each names its own window selector, since that is the thing these have and the shared
+        // small-multiples grid does not.
+        case .hrvTrend:         return String(localized: "HRV alone, with its own window")
+        case .restingHrTrend:   return String(localized: "Resting heart rate alone, with its own window")
+        case .dayQualityTrend:  return String(localized: "Day quality alone, with its own window")
+        case .sleepTrend:       return String(localized: "Sleep score alone, with its own window")
+        case .effortTrend:      return String(localized: "Effort alone, with its own window")
+        case .waterTrend:       return String(localized: "Water in cups, with its own window")
+        case .respiratoryTrend: return String(localized: "Respiratory rate alone, with its own window")
         }
     }
 
@@ -123,6 +143,13 @@ extension TrendsSection {
         case .trainingLoad:   return StrandPalette.effortColor
         case .yearStrip:      return StrandPalette.restBright
         case .exportReport:   return StrandPalette.accent
+        case .hrvTrend:         return StrandPalette.metricCyan
+        case .restingHrTrend:   return StrandPalette.metricRose
+        case .dayQualityTrend:  return StrandPalette.statusPositive
+        case .sleepTrend:       return StrandPalette.restColor
+        case .effortTrend:      return StrandPalette.effortColor
+        case .waterTrend:       return StrandPalette.metricCyan
+        case .respiratoryTrend: return StrandPalette.restBright
         }
     }
 }

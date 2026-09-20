@@ -2187,6 +2187,10 @@ final class AppModel: ObservableObject {
     /// session, and two deliberate taps are not something a rack does by accident.
     var strapDoubleTapOverride: (() -> Void)?
 
+    /// Double-tap events seen but not yet forming a complete gesture (260920). Empty whenever
+    /// `WaterTapPrefs.requiredTaps == 1`, which is the default.
+    private var pendingDoubleTaps: [Date] = []
+
     private func handleDoubleTap() {
         let now = Date()
         // 260907: the window is user-configurable (Automations → Double-tap). The old 1.2 s constant
@@ -2194,6 +2198,29 @@ final class AppModel: ObservableObject {
         // and the knob lets the wearer trade sensitivity for certainty themselves. This is the
         // SEPARATE-taps guard; one physical tap firing once is handled structurally by the 16.13
         // event-timestamp dedup in FrameRouter and is not a knob.
+        // 260920: require N events inside a window before acting, when the wearer has asked for it.
+        // A clap fires ONE strap event; a deliberate tap-tap/pause/tap-tap fires two.
+        //
+        // ORDER MATTERS. This runs BEFORE the separate-taps debounce below, because the two guards
+        // want opposite things from a closely-spaced second event: the debounce exists to swallow
+        // it, and a multi-event gesture is built out of exactly that. Running the debounce first
+        // would reject the second half of every gesture and the count could never be reached.
+        //
+        // The debounce still applies to the COMPLETED gesture, which is what it was always for —
+        // two cups should not be logged seconds apart.
+        let need = WaterTapPrefs.requiredTaps
+        if need > 1 {
+            let outcome = WaterTapPrefs.gestureCompletes(
+                now: now,
+                pending: pendingDoubleTaps,
+                requiredTaps: need,
+                gestureWindowSeconds: WaterTapPrefs.gestureWindow)
+            pendingDoubleTaps = outcome.pending
+            guard outcome.fires else {
+                live.append(log: "Double-tap \(outcome.pending.count) of \(need): waiting for the rest of the gesture")
+                return
+            }
+        }
         let since = now.timeIntervalSince(lastDoubleTapAt)
         let tapWindow = Double(WaterTapPrefs.window)
         guard since > tapWindow else {

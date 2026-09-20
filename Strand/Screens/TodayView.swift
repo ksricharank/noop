@@ -2003,7 +2003,11 @@ struct TodayView: View {
         case .recoveryVitals:
             recoveryVitalsSection
         case .yourCards:
-            yourCardsSection
+            // 260920: the rows moved INSIDE the Key Metrics section (see `dashboardCardsInline`), so
+            // this section renders nothing. The case is kept rather than removed so a stored layout
+            // written before the merge still decodes — dropping the rawValue would silently discard
+            // the wearer's whole saved order, which `DayLayoutPrefs`-style recovery cannot undo.
+            EmptyView()
         case .menstrualCycle:
             if selectedDayOffset == 0 { MenstrualCycleHomeCard() }
         case .journal:
@@ -4010,6 +4014,49 @@ struct TodayView: View {
             }
             if metricsHasOverflow {
                 metricsExpander
+            }
+            // 260920, maintainer: "can we make all of them into key metrics one section instead of
+            // two?" The dashboard rows now sit UNDER the tile grid, inside this section, rather than
+            // in their own "Your cards" block with its own header and Edit button.
+            //
+            // They stay ROWS rather than becoming tiles: Stress, Fitness Age, VO₂ Max and Vitality
+            // have no tile form, and Coupled and Coach carry no value at all — they are navigation.
+            // Converting them would mean dropping the last two and inventing tiles for the others,
+            // which loses the tap-through that is the whole point of a dashboard row.
+            //
+            // Two EDIT buttons for one section would be confusing, so the rows' own header is gone
+            // and `dashboardCardsInline` carries just the rows; the section's single Edit opens the
+            // tile editor, and the rows keep their own editor behind the divider's "Cards" link.
+            dashboardCardsInline
+        }
+    }
+
+    /// The dashboard rows, headerless, for hosting inside the Key Metrics section (260920).
+    ///
+    /// Today-only, like the section it used to own: a navigated past day has no "current" stress or
+    /// fitness age to show, and the rows' detail screens all read today.
+    @ViewBuilder
+    private var dashboardCardsInline: some View {
+        if selectedDayOffset == 0 && !enabledDashboardCards.isEmpty {
+            Divider().overlay(StrandPalette.hairline)
+                .padding(.vertical, NoopMetrics.space1 / 2)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Cards").strandOverline()
+                Spacer(minLength: 8)
+                Button {
+                    customizationDestination = .yourCards
+                } label: {
+                    Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")
+                        .font(StrandFont.overline)
+                        .tracking(StrandFont.overlineTracking)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StrandPalette.accent)
+                .accessibilityLabel("Customise your cards")
+                .help("Choose which cards show and reorder them")
+            }
+            ForEach(enabledDashboardCards) { card in
+                dashboardCardRow(card)
             }
         }
     }

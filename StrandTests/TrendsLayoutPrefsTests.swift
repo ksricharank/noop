@@ -6,8 +6,32 @@ import XCTest
 /// a section has silently vanished from both the page AND the Arrange sheet.
 final class TrendsLayoutPrefsTests: XCTestCase {
 
-    func testAnEmptyStoredOrderIsTheDefaultOrder() {
-        XCTAssertEqual(TrendsLayoutPrefs.decodeOrder(""), TrendsSection.defaultOrder)
+    /// 260920: decode returns EVERY card, so an empty store yields `canonicalOrder` — the default
+    /// order followed by the per-metric blocks. Those blocks must be reachable in the Arrange sheet
+    /// even though they do not render until switched on, which is `defaultHidden`'s job, not this
+    /// one. Asserting `defaultOrder` here is what caught them being unreachable.
+    func testAnEmptyStoredOrderIsTheCanonicalOrder() {
+        XCTAssertEqual(TrendsLayoutPrefs.decodeOrder(""), TrendsSection.canonicalOrder)
+        XCTAssertEqual(TrendsLayoutPrefs.decodeOrder("").prefix(TrendsSection.defaultOrder.count).map { $0 },
+                       TrendsSection.defaultOrder,
+                       "the original cards keep their original order and positions")
+    }
+
+    /// The page and the Arrange sheet must agree about what is hidden, or the sheet lists a card as
+    /// Shown that the page is hiding.
+    func testPerMetricBlocksAreHiddenUntilArrangeIsSaved() {
+        let visible = TrendsLayoutPrefs.visibleOrder(orderRaw: "", hiddenRaw: "")
+        XCTAssertEqual(visible, TrendsSection.defaultOrder,
+                       "an untouched install renders exactly the pre-260920 page")
+        for block in TrendsLayoutPrefs.defaultHidden {
+            XCTAssertFalse(visible.contains(block), "\(block) must not appear uninvited")
+        }
+        // Once Arrange has been saved, the STORED set is authoritative — otherwise a card could be
+        // switched on and would silently hide itself again on the next launch.
+        let afterSave = TrendsLayoutPrefs.visibleOrder(
+            orderRaw: "", hiddenRaw: TrendsLayoutPrefs.encodeHidden([.yearStrip]))
+        XCTAssertTrue(afterSave.contains(.hrvTrend))
+        XCTAssertFalse(afterSave.contains(.yearStrip))
     }
 
     /// Every card appears exactly once, whatever the stored string says. This is the invariant the
@@ -47,9 +71,14 @@ final class TrendsLayoutPrefsTests: XCTestCase {
     /// The round trip is lossless, which is what lets the sheet store "shown ++ hidden" and read
     /// back the same arrangement.
     func testEncodeDecodeRoundTrips() {
-        let order: [TrendsSection] = [.yearStrip, .insight, .trainingLoad,
-                                      .weekInReview, .recoveryHero, .smallMultiples, .exportReport]
+        // A full arrangement round-trips unchanged.
+        let order = TrendsSection.canonicalOrder.reversed().map { $0 }
         XCTAssertEqual(TrendsLayoutPrefs.decodeOrder(TrendsLayoutPrefs.encode(order)), order)
+        // A PARTIAL one keeps its stored prefix and appends the rest, rather than losing either.
+        let partial: [TrendsSection] = [.yearStrip, .insight, .trainingLoad]
+        let decoded = TrendsLayoutPrefs.decodeOrder(TrendsLayoutPrefs.encode(partial))
+        XCTAssertEqual(decoded.prefix(3).map { $0 }, partial)
+        XCTAssertEqual(Set(decoded), Set(TrendsSection.allCases))
     }
 
     /// The default order is exactly the pre-arrangeable hard-coded order, so an install that never
