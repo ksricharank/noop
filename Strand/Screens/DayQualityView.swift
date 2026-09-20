@@ -125,6 +125,7 @@ struct DayQualityView: View {
             // copies of the same view.
             if section == firstTrendSectionInOrder {
                 ScoreTrendSection(title: "Day quality trend", valuesByDay: scoresByDay,
+                                  cacheIdentity: "day-quality-trend",
                                   windows: Self.windows, window: $window,
                                   // The signed range, explicitly: the section defaults to the 0…106
                                   // rest scale, which would fold the whole negative half onto the

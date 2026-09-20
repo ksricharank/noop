@@ -1795,6 +1795,7 @@ struct SleepView: View {
     @ViewBuilder
     private var restTrend: some View {
         ScoreTrendSection(title: "Rest trend", valuesByDay: restByDay,
+                          cacheIdentity: "rest-trend",
                           windows: Self.restWindows, window: $restWindow,
                           lowLabel: "Poor", highLabel: "Excellent")
     }
