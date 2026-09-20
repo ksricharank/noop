@@ -378,11 +378,15 @@ struct LiquidTodayView: View {
                         case .workouts: lastWorkoutsSection
                         case .heartRate: heartRateSection
                         case .recoveryVitals: recoveryVitalsSection
-                        // 260920: the rows moved INSIDE keyMetricsSection (see
-                        // `dashboardCardsInline`). The case is kept rendering nothing rather than
-                        // removed, so a layout stored before the merge still decodes — dropping the
-                        // rawValue would make every saved order decode short.
-                        case .yourCards: EmptyView()
+                        // 260920: reads as a continuation of KEY METRICS — no second section
+                        // header — but stays its OWN section so it can be moved and hidden
+                        // independently.
+                        //
+                        // The first attempt nested these rows INSIDE `keyMetricsSection`, which
+                        // made them un-hideable on their own and, worse, deleted them along with
+                        // the tile grid when that was hidden. "One section" meant one visual block,
+                        // not one hideable unit; collapsing the two was the wrong reading.
+                        case .yourCards: dashboardCardsInline
                         case .menstrualCycle:
                             if selectedDayOffset == 0 { MenstrualCycleHomeCard() }
                         // #656: the persistent journal widget (last-7-days strip + tap-through). Now a
@@ -1537,13 +1541,6 @@ struct LiquidTodayView: View {
                 LiquidFullWidthNavigationAction("Show all metrics")
             }
             .buttonStyle(LiquidPressStyle())
-            // 260920, maintainer: "can we make all of them into key metrics one section instead of
-            // two?" The dashboard rows now render HERE, under the tile grid, instead of in their own
-            // "Your cards" block with a second header and a second Edit.
-            //
-            // They stay ROWS rather than becoming tiles: Stress, Fitness Age, VO₂ Max and Vitality
-            // have no tile form, and Coupled and Coach carry no value at all — they are navigation.
-            dashboardCardsInline
         }
     }
 
@@ -1559,9 +1556,17 @@ struct LiquidTodayView: View {
             .filter { hydrationEnabled || $0 != .hydration }
             .filter { coachEnabled || $0 != .coach }
         if selectedDayOffset == 0 && !cards.isEmpty {
-            Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
+            // The divider and the quiet "CARDS" sub-head only make sense as a CONTINUATION of the
+            // tile grid. With Key Metrics hidden — or moved elsewhere in the order — this block is
+            // on its own and needs its own full header, or it reads as a set of orphaned rows under
+            // a rule that divides it from whatever happens to sit above.
+            let followsKeyMetrics = sectionOrder.firstIndex(of: .keyMetrics)
+                .flatMap { km in sectionOrder.firstIndex(of: .yourCards).map { $0 == km + 1 } } ?? false
+            if followsKeyMetrics {
+                Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
+            }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                sectionHead("CARDS", trailing: "")
+                sectionHead(followsKeyMetrics ? "CARDS" : "YOUR CARDS", trailing: "")
                 Button { customizationDestination = .yourCards } label: {
                     Text(String(localized: "Edit").uppercased())
                         .font(StrandFont.overlineScaled(11))
