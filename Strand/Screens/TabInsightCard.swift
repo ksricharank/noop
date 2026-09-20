@@ -33,6 +33,18 @@ struct TabInsightCard: View {
     /// Whether to offer "Ask the Coach" under the text. The card opens the chat itself through the
     /// router it owns, so a caller does not have to hold one to show the link.
     var showsAskCoach: Bool = false
+    /// What this tab's "Ask the Coach" should OPEN ON (260920, maintainer request: "if I press it
+    /// from the sleep button, the coach when opened should be operating that as a follow up to the
+    /// sleep LLM output in the sleep tab").
+    ///
+    /// Without this, every tab's button opened the same blank chat and the wearer had to re-explain
+    /// which reading they were asking about — the summary they were looking at was right there and
+    /// the coach could not see it. The card hands over the SUMMARY IT IS SHOWING plus a one-line
+    /// framing, so the first turn is already a follow-up.
+    ///
+    /// Takes the generated text because the seed is only meaningful once there IS a summary; the
+    /// button is hidden until then anyway.
+    var coachFollowUp: ((String) -> String)? = nil
 
     /// The coach engine, owned HERE rather than by the tab root (260919).
     ///
@@ -70,6 +82,31 @@ struct TabInsightCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(expanded ? "Collapse \(title)" : "Expand \(title)")
+            .overlay(alignment: .trailing) {
+                // Regenerate (260920, maintainer request: the same affordance the Today synthesis
+                // already carries, on the other three tabs).
+                //
+                // An OVERLAY rather than another element inside the disclosure button's label: a
+                // Button nested in a Button's label is not independently tappable, so the refresh
+                // would have toggled the section instead of regenerating it.
+                //
+                // Shown only while expanded — a refresh on a collapsed section would spend a
+                // provider call on text nobody is looking at, which is the cost the whole
+                // generate-on-first-expand design exists to avoid.
+                if expanded {
+                    Button {
+                        Task { await load(force: true) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(inFlight ? StrandPalette.textTertiary : StrandPalette.accent)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(inFlight)
+                    .accessibilityLabel(Text("Regenerate \(title)"))
+                }
+            }
 
             if expanded {
                 if let text {
@@ -92,7 +129,15 @@ struct TabInsightCard: View {
                 if showsAskCoach, text != nil {
                     HStack {
                         Spacer()
-                        Button { router.openCoach() } label: {
+                        Button {
+                            // Seed the chat with THIS tab's reading so the first turn is a
+                            // follow-up, not a cold open. Falls back to a plain open when a caller
+                            // supplied no framing, which is the old behaviour.
+                            if let text, let coachFollowUp {
+                                coach.pendingPrompt = coachFollowUp(text)
+                            }
+                            router.openCoach()
+                        } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: "sparkles").font(StrandFont.caption)
                                 Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
@@ -124,8 +169,10 @@ struct TabInsightCard: View {
         }
     }
 
-    private func load() async {
-        guard textSubject != subject || text == nil else { return }
+    /// `force` bypasses the cache — the Regenerate button's path. Everything else (first expand,
+    /// a subject change) keeps the cached text so returning to a tab does not re-spend a call.
+    private func load(force: Bool = false) async {
+        if !force { guard textSubject != subject || text == nil else { return } }
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false }
