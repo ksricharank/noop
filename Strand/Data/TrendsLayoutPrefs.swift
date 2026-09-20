@@ -46,6 +46,11 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     case waterTrend
     case respiratoryTrend
 
+    /// The unified card (260920): every selected metric over the page's window, in one of three
+    /// styles. The maintainer's ask was to be able to retire every other widget on this page in
+    /// favour of it, so it is the one section that is SHOWN by default among the 260920 additions.
+    case allMetrics
+
     var id: String { rawValue }
 
     /// The card's display label in the Arrange sheet.
@@ -65,6 +70,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
         case .effortTrend:      return String(localized: "Effort trend")
         case .waterTrend:       return String(localized: "Water trend")
         case .respiratoryTrend: return String(localized: "Respiratory trend")
+        case .allMetrics:       return String(localized: "All metrics")
         }
     }
 
@@ -86,6 +92,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// contract anyone maintains deliberately. Writing the sequence out means a reordered enum
     /// cannot silently shuffle a wearer's appended cards.
     static let canonicalOrder: [TrendsSection] = defaultOrder + [
+        .allMetrics,
         .hrvTrend, .restingHrTrend, .dayQualityTrend,
         .sleepTrend, .effortTrend, .waterTrend, .respiratoryTrend,
     ]

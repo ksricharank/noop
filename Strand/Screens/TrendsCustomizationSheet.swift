@@ -110,6 +110,7 @@ extension TrendsSection {
         case .effortTrend:      return "flame"
         case .waterTrend:       return "drop"
         case .respiratoryTrend: return "lungs"
+        case .allMetrics:       return "chart.xyaxis.line"
         }
     }
 
@@ -131,6 +132,7 @@ extension TrendsSection {
         case .effortTrend:      return String(localized: "Effort alone, with its own window")
         case .waterTrend:       return String(localized: "Water in cups, with its own window")
         case .respiratoryTrend: return String(localized: "Respiratory rate alone, with its own window")
+        case .allMetrics:       return String(localized: "Every metric you choose, over the page's window")
         }
     }
 
@@ -150,6 +152,7 @@ extension TrendsSection {
         case .effortTrend:      return StrandPalette.effortColor
         case .waterTrend:       return StrandPalette.metricCyan
         case .respiratoryTrend: return StrandPalette.restBright
+        case .allMetrics:       return StrandPalette.accent
         }
     }
 }

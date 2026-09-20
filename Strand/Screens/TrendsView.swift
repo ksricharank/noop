@@ -72,6 +72,48 @@ struct TrendsView: View {
     /// water surface in the app displays.
     @State private var waterCupsByDay: [String: Double] = [:]
 
+    // The unified card's configuration (260920).
+    // One stored selection PER STYLE (260920). `@AppStorage` needs a literal key, so the three are
+    // declared explicitly rather than indexed — and `multiMetricSelection` below picks the one in
+    // force, which keeps the resolution rule in `MultiMetricPrefs` rather than spread across here.
+    @AppStorage(MultiMetricPrefs.styleKey) private var multiMetricStyleRaw = MultiMetricStyle.overlay.rawValue
+    @AppStorage("trends.multiMetricSelection.overlay") private var multiMetricOverlayRaw = ""
+    @AppStorage("trends.multiMetricSelection.rows") private var multiMetricRowsRaw = ""
+    @AppStorage("trends.multiMetricSelection.heatmap") private var multiMetricHeatmapRaw = ""
+
+    private var multiMetricStyle: MultiMetricStyle {
+        MultiMetricPrefs.decodeStyle(multiMetricStyleRaw)
+    }
+
+    /// The metrics the CURRENT style draws. Reads through `MultiMetricPrefs.resolved` so the
+    /// carry-over from the pre-per-style key is applied in exactly one place.
+    private var multiMetricSelection: [MultiMetric] {
+        let own: String
+        switch multiMetricStyle {
+        case .overlay: own = multiMetricOverlayRaw
+        case .rows:    own = multiMetricRowsRaw
+        case .heatmap: own = multiMetricHeatmapRaw
+        }
+        if !own.isEmpty { return MultiMetricPrefs.decode(own, style: multiMetricStyle) }
+        return MultiMetricPrefs.resolved(style: multiMetricStyle)
+    }
+    @State private var showMultiMetricConfig = false
+
+    /// Every series the unified card can draw, assembled from what this page already holds. Built
+    /// per body rather than cached: each entry is a dictionary the page has in hand, and the card
+    /// windows and measures them once in its own `resolved`.
+    private var multiMetricSeries: [MultiMetric: [String: Double]] {
+        [.charge: seriesByDay { $0.recovery },
+         .hrv: seriesByDay { $0.avgHrv },
+         .restingHr: seriesByDay { $0.restingHr.map(Double.init) },
+         .effort: seriesByDay { $0.strain },
+         .sleep: sleepPerfByDay,
+         .dayQuality: dayQualityByDay,
+         .steps: seriesByDay { $0.steps.map(Double.init) },
+         .respiratory: seriesByDay { $0.respRateBpm },
+         .water: waterCupsByDay]
+    }
+
     /// Per-metric window selections (260920). ONE dictionary keyed by section rather than seven
     /// separate `@State`s: the set of metric blocks is a list that will grow, and seven parallel
     /// properties would have to grow with it.
@@ -330,6 +372,12 @@ struct TrendsView: View {
         .sheet(isPresented: $showTrendsCustomize) {
             TrendsCustomizationSheet(sectionOrderRaw: $trendsSectionOrderRaw,
                                      hiddenSectionsRaw: $trendsHiddenSectionsRaw)
+        }
+        .sheet(isPresented: $showMultiMetricConfig) {
+            MultiMetricConfigSheet(overlayRaw: $multiMetricOverlayRaw,
+                                   rowsRaw: $multiMetricRowsRaw,
+                                   heatmapRaw: $multiMetricHeatmapRaw,
+                                   styleRaw: $multiMetricStyleRaw)
         }
         .sheet(isPresented: $showingReport) {
             TrendsReportSheet(days: repo.days)
@@ -661,6 +709,12 @@ struct TrendsView: View {
         case .respiratoryTrend:
             metricTrendSection(.respiratoryTrend, valuesByDay: seriesByDay { $0.respRateBpm },
                                range: 8...24, low: "Low", high: "High", unit: "rpm")
+        case .allMetrics:
+            MultiMetricCard(seriesByMetric: multiMetricSeries,
+                            metrics: multiMetricSelection,
+                            style: multiMetricStyle,
+                            windowDays: range.days ?? repo.days.count,
+                            onConfigure: { showMultiMetricConfig = true })
         }
     }
 
