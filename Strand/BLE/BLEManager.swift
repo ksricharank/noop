@@ -790,6 +790,13 @@ public final class BLEManager: NSObject, ObservableObject {
     /// toggle only on the false↔true edge instead of on every input change. Cleared on disconnect — the
     /// strap forgets the toggle across a connection, and the post-bond branch re-arms from `wantsRealtime`.
     private var realtimeArmed = false
+    /// True after `reconcileRealtime()` has DELIBERATELY silenced the stream under the duty cycle
+    /// (locked, outside the sleep window). Read by `enableLiveNotifications` (skip re-subscribing
+    /// 0x2A37 — firmware can keep emitting it with the TOGGLE off, which would keep the per-beat
+    /// wakes this mode exists to stop) and by the keep-alive's no-data bounce (silence is
+    /// intentional, not a dead link; offload traffic still feeds `lastDataAt` every cadence tick).
+    /// Cleared whenever the want goes true again.
+    private var dutyCycleSilenced = false
     /// #80 marginal-radio fallback: tracks consecutive arm-then-quick-timeout cycles. When it trips,
     /// `standardHRFallback` goes true and the next connect skips arming R10/R11 (relies on 0x2A37).
     private var marginalRadio = MarginalRadioDetector()
@@ -931,7 +938,40 @@ public final class BLEManager: NSObject, ObservableObject {
     }
 
     // MARK: CoreBluetooth
-    private var central: CBCentralManager!
+
+    /// The CoreBluetooth client, created LAZILY on macOS (260906).
+    ///
+    /// The 260903 change ("macOS: stay idle at launch") gated `connectFromSystem` — the path that
+    /// scans and connects. But the macOS Bluetooth permission prompt does not come from connecting:
+    /// it comes from INSTANTIATING a `CBCentralManager`, which `init` did unconditionally. So
+    /// building the project still raised the prompt. The gate was one layer too high, and the symptom
+    /// it was written to remove was only half removed — the scan and the connect attempts did stop,
+    /// which is why it looked fixed.
+    ///
+    /// Deferring construction is what actually leaves the radio and the prompt alone until something
+    /// asks. Every existing `central.` use site reads through the computed property below and is
+    /// unchanged, so a deliberate Connect from the UI builds the client on the spot.
+    ///
+    /// iOS constructs it eagerly in `init`, exactly as before: there, being ready to restore a
+    /// background connection at launch IS the product, and the permission is granted at install.
+    private var centralStorage: CBCentralManager?
+
+    /// The client, materialised on first touch. Reads as `central` at every existing call site.
+    private var central: CBCentralManager {
+        if let c = centralStorage { return c }
+        // No restore identifier here: that is an iOS background feature, and iOS never reaches this
+        // fallback because `init` has already assigned the restorable client.
+        let c = CBCentralManager(delegate: self, queue: .main)
+        centralStorage = c
+        #if os(macOS)
+        log("macOS: CoreBluetooth client created on first use (idle until asked)")
+        #endif
+        return c
+    }
+
+    /// Whether the client exists yet, for paths that must not bring it into being merely by asking
+    /// after its state — without this a status read would defeat the deferral.
+    private var centralExists: Bool { centralStorage != nil }
     private var peripheral: CBPeripheral?
     /// Multi-WHOOP: when non-nil, the scan/discover path connects ONLY to the peripheral whose
     /// `identifier == preferredPeripheralUUID` and ignores every other discovered WHOOP. When nil
@@ -1359,11 +1399,14 @@ public final class BLEManager: NSObject, ObservableObject {
         // iOS background state preservation/restoration: the restore identifier is what makes
         // CoreBluetooth relaunch the app into the background and deliver willRestoreState after
         // a suspend-then-jettison. Without it, willRestoreState is never called.
-        central = CBCentralManager(delegate: self, queue: .main,
-                                   options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
+        centralStorage = CBCentralManager(delegate: self, queue: .main,
+                                          options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
         #else
-        // Strand (macOS desktop): no state-restoration identifier (iOS background feature).
-        central = CBCentralManager(delegate: self, queue: .main)
+        // 260906: macOS deliberately does NOT construct the client here — see `centralStorage`.
+        // Instantiating a CBCentralManager is what raises the macOS permission prompt, so the app
+        // stays genuinely idle (no prompt, no radio) until something actually asks for Bluetooth.
+        // This matters for the TEST suite too: StrandTests is hosted by the macOS app, so an eager
+        // client raised the prompt on every test run as well as every build.
         #endif
         // Strap-as-clock: an incoming EVENT packet kicks a rate-limited catch-up sync.
         router.onSyncTrigger = { [weak self] in self?.requestSync(.strap) }
@@ -1559,11 +1602,14 @@ public final class BLEManager: NSObject, ObservableObject {
         // Restore identifier + background-capable central (mirrors the production initializer
         // so a restored manager matches by identifier; only exercised by tests/previews).
         #if os(iOS)
-        central = CBCentralManager(delegate: self, queue: .main,
-                                   options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
+        centralStorage = CBCentralManager(delegate: self, queue: .main,
+                                          options: [CBCentralManagerOptionRestoreIdentifierKey: BLEManager.restoreID])
         #else
-        // Strand (macOS desktop): no state-restoration identifier (iOS background feature).
-        central = CBCentralManager(delegate: self, queue: .main)
+        // 260906: macOS deliberately does NOT construct the client here — see `centralStorage`.
+        // Instantiating a CBCentralManager is what raises the macOS permission prompt, so the app
+        // stays genuinely idle (no prompt, no radio) until something actually asks for Bluetooth.
+        // This matters for the TEST suite too: StrandTests is hosted by the macOS app, so an eager
+        // client raised the prompt on every test run as well as every build.
         #endif
         // Strap-as-clock: an incoming EVENT packet kicks a rate-limited catch-up sync.
         router.onSyncTrigger = { [weak self] in self?.requestSync(.strap) }
@@ -1623,8 +1669,35 @@ public final class BLEManager: NSObject, ObservableObject {
         // on its own. Gating the shared core instead would have made the Connect button silently dead
         // while the Devices screen showed a "Reconnecting…" toast.
         guard whoopConnectAllowed("connect-from-system") else { return }
+        #if os(macOS)
+        // 260903: the macOS app stays IDLE at launch unless the user has asked otherwise.
+        //
+        // This fork is an iPhone deployment; the macOS target exists to build and to HOST
+        // `StrandTests` (its TEST_HOST/BUNDLE_LOADER point at NOOP Staging.app, so the whole
+        // app-level suite links against that module and the target cannot simply be removed).
+        // But every Run of that scheme launched a full BLE client on the development Mac —
+        // permission prompts, a scan, and connect attempts against a strap that is paired to the
+        // phone. That is radio traffic and OS noise generated by the act of building.
+        //
+        // ONLY the system-initiated path is gated: `poweredOn` fires on launch and on every
+        // Bluetooth toggle, and it is the one that fires without anyone asking. A deliberate
+        // connect from the UI calls `connect(...)`/`connectCore` directly and is untouched, so the
+        // macOS app remains fully usable for anyone who wants it — it simply waits to be asked.
+        //
+        // Opt back in with:  defaults write <bundle-id> noop.macos.autoConnect -bool YES
+        // iOS is unaffected: there the auto-connect on radio-on IS the product.
+        guard UserDefaults.standard.bool(forKey: BLEManager.macAutoConnectKey) else {
+            log("macOS: skipping system-initiated connect (idle by default; "
+                + "set \(BLEManager.macAutoConnectKey) to opt in)")
+            return
+        }
+        #endif
         connectCore(model: model)
     }
+
+    /// Opt-in flag for the macOS auto-connect gate above. Defaults FALSE (absent), so a fresh
+    /// development machine never starts scanning on its own.
+    static let macAutoConnectKey = "noop.macos.autoConnect"
 
     private func connectCore(model: WhoopModel) {
         intentionalDisconnect = false
@@ -1936,8 +2009,59 @@ public final class BLEManager: NSObject, ObservableObject {
         foregroundSalvageObserver = NotificationCenter.default.addObserver(
             forName: name, object: nil, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.salvageProbeIfBondLoopPaused() }
+            Task { @MainActor in
+                self?.salvageProbeIfBondLoopPaused()
+                // Duty cycle: becoming active is the strongest unlock signal a previously-SUSPENDED
+                // app ever gets (the protectedData note is only delivered to a running process) —
+                // and it can only happen unlocked, so it also clears the lock latch before the
+                // reconcile re-derives the stream want. Opening the app re-arms instantly.
+                #if os(iOS)
+                DeviceLockState.noteUnlocked()
+                #endif
+                self?.reconcileRealtime()
+            }
         }
+        #endif
+        installDutyCycleLockObservers()
+    }
+
+    /// Locked-stream duty cycle: reconcile the stream on both lock edges. Unlock re-arms the stream
+    /// immediately when the process is running (a suspended app misses the note and catches up at its
+    /// next wake via the keep-alive's reconcile); lock silences it and starts the burst timer chain.
+    /// Observers are installed unconditionally and the handlers gate on the mode, so flipping the
+    /// Settings value needs no re-wiring. iOS-only — the mode itself never engages elsewhere.
+    private var dutyCycleLockObservers: [NSObjectProtocol] = []
+    private func installDutyCycleLockObservers() {
+        #if os(iOS)
+        dutyCycleLockObservers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                // The latch clears whether or not duty mode is on — DeviceLockState is a plain fact
+                // about the phone, and a Settings flip mid-latch must not strand it.
+                DeviceLockState.noteUnlocked()
+                guard let self, self.dutyCycleModeEnabled else { return }
+                self.log("Duty cycle: phone unlocked — re-arming the realtime stream")
+                self.reconcileRealtime()
+            }
+        })
+        dutyCycleLockObservers.append(NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataWillBecomeUnavailableNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                DeviceLockState.noteWillLock()
+                guard let self, self.dutyCycleModeEnabled else { return }
+                self.log("Duty cycle: phone locking — silencing the realtime stream (the sleep window and offload-driven Lock-Screen refreshes keep coverage)")
+                // The latch above makes `deviceIsLocked()` already true, so THIS reconcile silences
+                // immediately — no more waiting out the keybag's 10–60 s grace, which was the
+                // rapid-lock/unlock churn the 260827-2142 test exposed. The +15 s follow-up is now
+                // just a backstop for the keybag's own flip; the ~60 s keep-alive backstops both.
+                self.reconcileRealtime()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+                    self?.reconcileRealtime()
+                }
+            }
+        })
         #endif
     }
 
@@ -2677,6 +2801,11 @@ public final class BLEManager: NSObject, ObservableObject {
         backfillTimeout = nil
         backfillFrameQueue.removeAll()
         log("Backfill: session ended — reason=\(reason)")
+        // Persist the wake counters on this already-running path (one small defaults write per sync,
+        // every 10-15 min). Per-process counters alone lose the whole day whenever the process dies
+        // before an export — the 260828-0731 log's overnight totals vanished at a 07:31 relaunch and
+        // the header could only extrapolate a 30 s launch burst.
+        BatteryDiag.flush()
         // Inactivity reminder (#419): read-only hook on the natural offload completion (no cadence
         // change). Only on a true HISTORY_COMPLETE — a timeout/disconnect didn't bring a fresh window.
         if reason == "HISTORY_COMPLETE" { maybeBuzzInactivity() }
@@ -3313,9 +3442,56 @@ public final class BLEManager: NSObject, ObservableObject {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
         let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
         let d = UserDefaults.standard
-        return ContinuousHrvSchedule.streamWanted(
+        let fallback = ContinuousHrvSchedule.streamWanted(
             continuousHrv: true,
             overnightOnly: PuffinExperiment.continuousHrvOvernightOnlyEnabled,
+            minuteOfDay: minuteOfDay,
+            startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
+            endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes)
+        // Locked-stream duty cycle (Lock-Screen refresh = -1): NARROW the pre-existing want. The
+        // stream stays armed through the sleep window (dense night R-R = HRV coverage) and while the
+        // phone is unlocked; locked daytime silences it — the Lock Screen refreshes from persisted
+        // offload data instead (AppModel.lockedActivityRefresh). All the guards above (preference
+        // off, strap-battery pause) and #927's own window keep their authority — the duty cycle can
+        // silence an armed stream, never arm a silenced one.
+        guard dutyCycleModeEnabled else { return fallback }
+        return LockedStreamPolicy.streamWanted(
+            dutyCycle: true, fallbackWant: fallback,
+            locked: deviceIsLocked(),
+            inSleepWindow: inContinuousSleepWindow(minuteOfDay: minuteOfDay))
+    }
+
+    /// Whether the locked-stream duty cycle is opted in (Lock-Screen refresh minutes = -1). Read per
+    /// evaluation, like the #927 window, so a Settings edit applies at the next reconcile. iOS-only:
+    /// macOS has no lock-screen surface and never duty-cycles.
+    private var dutyCycleModeEnabled: Bool {
+        #if os(iOS)
+        return LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: UnitPrefs.liveActivityLockedMinutes())
+        #else
+        return false
+        #endif
+    }
+
+    /// Locked = the shared latch-or-keybag signal (`DeviceLockState`), same read the Live Activity
+    /// uses. The keybag alone flips 10–60 s AFTER the physical lock, which left the stream armed and
+    /// the locked Lock Screen repainting for that whole grace window; the latch (set the instant the
+    /// lock notification fires) is what makes this edge crisp. Safe here: BLEManager is @MainActor.
+    private func deviceIsLocked() -> Bool {
+        #if os(iOS)
+        return DeviceLockState.isLocked(protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
+        #else
+        return false
+        #endif
+    }
+
+    /// The duty cycle's night window: the SAME user-configured quiet-hours window #927 uses, but read
+    /// as if "overnight only" were on — under the duty cycle the night must stream regardless of that
+    /// separate toggle, because dense night R-R is the coverage the mode promises to protect.
+    private func inContinuousSleepWindow(minuteOfDay: Int) -> Bool {
+        let d = UserDefaults.standard
+        return ContinuousHrvSchedule.streamWanted(
+            continuousHrv: true,
+            overnightOnly: true,
             minuteOfDay: minuteOfDay,
             startMin: d.object(forKey: ContinuousHrvSchedule.quietStartKey) as? Int ?? ContinuousHrvSchedule.defaultStartMinutes,
             endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes)
@@ -3333,10 +3509,33 @@ public final class BLEManager: NSObject, ObservableObject {
     private func reconcileRealtime() {
         let want = screenWantsRealtime || continuousCaptureWantsNow()
         wantsRealtime = want   // keep-alive + post-bond arm-on-connect read this derived value
+        // Duty-cycle bookkeeping runs on EVERY reconcile, not only on toggle edges: "silenced" means
+        // "the duty cycle is why the stream is off", which the keep-alive (skip the no-data bounce)
+        // and enableLiveNotifications (don't re-subscribe 0x2A37) read even when nothing was sent.
+        dutyCycleSilenced = dutyCycleModeEnabled && keepRealtimeForData && !want
         guard want != realtimeArmed else { return }                      // no edge — nothing to send
         guard selectedModel.deviceFamily == .whoop4 || state.bonded else { return }   // can't reach the strap yet
         realtimeArmed = want
         send(.toggleRealtimeHR, payload: [want ? 0x01 : 0x00])
+        // Duty cycle only: the TOGGLE alone is not enough to stop the per-beat wakes — firmware can
+        // keep emitting the standard 0x2A37 HR profile with the realtime toggle off (that survival is
+        // load-bearing for #927/#80 users, so this stays scoped to the duty cycle, where the silence
+        // IS the feature). Drop the subscription on the silence edge; re-subscribe on the arm edge
+        // with a forced off→on cycle: `setNotifyValue(false)` is async, so `isNotifying` can read a
+        // STALE true at re-arm time and a plain "already active" skip would leave the subscription
+        // actually dead — the v1 "Dynamic Island stale after unlock" bug. The cycle is the same
+        // re-establishment shape the #613 restore path uses, and arm edges are rare (unlock, window
+        // open), so the extra round-trip costs nothing.
+        if dutyCycleModeEnabled, let p = peripheral, let hr = heartRateCharacteristic {
+            if want {
+                if hr.isNotifying { p.setNotifyValue(false, for: hr) }
+                p.setNotifyValue(true, for: hr)
+                log("Duty cycle: 0x2A37 re-subscribed (unlock/sleep window) — live stream resumes")
+            } else if hr.isNotifying {
+                p.setNotifyValue(false, for: hr)
+                log("Duty cycle: 0x2A37 unsubscribed while locked — per-beat wakes silenced until unlock or the sleep window")
+            }
+        }
     }
 
     /// EXPERIMENTAL R22 telemetry (#174): give the user (and us) live proof of what the strap is doing.
@@ -4593,7 +4792,11 @@ public final class BLEManager: NSObject, ObservableObject {
         // (`historyEmpty` still gates the battery-backfill interval below — a separate concern, left as-is.)
         let bounceFuse: TimeInterval =
             selectedModel.deviceFamily == .whoop5 ? 600 : 120
-        if Date().timeIntervalSince(lastDataAt) > bounceFuse {
+        // Duty cycle: while the stream is deliberately silenced, "no data" is the design, not a stall —
+        // bouncing here would thrash the link every fuse-width all afternoon. Liveness accountability
+        // moves to the burst: arming one grants a fresh `lastDataAt` grace, so a burst that truly
+        // produces nothing re-arms this fuse on the next tick.
+        if Date().timeIntervalSince(lastDataAt) > bounceFuse, !dutyCycleSilenced {
             log("No data for >\(Int(bounceFuse))s — bouncing link to resume streaming")
             if let p = peripheral { central.cancelPeripheralConnection(p) }
             return
@@ -4629,10 +4832,14 @@ public final class BLEManager: NSObject, ObservableObject {
         let captureWantNow = screenWantsRealtime || continuousCaptureWantsNow()
         if wantsRealtime != captureWantNow, keepRealtimeForData, !screenWantsRealtime {
             if captureWantNow {
-                log("Continuous HRV: overnight window opened; arming the realtime stream (#927)")
+                // Name only what this edge observed: the combined want flipped on. The old wording
+                // ("overnight window opened") asserted a CAUSE this line never checked — under the
+                // duty cycle the same edge fires on every unlock, and the 260828-1425 log's midday
+                // "window opened" lines sent the analysis down the wrong path (the #1635 class).
+                log("Continuous capture: realtime want flipped ON — arming the stream (#927 window, unlock, or a settings change)")
             } else {
                 send(.sendR10R11Realtime, payload: [0x00])   // stop the heavy burst, like stopRealtime
-                log("Continuous HRV: overnight window closed; realtime stream disarmed until tonight (#927)")
+                log("Continuous capture: realtime want flipped OFF — stream disarmed (#927 window closed, lock, or a settings change)")
             }
         }
         reconcileRealtime()   // recomputes wantsRealtime from the fresh predicate; toggles only on an edge
@@ -4921,11 +5128,14 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private func enableLiveNotifications(reason: String) {
         guard let p = peripheral, p.state == .connected else { return }
+        // Duty cycle: while the stream is deliberately silenced, 0x2A37 stays UNSUBSCRIBED — this
+        // runs on every keep-alive tick and would otherwise quietly re-arm the per-beat wakes the
+        // silence just stopped. The reconciler re-requests it itself on the arm edge.
         let chars = [
             cmdNotifyCharacteristic,
             eventNotifyCharacteristic,
             dataNotifyCharacteristic,
-            heartRateCharacteristic,
+            dutyCycleSilenced ? nil : heartRateCharacteristic,
             batteryCharacteristic,
         ].compactMap { $0 }
         // #613: normally skip already-notifying chars (requestNotify would just log "already active" on
@@ -5513,7 +5723,12 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.unauthorizedSettleWork = nil
-            guard self.central?.state == .unauthorized else { return }
+            // 260906: must NOT materialise the client. This runs on a deadline, and asking a
+            // not-yet-created central for its state would construct one — raising the very macOS
+            // permission prompt the lazy construction exists to avoid, from a path whose whole job is
+            // to REPORT on permission. No client means nothing was ever asked, so there is no wedged
+            // grant to diagnose.
+            guard self.centralExists, self.central.state == .unauthorized else { return }
             self.log("Central still unauthorized \(BLEManager.unauthorizedSettleSeconds)s after a granted TCC read — not cold-start settling (#391); treating as a wedged grant (#429) and showing the re-grant banner")
             self.showBluetoothRegrantBanner()
         }
@@ -6951,6 +7166,22 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         }
     }
 
+    /// Short channel label for the `BatteryDiag` wake counters. Static mapping, no allocation beyond
+    /// the literal; anything unrecognised keeps its UUID string so a new channel shows up named rather
+    /// than hidden in an "other" bucket.
+    private static func notifyLabel(for uuid: CBUUID) -> String {
+        switch uuid {
+        case heartRateChar: return "hr2A37"
+        case batteryChar: return "battery"
+        case cmdNotifyChar: return "cmd"
+        case eventNotifyChar: return "event"
+        case dataNotifyChar: return "data"
+        case disSerialChar, disHwRevChar: return "dis"
+        default:
+            return whoop5NotifyChars.contains(uuid) ? "puffin" : uuid.uuidString
+        }
+    }
+
     public func peripheral(_ peripheral: CBPeripheral,
                            didUpdateValueFor characteristic: CBCharacteristic,
                            error: Error?) {
@@ -6969,6 +7200,11 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         inboundFrames += 1
         inboundBytes += bytes.count
         if characteristic.uuid == BLEManager.cmdNotifyChar { cmdChannelFrames += 1 }
+        // Battery attribution: every notification is a process resume, and which CHANNEL resumes us is
+        // the whole question a drain report needs answered. One integer increment (BatteryDiag).
+        // Counted alongside upstream's epitaph tallies above, not instead of them: they answer
+        // "did anything arrive", this answers "which channel is waking us and how often".
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:
