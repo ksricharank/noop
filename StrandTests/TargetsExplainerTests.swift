@@ -100,8 +100,10 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertTrue(blocks[3].contains("standard need for a 34-year-old:"), blocks[3])
         XCTAssertTrue(blocks[3].contains("Charge 80 is high (≥\(DailyTargets.pushChargeFloor)) → +0 min"),
                       blocks[3])
-        XCTAssertTrue(blocks[3].contains("you're 40 min short on sleep lately → pay back a quarter"
-                                         + " tonight: +10 min (never more than"
+        // 260920: the rung NAMES the Sleep tab's ledger, so the wearer can check the figure against
+        // the card it comes from. The arithmetic is unchanged.
+        XCTAssertTrue(blocks[3].contains("the Sleep tab's debt ledger says you're 40 min short lately"
+                                         + " → pay back a quarter tonight: +10 min (never more than"
                                          + " +\(Int(DailyTargets.sleepDebtCapMin)))"), blocks[3])
         XCTAssertTrue(blocks[3].contains("never set below \(Int(DailyTargets.sleepFloorMin / 60))h"), blocks[3])
         // The jargon is gone.
@@ -195,7 +197,7 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj) steps"), blocks[2])
         XCTAssertTrue(blocks[2].contains("target = \(restDayTarget)"), blocks[2])
         // SLEEP: a balanced ledger still prints its rung.
-        XCTAssertTrue(blocks[3].contains("your sleep ledger is even (within"
+        XCTAssertTrue(blocks[3].contains("the Sleep tab's debt ledger is even (within"
                                          + " \(Int(DailyTargets.debtDeadbandMin)) min) → +0 min"), blocks[3])
     }
 

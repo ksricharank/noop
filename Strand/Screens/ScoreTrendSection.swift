@@ -413,12 +413,29 @@ struct ScoreTrendSection: View {
                     TrendChart(points: pts,
                                gradient: StrandPalette.recoveryGradient,
                                valueRange: valueRange,
-                               showsBars: showsBars,
+                               // 260920, maintainer: "make the line chart in sleep similar to this
+                               // bar chart". Bars are now this section's only form — a day is a
+                               // discrete reading, and a curve implies interpolation between days
+                               // nothing was measured on. `showsBars` stays a parameter because the
+                               // component is shared, but every call site in the app passes bars.
+                               showsBars: true,
+                               // 260920, maintainer: "make the bar chart into a non interactive one?
+                               // Right now when I scroll, I get stuck on the widget."
+                               //
+                               // The cause is `DragGesture(minimumDistance: 0)` inside TrendChart,
+                               // enabled whenever `showsHover && showsBars`. A zero minimum distance
+                               // claims the touch on contact, before the enclosing ScrollView can
+                               // decide the gesture was a scroll — so a swipe that begins over the
+                               // chart scrubs the chart instead of moving the page.
+                               //
+                               // The affordance is not worth that: the footer already prints mean,
+                               // min and max, and the calendar strip below reads individual days.
+                               showsHover: false,
                                valueFormat: format,
                                accessibilityLabel: String(localized: "Trend"),
-                               // The "now" end-cap belongs to a line's leading point; on bars there is
-                               // no line for it to sit on.
-                               nowCapColor: showsBars ? nil : StrandPalette.chargeBright)
+                               // The "now" end-cap belongs to a line's leading point; bars have no
+                               // line for it to sit on.
+                               nowCapColor: nil)
                 },
                 footer: { footer(pts) })
             .accessibilityElement(children: .contain)
