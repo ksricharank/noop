@@ -76,28 +76,40 @@ struct TrendsView: View {
     // One stored selection PER STYLE (260920). `@AppStorage` needs a literal key, so the three are
     // declared explicitly rather than indexed — and `multiMetricSelection` below picks the one in
     // force, which keeps the resolution rule in `MultiMetricPrefs` rather than spread across here.
-    @AppStorage(MultiMetricPrefs.styleKey) private var multiMetricStyleRaw = MultiMetricStyle.overlay.rawValue
-    @AppStorage("trends.multiMetricSelection.overlay") private var multiMetricOverlayRaw = ""
+    // Per-card metrics and windows (260920). `@AppStorage` needs literal keys, so the pairs are
+    // declared explicitly; `MultiMetricPrefs` owns the resolution rules.
     @AppStorage("trends.multiMetricSelection.rows") private var multiMetricRowsRaw = ""
     @AppStorage("trends.multiMetricSelection.heatmap") private var multiMetricHeatmapRaw = ""
+    @AppStorage("trends.multiMetricWindow.rows") private var multiMetricRowsWindow = 0
+    @AppStorage("trends.multiMetricWindow.heatmap") private var multiMetricHeatmapWindow = 0
+    /// Which card the config sheet is editing — nil when closed.
+    @State private var configuringStyle: MultiMetricStyle?
 
-    private var multiMetricStyle: MultiMetricStyle {
-        MultiMetricPrefs.decodeStyle(multiMetricStyleRaw)
+    private func multiMetricSelection(_ style: MultiMetricStyle) -> [MultiMetric] {
+        let own = style == .rows ? multiMetricRowsRaw : multiMetricHeatmapRaw
+        if !own.isEmpty { return MultiMetricPrefs.decode(own, style: style) }
+        return MultiMetricPrefs.resolved(style: style)
     }
 
-    /// The metrics the CURRENT style draws. Reads through `MultiMetricPrefs.resolved` so the
-    /// carry-over from the pre-per-style key is applied in exactly one place.
-    private var multiMetricSelection: [MultiMetric] {
-        let own: String
-        switch multiMetricStyle {
-        case .overlay: own = multiMetricOverlayRaw
-        case .rows:    own = multiMetricRowsRaw
-        case .heatmap: own = multiMetricHeatmapRaw
-        }
-        if !own.isEmpty { return MultiMetricPrefs.decode(own, style: multiMetricStyle) }
-        return MultiMetricPrefs.resolved(style: multiMetricStyle)
+    private func multiMetricWindow(_ style: MultiMetricStyle) -> Int {
+        let stored = style == .rows ? multiMetricRowsWindow : multiMetricHeatmapWindow
+        return MultiMetricPrefs.windowOptions.contains(stored)
+            ? stored : MultiMetricPrefs.defaultWindow(for: style)
     }
-    @State private var showMultiMetricConfig = false
+
+    private func setMultiMetricWindow(_ style: MultiMetricStyle, _ days: Int) {
+        if style == .rows { multiMetricRowsWindow = days } else { multiMetricHeatmapWindow = days }
+    }
+
+    @ViewBuilder
+    private func multiMetricCard(_ style: MultiMetricStyle) -> some View {
+        MultiMetricCard(seriesByMetric: multiMetricSeries,
+                        metrics: multiMetricSelection(style),
+                        style: style,
+                        windowDays: multiMetricWindow(style),
+                        onWindowChange: { setMultiMetricWindow(style, $0) },
+                        onConfigure: { configuringStyle = style })
+    }
 
     /// Every series the unified card can draw, assembled from what this page already holds. Built
     /// per body rather than cached: each entry is a dictionary the page has in hand, and the card
@@ -373,11 +385,10 @@ struct TrendsView: View {
             TrendsCustomizationSheet(sectionOrderRaw: $trendsSectionOrderRaw,
                                      hiddenSectionsRaw: $trendsHiddenSectionsRaw)
         }
-        .sheet(isPresented: $showMultiMetricConfig) {
-            MultiMetricConfigSheet(overlayRaw: $multiMetricOverlayRaw,
-                                   rowsRaw: $multiMetricRowsRaw,
-                                   heatmapRaw: $multiMetricHeatmapRaw,
-                                   styleRaw: $multiMetricStyleRaw)
+        .sheet(item: $configuringStyle) { style in
+            MultiMetricConfigSheet(style: style,
+                                   selectionRaw: style == .rows
+                                       ? $multiMetricRowsRaw : $multiMetricHeatmapRaw)
         }
         .sheet(isPresented: $showingReport) {
             TrendsReportSheet(days: repo.days)
@@ -710,11 +721,9 @@ struct TrendsView: View {
             metricTrendSection(.respiratoryTrend, valuesByDay: seriesByDay { $0.respRateBpm },
                                range: 8...24, low: "Low", high: "High", unit: "rpm")
         case .allMetrics:
-            MultiMetricCard(seriesByMetric: multiMetricSeries,
-                            metrics: multiMetricSelection,
-                            style: multiMetricStyle,
-                            windowDays: range.days ?? repo.days.count,
-                            onConfigure: { showMultiMetricConfig = true })
+            multiMetricCard(.rows)
+        case .allMetricsHeatmap:
+            multiMetricCard(.heatmap)
         }
     }
 

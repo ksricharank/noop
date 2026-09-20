@@ -88,9 +88,17 @@ enum MultiMetric: String, CaseIterable, Identifiable {
 }
 
 /// How the unified card draws its metrics.
+/// How a unified card draws its metrics.
+///
+/// 260920: `overlay` was RETIRED after one build — the maintainer: "delete the overlay one - it is
+/// useless". Normalising every metric to its own 0–1 range made the lines comparable in shape and
+/// unreadable in value, and the legend it needed to compensate was doing the real work.
+///
+/// The two survivors are now SEPARATE CARDS rather than styles of one, so both can be on the page
+/// at once ("make the rows and heatmap widgets as two separate widgets instead of me having to
+/// select one vs the other"). The enum remains because each card still needs its own preference
+/// namespace — metrics, order and window are all per-card.
 enum MultiMetricStyle: String, CaseIterable, Identifiable {
-    /// Every metric on one set of axes, each scaled 0–100% against its own observed range.
-    case overlay
     /// One short strip per metric, stacked, sharing the x-axis and keeping real values.
     case rows
     /// Metrics as rows, days as columns, each cell shaded by deviation from baseline.
@@ -100,7 +108,6 @@ enum MultiMetricStyle: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .overlay: return String(localized: "Overlay")
         case .rows:    return String(localized: "Rows")
         case .heatmap: return String(localized: "Heatmap")
         }
@@ -110,8 +117,6 @@ enum MultiMetricStyle: String, CaseIterable, Identifiable {
     /// nothing about which question each answers.
     var blurb: String {
         switch self {
-        case .overlay:
-            return String(localized: "Every metric on one axis, each scaled to its own range. Best for spotting that two signals moved together.")
         case .rows:
             return String(localized: "One strip per metric with its real values, days lined up. Best for reading actual numbers while still comparing days.")
         case .heatmap:
@@ -142,12 +147,28 @@ enum MultiMetricPrefs {
     static let legacySelectionKey = "trends.multiMetricSelection"
     static let styleKey = "trends.multiMetricStyle"
 
+    /// Each card's OWN window, in days (260920, maintainer: "make sure the heat map view has its
+    /// own separate time control / window selector (same for the rows one too)").
+    ///
+    /// Independent of the page's range bar: a heatmap is most useful over weeks while a row stack
+    /// is usually read over days, and one shared control cannot serve both.
+    static func windowKey(for style: MultiMetricStyle) -> String {
+        "trends.multiMetricWindow.\(style.rawValue)"
+    }
+
+    static let windowOptions = [7, 14, 30, 90]
+    static func defaultWindow(for style: MultiMetricStyle) -> Int {
+        style == .heatmap ? 30 : 14
+    }
+
+    static func window(for style: MultiMetricStyle, defaults: UserDefaults = .standard) -> Int {
+        let stored = defaults.integer(forKey: windowKey(for: style))
+        return windowOptions.contains(stored) ? stored : defaultWindow(for: style)
+    }
+
     /// The default set for a style, chosen for what that style can carry legibly.
     static func defaultSelection(for style: MultiMetricStyle) -> [MultiMetric] {
         switch style {
-        case .overlay:
-            // Five lines on one axis is about the ceiling before colours stop being separable.
-            return [.charge, .hrv, .restingHr, .sleep, .effort]
         case .rows:
             // Each row owns its own scale and ~38pt, so a couple more is still readable.
             return [.charge, .hrv, .restingHr, .sleep, .effort, .steps]
@@ -164,7 +185,7 @@ enum MultiMetricPrefs {
     /// An empty/unset string yields the style's default; an explicitly EMPTY selection is not
     /// expressible, deliberately — a card drawing nothing would read as broken rather than as
     /// configured, and hiding the card is what the Arrange sheet is for.
-    static func decode(_ raw: String, style: MultiMetricStyle = .overlay) -> [MultiMetric] {
+    static func decode(_ raw: String, style: MultiMetricStyle = .rows) -> [MultiMetric] {
         let parsed = raw.split(separator: ",").compactMap { MultiMetric(rawValue: String($0)) }
         var seen = Set<MultiMetric>()
         let deduped = parsed.filter { seen.insert($0).inserted }
@@ -186,6 +207,6 @@ enum MultiMetricPrefs {
     }
 
     static func decodeStyle(_ raw: String) -> MultiMetricStyle {
-        MultiMetricStyle(rawValue: raw) ?? .overlay
+        MultiMetricStyle(rawValue: raw) ?? .rows
     }
 }

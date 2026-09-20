@@ -50,6 +50,9 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// styles. The maintainer's ask was to be able to retire every other widget on this page in
     /// favour of it, so it is the one section that is SHOWN by default among the 260920 additions.
     case allMetrics
+    /// The heatmap as its OWN card (260920) — both it and the row stack can now be on the page at
+    /// once, rather than being two settings of one section.
+    case allMetricsHeatmap
 
     var id: String { rawValue }
 
@@ -70,7 +73,8 @@ enum TrendsSection: String, CaseIterable, Identifiable {
         case .effortTrend:      return String(localized: "Effort trend")
         case .waterTrend:       return String(localized: "Water trend")
         case .respiratoryTrend: return String(localized: "Respiratory trend")
-        case .allMetrics:       return String(localized: "All metrics")
+        case .allMetrics:        return String(localized: "Metric rows")
+        case .allMetricsHeatmap: return String(localized: "Metric heatmap")
         }
     }
 
@@ -92,7 +96,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// contract anyone maintains deliberately. Writing the sequence out means a reordered enum
     /// cannot silently shuffle a wearer's appended cards.
     static let canonicalOrder: [TrendsSection] = defaultOrder + [
-        .allMetrics,
+        .allMetrics, .allMetricsHeatmap,
         .hrvTrend, .restingHrTrend, .dayQualityTrend,
         .sleepTrend, .effortTrend, .waterTrend, .respiratoryTrend,
     ]

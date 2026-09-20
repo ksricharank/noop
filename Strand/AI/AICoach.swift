@@ -1738,6 +1738,22 @@ final class AICoachEngine: ObservableObject {
             facts += "\n\nMY PRECEDING NIGHTS (oldest first), for comparison:\n"
             facts += priorNights.map { "  " + dayLine($0) }.joined(separator: "\n")
         }
+        // 260920: tonight's plan, which used to sit in Today's targets block. It belongs to the tab
+        // that owns sleep — and now that the target has left the Today strip, this is the only
+        // surface where the wearer can see the figure the model is citing.
+        //
+        // Only for the CURRENT night: stepping back through history must not be answered with
+        // advice about tonight, which is a different night from the one on screen.
+        if night.day == Repository.localDayKey(Date()) {
+            let targets = repo.cachedLiveTargets()
+            if let need = targets.sleepNeedTonightMin {
+                facts += "\n\nTONIGHT'S PLAN:\n  " + Self.sleepPlanLine(
+                    needTonightMin: need,
+                    midsleepSec: await repo.habitualMidsleepSec(),
+                    typicalSleepHours: BatteryEstimator.typicalSleepHours(
+                        nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }))
+            }
+        }
         return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
             self.lastSleepOutcome = outcome
         }
@@ -2681,11 +2697,15 @@ final class AICoachEngine: ObservableObject {
                          + (left > 0 ? ", \(left) cups left." : " — target already met."))
         }
 
-        // Pillar 1 — rest & sleep: tonight's target and the precise bedtime that achieves it.
-        if let need = targets.sleepNeedTonightMin {
-            lines.append(sleepPlanLine(needTonightMin: need, midsleepSec: midsleepSec,
-                                       typicalSleepHours: typicalSleepHours))
-        }
+        // 260920: tonight's sleep target and its bedtime moved OUT of this block and into the
+        // Sleep tab's own facts, following the target itself off the Today strip.
+        //
+        // Today's synthesis is about the present hours; a bedtime hours away was always the least
+        // "now" thing in it, and with the number no longer on the screen the wearer is reading,
+        // stating it here invited the model to cite a figure they could not see. `sleepNarrative`
+        // states it instead, on the tab that owns sleep.
+        _ = midsleepSec
+        _ = typicalSleepHours
 
         guard !lines.isEmpty else { return "" }
         return (["TODAY'S TARGETS (deterministic, computed on-device from the user's own history — the "

@@ -16,9 +16,11 @@ struct MultiMetricCard: View {
     /// Which metrics to draw, in order.
     let metrics: [MultiMetric]
     let style: MultiMetricStyle
-    /// The window the page's selector is on, in days.
+    /// This card's OWN window, in days — not the page's (260920).
     let windowDays: Int
-    /// Opens the metric/style picker.
+    /// Changes this card's window.
+    var onWindowChange: ((Int) -> Void)?
+    /// Opens the metric picker.
     var onConfigure: (() -> Void)?
 
     var body: some View {
@@ -31,29 +33,59 @@ struct MultiMetricCard: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                 } else {
                     switch style {
-                    case .overlay: overlayChart
                     case .rows:    rowStrips
                     case .heatmap: heatmapGrid
                     }
-                    legend
+                    // Only the ROW stack needs the legend: each strip already prints its own latest
+                    // value, but the window's range is what says whether that value is high FOR
+                    // this wearer. The heatmap encodes exactly that in its shading, so repeating it
+                    // underneath would be the same fact twice.
+                    if style == .rows { legend }
                 }
             }
         }
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            SectionHeader("Metrics", overline: "Last \(windowDays) days",
-                          trailing: style.title)
-            if let onConfigure {
-                Button(action: onConfigure) {
-                    Label(String(localized: "Edit").uppercased(), systemImage: "slider.horizontal.3")
-                        .font(StrandFont.overline)
-                        .tracking(StrandFont.overlineTracking)
+        VStack(alignment: .leading, spacing: NoopMetrics.space1) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionHeader(LocalizedStringKey(style.title),
+                              overline: "Last \(windowDays) days")
+                if let onConfigure {
+                    Button(action: onConfigure) {
+                        Label(String(localized: "Edit").uppercased(),
+                              systemImage: "slider.horizontal.3")
+                            .font(StrandFont.overline)
+                            .tracking(StrandFont.overlineTracking)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StrandPalette.accent)
+                    .accessibilityLabel("Choose metrics and their order")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(StrandPalette.accent)
-                .accessibilityLabel("Choose metrics and style")
+            }
+            // This card's own window. Deliberately not the page's range bar: a heatmap reads best
+            // over weeks and a row stack over days, and one control cannot serve both.
+            if let onWindowChange {
+                HStack(spacing: 6) {
+                    ForEach(MultiMetricPrefs.windowOptions, id: \.self) { d in
+                        Button { onWindowChange(d) } label: {
+                            Text(d >= 30 ? "\(d / 30)m" : "\(d / 7)w")
+                                .font(StrandFont.caption.weight(d == windowDays ? .bold : .regular))
+                                .foregroundStyle(d == windowDays
+                                                 ? StrandPalette.accent : StrandPalette.textTertiary)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(
+                                    Capsule().fill(d == windowDays
+                                                   ? StrandPalette.accent.opacity(0.14) : .clear))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text("\(d) days"))
+                        .accessibilityAddTraits(d == windowDays ? [.isSelected] : [])
+                    }
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -97,39 +129,17 @@ struct MultiMetricCard: View {
         }
     }
 
-    /// Every day present in any selected metric, oldest first — the shared x-axis.
+    /// The window's days, oldest first — the shared x-axis.
+    ///
+    /// 260920 FIX: this used to union every metric's own points and sort. Each metric had ALREADY
+    /// been clipped to `windowDays` independently, so metrics whose data lands on different days
+    /// (steps recorded on a day with no sleep, say) contributed different sets, and the union came
+    /// out LONGER than the window — the maintainer selected a week and saw fifteen cells.
+    ///
+    /// Taking the union first and clipping last gives exactly the window, and a metric missing a
+    /// day now renders a gap on the shared axis rather than shifting every later column left.
     private var allDays: [String] {
-        Array(Set(resolved.flatMap { $0.points.map(\.day) })).sorted()
-    }
-
-    // MARK: Style 1 — normalized overlay
-
-    private var overlayChart: some View {
-        Chart {
-            ForEach(resolved) { r in
-                ForEach(r.points, id: \.day) { p in
-                    LineMark(
-                        x: .value("Day", p.day),
-                        y: .value("Level", r.normalized(p.value))
-                    )
-                    .foregroundStyle(r.metric.color)
-                    .interpolationMethod(.monotone)
-                }
-                .foregroundStyle(by: .value("Metric", r.metric.title))
-            }
-        }
-        .chartForegroundStyleScale(domain: resolved.map(\.metric.title),
-                                   range: resolved.map(\.metric.color))
-        .chartLegend(.hidden)
-        .chartYAxis(.hidden)
-        .chartYScale(domain: 0...1)
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(StrandPalette.hairline)
-            }
-        }
-        .frame(height: NoopMetrics.chartHeight)
-        .accessibilityLabel(Text("Overlaid trend of \(resolved.count) metrics"))
+        Array(Set(resolved.flatMap { $0.points.map(\.day) }).sorted().suffix(windowDays))
     }
 
     // MARK: Style 2 — stacked rows
@@ -162,7 +172,20 @@ struct MultiMetricCard: View {
                     .chartYScale(domain: r.min...(r.max > r.min ? r.max : r.min + 1))
                     .chartXAxis(.hidden)
                     .chartYAxis(.hidden)
+                    .chartPlotStyle { plot in
+                        // 260920 FIX: the maintainer's screenshot showed each row's area wash
+                        // bleeding down across the rows beneath it, so seven strips rendered as one
+                        // smeared stack.
+                        //
+                        // `.frame(height:)` bounds the CHART's layout, not its plot's drawing: an
+                        // AreaMark fills to the plot's baseline, and SwiftUI Charts lets that fill
+                        // paint outside the frame it was given. Clipping the plot is what actually
+                        // confines it — without this the marks are drawn unclipped and every row
+                        // after the first sits under its predecessors' fills.
+                        plot.clipped()
+                    }
                     .frame(height: 38)
+                    .clipped()
                 }
             }
         }
@@ -171,9 +194,9 @@ struct MultiMetricCard: View {
     // MARK: Style 3 — heatmap
 
     private var heatmapGrid: some View {
-        // Capped so a long window stays legible: past ~60 columns a cell is sub-pixel on a phone
-        // and the grid becomes a smear. The most RECENT days are kept, which is the half anyone
-        // reading "when did this go wrong" actually wants.
+        // `allDays` is already the window. The extra cap only bites on a very long one, where past
+        // ~60 columns a cell is sub-pixel on a phone and the grid becomes a smear; the most RECENT
+        // days are kept, which is the half anyone reading "when did this go wrong" wants.
         let days = Array(allDays.suffix(60))
         return VStack(alignment: .leading, spacing: 3) {
             ForEach(resolved) { r in
