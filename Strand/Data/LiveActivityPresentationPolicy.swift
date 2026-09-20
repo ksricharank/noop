@@ -51,8 +51,16 @@ enum LiveActivityPresentationPolicy {
                 reason: "inside the sleep window — the Lock Screen / Dynamic Island pauses for the "
                         + "night and resumes after it ends (streaming and scoring are unaffected)")
         }
+        // A link drop HOLDS the card rather than ending it (260829). Ending was one-way — iOS forbids
+        // starting a Live Activity from the background — so taking the strap off to charge, or a
+        // transient timeout while the phone sat locked in a pocket, killed the island until the next
+        // app open. The #911 worry this guard used to answer with `suppress` (a frozen number
+        // presented as live) is answered honestly instead: the disconnect edge repaints the card as
+        // not-live with a not-connected cue (`LiveActivityController.noteDisconnected`), and the plain
+        // number never claims liveness — the tilde is reserved for a moving reading. Only the user's
+        // toggle, the sleep window, or an explicit end takes the card down now.
         guard connected else {
-            return .suppress(reason: "the strap is not connected")
+            return .holdIfShowing(reason: "the strap is not connected — holding the last values")
         }
         // Deliberately `holdIfShowing`, not `suppress`: a connected strap with no sample on this tick is
         // routine, and ending the activity for it would flicker the Lock Screen off and on.

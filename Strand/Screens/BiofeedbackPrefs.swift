@@ -23,6 +23,9 @@ enum BiofeedbackPrefs {
         static let useResonance = "biofeedback.stressUseResonancePace" // sub
         static let quietStart   = "biofeedback.stressQuietStartMin"
         static let quietEnd     = "biofeedback.stressQuietEndMin"
+        // 260901 sensitivity knobs (user-configurable in the stress card; engine defaults when unset).
+        static let dropRatio    = "biofeedback.stressDropRatio"
+        static let sustainSec   = "biofeedback.stressSustainSec"
         // Replay-safe detector state (carried verbatim between evaluations).
         static let stBaseline   = "biofeedback.stOnsetBaseline"
         static let stWasBelow   = "biofeedback.stOnsetWasBelow"
@@ -84,6 +87,27 @@ enum BiofeedbackPrefs {
 
     /// Build the engine config from the persisted toggles, so the central L3 hook (Wave 3, in BLEManager's
     /// existing evaluateStress call-site) reads one consistent config.
+    // MARK: - Sensitivity (260901, maintainer's ask: expose the detector's knobs)
+
+    /// Dip threshold as a fraction of baseline (fast RMSSD below `baseline × this` = a dip).
+    /// Stored ×100 as an Int so the slider round-trips exactly; engine default (0.6) when unset.
+    static var dropRatio: Double {
+        get {
+            let pct = d.integer(forKey: K.dropRatio)
+            return pct > 0 ? Double(pct) / 100.0 : StressOnsetDetector.dropRatio
+        }
+        set { d.set(Int((newValue * 100).rounded()), forKey: K.dropRatio) }
+    }
+
+    /// How long a fresh dip must hold before it can fire. Engine default (60 s) when unset.
+    static var sustainSeconds: Int {
+        get {
+            let v = d.integer(forKey: K.sustainSec)
+            return v > 0 ? v : StressOnsetDetector.sustainSeconds
+        }
+        set { d.set(newValue, forKey: K.sustainSec) }
+    }
+
     static func stressConfig() -> StressOnsetDetector.Config {
         StressOnsetDetector.Config(
             enabled: checkInEnabled,
@@ -91,7 +115,9 @@ enum BiofeedbackPrefs {
             quietHoursEnabled: quietHoursEnabled,
             quietStartMinutes: quietStartMinutes,
             quietEndMinutes: quietEndMinutes,
-            buzzLoops: 1)
+            buzzLoops: 1,
+            dropRatio: dropRatio,
+            sustainSeconds: sustainSeconds)
     }
 
     // MARK: - L3 replay-safe state
