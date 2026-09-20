@@ -307,10 +307,15 @@ enum TargetsExplainer {
             let deadband = Int(DailyTargets.debtDeadbandMin)
             if debt > DailyTargets.debtDeadbandMin {
                 let term = Int(min(DailyTargets.sleepDebtCapMin, debt * DailyTargets.sleepDebtShare).rounded())
-                sl.append("you're \(Int(debt)) min short on sleep lately → pay back a quarter tonight:"
-                          + " +\(term) min (never more than +\(Int(DailyTargets.sleepDebtCapMin)))")
+                // 260920: names the Sleep tab's card explicitly. The number here IS that card's
+                // balance — same ledger, same personalized need, and since this build the same
+                // nap crediting — so saying where it comes from lets the wearer check one screen
+                // against the other instead of meeting a figure with no visible origin.
+                sl.append("the Sleep tab's debt ledger says you're \(Int(debt)) min short lately"
+                          + " → pay back a quarter tonight: +\(term) min"
+                          + " (never more than +\(Int(DailyTargets.sleepDebtCapMin)))")
             } else {
-                sl.append("your sleep ledger is even (within \(deadband) min) → +0 min")
+                sl.append("the Sleep tab's debt ledger is even (within \(deadband) min) → +0 min")
             }
             sl.append("never set below \(Int(DailyTargets.sleepFloorMin / 60))h or above"
                       + " \(Int(DailyTargets.sleepCapMin / 60))h → \(hm(sleepNeedMin))")

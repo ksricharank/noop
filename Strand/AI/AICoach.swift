@@ -2542,7 +2542,21 @@ final class AICoachEngine: ObservableObject {
 
         // 2. Sleep debt — a running balance vs need over the ledger window. Far more actionable than the
         //    per-night durations alone, which the model would otherwise have to sum by eye.
-        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) })
+        // 260920: the personalized need, NOT `ledger`'s 8 h default. Omitting `needHours` here left
+        // the coach describing a debt measured against a flat 8 h while both the Today target and
+        // the Sleep tab measured against `personalizedNeedHours` — so it could report a shortfall
+        // neither screen showed, in a block whose whole purpose is deterministic on-device figures
+        // the model is told not to recompute.
+        //
+        // Naps are NOT credited here, and cannot be from this call site: `days` carries
+        // `DailyMetric` rows with no session detail. The coach therefore reports a debt that is
+        // never smaller than the screens' — it under-credits sleep rather than inventing it, which
+        // is the safe direction for a figure that drives advice to rest.
+        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
+            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
+            age: nil) * 60.0
+        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
+                                      needHours: ledgerNeedMin / 60.0)
         if ledger.nightCount > 0 {
             let hours = ledger.magnitudeMin / 60.0
             if ledger.magnitudeMin < SleepDebt.onTargetBandMin {

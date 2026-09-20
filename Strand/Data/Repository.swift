@@ -273,6 +273,18 @@ final class Repository: ObservableObject {
     private var hydrationCachedML: Double = 0
     private var hydrationCachedDay = ""
 
+    /// Asleep minutes from SEPARATE naps, keyed by wake-day (260920).
+    ///
+    /// The sleep-debt ledger behind the Today sleep target has to credit naps exactly as the Sleep
+    /// tab's ledger does, or the two screens report different debt from the same nights. Nap
+    /// minutes need `CachedSleepSession` rows, which only load asynchronously, while `liveTargets`
+    /// is a synchronous read — so they are derived once per refresh and cached here, the same shape
+    /// as `hydrationCachedML`.
+    ///
+    /// Empty until the first refresh completes, which reproduces the previous (nap-blind) behaviour
+    /// rather than guessing: an absent nap is credited as zero, never as an error.
+    private(set) var napSleepMinByDay: [String: Double] = [:]
+
     /// Tail of the serialised hydration-mutation chain (260904).
     ///
     /// Every hydration write is a read-modify-write (`logHydration` reads the day's total and
@@ -795,11 +807,22 @@ final class Repository: ObservableObject {
     /// Everything here is body-state, never habit (the maintainer's doctrine — see `DailyTargets`'
     /// header): the only trailing-window reads are the multi-signal readiness baselines and the
     /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
+    /// - Parameter napSleepMinByDay: asleep minutes from SEPARATE naps, keyed by wake-day.
+    ///   260920: the sleep-debt ledger behind `sleepNeedTonightMin` credited MAIN sleep only, while
+    ///   the Sleep tab's own ledger (`SleepModel.debtLedger`) credited naps too — so on any day with
+    ///   a nap the two screens reported different debt from the same nights, and the Today target
+    ///   was priced off the larger one. The comment below claiming every debt surface shares one
+    ///   reference was true of the NEED and silently false of the SLEEP.
+    ///
+    ///   Defaulted to empty rather than made required: the widget and Live Activity paths build
+    ///   targets without ever loading sleep sessions, and an empty map reproduces the previous
+    ///   behaviour exactly for them instead of forcing a load they cannot afford.
     static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
                             profile: UserProfile,
                             todayKey: String,
                             waterTodayML: Double? = nil,
-                            waterEnabled: Bool = false) -> LiveTargets {
+                            waterEnabled: Bool = false,
+                            napSleepMinByDay: [String: Double] = [:]) -> LiveTargets {
         // The full read, not just the level: the explainer's "body check" lines print the
         // signals' actual values against their baselines (260901: no jargon, every line a number).
         let readinessRead = ReadinessEngine.evaluate(days: days)
@@ -863,8 +886,16 @@ final class Repository: ObservableObject {
         let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
             nightlyHours: nightlyMinutes.map { $0 / 60.0 },
             age: nil) * 60.0
-        let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
-                                      needHours: ledgerNeedMin / 60.0)
+        // Credit naps exactly as `SleepModel.debtLedger` does, through the SAME helper, so the two
+        // ledgers cannot drift again. With an empty map this is `totalSleepMin` unchanged.
+        let ledger = SleepDebt.ledger(
+            series: days.map { day in
+                (day: day.day,
+                 totalSleepMin: SleepDebt.creditedSleepMin(
+                    mainSleepMin: day.totalSleepMin,
+                    napSleepMin: napSleepMinByDay[day.day] ?? 0))
+            },
+            needHours: ledgerNeedMin / 60.0)
         return LiveTargets(
             // TOTAL calories, both sides (260830): the raw whole-day estimate vs a full resting day
             // plus the priced session — the mainstream-tracker framing, by maintainer instruction.
@@ -984,7 +1015,10 @@ final class Repository: ObservableObject {
                                 profile: profile,
                                 todayKey: day,
                                 waterTodayML: waterML,
-                                waterEnabled: waterOn)
+                                waterEnabled: waterOn,
+                                // 260920: credit naps, so the sleep target is priced off the same
+                                // debt the Sleep tab shows.
+                                napSleepMinByDay: napSleepMinByDay)
     }
 
     /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
@@ -1420,7 +1454,33 @@ final class Repository: ObservableObject {
         // schedules SwiftUI work — but "clear every cache, then publish" is the invariant stated above,
         // and an appended line after the bump is how that invariant quietly stops being true.
         self.exploreAllCache = nil
+        // Nap minutes for the debt ledger (260920). Derived from the sessions this refresh already
+        // read, so it costs no extra query; see `napSleepMinByDay`.
+        // Computed sessions preferred, imported as the fallback — the same precedence the Sleep tab
+        // applies, so both ledgers see the same blocks.
+        self.napSleepMinByDay = Self.napMinutesByWakeDay(
+            sessions: compSleep.isEmpty ? impSleep : compSleep)
         self.refreshSeq += 1
+    }
+
+    /// Group sleep sessions by wake-day and total the minutes credited as NAPS.
+    ///
+    /// A day's sessions are handed to the same `SleepView.napSleepMinutes` rule the Sleep tab uses,
+    /// so "which block was the main sleep and which were naps" is decided in exactly one place. A
+    /// day with a single block yields zero, which is why a normal night adds nothing here.
+    nonisolated static func napMinutesByWakeDay(sessions: [CachedSleepSession],
+                                                habitualMidsleepSec: Int? = nil) -> [String: Double] {
+        var byDay: [String: [CachedSleepSession]] = [:]
+        for s in sessions {
+            let day = localDayKey(Date(timeIntervalSince1970: TimeInterval(s.endTs)))
+            byDay[day, default: []].append(s)
+        }
+        var out: [String: Double] = [:]
+        for (day, blocks) in byDay {
+            let mins = SleepView.napSleepMinutes(blocks, habitualMidsleepSec: habitualMidsleepSec)
+            if mins > 0 { out[day] = mins }
+        }
+        return out
     }
 
     /// Per-source coverage counts for the Freshness Pipeline card. Pure over the rows already read.
