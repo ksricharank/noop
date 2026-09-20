@@ -148,6 +148,23 @@ public struct DailyMetric: Equatable, Codable {
         self.sleepHrOnly = sleepHrOnly
     }
 
+    /// This row with a different step count, every other field carried through unchanged.
+    ///
+    /// A whole-struct rebuild is the only way to change one field of a `let`-only value type, and
+    /// doing it by hand at the call site means listing all 21 fields — which is exactly where a
+    /// later-added column gets silently dropped (the field is simply forgotten, and the row loses
+    /// data with no compile error). Keeping the rebuild HERE, beside the memberwise init, means one
+    /// place to update when a column is added.
+    public func replacingSteps(_ steps: Int?) -> DailyMetric {
+        DailyMetric(day: day, totalSleepMin: totalSleepMin, efficiency: efficiency,
+                    deepMin: deepMin, remMin: remMin, lightMin: lightMin,
+                    disturbances: disturbances, restingHr: restingHr, avgHrv: avgHrv,
+                    recovery: recovery, strain: strain, exerciseCount: exerciseCount,
+                    spo2Pct: spo2Pct, skinTempDevC: skinTempDevC, respRateBpm: respRateBpm,
+                    steps: steps, activeKcalEst: activeKcalEst,
+                    spo2Red: spo2Red, spo2Ir: spo2Ir, avgSdnn: avgSdnn, skinTempC: skinTempC)
+    }
+
     /// The freshest STRICTLY-PRIOR day that carries at least one overnight vital (HRV / resting HR /
     /// respiratory), or nil. This is the recovery-INDEPENDENT twin of the whole-row Charge carry: it never
     /// gates on `recovery != nil`, so a night whose recovery is null but which still recorded real HRV/RHR
