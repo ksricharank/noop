@@ -32,15 +32,10 @@ struct MultiMetricCard: View {
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                 } else {
-                    switch style {
-                    case .rows:    rowStrips
-                    case .heatmap: heatmapGrid
-                    }
-                    // Only the ROW stack needs the legend: each strip already prints its own latest
-                    // value, but the window's range is what says whether that value is high FOR
-                    // this wearer. The heatmap encodes exactly that in its shading, so repeating it
-                    // underneath would be the same fact twice.
-                    if style == .rows { legend }
+                    // The calendar is drawn by TrendsView's own `yearStrip`, which owns the
+                    // year-long heat strips; this card renders only the row stack.
+                    rowStrips
+                    legend
                 }
             }
         }
@@ -189,59 +184,6 @@ struct MultiMetricCard: View {
                 }
             }
         }
-    }
-
-    // MARK: Style 3 — heatmap
-
-    private var heatmapGrid: some View {
-        // `allDays` is already the window. The extra cap only bites on a very long one, where past
-        // ~60 columns a cell is sub-pixel on a phone and the grid becomes a smear; the most RECENT
-        // days are kept, which is the half anyone reading "when did this go wrong" wants.
-        let days = Array(allDays.suffix(60))
-        return VStack(alignment: .leading, spacing: 3) {
-            ForEach(resolved) { r in
-                let lookup = Dictionary(r.points.map { ($0.day, $0.value) },
-                                        uniquingKeysWith: { _, last in last })
-                HStack(spacing: 2) {
-                    Text(r.metric.title.uppercased())
-                        .font(StrandFont.overlineScaled(9))
-                        .foregroundStyle(StrandPalette.textTertiary)
-                        .frame(width: 74, alignment: .leading)
-                        .lineLimit(1)
-                    GeometryReader { geo in
-                        let w = max(1.0, (geo.size.width - CGFloat(days.count - 1) * 1.0)
-                                    / CGFloat(max(days.count, 1)))
-                        HStack(spacing: 1) {
-                            ForEach(days, id: \.self) { day in
-                                Rectangle()
-                                    .fill(cellColor(r, lookup[day]))
-                                    .frame(width: w)
-                            }
-                        }
-                    }
-                    .frame(height: 16)
-                }
-            }
-            Text("Shaded by distance from your own average over this window.")
-                .font(StrandFont.caption)
-                .foregroundStyle(StrandPalette.textTertiary)
-                .padding(.top, 2)
-        }
-    }
-
-    /// A cell's shade: greener the better the day was FOR THAT METRIC, amber the worse, and a faint
-    /// neutral when the day has no reading. `higherIsBetter` is what stops a high resting HR being
-    /// painted as a good day.
-    private func cellColor(_ r: Resolved, _ value: Double?) -> Color {
-        guard let value else { return StrandPalette.hairline.opacity(0.35) }
-        let span = r.max - r.min
-        guard span > 0 else { return r.metric.color.opacity(0.4) }
-        let t = (value - r.mean) / span                 // -1…1-ish, 0 = average
-        let signed = r.metric.higherIsBetter ? t : -t
-        if signed >= 0 {
-            return StrandPalette.statusPositive.opacity(0.25 + min(0.65, signed * 1.3))
-        }
-        return StrandPalette.metricAmber.opacity(0.25 + min(0.65, -signed * 1.3))
     }
 
     // MARK: Legend

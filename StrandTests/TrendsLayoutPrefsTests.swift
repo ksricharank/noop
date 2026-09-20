@@ -24,11 +24,12 @@ final class TrendsLayoutPrefsTests: XCTestCase {
         // 260920: `allMetrics` is the ONE new section shown by default — the maintainer asked for a
         // single card that could replace the rest of the page, which it cannot do while hidden.
         // Every per-metric block stays opt-in.
-        // 260920: BOTH unified cards ship shown — the maintainer asked for the row stack and the
-        // heatmap as separate widgets rather than two settings of one, and a card that has to be
-        // switched on cannot replace the page it is meant to replace.
-        XCTAssertEqual(visible, TrendsSection.defaultOrder + [.allMetrics, .allMetricsHeatmap],
-                       "the pre-260920 page, plus both unified cards")
+        // 260920: the row card ships SHOWN — a card meant to replace the page cannot do that while
+        // hidden. The heatmap that briefly shipped beside it was removed the same day at the
+        // maintainer's request ("I don't like the new heatmap widget"); the CALENDAR, which was
+        // already on the page, absorbed its configurability instead.
+        XCTAssertEqual(visible, TrendsSection.defaultOrder + [.allMetrics],
+                       "the pre-260920 page, plus the row card")
         for block in TrendsLayoutPrefs.defaultHidden {
             XCTAssertFalse(visible.contains(block), "\(block) must not appear uninvited")
         }

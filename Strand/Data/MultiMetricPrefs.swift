@@ -101,15 +101,20 @@ enum MultiMetric: String, CaseIterable, Identifiable {
 enum MultiMetricStyle: String, CaseIterable, Identifiable {
     /// One short strip per metric, stacked, sharing the x-axis and keeping real values.
     case rows
-    /// Metrics as rows, days as columns, each cell shaded by deviation from baseline.
-    case heatmap
+    /// The calendar strips — one heat strip per metric, every scored day of the year.
+    ///
+    /// 260920: replaced `heatmap`, which drew the same idea over the window and which the
+    /// maintainer did not want ("I don't like the new heatmap widget - get rid of it"). The
+    /// calendar was ALREADY on the page with three hard-coded metrics; it inherits this namespace
+    /// so the same picker configures it.
+    case calendar
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .rows:    return String(localized: "Rows")
-        case .heatmap: return String(localized: "Heatmap")
+        case .calendar: return String(localized: "Calendar")
         }
     }
 
@@ -119,8 +124,8 @@ enum MultiMetricStyle: String, CaseIterable, Identifiable {
         switch self {
         case .rows:
             return String(localized: "One strip per metric with its real values, days lined up. Best for reading actual numbers while still comparing days.")
-        case .heatmap:
-            return String(localized: "A grid of days, shaded by how far each sits from your baseline. Best for finding the days where everything was off.")
+        case .calendar:
+            return String(localized: "A year of days per metric, shaded by value. Best for reading consistency and spotting streaks.")
         }
     }
 }
@@ -158,7 +163,7 @@ enum MultiMetricPrefs {
 
     static let windowOptions = [7, 14, 30, 90]
     static func defaultWindow(for style: MultiMetricStyle) -> Int {
-        style == .heatmap ? 30 : 14
+        style == .calendar ? 365 : 14
     }
 
     static func window(for style: MultiMetricStyle, defaults: UserDefaults = .standard) -> Int {
@@ -172,9 +177,10 @@ enum MultiMetricPrefs {
         case .rows:
             // Each row owns its own scale and ~38pt, so a couple more is still readable.
             return [.charge, .hrv, .restingHr, .sleep, .effort, .steps]
-        case .heatmap:
-            // A row per metric costs 16pt and no legibility, so this one starts with everything.
-            return MultiMetric.allCases
+        case .calendar:
+            // The three the calendar already carried before it became configurable, so an existing
+            // page looks unchanged until the wearer edits it.
+            return [.charge, .dayQuality, .sleep]
         }
     }
 
