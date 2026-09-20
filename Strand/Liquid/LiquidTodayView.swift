@@ -378,7 +378,11 @@ struct LiquidTodayView: View {
                         case .workouts: lastWorkoutsSection
                         case .heartRate: heartRateSection
                         case .recoveryVitals: recoveryVitalsSection
-                        case .yourCards: yourCardsSection
+                        // 260920: the rows moved INSIDE keyMetricsSection (see
+                        // `dashboardCardsInline`). The case is kept rendering nothing rather than
+                        // removed, so a layout stored before the merge still decodes — dropping the
+                        // rawValue would make every saved order decode short.
+                        case .yourCards: EmptyView()
                         case .menstrualCycle:
                             if selectedDayOffset == 0 { MenstrualCycleHomeCard() }
                         // #656: the persistent journal widget (last-7-days strip + tap-through). Now a
@@ -1533,6 +1537,43 @@ struct LiquidTodayView: View {
                 LiquidFullWidthNavigationAction("Show all metrics")
             }
             .buttonStyle(LiquidPressStyle())
+            // 260920, maintainer: "can we make all of them into key metrics one section instead of
+            // two?" The dashboard rows now render HERE, under the tile grid, instead of in their own
+            // "Your cards" block with a second header and a second Edit.
+            //
+            // They stay ROWS rather than becoming tiles: Stress, Fitness Age, VO₂ Max and Vitality
+            // have no tile form, and Coupled and Coach carry no value at all — they are navigation.
+            dashboardCardsInline
+        }
+    }
+
+    /// The dashboard rows, headerless, hosted inside KEY METRICS (260920). The rows themselves and
+    /// their ordering are unchanged — `yourCardsSection`'s body minus its section header, so the two
+    /// cannot render differently.
+    @ViewBuilder
+    private var dashboardCardsInline: some View {
+        // The SAME two gates `yourCardsSection` applied — hydration off hides its card, coach off
+        // hides the launcher. Dropping either here would have put back a card the wearer switched
+        // off, which is the kind of thing a move like this loses silently.
+        let cards = DashboardCardPrefs.decodeEnabled(dashboardCardsRaw)
+            .filter { hydrationEnabled || $0 != .hydration }
+            .filter { coachEnabled || $0 != .coach }
+        if selectedDayOffset == 0 && !cards.isEmpty {
+            Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                sectionHead("CARDS", trailing: "")
+                Button { customizationDestination = .yourCards } label: {
+                    Text(String(localized: "Edit").uppercased())
+                        .font(StrandFont.overlineScaled(11))
+                        .tracking(1.0)
+                        .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Customise your cards")
+            }
+            ForEach(cards) { card in
+                liquidCard(for: card)
+            }
         }
     }
 
