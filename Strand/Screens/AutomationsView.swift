@@ -47,6 +47,39 @@ struct AutomationsView: View {
     @AppStorage(HapticPrefs.liveSession) private var liveSessionHaptic = true
     @AppStorage(HapticPrefs.workout) private var workoutHaptic = true
 
+    // 260901 stress-sensitivity knobs — @State mirrors of BiofeedbackPrefs (custom-defaulted
+    // accessors, so plain @AppStorage would misread an unset key as 0).
+    @State private var stressDipPct = Int((BiofeedbackPrefs.dropRatio * 100).rounded())
+    @State private var stressSustainSec = BiofeedbackPrefs.sustainSeconds
+    // 260901 target automations (A morning brief / E pacing nudges). Plain bools, so @AppStorage.
+    @AppStorage(TargetAutomations.K.briefEnabled) private var morningBriefOn = false
+    @AppStorage(TargetAutomations.K.pacingEnabled) private var pacingOn = false
+    // Defaults TRUE, matching `TargetAutomations.wristBuzzEnabled`. These two defaults MUST agree:
+    // an @AppStorage default of false against a logic default of true would render the switch off
+    // while the buzz was in fact firing.
+    @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = true
+    @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
+    @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
+    // 260904 pacing delivery window. Both OPTIONAL — nil means unbounded (wake -> midnight, the
+    // pre-control behaviour), which is why these are `Int?` mirrors rather than @AppStorage ints:
+    // an unset key must stay unset, not be written as a 0 that reads as "midnight".
+    @State private var pacingStartMin = TargetAutomations.pacingStartMinute
+    @State private var pacingStopMin = TargetAutomations.pacingStopMinute
+
+    // 260904 water reminders — moved here from Settings -> Features so every reminder and nudge
+    // lives on one screen. The TRACKER toggle stays in Settings (it is a data feature, not a
+    // notification); this card gates itself on it and points there when it is off.
+    // 260905 steps source. A @State mirror rather than @AppStorage: the stored value is a raw
+    // string with a non-empty default, which @AppStorage cannot express (an unset key would read as
+    // "" and fall out of the enum).
+    @State private var stepsSource = StepsSourcePrefs.preferred
+
+    @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
+    @AppStorage(HydrationReminder.K.enabled) private var hydrationRemindersOn = false
+    @State private var hydrationStartMin = HydrationReminder.startMinute
+    @State private var hydrationStopMin = HydrationReminder.stopMinute
+    @State private var hydrationIntervalMin = HydrationReminder.intervalMinutes
+
     var body: some View {
         ScreenScaffold(title: "Automations",
                        subtitle: "Make the strap do things: tap to act, walk away to lock, train by feel.",
@@ -61,6 +94,11 @@ struct AutomationsView: View {
             hapticsCard
             wearCard
             coachingCard
+            wristBuzzCard
+            morningBriefCard
+            pacingCard
+            stepsSourceCard
+            waterReminderCard
             // #766: the strap's silent wake-alarm card used to sit here, which let users conflate it with
             // the wind-down reminder. It's moved to the dedicated Alarms screen (SmartAlarmView) so every
             // wake/wind-down control lives in one place. Automations is just inputs-to-actions now.
@@ -121,6 +159,10 @@ struct AutomationsView: View {
         }
     }
 
+    /// The double-tap gesture window, in seconds (260907). `@AppStorage` so the stepper writes
+    /// straight through to the key `WaterTapPrefs.window` reads — no second source of truth.
+    @AppStorage(WaterTapPrefs.windowKey) private var tapWindowSeconds = WaterTapPrefs.defaultWindow
+
     // MARK: - Double tap
 
     private var doubleTapCard: some View {
@@ -138,6 +180,35 @@ struct AutomationsView: View {
                 }
                 if behavior.doubleTapAction == .runShortcut {
                     shortcutField(String(localized: "Shortcut name"), text: $behavior.doubleTapShortcut)
+                }
+                // 260907, maintainer's ask: the gesture window, configurable, at the top of this
+                // page. Shown for EVERY action, not only water: it governs how far apart two taps
+                // must be to count as two separate acts, whatever the action is.
+                //
+                // This is NOT the duplicate guard. One physical tap firing exactly once is handled
+                // structurally by the event-timestamp dedup (16.13) and is not a knob — turning that
+                // into a setting would invite someone to break it. This knob answers the different
+                // question the "still feels sensitive" report raises: how long to ignore a SECOND
+                // tap, so a bump moments after a real one does not log twice.
+                Divider().overlay(StrandPalette.hairline)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ignore another tap for").font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Raise this if a knock logs an extra cup; lower it to log two in a row.")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: NoopMetrics.space2)
+                    Stepper(value: $tapWindowSeconds,
+                            in: WaterTapPrefs.minWindow...WaterTapPrefs.maxWindow) {
+                        Text("\(tapWindowSeconds)s")
+                            .font(StrandFont.bodyNumber)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .monospacedDigit()
+                    }
+                    .fixedSize()
                 }
                 HStack {
                     Button {
@@ -224,13 +295,26 @@ struct AutomationsView: View {
                 // v5 L3 closed-loop check-in (master + sub toggles). Default OFF, manual-first. The keys
                 // mirror BiofeedbackPrefs, which the central detector (AppModel.evaluateStress) reads.
                 ToggleRow(label: String(localized: "Stress check-ins (haptic)"),
-                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz and a dismissible card. Never an alarm, never a diagnosis."),
+                          help: String(localized: "When a fresh, non-exercise HRV dip is detected while you're still, NOOP offers a one-minute guided breath: a single confirming buzz, a screen notification and a dismissible card. Never an alarm, never a diagnosis."),
                           isOn: $behavior.stressCheckIn)
                 if behavior.stressCheckIn {
                     rowDivider
                     ToggleRow(label: String(localized: "Auto-nudge"),
-                              help: String(localized: "Let the check-in fire on its own. Off keeps it manual: you start a breath from Breathe yourself."),
+                              help: String(localized: "Let the check-in fire on its own: the strap buzzes when a deep breath would help. Off keeps it manual: you start a breath from Breathe yourself. Live stream on = instant; with Continuous HRV set to overnight only, daytime dips are found on each strap sync and nudged up to ~15 minutes late."),
                               isOn: $behavior.stressAutoNudge)
+                        .onChangeCompat(of: behavior.stressAutoNudge) { on in
+                            // Ask at the moment of intent (the IllnessNotifier idiom): the screen
+                            // notification defaults on, so arming the auto-nudge is the first
+                            // moment it could need permission.
+                            if on, behavior.stressNotify { BreatheNotifier.requestAuthorization() }
+                        }
+                    rowDivider
+                    ToggleRow(label: String(localized: "Screen notification"),
+                              help: String(localized: "Alongside the buzz, show a notification telling you to take a deep breath."),
+                              isOn: $behavior.stressNotify)
+                        .onChangeCompat(of: behavior.stressNotify) { on in
+                            if on { BreatheNotifier.requestAuthorization() }
+                        }
                     rowDivider
                     ToggleRow(label: String(localized: "Respect quiet hours"),
                               help: String(localized: "Suppress auto-nudges overnight (10pm-7am)."),
@@ -239,9 +323,335 @@ struct AutomationsView: View {
                     ToggleRow(label: String(localized: "Use my resonance pace"),
                               help: String(localized: "Breathe at the pace your last \u{201C}find my pace\u{201D} sweep locked in, if you have one. Otherwise a calm 5.5 breaths/min."),
                               isOn: $behavior.stressUseResonancePace)
+                    // 260901 sensitivity knobs (maintainer's ask): the detector's dip threshold and
+                    // hold time, surfaced so nudge frequency is tunable. The exported log's
+                    // "Breathe cues today:" line is the evidence to tune against.
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip depth"),
+                               help: String(localized: "Fires when your beat-to-beat HRV drops below this share of your personal baseline. Higher = shallower dips count = more nudges. Ships at 60%."),
+                               value: $stressDipPct, suffix: "%", range: 50...80, step: 5)
+                        .onChangeCompat(of: stressDipPct) { pct in
+                            BiofeedbackPrefs.dropRatio = Double(pct) / 100.0
+                        }
+                    rowDivider
+                    stepperRow(label: String(localized: "Dip must last"),
+                               help: String(localized: "A dip shorter than this is treated as a wobble, not stress. Shorter = more nudges (most brief dips self-recover within a minute). Ships at 60 s."),
+                               value: $stressSustainSec, suffix: "s", range: 15...120, step: 15)
+                        .onChangeCompat(of: stressSustainSec) { sec in
+                            BiofeedbackPrefs.sustainSeconds = sec
+                        }
                 }
             }
         }
+    }
+
+    // MARK: - Wrist buzz for NOOP's own nudges (260903)
+
+    private var wristBuzzCard: some View {
+        Section2(icon: "hand.tap.fill", title: String(localized: "Buzz my wrist"),
+                 blurb: String(localized: "When NOOP sends you one of its own nudges, buzz the strap too \u{2014} so you feel it without checking the phone."),
+                 active: nudgeWristBuzz) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Buzz on NOOP nudges"),
+                          help: String(localized: "Applies to the morning brief, pace checks and water reminders, and confirms a cup logged from a reminder. Stress check-ins already buzz on their own."),
+                          isOn: $nudgeWristBuzz)
+                if nudgeWristBuzz {
+                    // One row per cue, so nothing is silently off and it is obvious which nudges
+                    // are wired to the wrist. Each defaults ON — enabling the master gives every
+                    // cue a buzz, and the user switches off what they do not want.
+                    ForEach(TargetAutomations.BuzzCue.allCases, id: \.rawValue) { cue in
+                        rowDivider
+                        ToggleRow(label: cue.label,
+                                  help: cue == .breathe
+                                      ? String(localized: "Stress check-ins buzz on their own path too, so this stays on even with the switch above off.")
+                                      : String(localized: "Buzz the strap when this nudge is posted."),
+                                  isOn: buzzCueBinding(cue))
+                    }
+                    rowDivider
+                    Text("The buzz needs the strap connected and bonded, so a charging or out-of-range strap simply gets no cue. The Move reminder has its own buzz and its own switch \u{2014} see Inactivity reminder below.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    /// A per-cue buzz switch, read/written through `TargetAutomations` so the default-ON semantics
+    /// live in one place rather than being restated by the view.
+    private func buzzCueBinding(_ cue: TargetAutomations.BuzzCue) -> Binding<Bool> {
+        Binding(
+            get: { UserDefaults.standard.object(forKey: cue.rawValue) as? Bool ?? true },
+            set: { UserDefaults.standard.set($0, forKey: cue.rawValue) })
+    }
+
+    // MARK: - Morning brief (260901, automation A)
+
+    private var morningBriefCard: some View {
+        Section2(icon: "sunrise.fill", title: String(localized: "Morning brief"),
+                 blurb: String(localized: "The day's plan as a notification the moment the first post-wake sync scores your night — Charge, workout, steps and tonight's sleep target, before you ever open the app."),
+                 active: morningBriefOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable morning brief"),
+                          help: String(localized: "One notification per day, sent when the morning score lands."),
+                          isOn: $morningBriefOn)
+                    .onChangeCompat(of: morningBriefOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if morningBriefOn {
+                    rowDivider
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Not before").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            Text("An early sync can score the night while you're still asleep - hold the brief until this time.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                        }
+                        Spacer(minLength: 8)
+                        DatePicker("", selection: briefEarliestBinding, displayedComponents: .hourAndMinute)
+                            .labelsHidden().datePickerStyle(.compact)
+                            .accessibilityLabel("Morning brief earliest time")
+                    }
+                    .frame(minHeight: 42).padding(.vertical, 4)
+                }
+            }
+        }
+    }
+
+    private var briefEarliestBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: briefEarliestMin) },
+                set: { briefEarliestMin = Self.minutes(from: $0)
+                       UserDefaults.standard.set(briefEarliestMin, forKey: TargetAutomations.K.briefEarliestMin) })
+    }
+
+    // MARK: - Target pacing (260901, automation E)
+
+    private var pacingCard: some View {
+        Section2(icon: "figure.walk.motion", title: String(localized: "Target pacing"),
+                 blurb: String(localized: "Intelligent check-ins against today's pace: every few hours from when you woke (your scored night's end; the quiet-hours end until it's scored), each target is compared with where it should be by now \u{2014} steps and effort spread over your waking day to midnight, calories over the full 24h \u{2014} and only a genuine shortfall nudges, sized by what catches you up. On pace = silence."),
+                 active: pacingOn) {
+            VStack(spacing: 0) {
+                ToggleRow(label: String(localized: "Enable pacing nudges"),
+                          help: String(localized: "At most one nudge per check-in, and only when you're behind where you should be at that hour."),
+                          isOn: $pacingOn)
+                    .onChangeCompat(of: pacingOn) { on in
+                        if on { TargetAutomations.requestAuthorization() }
+                    }
+                if pacingOn {
+                    rowDivider
+                    stepperRow(label: String(localized: "Check every"),
+                               help: String(localized: "How often the pace is checked, at the top of every N hours through the waking day. Nudges land within a strap sync (~10 min) of the hour."),
+                               value: $pacingEveryHours, suffix: String(localized: "h"), range: 1...6, step: 1)
+                        .onChangeCompat(of: pacingEveryHours) { h in
+                            UserDefaults.standard.set(h, forKey: TargetAutomations.K.pacingIntervalHours)
+                        }
+                    rowDivider
+                    ToggleRow(label: String(localized: "Only nudge between"),
+                              help: String(localized: "Keep check-ins inside set hours. Off means from when you woke until midnight."),
+                              isOn: pacingWindowEnabledBinding)
+                    if pacingStartMin != nil || pacingStopMin != nil {
+                        rowDivider
+                        HStack(spacing: 12) {
+                            Text("From").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            DatePicker("", selection: pacingStartBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Pacing nudge earliest time")
+                            Text("to").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
+                            DatePicker("", selection: pacingStopBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Pacing nudge latest time")
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        Text("The check-in schedule still counts from when you actually woke, so your pace targets stay priced against your real day \u{2014} these hours only decide when a nudge is allowed to reach you. A check-in that falls outside them is skipped, not saved up.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The window switch. ON writes a sensible default pair; OFF clears BOTH keys so the decision
+    /// falls back to unbounded rather than to a stored pair that merely looks disabled.
+    private var pacingWindowEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { pacingStartMin != nil || pacingStopMin != nil },
+            set: { on in
+                if on {
+                    // 08:00-21:00: a plausible waking span that is not merely the old behaviour
+                    // re-expressed, so turning the switch on visibly does something.
+                    pacingStartMin = 8 * 60
+                    pacingStopMin = 21 * 60
+                } else {
+                    pacingStartMin = nil
+                    pacingStopMin = nil
+                }
+                TargetAutomations.setPacingStartMinute(pacingStartMin)
+                TargetAutomations.setPacingStopMinute(pacingStopMin)
+            })
+    }
+
+    private var pacingStartBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: pacingStartMin ?? 8 * 60) },
+                set: { d in
+                    let m = Self.minutes(from: d)
+                    pacingStartMin = m
+                    // Keep the pair ordered: a start dragged past the stop pushes the stop with it,
+                    // which is friendlier than refusing the edit or silently inverting the window.
+                    if let stop = pacingStopMin, stop <= m {
+                        pacingStopMin = min(24 * 60, m + 60)
+                        TargetAutomations.setPacingStopMinute(pacingStopMin)
+                    }
+                    TargetAutomations.setPacingStartMinute(m)
+                })
+    }
+
+    private var pacingStopBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: pacingStopMin ?? 21 * 60) },
+                set: { d in
+                    let m = Self.minutes(from: d)
+                    pacingStopMin = max(m, (pacingStartMin ?? 0) + 60)
+                    TargetAutomations.setPacingStopMinute(pacingStopMin)
+                })
+    }
+
+    // MARK: - Steps source (260905)
+
+    /// Which device's step count the app trusts when both have one.
+    ///
+    /// Sits here rather than in Settings because the maintainer asked for it "in the automations
+    /// page above hydration", and because the choice behaves like the other cards on this screen:
+    /// it changes what NOOP does with a signal, not what it stores.
+    ///
+    /// The picker writes through `StepsSourcePrefs`, and the effect lands in ONE place —
+    /// `Repository.mergeAppleSteps` — so the tile, the targets strip, pacing and the day-quality
+    /// score all move together. Nothing is recomputed: the next dashboard refresh simply merges the
+    /// other source's number, which is why this is a plain read rather than a re-score.
+    private var stepsSourceCard: some View {
+        Section2(icon: "figure.walk", title: String(localized: "Step count"),
+                 blurb: String(localized: "Your strap and your Apple Watch both count steps. Choose which one NOOP should trust when both have a number for the day."),
+                 active: stepsSource == .appleHealth) {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Prefer").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                        Text("Applies everywhere the count appears \u{2014} the Today tile, the steps figure in your targets, pacing check-ins and your day-quality score. Your step target itself is set by Charge and readiness, so it does not change.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Picker("", selection: $stepsSource) {
+                        ForEach(StepsSource.allCases) { s in Text(s.label).tag(s) }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                    .accessibilityLabel("Preferred step count source")
+                    .onChangeCompat(of: stepsSource) { s in
+                        StepsSourcePrefs.setPreferred(s)
+                        // Re-merge so the change is visible without waiting for the next sync. The
+                        // rows are already stored; only which column wins changes.
+                        Task { await model.repo.refresh() }
+                    }
+                }
+                .frame(minHeight: 42).padding(.vertical, 4)
+                Text("A day the other device did not record falls back to whichever count exists, so switching never blanks a day. Only steps are affected \u{2014} calories stay on NOOP's own estimate, which also feeds your effort score.")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: - Water reminders (260904 — moved from Settings → Features)
+
+    /// Water reminders, rehomed here so notifications live in one place.
+    ///
+    /// Gated on the hydration TRACKER, which stays in Settings: a reminder to drink with no log to
+    /// count against would have nothing to say. When the tracker is off this card says so and
+    /// points at Settings rather than hiding, so the control is discoverable from the screen the
+    /// wearer now expects to find it on.
+    private var waterReminderCard: some View {
+        Section2(icon: "drop.fill", title: String(localized: "Water reminders"),
+                 blurb: String(localized: "A nudge through the day carrying today's cup goal, how many you've had and how many are left. Long-press it to log a cup or a half cup without opening NOOP."),
+                 active: hydrationEnabled && hydrationRemindersOn) {
+            VStack(spacing: 0) {
+                if !hydrationEnabled {
+                    Text("Hydration tracking is off, so there is nothing to remind you about yet. Turn it on in Settings \u{2192} Features to use reminders.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.statusWarning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 6)
+                } else {
+                    ToggleRow(label: String(localized: "Enable water reminders"),
+                              help: String(localized: "Reminds you to drink through the day."),
+                              isOn: $hydrationRemindersOn)
+                        .onChangeCompat(of: hydrationRemindersOn) { on in
+                            HydrationReminder.setEnabled(on) { granted in
+                                if on && !granted { hydrationRemindersOn = false }
+                            }
+                        }
+                    if hydrationRemindersOn {
+                        rowDivider
+                        HStack(spacing: 12) {
+                            Text("From").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                            DatePicker("", selection: hydrationStartBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Water reminder start time")
+                            Text("to").font(StrandFont.body).foregroundStyle(StrandPalette.textSecondary)
+                            DatePicker("", selection: hydrationStopBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Water reminder stop time")
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        rowDivider
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Remind every").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                                Text("Reminders ride your strap syncs, so one lands within about ten minutes of its time.")
+                                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            Picker("", selection: $hydrationIntervalMin) {
+                                Text("1 hour").tag(60)
+                                Text("1.5 hours").tag(90)
+                                Text("2 hours").tag(120)
+                                Text("2.5 hours").tag(150)
+                                Text("3 hours").tag(180)
+                            }
+                            .labelsHidden().pickerStyle(.menu)
+                            .accessibilityLabel("Water reminder interval")
+                            .onChangeCompat(of: hydrationIntervalMin) { minutes in
+                                HydrationReminder.setIntervalMinutes(minutes)
+                            }
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                        Text("Tapping a reminder opens your water log; ignoring it logs nothing. Left alone, the stop time follows the start of your sleep window in Settings.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start/stop bindings write through `HydrationReminder`, so its clamps (and the stop's
+    /// sleep-window fallback) are the single authority on what a picker can express.
+    private var hydrationStartBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: hydrationStartMin) },
+                set: { d in
+                    HydrationReminder.setStartMinute(Self.minutes(from: d))
+                    hydrationStartMin = HydrationReminder.startMinute
+                    hydrationStopMin = HydrationReminder.stopMinute
+                })
+    }
+
+    private var hydrationStopBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: hydrationStopMin) },
+                set: { d in
+                    HydrationReminder.setStopMinute(Self.minutes(from: d))
+                    hydrationStopMin = HydrationReminder.stopMinute
+                })
     }
 
     // MARK: - Inactivity reminder (#419)

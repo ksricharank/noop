@@ -1,6 +1,8 @@
 #if os(iOS)
 import Foundation
+import UIKit
 import WidgetKit
+import StrandAnalytics   // HydrationGoal — half-cup conversion for the water glance
 
 extension WidgetSnapshot {
     /// The ACTIVE device's charge for the widget (#2075).
@@ -42,6 +44,10 @@ extension WidgetSnapshot {
     @MainActor
     static func publish(from model: AppModel) async {
         await refreshWidgetPresence()
+        // 260831 instrumentation: begun/finished counted separately — a publish that enters here and
+        // never reaches the save decision is a hang or process death INSIDE this path, which the
+        // frozen-widget report could not distinguish from a publish that never ran at all.
+        WidgetPublishStats.recordFullBegun()
         let days = model.repo.days
         let now = Date()
         // The recovery-derived anchor: today's row when it's scored, else the freshest STRICTLY-PRIOR
@@ -73,13 +79,6 @@ extension WidgetSnapshot {
         let effortScale = UnitPrefs.resolveEffortScale(
             UserDefaults.standard.string(forKey: UnitPrefs.effortScaleKey) ?? ""
         )
-        let strain = day?.strain
-        let effortDisplay: String? = strain.map { stored in
-            if effortScale == .whoop {
-                return String(format: "%.1f", UnitFormatter.effortValue(stored, scale: .whoop))
-            }
-            return "\(Int(stored.rounded()))"
-        }
         // #2040: today's stress curve. Self-gating on a cheap heart-rate fingerprint, so a publish that
         // changed nothing costs one indexed COUNT and no rows. Only the FULL path scores it; the live
         // fast path below reuses the previous snapshot and so carries the curve forward untouched.
@@ -98,14 +97,39 @@ extension WidgetSnapshot {
         // would decode the App Group blob twice on any publish that could not score, and this file
         // already went to the trouble of removing one such decode from the live path.
         let storedStress: WidgetSnapshot? = stress == nil ? load() : nil
+        // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
+        // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
+        // refresh or day roll). This full publish runs post-offload even in the BACKGROUND (#980),
+        // which is exactly the ~15-minute burst cadence the targets widget is built around — no
+        // extra trigger needed.
+        let targets = model.repo.cachedLiveTargets(now: now)
+        // Effort NUMERATOR = the targets' own `effortTodayStored` (260831) — the row for the targets'
+        // todayKey, which rolls at LOCAL midnight — never the anchor row's strain. The anchor
+        // legitimately carries YESTERDAY's scored day until the new night lands, so right after
+        // midnight the widget read "5/46" (yesterday's effort over the target) while the in-app strip
+        // read "0/46"; every targets surface now formats the same value the Live Activity's
+        // `effortDisplays(targets:)` does. Nil (no row yet) stays nil — `effortNT` renders the honest
+        // fresh-day "0/<target>". Both sides pre-formatted here for the same App-Group reason as #313.
+        func effortFmt(_ stored: Int?) -> String? {
+            guard let stored else { return nil }
+            if effortScale == .whoop {
+                return String(format: "%.1f", UnitFormatter.effortValue(Double(stored), scale: .whoop))
+            }
+            return "\(stored)"
+        }
+        let effortDisplay = effortFmt(targets.effortTodayStored)
+        let effortTargetDisplay = effortFmt(targets.effortTarget)
         let snap = WidgetSnapshot(
             recovery: day?.recovery.map { Int($0.rounded()) },
             bpm: model.bpm ?? model.live.heartRate,
             batteryPct: activeBatteryPct(from: model),
             bonded: model.live.bonded,
             updated: Date(),
-            // Stored 0–100 axis for ring fill; display string carries the #313 scale.
-            effort: strain.map { Int($0.rounded()) },
+            // Stored 0–100 axis for ring fill — the SAME today row as `effortDisplay` above, so the
+            // upstream ring face's fill and centre text can never describe different days. Effort is
+            // a today-accumulator (like steps/cal); only the scored-night fields (recovery/rest/HRV/
+            // resting HR) carry via the anchor.
+            effort: targets.effortTodayStored,
             rest: restScore.map { Int($0.rounded()) },
             hrv: day?.avgHrv.map { Int($0.rounded()) },
             restingHr: day?.restingHr,
@@ -114,9 +138,31 @@ extension WidgetSnapshot {
             // nil when the curve could not be scored at all, which must not blank a widget that already
             // has one: carry the stored values forward instead of publishing an absence.
             stressSeries: stressPoints ?? storedStress?.stressSeries,
-            stressDay: stress?.day ?? storedStress?.stressDay
+            stressDay: stress?.day ?? storedStress?.stressDay,
+            effortTargetDisplay: effortTargetDisplay,
+            kcal: targets.kcalToday,
+            kcalTarget: targets.kcalTargetKcal,
+            sleepNeedMin: targets.sleepNeedTonightMin,
+            steps: targets.stepsToday,
+            stepsTarget: targets.stepsTarget,
+            // 260903: water joins the targets faces (it took Sleep's fourth cell). Half-cups, the
+            // tracker's own resolution — the face quantizes to whole cups, which is also what keeps
+            // a half-cup log from spending a WidgetKit reload. Nil target = tracking off = dash.
+            waterHalfCups: targets.waterTodayML.map { HydrationGoal.halfCups(fromML: $0) },
+            waterTargetCups: targets.waterTargetCups
         )
-        saveAndReloadIfChanged(snap)
+        // Read the PREVIOUS snapshot once, before the save, so the scene split and the
+        // unrendered-change probe both describe the transition this publish is about to make.
+        let previousSnap = load()
+        let unseenOnly = WidgetSnapshot.changedOnlyInUnrenderedFields(from: previousSnap, to: snap)
+        let reloaded = saveAndReloadIfChanged(snap, previous: previousSnap)
+        WidgetPublishStats.recordFullFinished(
+            glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
+                + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-") "
+                + "water=\(snap.waterDisplay ?? "-")",
+            reloadRequested: reloaded,
+            inBackground: Self.isBackground,
+            unseenOnly: unseenOnly)
     }
 
     /// Publish fields that come directly from the live BLE state without re-reading the Rest metric
@@ -141,7 +187,27 @@ extension WidgetSnapshot {
         snap.batteryPct = Self.activeBatteryPct(from: model)
         snap.bonded = model.live.bonded
         snap.updated = now
-        saveAndReloadIfChanged(snap, previous: previous)
+        WidgetPublishStats.recordLive(reloadRequested: saveAndReloadIfChanged(snap, previous: previous),
+                                      inBackground: Self.isBackground)
+    }
+
+    /// Is the app in the BACKGROUND right now? (260905)
+    ///
+    /// The distinction the widget-lag investigation turned on: WidgetKit reloads requested from the
+    /// background are charged against a daily budget (~40-70), foreground ones are exempt. The
+    /// existing `reloads` counter is a total and so cannot say whether a day's requests were free or
+    /// spent — which is the question "why does the widget lag behind the app" actually needs.
+    ///
+    /// Read at the publish site rather than threaded down from the view: the publish has several
+    /// entry points (the ungated hydration hook, the post-offload path, the gated foreground hooks)
+    /// and a parameter would have to be plumbed correctly through every one of them to be trusted.
+    /// `applicationState` is the OS's own answer and cannot fall out of step with reality.
+    ///
+    /// `.inactive` counts as foreground: it is the transitional phase (a notification shade pulled
+    /// down, the app switcher), not a suspended app.
+    @MainActor
+    private static var isBackground: Bool {
+        UIApplication.shared.applicationState == .background
     }
 
     /// Persist and ask WidgetKit for a new timeline only when a rendered field changed. The snapshot's
@@ -149,28 +215,54 @@ extension WidgetSnapshot {
     /// true no-op rather than an App-Group write plus an extension reload.
     /// `previous` lets the live fast path pass the snapshot it already loaded (it runs on the main actor,
     /// so that value is still current); the full publish path omits it and this loads once for the dedup.
+    /// Returns whether a WidgetKit reload was actually requested, so the callers' 260831
+    /// instrumentation can split reloads from dedup skips.
     @MainActor
-    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot, previous: WidgetSnapshot? = nil) {
+    @discardableResult
+    private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot,
+                                               previous: WidgetSnapshot? = nil) -> Bool {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
+            // ALWAYS save, even when the reload is withheld. The snapshot is the source of truth the
+            // extension reads on its NEXT build (its own `.after` schedule, or the next admitted
+            // reload), so a coalesced burst still lands its final values on the face — it just does
+            // not spend a budget reload per sync to get there.
             snap.save(previousSeries: previous?.hrSeries ?? [])
-            WidgetCenter.shared.reloadAllTimelines()
-            // Android skips the update entirely when no widget is placed; WidgetKit offers no
-            // synchronous way to know, so the reload still goes out and is instead recorded honestly.
-            // Counting it as a reload would make a widget-removed export read exactly like a
-            // widget-installed one, which is half the comparison the counters exist for.
-            if WidgetTelemetry.widgetsInstalled {
-                WidgetTelemetry.noteReloaded()
-            } else {
-                WidgetTelemetry.noteNoWidget()
+            // 260906: foreground reloads are budget-EXEMPT, so while the app is open the widget
+            // tracks it exactly and the gate is bypassed. Only background requests are paced.
+            guard isBackground else {
+                WidgetSnapshot.ExtensionStats.recordReloadRequested()
+                WidgetCenter.shared.reloadAllTimelines()
+                return true
             }
-        } else if WidgetSnapshot.traceNeedsPoint(previous: previous, bpm: snap.bpm, now: snap.updated) {
-            // A steady heart changes nothing the header renders, so the branch above declines — but the
-            // TRACE still wants this minute's point, or it stops advancing at rest and prunes to empty
-            // (#1957). Persist without a reload: the point is for the next timeline WidgetKit builds,
-            // and spending a reload a minute is exactly what the dedup above exists to avoid.
-            snap.save(previousSeries: previous?.hrSeries ?? [])
-            WidgetTelemetry.noteDeclined()
+            let state = WidgetPublishStats.budgetState()
+            let change = reloadChange(from: previous, to: snap)
+            switch WidgetReloadBudget.decide(change: change,
+                                             lastReloadAt: state.lastAt,
+                                             usedToday: state.usedToday) {
+            case .allow:
+                WidgetPublishStats.recordBgReloadSpent()
+                // Over-reporting reloads is the safe direction for a cost figure; a widget-removed
+                // export must not read like a widget-installed one (upstream's counters).
+                if WidgetTelemetry.widgetsInstalled { WidgetTelemetry.noteReloaded() }
+                else { WidgetTelemetry.noteNoWidget() }
+                // Stamp the request so the extension can measure how long WidgetKit took to act on
+                // it. Written BEFORE the call, so a fast turnaround cannot be missed.
+                WidgetSnapshot.ExtensionStats.recordReloadRequested()
+                WidgetCenter.shared.reloadAllTimelines()
+                return true
+            case .coalesced:
+                // The strap syncs in bursts (172 offloads → 58 distinct moments in the 260906 log).
+                // Riding out the burst and letting the LAST state be the one that reloads is both
+                // cheaper and fresher than reloading on each sync.
+                WidgetPublishStats.recordGateSkip(capped: false)
+                return false
+            case .capped:
+                // Past the daily cap a request is deferred anyway and deepens the throttle for
+                // everything after it. The extension's own timeline policy keeps the face moving.
+                WidgetPublishStats.recordGateSkip(capped: true)
+                return false
+            }
         } else if liveUpdateRequiresFullBuild(previous: previous, now: snap.updated) {
             // The rollover's visible values can legitimately match yesterday's. Persist the fresh day
             // stamp once without spending a redundant WidgetKit reload, so later live ticks stay fast.
@@ -182,6 +274,7 @@ extension WidgetSnapshot {
             // went anywhere as if they had.
             WidgetTelemetry.noteDeclined()
         }
+        return false
     }
 
     /// Ask WidgetKit whether any widget is actually installed, and remember the answer.
@@ -204,6 +297,30 @@ extension WidgetSnapshot {
             }
         }
         if let installed { WidgetTelemetry.noteWidgetsInstalled(installed) }
+    }
+
+    /// Classify what moved, for the budget gate's urgency test.
+    ///
+    /// Only fields the wearer ACTS on are urgent. Water is always urgent — logging a cup is a
+    /// deliberate act (often the strap double-tap, which has no on-screen feedback at all), and the
+    /// widget is where the wearer confirms it landed. Scores move rarely. Steps must clear a
+    /// threshold, because a step count drifts continuously and re-rendering a ring for +12 steps is
+    /// exactly the spend that emptied the budget.
+    ///
+    /// Calories and effort are deliberately NOT urgent: both drift all day, and neither is a number
+    /// anyone acts on within two minutes.
+    @MainActor
+    private static func reloadChange(from previous: WidgetSnapshot?,
+                                     to snap: WidgetSnapshot) -> WidgetReloadBudget.Change {
+        guard let previous else { return .init(scoreChanged: true) }   // first publish of the day
+        // Absent → present counts as a change; absent → absent does not. A nil steps count is "not
+        // measured yet", so treating it as 0 would manufacture a large delta at first light.
+        let stepsDelta = abs((snap.steps ?? 0) - (previous.steps ?? 0))
+        return .init(stepsDelta: snap.steps == nil ? 0 : stepsDelta,
+                     waterLogged: (snap.waterHalfCups ?? 0) > (previous.waterHalfCups ?? 0),
+                     scoreChanged: snap.recovery != previous.recovery
+                                || snap.effort != previous.effort
+                                || snap.rest != previous.rest)
     }
 
     /// #114/#169: HR is the ONE high-frequency widget-publish trigger — `model.bpm` moves every few

@@ -230,6 +230,9 @@ struct SettingsView: View {
     // Hydration tracker (opt-in, MVP). Default OFF — when off the hydration dashboard card + detail are
     // hidden. Mirrors the Android pref so the toggle reads the same on both platforms.
     @AppStorage(HydrationStore.enabledKey) private var hydrationEnabled = false
+    // 260904: the water-REMINDER controls (enable, start, stop, interval) moved to AutomationsView,
+    // which is now the single screen for notifications and nudges. Only the tracker toggle above
+    // remains here, since it gates stored data rather than a notification.
 
     /// Opt-in "Auto-detect workouts" (default OFF). When ON, Today scans the last day or two of HR for a
     /// sustained-elevated window and offers — via a single dismissible card — to save it as a workout.
@@ -1813,6 +1816,17 @@ struct SettingsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                // 260904: the water REMINDER controls moved to Automations, which is now the one
+                // screen for notifications and nudges. The tracker toggle stays here — it is a data
+                // feature, not a notification — and the pointer below is what keeps the reminder
+                // discoverable from the screen it used to live on.
+                if hydrationEnabled {
+                    Text("Water reminders, including when they start and stop, are in Automations.")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 rowDivider
 
                 Toggle(isOn: $autoDetectWorkoutsEnabled) {
@@ -2811,6 +2825,28 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Open Backup and Sync to a folder")
+
+                // 260920: the daily digest. Its own destination so it cannot be confused with the
+                // backup snapshots, and its own screen because it has a filename, a cadence and a
+                // content choice of its own — none of which mean anything to a `.noopbak`.
+                NavigationLink {
+                    IntegrationView()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .accessibilityHidden(true)
+                        Text("Integration — daily digest file…")
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(LiquidPressStyle())
+                .accessibilityLabel("Open Integration, the daily digest file")
             }
         }
     }

@@ -205,6 +205,10 @@ struct TodayView: View {
     @EnvironmentObject var intelligence: IntelligenceEngine
     /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
     @State private var refreshingAll = false
+    /// 260903: the coach's synthesis section, collapsible so the deterministic numbers +
+    /// derivations can be read without scrolling past the prose. Liquid twin: the same state in
+    /// `LiquidTodayView` — keep the two in step.
+    @State private var coachSectionExpanded = true
     // PERF (scroll stutter): TodayView deliberately does NOT observe `LiveState` directly. A connected
     // strap publishes `LiveState` ~1 Hz (heart rate + each R-R packet), and an `@EnvironmentObject live`
     // here would invalidate the ENTIRE Today `body` on every tick, re-evaluating the scene backdrop, the
@@ -2384,11 +2388,24 @@ struct TodayView: View {
             // both states, so a glance still reads today's verdict; the detail body reveals on tap.
             synthesisCollapsible(d: d, score: score)
 
+            // 260830: today's three target numbers, big and readable BEFORE the narrative that
+            // explains them — the targets analogue of the hero's Charge · Effort · Rest. Liquid twin:
+            // the same strip inside LiquidTodayView's synthesis card; keep the two in step.
+            // Offset 0 passes nil so today keeps the memoized live path every other surface
+            // reads; a browsed day passes its key so the four n/t pairs follow the picker.
+            DailyTargetsStrip(day: selectedDayOffset == 0 ? nil : selectedDayKey)
+                .padding(.horizontal, 2)
+
             // Horizons / coach synthesis, in step with the liquid Today (the codebase treats
             // classic/liquid divergence as a bug). Always shown — the S4 collapse is gone. When the
             // coach has written TODAY's synthesis, its prose replaces the rule-based horizons (it
             // covers the same timescales); every fallback case renders the rule-based read.
-            if let ai = coach.synthesisText,
+            // 260906: gated on offset 0 as well. The coach synthesis is always written ABOUT today
+            // ("synthesisIsCurrent" is a freshness check, not a day match), so on a browsed past day
+            // it narrated today's numbers under yesterday's date — the same stale-today class of bug
+            // as the n/t strip beside it. A past day falls through to the rule-based horizons, which
+            // read `displayDay`.
+            if selectedDayOffset == 0, let ai = coach.synthesisText,
                AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
                 aiSynthesisCard(ai)
             } else {
@@ -2456,24 +2473,41 @@ struct TodayView: View {
     @ViewBuilder private func aiSynthesisCard(_ text: String) -> some View {
         NoopCard(tint: StrandPalette.chargeColor) {
             VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 4) {
-                    Image(systemName: "sparkles").font(StrandFont.caption)
-                        .foregroundStyle(StrandPalette.textTertiary)
-                    Text("Written by your Coach").strandOverline()
-                    // Always names the model that wrote it. Showing it only for a fallback made the
-                    // label's ABSENCE mean "your chosen model", which nobody can read off the
-                    // screen. Twin of the same line in the other Today view; keep them in step.
-                    if let model = coach.synthesisModel {
-                        Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)")
-                            .font(StrandFont.footnote)
+                // 260903: the header collapses the prose, matching the liquid twin. This view
+                // already renders the coach in its OWN card, so it needs no divider — the card
+                // edge is the seam the liquid view had to add a rule for.
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { coachSectionExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles").font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                        Text("Written by your Coach").strandOverline()
+                        // Always names the model that wrote it. Showing it only for a fallback made the
+                        // label's ABSENCE mean "your chosen model", which nobody can read off the
+                        // screen. Twin of the same line in the other Today view; keep them in step.
+                        if let model = coach.synthesisModel {
+                            Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                        Spacer(minLength: 4)
+                        Image(systemName: coachSectionExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
                 }
-                // LLM replies arrive as Markdown; plain Text showed literal asterisks. Rendered
-                // through the same MarkdownUI pipeline as the Coach chat, sized for this card
-                // (see Theme.strandSynthesis). Liquid twin: the AI branch of the synthesis card.
-                Markdown(text)
-                    .markdownTheme(.strandSynthesis)
+                .buttonStyle(.plain)
+                .accessibilityLabel(coachSectionExpanded
+                                    ? "Collapse the coach's synthesis"
+                                    : "Expand the coach's synthesis")
+                if coachSectionExpanded {
+                    // LLM replies arrive as Markdown; plain Text showed literal asterisks. Rendered
+                    // through the same MarkdownUI pipeline as the Coach chat, sized for this card
+                    // (see Theme.strandSynthesis). Liquid twin: the AI branch of the synthesis card.
+                    Markdown(text)
+                        .markdownTheme(.strandSynthesis)
+                }
             }
         }
     }
@@ -5861,15 +5895,12 @@ private struct StrapBatteryRow: View {
     }
 
     /// Level-banded battery glyph; the bolt variant when the strap reports charging.
+    ///
+    /// Delegates to `BatteryGlyph` so this and the widgets cannot drift: the widgets drew a fixed
+    /// `battery.50` beside a live percentage until 260919 precisely because this banding was not
+    /// reachable from the extension.
     private func symbol(_ pct: Double) -> String {
-        if live.charging == true { return "battery.100.bolt" }
-        switch pct {
-        case ..<13: return "battery.0"
-        case ..<38: return "battery.25"
-        case ..<63: return "battery.50"
-        case ..<88: return "battery.75"
-        default:    return "battery.100"
-        }
+        BatteryGlyph.symbol(forPercent: Int(pct.rounded(.down)), charging: live.charging == true)
     }
 
     /// #713: "~X left" runtime from `live.batteryEstimate`. Under 48 hours we show hours so a nearly-flat
