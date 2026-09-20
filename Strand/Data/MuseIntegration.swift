@@ -52,8 +52,8 @@ enum MuseIntegration {
         set { UserDefaults.standard.set(newValue, forKey: enabledKey) }
     }
 
-    /// Hour of the local day the digest is generated, 0–23. Defaults to 7am — the maintainer
-    /// generates this "when I wake up".
+    /// Hour of the local day the FIRST write of each day happens, 0–23. Defaults to 7am — the
+    /// maintainer generates this "when I wake up".
     static var hourOfDay: Int {
         get {
             guard UserDefaults.standard.object(forKey: hourKey) != nil else { return 7 }
@@ -61,6 +61,37 @@ enum MuseIntegration {
         }
         set { UserDefaults.standard.set(min(max(newValue, 0), 23), forKey: hourKey) }
     }
+
+    static let intervalKey = "integration.intervalHours"
+
+    /// Hours between writes (260920, maintainer: "24 meaning once a day, 12 meaning twice, 6 meaning
+    /// 4 times"). The first write of a day still lands at `hourOfDay`; this says how often to write
+    /// AFTER that.
+    ///
+    /// Only divisors of 24 are offered, so the writes land at the same clock times every day rather
+    /// than drifting — with 5, say, the fourth write would fall on the next day and the cadence
+    /// would walk around the clock.
+    static let intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24]
+    static let defaultIntervalHours = 24
+
+    static var intervalHours: Int {
+        get {
+            guard UserDefaults.standard.object(forKey: intervalKey) != nil else {
+                return defaultIntervalHours
+            }
+            return clampInterval(UserDefaults.standard.integer(forKey: intervalKey))
+        }
+        set { UserDefaults.standard.set(clampInterval(newValue), forKey: intervalKey) }
+    }
+
+    /// Clamped on READ as well as write: a value can arrive from a restored backup, and a 0 there
+    /// would make every launch write the file.
+    static func clampInterval(_ h: Int) -> Int {
+        intervalOptions.contains(h) ? h : defaultIntervalHours
+    }
+
+    /// How many times a day the current setting writes. Display-only.
+    static var writesPerDay: Int { max(1, 24 / intervalHours) }
 
     /// Whether to include the coach's own narrative text in the digest. Off by default: it costs a
     /// provider call per write, and the numbers are the part another tool cannot recompute.
@@ -122,13 +153,37 @@ enum MuseIntegration {
     static func isDue(now: Date,
                       lastWrittenMs: Int,
                       hourOfDay: Int,
+                      intervalHours: Int = 24,
                       calendar: Calendar = .current) -> Bool {
-        guard let todaysTrigger = calendar.date(bySettingHour: min(max(hourOfDay, 0), 23),
-                                                minute: 0, second: 0, of: now) else { return false }
-        guard now >= todaysTrigger else { return false }
+        let anchorHour = min(max(hourOfDay, 0), 23)
+        let step = clampInterval(intervalHours)
+        guard let todaysAnchor = calendar.date(bySettingHour: anchorHour,
+                                               minute: 0, second: 0, of: now) else { return false }
+
+        // The most recent slot boundary at or before `now`. Slots run from the anchor hour in
+        // `step`-hour jumps; before today's anchor the relevant one is yesterday's last slot, which
+        // is why this walks BACK from the anchor rather than clamping to it. Without that, a 6-hour
+        // cadence would go silent between midnight and the anchor every single day.
+        var slot = todaysAnchor
+        if now < todaysAnchor {
+            while slot > now {
+                guard let earlier = calendar.date(byAdding: .hour, value: -step, to: slot) else {
+                    return false
+                }
+                slot = earlier
+            }
+        } else {
+            while let next = calendar.date(byAdding: .hour, value: step, to: slot), next <= now {
+                slot = next
+            }
+        }
+
         guard lastWrittenMs > 0 else { return true }
         let last = Date(timeIntervalSince1970: TimeInterval(lastWrittenMs) / 1000)
-        return last < todaysTrigger
+        // Due when the last write predates the slot we are currently in. A missed slot therefore
+        // catches up at the next launch instead of being skipped, and a second launch inside the
+        // same slot does not rewrite.
+        return last < slot
     }
 }
 
