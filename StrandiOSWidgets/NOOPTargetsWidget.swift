@@ -227,7 +227,10 @@ struct NOOPTargetsView: View {
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 4)
                 Text(value)
-                    .font(.system(size: 17, weight: .bold, design: .rounded))
+                    // 260919: 15pt against the 13pt label — "just a tad bit larger than the font
+                    // of the words". Weight carries the emphasis instead of size, so the pair still
+                    // reads as the value and the label as its name.
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(value == "–" ? StrandPalette.textTertiary : tint)
                     // Single line with room to shrink: "18.4k/8.9k" is the widest realistic pair and
                     // this face has truncated before. The floor drops with the larger type.
