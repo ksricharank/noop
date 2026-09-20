@@ -110,7 +110,8 @@ extension TrendsSection {
         case .effortTrend:      return "flame"
         case .waterTrend:       return "drop"
         case .respiratoryTrend: return "lungs"
-        case .allMetrics:       return "chart.xyaxis.line"
+        case .allMetrics:        return "chart.xyaxis.line"
+        case .allMetricsHeatmap: return "square.grid.3x3.fill"
         }
     }
 
@@ -132,7 +133,8 @@ extension TrendsSection {
         case .effortTrend:      return String(localized: "Effort alone, with its own window")
         case .waterTrend:       return String(localized: "Water in cups, with its own window")
         case .respiratoryTrend: return String(localized: "Respiratory rate alone, with its own window")
-        case .allMetrics:       return String(localized: "Every metric you choose, over the page's window")
+        case .allMetrics:        return String(localized: "One strip per metric, with its real values")
+        case .allMetricsHeatmap: return String(localized: "A grid of days, shaded by distance from your baseline")
         }
     }
 
@@ -152,7 +154,8 @@ extension TrendsSection {
         case .effortTrend:      return StrandPalette.effortColor
         case .waterTrend:       return StrandPalette.metricCyan
         case .respiratoryTrend: return StrandPalette.restBright
-        case .allMetrics:       return StrandPalette.accent
+        case .allMetrics:        return StrandPalette.accent
+        case .allMetricsHeatmap: return StrandPalette.metricAmber
         }
     }
 }

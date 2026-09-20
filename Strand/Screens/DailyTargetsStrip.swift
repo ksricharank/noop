@@ -61,15 +61,28 @@ struct DailyTargetsStrip: View {
             }
             HStack(alignment: .top, spacing: 12) {
                 targetCell("Cal", value: calText(targets), tint: StrandPalette.metricAmber)
-                targetCell("Sleep", value: sleepText(targets), tint: StrandPalette.metricCyan)
-            }
-            // Water (260903, maintainer's ask): a THIRD row spanning both columns, because it is
-            // the one target that is logged by hand — the −/+ half-cup controls exist so water
-            // drunk outside a reminder still lands. Writes through the SAME `logHydration` the
-            // hydration screen and the reminder's action use, so the three can never disagree.
-            // Hidden entirely when hydration tracking is off (`waterTargetCups` nil).
-            if targets.waterTargetCups != nil {
-                waterRow(targets).id(hydrationSeq)
+                // 260920: WATER takes the fourth slot, which Sleep vacated.
+                //
+                // Sleep was removed at the maintainer's request because two screens showed two
+                // different sleep figures and read as a bug. They were not the same quantity:
+                // the Sleep tab's ledger prints its BASELINE need (the 75th percentile of the
+                // wearer's own recent nights — what a normal night looks like for them), while this
+                // strip printed TONIGHT's target, which starts from the population floor and is
+                // then adjusted by charge, last night's Rest, the readiness read and debt payback.
+                // Both correct, neither wrong, and nothing on either screen said they measured
+                // different things.
+                //
+                // Rather than relabel two surfaces and hope the distinction lands, the target moves
+                // to the ONE screen that owns sleep. The strip keeps the three targets that have no
+                // second home, and the derivation block below still explains tonight's sleep need
+                // for anyone who expands it.
+                if targets.waterTargetCups != nil {
+                    waterCell(targets).id(hydrationSeq)
+                } else {
+                    // Hydration off: nothing to put here, and a lone Cal cell stretched across the
+                    // row would look like a layout fault. An empty spacer keeps the 2×2 grid.
+                    Color.clear.frame(maxWidth: .infinity)
+                }
             }
             // Optional derivations (260901, maintainer's ask): the precise formula behind each of
             // the four targets, with TODAY's inputs filled in — collapsed by default so the strip
@@ -108,41 +121,45 @@ struct DailyTargetsStrip: View {
         }
     }
 
-    /// The water row: label + n/t in the same big rounded type the cells use, with half-cup −/+
-    /// controls. Spans the full width (the maintainer's slotting) since it carries two controls.
+    /// Water as a GRID CELL (260920) — the same n/t type as its three neighbours, with the −/+
+    /// controls beneath rather than beside.
+    ///
+    /// A cell is roughly half the width the old full-width row had, and the controls will not fit
+    /// on the value's line there: "17/21 cups" plus two 30pt buttons overflows a phone column, and
+    /// `minimumScaleFactor` would shrink the number to keep them company. Stacking keeps the value
+    /// at the same size as Steps, Cal and Effort, which is the point of it being a cell at all.
     @ViewBuilder
-    private func waterRow(_ t: LiveTargets) -> some View {
+    private func waterCell(_ t: LiveTargets) -> some View {
         let drunkHalves = HydrationGoal.halfCups(fromML: t.waterTodayML ?? 0)
         let goalCups = max(1, t.waterTargetCups ?? 0)
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Water")
-                    .font(StrandFont.overline)
-                    .tracking(1.2)
-                    .foregroundStyle(StrandPalette.textTertiary)
-                Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves))/\(goalCups) cups")
-                    .font(StrandFont.rounded(24, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundStyle(StrandPalette.metricPurple)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Water")
+                .font(StrandFont.overline)
+                .tracking(1.2)
+                .foregroundStyle(StrandPalette.textTertiary)
+            Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves))/\(goalCups) cups")
+                .font(StrandFont.rounded(24, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(StrandPalette.metricPurple)
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+            HStack(spacing: 8) {
+                // Same optimistic-then-persist behaviour as the old row: the store write is four
+                // awaits and can queue behind a strap sync, and a counter you cannot watch move is
+                // not trackable.
+                waterButton(systemName: "minus", disabled: drunkHalves == 0) {
+                    repo.bumpHydrationOptimistically(deltaML: -HydrationGoal.halfCupML)
+                    Task { await removeHalfCup() }
+                }
+                waterButton(systemName: "plus", disabled: false) {
+                    repo.bumpHydrationOptimistically(deltaML: HydrationGoal.halfCupML)
+                    Task { _ = await repo.logHydration(amountMl: HydrationGoal.halfCupML) }
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
-            // Half-cup steps. Remove is disabled at zero rather than hidden, so the control pair
-            // never reflows as the count changes.
-            // Both controls move the number FIRST (optimistic), then persist. The store write is
-            // four awaits and can queue behind a strap sync; a counter you cannot watch move is
-            // not trackable, which is exactly what was reported.
-            waterButton(systemName: "minus", disabled: drunkHalves == 0) {
-                repo.bumpHydrationOptimistically(deltaML: -HydrationGoal.halfCupML)
-                Task { await removeHalfCup() }
-            }
-            waterButton(systemName: "plus", disabled: false) {
-                repo.bumpHydrationOptimistically(deltaML: HydrationGoal.halfCupML)
-                Task { _ = await repo.logHydration(amountMl: HydrationGoal.halfCupML) }
-            }
+            .padding(.top, 2)
         }
-        .padding(.top, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("Water"))
         .accessibilityValue(Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves)) of \(goalCups) cups"))

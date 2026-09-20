@@ -37,7 +37,12 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("total burned so far: 1830 kcal"), block)
         XCTAssertTrue(block.contains("Step target: 8000"), block)
         XCTAssertTrue(block.contains("steps so far: 6214"), block)
-        XCTAssertTrue(block.contains("target 8h30 asleep"), block)
+        // 260920: the sleep plan LEFT this block for the Sleep tab's own facts, following the
+        // target off the Today strip. Today's synthesis is about the present hours, and citing a
+        // bedtime the wearer can no longer see on that screen is exactly the mismatch the move
+        // exists to prevent. Asserted ABSENT so a future re-add is a deliberate act.
+        XCTAssertFalse(block.contains("asleep"), block)
+        XCTAssertFalse(block.contains("Sleep tonight"), block)
         // The retired Heart line must not linger: the bullet reads trends from the wider context.
         XCTAssertFalse(block.contains("Heart right now"), block)
         XCTAssertFalse(block.contains("autonomic read"), block)

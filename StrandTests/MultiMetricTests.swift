@@ -9,9 +9,12 @@ final class MultiMetricTests: XCTestCase {
 
     /// An unset selection yields the default set, never an empty card. A card drawing nothing reads
     /// as broken rather than as configured.
+    /// `decode` defaults to the ROW stack's set since 260920, when overlay was retired and `.rows`
+    /// became the parameter default.
     func testUnsetSelectionYieldsTheDefaultSet() {
-        XCTAssertEqual(MultiMetricPrefs.decode(""), MultiMetric.defaultSelection)
-        XCTAssertEqual(MultiMetricPrefs.decode("nonsense,alsoNonsense"), MultiMetric.defaultSelection)
+        let rows = MultiMetricPrefs.defaultSelection(for: .rows)
+        XCTAssertEqual(MultiMetricPrefs.decode(""), rows)
+        XCTAssertEqual(MultiMetricPrefs.decode("nonsense,alsoNonsense"), rows)
     }
 
     // MARK: Per-style selections (260920)
@@ -20,10 +23,9 @@ final class MultiMetricTests: XCTestCase {
     /// a few more as rows, everything as a heatmap.
     func testEachStyleHasItsOwnDefault() {
         XCTAssertEqual(MultiMetricPrefs.defaultSelection(for: .heatmap), MultiMetric.allCases)
-        XCTAssertLessThan(MultiMetricPrefs.defaultSelection(for: .overlay).count,
-                          MultiMetricPrefs.defaultSelection(for: .heatmap).count)
-        XCTAssertLessThanOrEqual(MultiMetricPrefs.defaultSelection(for: .overlay).count, 5,
-                                 "an overlay past ~5 lines stops being separable by colour")
+        XCTAssertLessThan(MultiMetricPrefs.defaultSelection(for: .rows).count,
+                          MultiMetricPrefs.defaultSelection(for: .heatmap).count,
+                          "a row costs ~38pt and a heatmap row 16pt, so rows start smaller")
     }
 
     /// The three keys must not collide, or configuring one style would silently rewrite another.
@@ -68,7 +70,10 @@ final class MultiMetricTests: XCTestCase {
 
     func testUnknownStyleFallsBackRatherThanCrashing() {
         XCTAssertEqual(MultiMetricPrefs.decodeStyle("heatmap"), .heatmap)
-        XCTAssertEqual(MultiMetricPrefs.decodeStyle("from-the-future"), .overlay)
+        // `overlay` was retired in 260920; a stored value naming it must fall back rather than
+        // leave the card unable to resolve a style.
+        XCTAssertEqual(MultiMetricPrefs.decodeStyle("overlay"), .rows)
+        XCTAssertEqual(MultiMetricPrefs.decodeStyle("from-the-future"), .rows)
     }
 
     /// Resting HR and respiration are the two where a HIGHER reading is a worse day. The heatmap
@@ -86,7 +91,7 @@ final class MultiMetricTests: XCTestCase {
                       metrics: [MultiMetric],
                       windowDays: Int = 30) -> MultiMetricCard {
         MultiMetricCard(seriesByMetric: series, metrics: metrics,
-                        style: .overlay, windowDays: windowDays)
+                        style: .rows, windowDays: windowDays)
     }
 
     private func days(_ values: [Double], from: Int = 1) -> [String: Double] {
@@ -132,6 +137,19 @@ final class MultiMetricTests: XCTestCase {
     func testAFlatSeriesSitsMidAxis() {
         let r = card([.charge: days([70, 70, 70])], metrics: [.charge]).resolved
         XCTAssertEqual(r.first?.normalized(70), 0.5)
+    }
+
+    /// 260920 REGRESSION: the shared axis unioned each metric's OWN clipped points, so metrics
+    /// recorded on different days produced MORE columns than the window — the maintainer selected
+    /// a week and saw fifteen cells.
+    func testTheSharedAxisNeverExceedsTheWindow() {
+        // Two metrics on disjoint days: 10 days of steps, 10 different days of HRV.
+        var steps: [String: Double] = [:], hrv: [String: Double] = [:]
+        for i in 1...10 { steps[String(format: "2026-09-%02d", i)] = Double(i * 100) }
+        for i in 11...20 { hrv[String(format: "2026-09-%02d", i)] = Double(30 + i) }
+        let c = card([.steps: steps, .hrv: hrv], metrics: [.steps, .hrv], windowDays: 7)
+        let axis = Set(c.resolved.flatMap { $0.points.map(\.day) }).sorted().suffix(7)
+        XCTAssertEqual(axis.count, 7, "the axis must be the window, not the union of both metrics")
     }
 
     /// Points must arrive oldest-first whatever order the dictionary yields, or every line is drawn
