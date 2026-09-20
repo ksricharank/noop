@@ -19,13 +19,13 @@ final class MultiMetricTests: XCTestCase {
 
     // MARK: Per-style selections (260920)
 
-    /// Each style defaults to a set sized for what it can draw legibly — five lines on one axis,
-    /// a few more as rows, everything as a heatmap.
+    /// Each card defaults to a set sized for what it draws. The CALENDAR starts with the three
+    /// strips it carried before it became configurable, so an existing page looks unchanged until
+    /// the wearer edits it.
     func testEachStyleHasItsOwnDefault() {
-        XCTAssertEqual(MultiMetricPrefs.defaultSelection(for: .heatmap), MultiMetric.allCases)
-        XCTAssertLessThan(MultiMetricPrefs.defaultSelection(for: .rows).count,
-                          MultiMetricPrefs.defaultSelection(for: .heatmap).count,
-                          "a row costs ~38pt and a heatmap row 16pt, so rows start smaller")
+        XCTAssertEqual(MultiMetricPrefs.defaultSelection(for: .calendar),
+                       [.charge, .dayQuality, .sleep])
+        XCTAssertFalse(MultiMetricPrefs.defaultSelection(for: .rows).isEmpty)
     }
 
     /// The three keys must not collide, or configuring one style would silently rewrite another.
@@ -52,8 +52,8 @@ final class MultiMetricTests: XCTestCase {
         d.set(MultiMetricPrefs.encode([.steps, .hrv]),
               forKey: MultiMetricPrefs.selectionKey(for: .rows))
         XCTAssertEqual(MultiMetricPrefs.resolved(style: .rows, defaults: d), [.steps, .hrv])
-        // ...and the OTHER styles are untouched by that write.
-        XCTAssertEqual(MultiMetricPrefs.resolved(style: .heatmap, defaults: d), [.water])
+        // ...and the OTHER card is untouched by that write.
+        XCTAssertEqual(MultiMetricPrefs.resolved(style: .calendar, defaults: d), [.water])
     }
 
     func testSelectionRoundTripsAndDropsDuplicates() {
@@ -69,9 +69,10 @@ final class MultiMetricTests: XCTestCase {
     }
 
     func testUnknownStyleFallsBackRatherThanCrashing() {
-        XCTAssertEqual(MultiMetricPrefs.decodeStyle("heatmap"), .heatmap)
-        // `overlay` was retired in 260920; a stored value naming it must fall back rather than
-        // leave the card unable to resolve a style.
+        XCTAssertEqual(MultiMetricPrefs.decodeStyle("calendar"), .calendar)
+        // `overlay` and `heatmap` were both retired in 260920; a stored value naming either must
+        // fall back rather than leave a card unable to resolve a style.
+        XCTAssertEqual(MultiMetricPrefs.decodeStyle("heatmap"), .rows)
         XCTAssertEqual(MultiMetricPrefs.decodeStyle("overlay"), .rows)
         XCTAssertEqual(MultiMetricPrefs.decodeStyle("from-the-future"), .rows)
     }

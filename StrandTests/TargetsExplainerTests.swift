@@ -52,7 +52,11 @@ final class TargetsExplainerTests: XCTestCase {
             sleepNeedMin: sleepNeed, age: 34, restingHr: 55, profile: profile,
             debtBalanceMin: -40)
 
-        XCTAssertEqual(blocks.count, 4, "four blocks — the session ladder lives inside Effort")
+        // 260920: THREE blocks. The SLEEP block left this explainer when the sleep target left the
+        // Today strip — a derivation for a number that is not on the screen is the same
+        // two-figures-disagreeing confusion in slower form. Effort, Calories, Steps remain; water
+        // has its own. The Sleep tab's ledger card and `sleepNarrative` carry sleep now.
+        XCTAssertEqual(blocks.count, 3, "three blocks — the session ladder lives inside Effort")
         // EFFORT: charge rung with the workout it picked, body-check numbers, Rest rung, the pace
         // spelled from resting HR toward max, the 0–100 scale defined before it's used.
         XCTAssertTrue(blocks[0].hasPrefix("EFFORT TARGET → \(effortTarget)"), blocks[0])
@@ -96,16 +100,9 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertFalse(blocks[2].contains("base 8000"),
                        "the retired band language must not reappear: " + blocks[2])
         // SLEEP: standard need, +0 rungs still printed, the debt payback in plain words.
-        XCTAssertTrue(blocks[3].hasPrefix("SLEEP TARGET → "), blocks[3])
-        XCTAssertTrue(blocks[3].contains("standard need for a 34-year-old:"), blocks[3])
-        XCTAssertTrue(blocks[3].contains("Charge 80 is high (≥\(DailyTargets.pushChargeFloor)) → +0 min"),
-                      blocks[3])
-        // 260920: the rung NAMES the Sleep tab's ledger, so the wearer can check the figure against
-        // the card it comes from. The arithmetic is unchanged.
-        XCTAssertTrue(blocks[3].contains("the Sleep tab's debt ledger says you're 40 min short lately"
-                                         + " → pay back a quarter tonight: +10 min (never more than"
-                                         + " +\(Int(DailyTargets.sleepDebtCapMin)))"), blocks[3])
-        XCTAssertTrue(blocks[3].contains("never set below \(Int(DailyTargets.sleepFloorMin / 60))h"), blocks[3])
+        // The sleep block is GONE from this explainer (260920) — asserted absent so a re-add is
+        // deliberate. Its arithmetic is still pinned through `sleepPlanLine` and the Sleep tab.
+        XCTAssertFalse(blocks.contains { $0.hasPrefix("SLEEP TARGET") }, blocks.joined())
         // The jargon is gone.
         for word in ["notch", "zone", "TRIMP", "trimp", "Karvonen", "keytel", "Keytel", "rmr",
                      "clamp", "readiness", "balanced", "rundown"] {
@@ -171,7 +168,7 @@ final class TargetsExplainerTests: XCTestCase {
                                                            readiness: .rundown, debtBalanceMin: 0),
             age: 34, restingHr: 60, profile: profile, debtBalanceMin: 0)
 
-        XCTAssertEqual(blocks.count, 4)
+        XCTAssertEqual(blocks.count, 3)
         // EFFORT: the body check names the down signals with their numbers and cancels the workout.
         XCTAssertTrue(blocks[0].hasPrefix("EFFORT TARGET → 0"), blocks[0])
         XCTAssertTrue(blocks[0].contains("Charge 20 is low (≤\(DailyTargets.recoverChargeCeiling))"),
@@ -196,9 +193,8 @@ final class TargetsExplainerTests: XCTestCase {
                       blocks[2])
         XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj) steps"), blocks[2])
         XCTAssertTrue(blocks[2].contains("target = \(restDayTarget)"), blocks[2])
-        // SLEEP: a balanced ledger still prints its rung.
-        XCTAssertTrue(blocks[3].contains("the Sleep tab's debt ledger is even (within"
-                                         + " \(Int(DailyTargets.debtDeadbandMin)) min) → +0 min"), blocks[3])
+        // SLEEP: no longer explained here at all.
+        XCTAssertFalse(blocks.contains { $0.hasPrefix("SLEEP TARGET") }, blocks.joined())
     }
 
     /// The Rest shift can bring a workout BACK after the body check cancelled it — the rungs must

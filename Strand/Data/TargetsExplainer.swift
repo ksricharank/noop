@@ -253,74 +253,15 @@ enum TargetsExplainer {
             out.append(st.joined(separator: "\n"))
         }
 
-        // ── SLEEP: standard need, then the day's asks, then the sleep-ledger payback ─────────
-        if let sleepNeedMin {
-            let baseMin = Int(AnalyticsEngine.Rest.populationNeedFloorHours(age: age) * 60.0)
-            var sl: [String] = ["SLEEP TARGET → \(hm(sleepNeedMin))"]
-            sl.append("standard need for a \(age.map(String.init) ?? "typical adult")"
-                      + "\(age != nil ? "-year-old" : ""): \(hm(baseMin))")
-            // `sleepNeedTonightMin` adds nothing when Charge is unscored, so the nil rung says so
-            // itself rather than borrowing the mid band's "+20" from `chargeRung`.
-            if charge == nil {
-                sl.append("Charge not scored yet → +0 min")
-            } else {
-                sl.append(chargeRung(charge, low: "+\(Int(DailyTargets.sleepChargeAdjRecoverMin)) min",
-                                     mid: "+\(Int(DailyTargets.sleepChargeAdjMaintainMin)) min",
-                                     high: "+0 min"))
-            }
-            sl.append("   (Charge ≤\(DailyTargets.recoverChargeCeiling) → +\(Int(DailyTargets.sleepChargeAdjRecoverMin))"
-                      + " · \(DailyTargets.recoverChargeCeiling + 1)–\(DailyTargets.pushChargeFloor - 1)"
-                      + " → +\(Int(DailyTargets.sleepChargeAdjMaintainMin)))")
-            if let rest = restScore {
-                if rest < DailyTargets.poorRestScore {
-                    sl.append("last night's Rest \(rest) is poor (below \(DailyTargets.poorRestScore))"
-                              + " → +\(Int(DailyTargets.sleepRestAdjPoorMin)) min")
-                } else if rest >= DailyTargets.greatRestScore {
-                    sl.append("last night's Rest \(rest) is great (\(DailyTargets.greatRestScore)+)"
-                              + " → \(Int(DailyTargets.sleepRestAdjGreatMin)) min")
-                } else {
-                    sl.append("last night's Rest \(rest) is mid-range (\(DailyTargets.poorRestScore)–"
-                              + "\(DailyTargets.greatRestScore - 1)) → +0 min")
-                }
-            } else {
-                sl.append("no Rest score last night → +0 min")
-            }
-            sl.append("   (Rest below \(DailyTargets.poorRestScore) → +\(Int(DailyTargets.sleepRestAdjPoorMin))"
-                      + " · \(DailyTargets.greatRestScore)+ → \(Int(DailyTargets.sleepRestAdjGreatMin)))")
-            switch readiness.level {
-            case .rundown:
-                sl.append(bodyCheck(readiness, compact: true)
-                          + " → +\(Int(DailyTargets.sleepReadinessAdjRundownMin)) min")
-            case .strained:
-                sl.append(bodyCheck(readiness, compact: true)
-                          + " → +\(Int(DailyTargets.sleepReadinessAdjStrainedMin)) min")
-            case .primed:
-                sl.append(bodyCheck(readiness, compact: true)
-                          + " → \(Int(DailyTargets.sleepReadinessAdjPrimedMin)) min")
-            case .balanced, .insufficient:
-                sl.append(bodyCheck(readiness, compact: true) + " → +0 min")
-            }
-            sl.append("   (several signals down → +\(Int(DailyTargets.sleepReadinessAdjRundownMin))"
-                      + " · one down → +\(Int(DailyTargets.sleepReadinessAdjStrainedMin))"
-                      + " · all strong → \(Int(DailyTargets.sleepReadinessAdjPrimedMin)))")
-            let debt = max(0, -debtBalanceMin)
-            let deadband = Int(DailyTargets.debtDeadbandMin)
-            if debt > DailyTargets.debtDeadbandMin {
-                let term = Int(min(DailyTargets.sleepDebtCapMin, debt * DailyTargets.sleepDebtShare).rounded())
-                // 260920: names the Sleep tab's card explicitly. The number here IS that card's
-                // balance — same ledger, same personalized need, and since this build the same
-                // nap crediting — so saying where it comes from lets the wearer check one screen
-                // against the other instead of meeting a figure with no visible origin.
-                sl.append("the Sleep tab's debt ledger says you're \(Int(debt)) min short lately"
-                          + " → pay back a quarter tonight: +\(term) min"
-                          + " (never more than +\(Int(DailyTargets.sleepDebtCapMin)))")
-            } else {
-                sl.append("the Sleep tab's debt ledger is even (within \(deadband) min) → +0 min")
-            }
-            sl.append("never set below \(Int(DailyTargets.sleepFloorMin / 60))h or above"
-                      + " \(Int(DailyTargets.sleepCapMin / 60))h → \(hm(sleepNeedMin))")
-            out.append(sl.joined(separator: "\n"))
-        }
+        // 260920: the SLEEP block left this explainer with the target itself. Today's strip no
+        // longer shows a sleep figure, and a derivation for a number that is not on the screen is
+        // the same mismatch in slower form — the wearer expands "How these were set" and finds a
+        // target explained that nothing above it states.
+        //
+        // The Sleep tab owns sleep now: its debt-ledger card carries the baseline need, and
+        // `sleepNarrative` states tonight's target and bedtime. `sleepNeedMin` stays a parameter
+        // because `TargetsExplainerTests` still pins the arithmetic through it.
+        _ = sleepNeedMin
 
         // ── WATER: body-size baseline in cups, plus a cup per 10 points of effort target ───
         if let waterTargetCups {

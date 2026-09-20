@@ -212,6 +212,9 @@ struct SettingsView: View {
     @AppStorage(ChartStyle.storageKey) private var chartStyleRaw = ChartStyle.titanium.rawValue
     // Sleep tab stage-CHART shape: Classic per-stage rows, or the WHOOP-style stepped hypnogram Filled/Ribbon.
     @AppStorage(SleepChartStyle.storageKey) private var sleepChartStyleRaw = SleepChartStyle.classic.rawValue
+    // 260920: the per-stage breakdown bars under the hypnogram. Default OFF — the chart above
+    // already shows the night's architecture and the bars restate it as numbers.
+    @AppStorage(SleepLayoutPrefs.showStageBarsKey) private var showStageBars = false
     // Chrome accent colour (mint / WHOOP blue / custom). Chrome only — never the data colour worlds.
     @AppStorage(AccentColor.storageKey) private var accentRaw = AccentColor.mint.rawValue
     @AppStorage(AccentColor.customHexKey) private var accentCustomHex = AccentColor.defaultCustomHex
@@ -1319,6 +1322,21 @@ struct SettingsView: View {
                     .tint(StrandPalette.accent)
                     .accessibilityLabel("Sleep chart")
                 }
+                rowDivider
+                // MARK: Stage breakdown bars — the Awake / Light / Deep / REM rows under the
+                // hypnogram. Off by default (260920).
+                Toggle(isOn: $showStageBars) {
+                    Text("Sleep stage bars")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+                Text("Adds the Awake / Light / Deep / REM rows under the sleep chart, with each stage's minutes and share of the night. The chart itself already shows the shape of the night, so these are off unless you want the numbers.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 rowDivider
                 // Chrome accent colour — the links/buttons/selection tint only. The recovery/strain/sleep
                 // DATA colours follow "Chart colours" above, never this. Custom reveals a colour well.

@@ -38,6 +38,9 @@ struct SleepView: View {
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
 
+    /// Whether to draw the per-stage breakdown bars under the hypnogram (260920). Default OFF.
+    @AppStorage(SleepLayoutPrefs.showStageBarsKey) private var showStageBars = false
+
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
     /// only when the underlying repo data actually changes — NOT on hover/animation/1Hz HR
@@ -972,7 +975,12 @@ struct SleepView: View {
                     // Oura/Garmin three things in one card disagreed. Ramp-aware rows name and colour every
                     // stage correctly, which IS the key; a legend above a correct key is the redundancy
                     // that was reported.
-                    stageBreakdownRows(s, palette: style.stagePalette)
+                    // 260920: OFF by default. The hypnogram above already shows the night's
+                    // architecture; the four bars restate it as numbers, which is useful when you
+                    // want them and a wall of bars when you do not. Settings → Sleep turns them on.
+                    if showStageBars {
+                        stageBreakdownRows(s, palette: style.stagePalette)
+                    }
             }
         )
     }

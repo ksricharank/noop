@@ -75,6 +75,14 @@ enum SleepSection: String, CaseIterable, Identifiable {
 /// and is a direct twin of `TodayLayoutPrefs` with a `sleep.` key namespace.
 enum SleepLayoutPrefs {
     /// UserDefaults key — a comma-joined list of `SleepSection` rawValues in display order.
+    /// Whether the per-stage breakdown bars (Awake / Light / Deep / REM) are drawn under the
+    /// hypnogram (260920, maintainer: "I want the detailed breakdown bars ... to be hidden by
+    /// default and I want to be able to configure the widget to enable them").
+    ///
+    /// Default OFF. Stored INVERTED — the key means "show" — because a `Bool` reads `false` when
+    /// unset, which is exactly the default wanted here, so no seeding is needed.
+    static let showStageBarsKey = "sleep.showStageBars"
+
     static let orderKey = "sleep.sectionOrder"
     /// UserDefaults key — a comma-joined list of explicitly hidden `SleepSection` rawValues.
     static let hiddenKey = "sleep.hiddenSections"

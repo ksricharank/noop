@@ -1041,7 +1041,14 @@ final class Repository: ObservableObject {
                                     profile: profile,
                                     todayKey: max(logicalKey, localKey),
                                     waterTodayML: waterOn ? hydrationTodayCachedML : nil,
-                                    waterEnabled: waterOn)
+                                    waterEnabled: waterOn,
+                                    // 260920: THIS is the path the Today strip, the widgets and the
+                                    // Sleep narrative all read, and it was the one still omitting
+                                    // naps — so 18.12's fix landed on `liveTargets(forDay:)` and
+                                    // left the surface anyone actually looks at unchanged. The
+                                    // maintainer's screenshots showed it: the Sleep card said −20m
+                                    // while the derivation said 45 min short, from the same nights.
+                                    napSleepMinByDay: napSleepMinByDay)
         }
     }
 

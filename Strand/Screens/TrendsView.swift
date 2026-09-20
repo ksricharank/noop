@@ -79,26 +79,25 @@ struct TrendsView: View {
     // Per-card metrics and windows (260920). `@AppStorage` needs literal keys, so the pairs are
     // declared explicitly; `MultiMetricPrefs` owns the resolution rules.
     @AppStorage("trends.multiMetricSelection.rows") private var multiMetricRowsRaw = ""
-    @AppStorage("trends.multiMetricSelection.heatmap") private var multiMetricHeatmapRaw = ""
+    @AppStorage("trends.multiMetricSelection.calendar") private var multiMetricCalendarRaw = ""
     @AppStorage("trends.multiMetricWindow.rows") private var multiMetricRowsWindow = 0
-    @AppStorage("trends.multiMetricWindow.heatmap") private var multiMetricHeatmapWindow = 0
     /// Which card the config sheet is editing — nil when closed.
     @State private var configuringStyle: MultiMetricStyle?
 
     private func multiMetricSelection(_ style: MultiMetricStyle) -> [MultiMetric] {
-        let own = style == .rows ? multiMetricRowsRaw : multiMetricHeatmapRaw
+        let own = style == .rows ? multiMetricRowsRaw : multiMetricCalendarRaw
         if !own.isEmpty { return MultiMetricPrefs.decode(own, style: style) }
         return MultiMetricPrefs.resolved(style: style)
     }
 
+    /// Only the ROW card carries a window selector — the calendar is a year by definition.
     private func multiMetricWindow(_ style: MultiMetricStyle) -> Int {
-        let stored = style == .rows ? multiMetricRowsWindow : multiMetricHeatmapWindow
-        return MultiMetricPrefs.windowOptions.contains(stored)
-            ? stored : MultiMetricPrefs.defaultWindow(for: style)
+        MultiMetricPrefs.windowOptions.contains(multiMetricRowsWindow)
+            ? multiMetricRowsWindow : MultiMetricPrefs.defaultWindow(for: style)
     }
 
     private func setMultiMetricWindow(_ style: MultiMetricStyle, _ days: Int) {
-        if style == .rows { multiMetricRowsWindow = days } else { multiMetricHeatmapWindow = days }
+        multiMetricRowsWindow = days
     }
 
     @ViewBuilder
@@ -388,7 +387,7 @@ struct TrendsView: View {
         .sheet(item: $configuringStyle) { style in
             MultiMetricConfigSheet(style: style,
                                    selectionRaw: style == .rows
-                                       ? $multiMetricRowsRaw : $multiMetricHeatmapRaw)
+                                       ? $multiMetricRowsRaw : $multiMetricCalendarRaw)
         }
         .sheet(isPresented: $showingReport) {
             TrendsReportSheet(days: repo.days)
@@ -722,8 +721,6 @@ struct TrendsView: View {
                                range: 8...24, low: "Low", high: "High", unit: "rpm")
         case .allMetrics:
             multiMetricCard(.rows)
-        case .allMetricsHeatmap:
-            multiMetricCard(.heatmap)
         }
     }
 
@@ -965,77 +962,108 @@ struct TrendsView: View {
 
     // MARK: Year heat-strip
 
+    /// The calendar strips, one per CHOSEN metric (260920).
+    ///
+    /// Was three hard-coded strips — charge, day quality, sleep score. The maintainer asked for the
+    /// same configurability the row card has ("make the calendar widget have a configurable set of
+    /// parameters wrt what I see there"), so it now reads a `MultiMetric` selection like its
+    /// sibling and shares the metric picker.
+    ///
+    /// Every series is normalised to 0–100 before it reaches `YearHeatStrip`, which colours cells
+    /// with `recoveryColor(score)` internally: a signed or out-of-range value would paint every day
+    /// at the bottom of the scale and make a bad day indistinguishable from a terrible one. The
+    /// tooltip un-normalises, so what the reader sees is always the real number.
     private var yearStrip: some View {
-        // Always show at least a full year for context; expand to all history on ALL.
+        // At least a full year for context; all history on ALL.
         let stripDays = max(range.days ?? repo.days.count, 365)
-        let recent = repo.days.suffix(stripDays)
-        let recoveryDays: [RecoveryDay] = recent.compactMap { d in
-            guard let dt = date(d.day) else { return nil }
-            return RecoveryDay(date: dt, score: d.recovery)
-        }
-        let title = (range == .all && repo.days.count > 365) ? String(localized: "Charge (all history)") : String(localized: "Charge (past year)")
-        // 260908 — the same calendar for the two composite scores, so a year of each can be read the
-        // way a year of charge already could.
-        //
-        // Day quality is normalised from its signed −100…+100 onto the 0–100 the strip's palette
-        // expects. `YearHeatStrip` colours cells with `recoveryColor(score)` internally, so passing
-        // signed values would paint every negative day with the bottom-of-scale colour and make a bad
-        // day indistinguishable from a terrible one. Normalising at the CALL SITE rather than adding a
-        // range parameter keeps a shared design component unchanged for one caller — and the tooltip
-        // still prints the real signed number, which is what the reader actually reads.
-        let dayCells: [RecoveryDay] = recent.compactMap { d in
-            guard let dt = date(d.day) else { return nil }
-            let raw = dayQualityByDay[d.day]
-            let normalised = raw.map { v in
-                (v - Double(DayQualityScore.publishedMinimum))
-                    / Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum) * 100
-            }
-            return RecoveryDay(date: dt, score: normalised)
-        }
-        let restCells: [RecoveryDay] = recent.compactMap { d in
-            guard let dt = date(d.day) else { return nil }
-            return RecoveryDay(date: dt, score: sleepPerfByDay[d.day])
-        }
+        let recent = Array(repo.days.suffix(stripDays))
+        let chosen = multiMetricSelection(.calendar)
         return NoopCard {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-                SectionHeader("\(title)", overline: "Calendar", trailing: String(localized: "\(recoveryDays.filter { $0.score != nil }.count) days"))
-                if recoveryDays.isEmpty {
-                    sparsePlaceholder.frame(height: 120)
-                } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        YearHeatStrip(days: recoveryDays).padding(.vertical, NoopMetrics.space1 / 2)
+                HStack(alignment: .firstTextBaseline) {
+                    SectionHeader("Calendar", overline: "Every scored day")
+                    Button { configuringStyle = .calendar } label: {
+                        Label(String(localized: "Edit").uppercased(),
+                              systemImage: "slider.horizontal.3")
+                            .font(StrandFont.overline)
+                            .tracking(StrandFont.overlineTracking)
                     }
-                    Divider().overlay(StrandPalette.hairline)
-                    legend
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StrandPalette.accent)
+                    .accessibilityLabel("Choose calendar metrics")
                 }
-                if dayCells.contains(where: { $0.score != nil }) {
-                    Divider().overlay(StrandPalette.hairline)
-                    SectionHeader("Day quality", overline: "Calendar",
-                                  trailing: String(localized: "\(dayCells.filter { $0.score != nil }.count) days"))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        // The tooltip un-normalises so it reads the real published number.
-                        YearHeatStrip(days: dayCells, valueFormat: { shown in
-                            let signed = shown / 100
-                                * Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum)
-                                + Double(DayQualityScore.publishedMinimum)
-                            let r = Int(signed.rounded())
-                            return String(localized: "Day quality \(r > 0 ? "+" : "")\(r)")
-                        })
-                        .padding(.vertical, NoopMetrics.space1 / 2)
-                    }
-                }
-                if restCells.contains(where: { $0.score != nil }) {
-                    Divider().overlay(StrandPalette.hairline)
-                    SectionHeader("Sleep score", overline: "Calendar",
-                                  trailing: String(localized: "\(restCells.filter { $0.score != nil }.count) nights"))
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        YearHeatStrip(days: restCells,
-                                      valueFormat: { String(localized: "Sleep score \(Int($0.rounded()))") })
-                            .padding(.vertical, NoopMetrics.space1 / 2)
+                ForEach(Array(chosen.enumerated()), id: \.element) { idx, metric in
+                    let cells = calendarCells(metric, days: recent)
+                    if cells.contains(where: { $0.score != nil }) {
+                        if idx > 0 { Divider().overlay(StrandPalette.hairline) }
+                        SectionHeader(LocalizedStringKey(metric.title), overline: "Calendar",
+                                      trailing: String(localized: "\(cells.filter { $0.score != nil }.count) days"))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            YearHeatStrip(days: cells,
+                                          valueFormat: { calendarTooltip(metric, $0) })
+                                .padding(.vertical, NoopMetrics.space1 / 2)
+                        }
+                        if idx == 0 {
+                            Divider().overlay(StrandPalette.hairline)
+                            legend
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// One metric's days, normalised onto the 0–100 scale `YearHeatStrip` expects.
+    private func calendarCells(_ metric: MultiMetric, days: [DailyMetric]) -> [RecoveryDay] {
+        let series = multiMetricSeries[metric] ?? [:]
+        // The observed range, so a metric with no natural 0–100 scale (HRV, resting HR, steps)
+        // still spreads across the palette instead of collapsing into one shade.
+        let values = series.values
+        let lo = values.min() ?? 0, hi = values.max() ?? 1
+        let span = hi - lo
+        return days.compactMap { d in
+            guard let dt = date(d.day) else { return nil }
+            guard let raw = series[d.day] else { return RecoveryDay(date: dt, score: nil) }
+            let scaled: Double
+            switch metric {
+            case .charge, .sleep:
+                scaled = raw                                   // already 0–100
+            case .dayQuality:
+                scaled = (raw - Double(DayQualityScore.publishedMinimum))
+                    / Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum) * 100
+            default:
+                scaled = span > 0 ? (raw - lo) / span * 100 : 50
+            }
+            // Inverted metrics are flipped so a HIGH resting HR is not painted as a good day.
+            return RecoveryDay(date: dt,
+                               score: metric.higherIsBetter ? scaled : 100 - scaled)
+        }
+    }
+
+    /// The tooltip un-normalises back to the real value, since the cell's colour is the only thing
+    /// that needed a common scale.
+    private func calendarTooltip(_ metric: MultiMetric, _ shown: Double) -> String {
+        let series = multiMetricSeries[metric] ?? [:]
+        let values = series.values
+        let lo = values.min() ?? 0, hi = values.max() ?? 1
+        let span = hi - lo
+        let display = metric.higherIsBetter ? shown : 100 - shown
+        let real: Double
+        switch metric {
+        case .charge, .sleep:
+            real = display
+        case .dayQuality:
+            real = display / 100
+                * Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum)
+                + Double(DayQualityScore.publishedMinimum)
+        default:
+            real = span > 0 ? lo + display / 100 * span : lo
+        }
+        let n = Int(real.rounded())
+        let sign = (metric == .dayQuality && n > 0) ? "+" : ""
+        return metric.unit.isEmpty
+            ? "\(metric.title) \(sign)\(n)"
+            : "\(metric.title) \(n) \(metric.unit)"
     }
 
     private var legend: some View {

@@ -132,12 +132,17 @@ struct DailyTargetsStrip: View {
     private func waterCell(_ t: LiveTargets) -> some View {
         let drunkHalves = HydrationGoal.halfCups(fromML: t.waterTodayML ?? 0)
         let goalCups = max(1, t.waterTargetCups ?? 0)
-        VStack(alignment: .leading, spacing: 2) {
+        // CENTRE-aligned, matching `targetCell` exactly. The first cut used `.leading`, which put
+        // the value hard left while its neighbours sat centred — the misalignment the maintainer
+        // reported. The unit word is gone too: "17/21" reads as cups from the label above it, and
+        // spelling it out pushed the number wide enough that `minimumScaleFactor` shrank it below
+        // its neighbours'.
+        VStack(alignment: .center, spacing: 2) {
             Text("Water")
                 .font(StrandFont.overline)
                 .tracking(1.2)
                 .foregroundStyle(StrandPalette.textTertiary)
-            Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves))/\(goalCups) cups")
+            Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves))/\(goalCups)")
                 .font(StrandFont.rounded(24, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(StrandPalette.metricPurple)
@@ -155,11 +160,10 @@ struct DailyTargetsStrip: View {
                     repo.bumpHydrationOptimistically(deltaML: HydrationGoal.halfCupML)
                     Task { _ = await repo.logHydration(amountMl: HydrationGoal.halfCupML) }
                 }
-                Spacer(minLength: 0)
             }
             .padding(.top, 2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("Water"))
         .accessibilityValue(Text("\(HydrationGoal.cupsDisplay(halfCups: drunkHalves)) of \(goalCups) cups"))

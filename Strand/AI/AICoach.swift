@@ -1744,6 +1744,28 @@ final class AICoachEngine: ObservableObject {
         //
         // Only for the CURRENT night: stepping back through history must not be answered with
         // advice about tonight, which is a different night from the one on screen.
+        // The debt ledger (260920, maintainer: "I want the sleep debt ledger target in the sleep
+        // page to show up in the LLM output as well").
+        //
+        // Built through `SleepModel.debtLedger` with the SAME nap credits the card uses, so the two
+        // cannot print different balances — the divergence fixed in 18.12 arrived exactly by two
+        // surfaces computing this separately. Both figures the card shows are stated: the BALANCE
+        // and the PER-NIGHT NEED, which is the baseline, not tonight's target.
+        let ledger = SleepModel.debtLedger(days: repo.days,
+                                           napSleepMinByDay: repo.napSleepMinByDay)
+        if ledger.nightCount > 0 {
+            let needH = ledger.needMin / 60.0
+            facts += String(format: "\n\nMY SLEEP-DEBT LEDGER (the Sleep tab's own card, over %d nights):\n",
+                            ledger.nightCount)
+            facts += String(format: "  per-night need (my own baseline, NOT tonight's target): %.1fh\n", needH)
+            if ledger.magnitudeMin < SleepDebt.onTargetBandMin {
+                facts += "  balance: even — within \(Int(SleepDebt.onTargetBandMin)) min of that need."
+            } else {
+                facts += String(format: "  balance: %.0f min %@", ledger.magnitudeMin,
+                                ledger.isDebt ? "SHORT" : "surplus")
+            }
+        }
+
         if night.day == Repository.localDayKey(Date()) {
             let targets = repo.cachedLiveTargets()
             if let need = targets.sleepNeedTonightMin {
@@ -1752,6 +1774,12 @@ final class AICoachEngine: ObservableObject {
                     midsleepSec: await repo.habitualMidsleepSec(),
                     typicalSleepHours: BatteryEstimator.typicalSleepHours(
                         nightlyHours: repo.days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } }))
+                // The two figures above are DIFFERENT quantities and the model must not present
+                // them as one disagreeing with itself — which is precisely how they read to the
+                // maintainer across three builds before the Today target was removed.
+                facts += "\n  (the ledger's per-night need is my usual night; tonight's target is"
+                    + " that adjusted for today's charge, rest, readiness and debt — they are not"
+                    + " the same number and neither is wrong.)"
             }
         }
         return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
