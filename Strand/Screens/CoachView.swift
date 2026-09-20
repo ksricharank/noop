@@ -197,7 +197,29 @@ struct CoachView: View {
         // rebuild mid-flight cannot send it twice, and gated on `isConfigured` so an unconfigured handoff
         // (which the launcher does not produce, but a future caller might) degrades to showing setup
         // rather than a failed request.
-        .task(id: coach.pendingPrompt) {
+        //
+        // 260920: the clear-before-send MUST NOT happen inside a `.task(id:)` keyed on the value
+        // being cleared. `.task(id:)` cancels and restarts its body whenever the id changes, so
+        // setting `pendingPrompt = nil` here cancelled the very task that was about to await
+        // `send` — the request was torn down mid-flight and surfaced as
+        // `URLError.cancelled` -> `.network("cancelled")` -> "Network problem: cancelled",
+        // blaming the internet for a self-inflicted cancellation. It only showed up once the tab
+        // summaries started seeding `pendingPrompt` (the Today launcher sets it and pushes in one
+        // gesture, which raced past it); every other coach path worked, which is exactly why the
+        // maintainer could see the summaries generate fine and this fail.
+        //
+        // `.onChangeCompat` + a detached-from-identity Task keeps the double-send guard (the value
+        // is still cleared before the await) without the clearing being a cancellation trigger.
+        .onChangeCompat(of: coach.pendingPrompt) { pending in
+            guard let prompt = pending, !prompt.isEmpty else { return }
+            coach.pendingPrompt = nil
+            guard coach.isConfigured else { return }
+            Task { await coach.send(prompt) }
+        }
+        // The same handoff, for a prompt that was ALREADY set before this view appeared — an
+        // `.onChange` never fires for a value that did not change while it was mounted, which is
+        // the case every time a tab seeds the prompt and THEN routes here.
+        .task {
             guard let prompt = coach.pendingPrompt, !prompt.isEmpty else { return }
             coach.pendingPrompt = nil
             guard coach.isConfigured else { return }

@@ -1,4 +1,5 @@
 import XCTest
+import StrandDesign
 import WhoopStore
 import StrandAnalytics
 @testable import Strand
@@ -171,5 +172,31 @@ extension MuseIntegrationTests {
         let out = MuseIntegration.digest(
             input, generatedAt: Date(timeIntervalSince1970: 1_789_000_000))
         print("\n===== BEGIN noop_to_muse.txt =====\n" + out + "===== END =====\n")
+    }
+}
+
+// MARK: - Sparkline preference (260920)
+
+final class SparklinePrefsTests: XCTestCase {
+    /// Default-OFF over an inverted key: an untouched install must get the CHEAP renderer. Phrasing
+    /// this as a plain `simpleKey` would have defaulted to the expensive path by accident, because
+    /// an unset `Bool` reads `false`.
+    func testAnUntouchedInstallGetsTheCheapPath() {
+        UserDefaults.standard.removeObject(forKey: SparklinePrefs.richKey)
+        XCTAssertTrue(SparklinePrefs.simple)
+    }
+
+    func testTheToggleSelectsTheRichPath() {
+        defer { UserDefaults.standard.removeObject(forKey: SparklinePrefs.richKey) }
+        UserDefaults.standard.set(true, forKey: SparklinePrefs.richKey)
+        XCTAssertFalse(SparklinePrefs.simple)
+        UserDefaults.standard.set(false, forKey: SparklinePrefs.richKey)
+        XCTAssertTrue(SparklinePrefs.simple)
+    }
+
+    /// The key string is the cross-platform/backup contract, pinned so a rename cannot silently
+    /// orphan a wearer's setting across a `.noopbak` round-trip.
+    func testKeyStringIsPinned() {
+        XCTAssertEqual(SparklinePrefs.richKey, "noop.richSparklines")
     }
 }
