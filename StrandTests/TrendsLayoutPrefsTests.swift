@@ -21,8 +21,11 @@ final class TrendsLayoutPrefsTests: XCTestCase {
     /// Shown that the page is hiding.
     func testPerMetricBlocksAreHiddenUntilArrangeIsSaved() {
         let visible = TrendsLayoutPrefs.visibleOrder(orderRaw: "", hiddenRaw: "")
-        XCTAssertEqual(visible, TrendsSection.defaultOrder,
-                       "an untouched install renders exactly the pre-260920 page")
+        // 260920: `allMetrics` is the ONE new section shown by default — the maintainer asked for a
+        // single card that could replace the rest of the page, which it cannot do while hidden.
+        // Every per-metric block stays opt-in.
+        XCTAssertEqual(visible, TrendsSection.defaultOrder + [.allMetrics],
+                       "the pre-260920 page, plus the unified card")
         for block in TrendsLayoutPrefs.defaultHidden {
             XCTAssertFalse(visible.contains(block), "\(block) must not appear uninvited")
         }
