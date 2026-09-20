@@ -58,16 +58,31 @@ enum DayQualityComputer {
     /// the work against the sleep that came before it.
     ///
     /// Nil when the key cannot be parsed, which fails the recovery half closed (absent, not wrong).
+    /// The day BEFORE `day`. The inverse of `nextDayKey`, sharing its parsing rules so the two
+    /// cannot disagree about a boundary — the integration digest walks backwards from today to the
+    /// finished day it recaps, which is the same edge `nextDayKey` walks forwards across.
+    static func previousDayKey(_ day: String) -> String? {
+        shiftDayKey(day, by: -1)
+    }
+
     static func nextDayKey(_ day: String) -> String? {
+        shiftDayKey(day, by: 1)
+    }
+
+    /// Shared day-key arithmetic. UTC and POSIX deliberately: these keys are calendar labels, not
+    /// instants, and parsing them in the device's zone makes a day shift across a DST boundary.
+    private static func shiftDayKey(_ day: String, by days: Int) -> String? {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         f.timeZone = TimeZone(identifier: "UTC")
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
         guard let d = f.date(from: day),
-              let next = Calendar(identifier: .gregorian).date(byAdding: .day, value: 1, to: d) else {
+              let shifted = cal.date(byAdding: .day, value: days, to: d) else {
             return nil
         }
-        return f.string(from: next)
+        return f.string(from: shifted)
     }
 
     static func input(for day: String,

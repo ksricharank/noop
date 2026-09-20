@@ -2825,6 +2825,28 @@ struct SettingsView: View {
                 }
                 .buttonStyle(LiquidPressStyle())
                 .accessibilityLabel("Open Backup and Sync to a folder")
+
+                // 260920: the daily digest. Its own destination so it cannot be confused with the
+                // backup snapshots, and its own screen because it has a filename, a cadence and a
+                // content choice of its own — none of which mean anything to a `.noopbak`.
+                NavigationLink {
+                    IntegrationView()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .accessibilityHidden(true)
+                        Text("Integration — daily digest file…")
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(LiquidPressStyle())
+                .accessibilityLabel("Open Integration, the daily digest file")
             }
         }
     }
