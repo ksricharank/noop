@@ -202,6 +202,20 @@ struct RootTabView: View {
             Task.detached(priority: .utility) {
                 await FolderBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
             }
+            // Integration digest (260920): the same on-launch catch-up shape, and for the same
+            // reason — iOS gives a sideloaded app no dependable daily wake, so "once a day" means
+            // "the first time you open it after the hour you chose". Silent on every failure; the
+            // Integration screen shows `lastError` and the last-written time.
+            //
+            // NOT detached: it needs the main-actor Repository and the coach engine, and the whole
+            // job is a few dictionary lookups plus one small file write. The heavy path (a coach
+            // call per section) is opt-in and already off by default.
+            // `coach: nil` deliberately. Holding an `@EnvironmentObject AICoachEngine` on this tab
+            // shell would subscribe it to all 32 of that object's @Published properties — the exact
+            // scroll regression fixed on 260919. The scheduled digest therefore writes the NUMBERS,
+            // which is the part another tool cannot recompute; the coach paragraphs are available
+            // from "Generate now" on the Integration screen, which already holds the engine.
+            await MuseIntegrationRunner.runIfDue(repo: repo, coach: nil)
         }
         // Quick-action sheet presents with the calm easing (~0.42s) per the README sheet spec —
         // the easing is applied where `quickAction` is set (see `presentQuickAction`), keeping the
