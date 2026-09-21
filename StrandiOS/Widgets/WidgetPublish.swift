@@ -166,12 +166,16 @@ extension WidgetSnapshot {
         // background budget — a withheld reload leaves a correct snapshot behind a stale face,
         // which looks identical to a wrong value from the outside.
         //
-        // Always-on and counts-only, same privacy class as the glance line beside it.
+        // `battery` rides along (260921): the home-screen widget showed no battery on a build where the
+        // path (`activeBatteryPct` → `live.batteryPct`) is intact, so the question is what value each
+        // publish actually carried — a nil at launch that a later publish never replaces would look
+        // exactly like a broken face. Always-on and counts-only, same privacy class as the glance line.
         let anchorKey = day?.day ?? "none"
         let todayKey = Repository.localDayKey(now)
         model.live.append(log: "chargePublish anchor=\(anchorKey)\(anchorKey == todayKey ? "" : " (carried)") "
                         + "charge=\(snap.recovery.map(String.init) ?? "nil") "
                         + "prevCharge=\(previousSnap?.recovery.map(String.init) ?? "none") "
+                        + "battery=\(snap.batteryPct.map(String.init) ?? "nil") "
                         + "reloadRequested=\(reloaded) bg=\(Self.isBackground)")
         WidgetPublishStats.recordFullFinished(
             glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "

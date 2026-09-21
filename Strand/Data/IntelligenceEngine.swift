@@ -2665,6 +2665,20 @@ final class IntelligenceEngine: ObservableObject {
             guard let snapshot = appliedLegacySnapshots[out[index].day] else { continue }
             out[index] = out[index].withLegacyScore(hrv: snapshot.avgHrv, recovery: snapshot.recovery)
         }
+        // 260921: #2115 was silent. The one log that could have shown Aug 19–Sep 11 losing their
+        // HRV/Charge to the WHOOP 5 unit policy (#2046) had no line for it, so the loss went
+        // unnoticed until a calendar made it visible. One counts-only line per completed pass:
+        // `preserved` = nights whose stored HRV/Charge #2115 carried forward this pass;
+        // `hrvMissingWithSleep` = nights that staged sleep but scored no HRV and had nothing stored
+        // to preserve. The second is NOT attributed to a cause here — a strap on the charger reads
+        // the same — it is the number to watch: it should only ever fall.
+        if !partialBaseline {
+            let missing = persistedDailies.filter {
+                $0.avgHrv == nil && ($0.totalSleepMin ?? 0) > 0 && appliedLegacySnapshots[$0.day] == nil
+            }.count
+            diagnosticSink?("legacyScores preserved=\(appliedLegacySnapshots.count) "
+                            + "hrvMissingWithSleep=\(missing) of \(persistedDailies.count) day(s)", nil)
+        }
 
         // Persist the computed scores under a dedicated "-noop" source so the WHOLE dashboard
         // (Today / Recovery / Strain / Sleep / Trends), not just this screen, reads them. The
@@ -2729,8 +2743,12 @@ final class IntelligenceEngine: ObservableObject {
             // eviction below: it would strip score attribution from any day in the 2-day window this
             // pass did not re-derive. Bounding the window to the days actually scored makes the light
             // pass's write strictly additive — it can rewrite what it produced and nothing else (260902).
-            let persistFrom = lightPass ? (dailies.map(\.day).min() ?? oldestDay) : oldestDay
-            let persistTo = lightPass ? (dailies.map(\.day).max() ?? newestDay) : newestDay
+            // 260921: `partialBaseline`, not `lightPass`. An ABANDONED full pass is partial in exactly
+            // the same way — it scored the newest N nights and nothing else — and `persistComputedScores`
+            // wide-deletes metricSeries + provenance over [from, to] before re-inserting. Bounded to the
+            // window it scanned, or 20 days of attribution vanish for nights the pass never touched.
+            let persistFrom = partialBaseline ? (dailies.map(\.day).min() ?? oldestDay) : oldestDay
+            let persistTo = partialBaseline ? (dailies.map(\.day).max() ?? newestDay) : newestDay
             let windows = preserveUnscoredHistory
                 ? dailiesByDay.keys.sorted().map { ($0, $0) }
                 : [(persistFrom, persistTo)]
@@ -2745,7 +2763,7 @@ final class IntelligenceEngine: ObservableObject {
                     // scored-night fields the light merge deliberately discards in favour of the stored ones.
                     // Writing them would put values on screen that no longer match the row they came from.
                     // The next full pass recomputes the lot against the real window.
-                    metricPoints: lightPass ? [] : (preserveUnscoredHistory
+                    metricPoints: partialBaseline ? [] : (preserveUnscoredHistory
                         ? restPointsByDay[from, default: []] : restPoints),
                     provenance: preserveUnscoredHistory
                         ? provenanceByDay[from, default: []] : Array(provenanceByCell.values),
@@ -2784,11 +2802,28 @@ final class IntelligenceEngine: ObservableObject {
         // off a much older carried day until the next full pass restored the row. The light pass's
         // entire job is to advance TODAY's accumulators; deciding what is stale is not its
         // business, and the full pass still reconciles the whole window at the morning open.
-        if !preserveUnscoredHistory, !persistedDailies.isEmpty, !lightPass {
+        // 260921: gated on `partialBaseline`, not `lightPass`. The 260906 abort gate can stop a FULL
+        // pass at night 1; `oldestDay` is the whole window regardless, so `persistedDailies` held one
+        // day and this loop deleted the other twenty computed rows — four times in one morning's log.
+        // The next full pass re-derived what it still could, but a row #2115 was preserving (a night
+        // whose R-R the WHOOP 5 unit policy withholds) has no raw to re-derive from: once evicted it
+        // is gone for good, and between the eviction and the restore the Today/widget anchor fell back
+        // to the oldest scored row outside the window. Same failure the 260902 light-pass guard
+        // describes, by the second route. A partial pass does not know what is stale; only a
+        // completed window does.
+        if !preserveUnscoredHistory, !persistedDailies.isEmpty, !partialBaseline {
             let freshKeys = Set(persistedDailies.map { $0.day })
             let existingWindow = (try? await store.dailyMetrics(deviceId: computedId, from: oldestDay, to: newestDay)) ?? []
+            var evicted = 0
             for stale in existingWindow where !freshKeys.contains(stale.day) {
                 _ = try? await store.deleteDailyMetrics(deviceId: computedId, from: stale.day, to: stale.day)
+                evicted += 1
+            }
+            // Rare-event evidence, always-on: a delete of computed history must never be silent. In
+            // steady state this is zero and prints nothing.
+            if evicted > 0 {
+                diagnosticSink?("evict: removed \(evicted) stale computed day(s) not reproduced by this "
+                                + "pass in [\(oldestDay), \(newestDay)]", nil)
             }
         }
         markPostLoopPhase("persist")
@@ -2802,7 +2837,9 @@ final class IntelligenceEngine: ObservableObject {
         // lose nothing; a WHOOP 4.0's steps_est refreshes at the morning full pass instead of
         // every ~10-min sync. The sleep/workout persists BELOW still run — they are windowed to
         // the light pass's own maxDays and keep the scored nights' sessions consistent.
-        if !lightPass {
+        // 260921: `partialBaseline` — an abandoned pass is the background pass the abort gate exists
+        // to keep cheap, and these are the fixed per-run overheads it was measured against.
+        if !partialBaseline {
             // ── Fitness Age (Phase 2) , weekly, keyed to the week's Saturday ────────────────────────────
             // Roll the last 7 computed days into the Nes/HUNT inputs and upsert a weekly Fitness Age (+ an
             // optional VO₂max when a waist is set) under the same "-noop" source. Idempotent on the Saturday

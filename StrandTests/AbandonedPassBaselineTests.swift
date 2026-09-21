@@ -96,6 +96,48 @@ final class AbandonedPassBaselineTests: XCTestCase {
                                        computed: 47, stored: 22), 22)
     }
 
+    // MARK: - The window-wide writes an abandoned pass must not make (260921)
+
+    /// The stale-eviction predicate, transcribed from `analyzeRecent`: a computed day in the window
+    /// this pass did not reproduce is deleted — and only when the pass's baseline is complete. The
+    /// field case that motivated it: `ABANDONED after 1/21` four times in one morning, each deleting
+    /// the other twenty days, so the Today/widget anchor fell back to a scored row a month old.
+    private func evictedDays(existingWindow: [String], scored: [String], partialBaseline: Bool) -> [String] {
+        guard !scored.isEmpty, !partialBaseline else { return [] }
+        let fresh = Set(scored)
+        return existingWindow.filter { !fresh.contains($0) }
+    }
+
+    func testAbandonedPassEvictsNothing() {
+        let window = (1...21).map { String(format: "2026-09-%02d", $0) }
+        XCTAssertEqual(evictedDays(existingWindow: window, scored: ["2026-09-21"], partialBaseline: true), [],
+                       "a pass that stopped at night 1 must not delete the twenty nights it never scored")
+    }
+
+    func testCompletedPassStillEvictsGenuinelyStaleRows() {
+        // The reconciliation is deliberate (#277 UTC/local duplicates) and must survive the guard.
+        XCTAssertEqual(evictedDays(existingWindow: ["2026-09-20", "2026-09-21", "2026-09-21Z"],
+                                   scored: ["2026-09-20", "2026-09-21"], partialBaseline: false),
+                       ["2026-09-21Z"])
+    }
+
+    /// The provenance / metric-series wide-delete spans [from, to]; a partial pass must bound it to the
+    /// days it actually scored.
+    private func persistWindow(scored: [String], oldestDay: String, newestDay: String,
+                               partialBaseline: Bool) -> (from: String, to: String) {
+        (partialBaseline ? (scored.min() ?? oldestDay) : oldestDay,
+         partialBaseline ? (scored.max() ?? newestDay) : newestDay)
+    }
+
+    func testAbandonedPassBoundsItsWideDeletesToTheScannedDays() {
+        let w = persistWindow(scored: ["2026-09-21"], oldestDay: "2026-09-01", newestDay: "2026-09-21",
+                              partialBaseline: true)
+        XCTAssertEqual(w.from, "2026-09-21"); XCTAssertEqual(w.to, "2026-09-21")
+        let full = persistWindow(scored: ["2026-09-21"], oldestDay: "2026-09-01", newestDay: "2026-09-21",
+                                 partialBaseline: false)
+        XCTAssertEqual(full.from, "2026-09-01")
+    }
+
     func testPartialPassWithNoStoredRowLeavesTheDayUnscored() {
         // A genuinely new day abandoned before a full pass ever ran: nil is honest. Inventing a
         // truncated estimate here is exactly what produced the flip.
