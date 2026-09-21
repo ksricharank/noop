@@ -38,6 +38,7 @@ struct SleepView: View {
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
 
+
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
     /// only when the underlying repo data actually changes — NOT on hover/animation/1Hz HR
@@ -55,6 +56,19 @@ struct SleepView: View {
     /// at a different session after a sync. The memoized trend `model` stays cached since
     /// the trends are night-independent. (#160)
     @State private var nightOffset = 0
+
+    /// 260906: the Rest-score series ("yyyy-MM-dd" → 0–100) and the window its trend covers, for the
+    /// `restTrend` section. Loaded here rather than derived from `model` because the trend plots the
+    /// STORED score — the same series the Rest hero reads — so the two cannot disagree.
+    @State private var restByDay: [String: Double] = [:]
+    @State private var restWindow = SleepView.restWindows[1]
+
+    /// Windows offered for the Rest trend. Matches the Day tab's set so the two per-metric tabs
+    /// behave identically; a year is included because the calendar strip rewards a long view.
+    static let restWindows: [ScoreTrendSection.Window] = [
+        .init(days: 14, label: "14d"), .init(days: 30, label: "30d"),
+        .init(days: 90, label: "90d"), .init(days: 365, label: "1y"),
+    ]
     /// Memoized decode of the NAVIGATED night (nil when `nightOffset == 0` — the hero reads
     /// `model.night` then). Rebuilt only in the `nightOffset` / data-key onChange handlers;
     /// `decodedNight` JSON-decodes, which must never run per body pass (1Hz HR ticks). (#160)
@@ -176,6 +190,7 @@ struct SleepView: View {
                         ForEach(Array(sleepVisibleSections.enumerated()), id: \.element) { idx, section in
                             sleepSectionView(section, resolved).staggeredAppear(index: idx + 1)
                         }
+
                     }
                 } else {
                     emptyState
@@ -225,6 +240,11 @@ struct SleepView: View {
                 modelKey = dataKey
                 navDaysCache = SleepModel.navDays(navSessions: navSessions)
                 model = buildModel()
+                // 260906: the stored Rest series for the trend section, on the same trigger — a
+                // freshly scored night re-reads it, exactly like the Trends page's own series loads.
+                let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+                restByDay = Dictionary(rest.map { ($0.day, $0.value) },
+                                       uniquingKeysWith: { _, last in last })
             }
             .sheet(item: $wakeEdit) { edit in
                 // The night's RECORDED coverage for the #940 guards: from the immutable detected
@@ -401,6 +421,13 @@ struct SleepView: View {
         (nightOffset == 0 ? model.night : navNight) ?? model.night
     }
 
+    /// The "yyyy-MM-dd" key for the night currently on screen, derived from its WAKE time — the
+    /// same convention `repo.days` rows are keyed by, so the two cannot disagree about which night
+    /// is being described.
+    private func nightDayKey(_ model: SleepModel) -> String {
+        Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(model.night.session.endTs)))
+    }
+
     /// The sleep-performance score (0–100) for a SPECIFIC night: the imported WHOOP figure for that
     /// night's LOCAL wake-day when the export carried one, else the resolved Rest composite for that
     /// day. Mirrors `performanceSeries`'s per-day transform exactly (the same single source of truth
@@ -418,6 +445,7 @@ struct SleepView: View {
     @ViewBuilder
     private func sleepSectionView(_ section: SleepSection, _ model: SleepModel) -> some View {
         switch section {
+        case .insight:         insightCard(model)
         case .sleepMarks:      SleepMarkCard()
         case .stages:          hero(model)
         case .bodyClock:       bodyClockDial(model)
@@ -425,6 +453,40 @@ struct SleepView: View {
         case .sleepDebt:       SleepDebtLedgerCard(model: model)
         case .stagesVsTypical: StagesVsTypicalCard(model: model)
         case .asleepDuration:  durationTrend(model)
+        case .restTrend:       restTrend
+        }
+    }
+
+    /// The tab's LLM read (260919). An arrangeable section like every other card here, so it can be
+    /// moved or hidden in Arrange rather than being pinned somewhere the wearer did not choose. Its
+    /// lens is THIS NIGHT's architecture and what it means for today — deliberately not the day's
+    /// grade (Recap owns that) or the week's direction (Trends).
+    private func insightCard(_ model: SleepModel) -> some View {
+        NoopCard {
+            TabInsightCard(
+                title: "What last night says",
+                // Keyed on the night being VIEWED, so stepping back through nights re-asks rather
+                // than leaving the previous answer sitting under new numbers.
+                subject: "sleep-\(nightDayKey(model))",
+                generate: { coach in
+                    guard let row = repo.days.first(where: { $0.day == nightDayKey(model) })
+                    else { return nil }
+                    return await coach.sleepNarrative(night: row)
+                },
+                startsExpanded: true,
+                showsAskCoach: true,
+                coachFollowUp: { summary in
+                    """
+                    I am looking at the Sleep tab for the night that ended on the morning of \
+                    \(nightDayKey(model)). It shows me this summary:
+
+                    \(summary)
+
+                    Treat this as the start of the conversation and answer follow-ups about that \
+                    night. Do not repeat the summary back to me.
+                    """
+                }
+            )
         }
     }
 
@@ -808,7 +870,7 @@ struct SleepView: View {
                     height: NoopMetrics.chartHeight,
                     tint: StrandPalette.restColor,
                     chart: { stageBar(s) },
-                    footer: { stageBreakdownRows(s) }
+                    footer: { stageBreakdownRows(s, model: model) }
                 )
             }
             // #407 — subordinate movement/restlessness trace UNDER the hypnogram, on the SAME timeline, for
@@ -911,7 +973,12 @@ struct SleepView: View {
                     // Oura/Garmin three things in one card disagreed. Ramp-aware rows name and colour every
                     // stage correctly, which IS the key; a legend above a correct key is the redundancy
                     // that was reported.
-                    stageBreakdownRows(s, palette: style.stagePalette)
+                    // 260920: always shown again. The bars were briefly gated behind a Settings
+                    // toggle because they restated the hypnogram as numbers — but now that each
+                    // row also carries its "vs typical" delta, the block is the ONLY place the
+                    // comparison lives, and a reading that has to be switched on in Settings is
+                    // one nobody finds. The toggle went with the `StagesVsTypicalCard` it replaced.
+                    stageBreakdownRows(s, palette: style.stagePalette, model: model)
             }
         )
     }
@@ -1277,12 +1344,17 @@ struct SleepView: View {
     /// proportional bar in the stage colour over a faint track, and the right-aligned duration. Same data
     /// as the prior footer (`s.rem` / `s.deep` / `s.light` / `s.awake` over `s.total`) — no new numbers.
     @ViewBuilder
-    private func stageBreakdownRows(_ s: Stages, palette: SleepStagePalette = .noop) -> some View {
+    private func stageBreakdownRows(_ s: Stages, palette: SleepStagePalette = .noop,
+                                    model: SleepModel? = nil) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-            stageBreakdownRow(.rem,   minutes: s.rem,   total: s.total, percent: stageSharePercent(.rem, s), palette: palette)
-            stageBreakdownRow(.deep,  minutes: s.deep,  total: s.total, percent: stageSharePercent(.deep, s), palette: palette)
-            stageBreakdownRow(.light, minutes: s.light, total: s.total, percent: stageSharePercent(.light, s), palette: palette)
-            stageBreakdownRow(.awake, minutes: s.awake, total: s.total, percent: stageSharePercent(.awake, s), palette: palette)
+            // 260920: each row now carries its own "vs typical" delta, which used to be a whole
+            // separate `StagesVsTypicalCard`. One widget, both readings — the maintainer's ask.
+            // Awake has no typical mean in the model (nor did the old card show one), so it
+            // renders without a delta rather than with a fabricated zero.
+            stageBreakdownRow(.rem,   minutes: s.rem,   total: s.total, percent: stageSharePercent(.rem, s), palette: palette, typical: model?.typicalRemMin)
+            stageBreakdownRow(.deep,  minutes: s.deep,  total: s.total, percent: stageSharePercent(.deep, s), palette: palette, typical: model?.typicalDeepMin)
+            stageBreakdownRow(.light, minutes: s.light, total: s.total, percent: stageSharePercent(.light, s), palette: palette, typical: model?.typicalLightMin)
+            stageBreakdownRow(.awake, minutes: s.awake, total: s.total, percent: stageSharePercent(.awake, s), palette: palette, typical: nil)
         }
     }
 
@@ -1305,7 +1377,8 @@ struct SleepView: View {
     /// row highlights that stage and recedes the rest; tapping the selected row again clears the highlight.
     @ViewBuilder
     private func stageBreakdownRow(_ stage: SleepStage, minutes: Double, total: Double, percent: Int,
-                                   palette: SleepStagePalette = .noop) -> some View {
+                                   palette: SleepStagePalette = .noop,
+                                   typical: Double? = nil) -> some View {
         let color = StrandPalette.sleepStageColor(stage, palette: palette)
         let fraction = total > 0 ? min(1, max(0, minutes / total)) : 0
         let isSelected = selectedStage == stage
@@ -1327,10 +1400,23 @@ struct SleepView: View {
             // The NOOP signature: a segmented PipBar that counts up to the share-of-night fraction,
             // tinted in the stage colour over the canonical inset track. Flat, crisp, no glow.
             PipBar(value: fraction * 100, segments: 20, tint: color, height: 8)
-            Text(durationText(minutes))
-                .font(StrandFont.captionNumber)
-                .foregroundStyle(StrandPalette.textPrimary)
-                .frame(width: 60, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(durationText(minutes))
+                    .font(StrandFont.captionNumber)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                // The absorbed "vs typical" reading. Green when above the personal mean and amber
+                // below — for AWAKE that is inverted, since more time awake is the worse night.
+                if let typical, typical > 0 {
+                    let diff = minutes - typical
+                    let better = stage == .awake ? diff < 0 : diff > 0
+                    Text("\(diff >= 0 ? "+" : "−")\(durationText(abs(diff))) vs typ")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(abs(diff) < 1 ? StrandPalette.textTertiary
+                                         : (better ? StrandPalette.statusPositive
+                                            : StrandPalette.metricAmber))
+                }
+            }
+            .frame(width: 78, alignment: .trailing)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -1730,6 +1816,25 @@ struct SleepView: View {
     // `SleepDebtLedgerCard` directly; the card body, its `debtDeltaBars` strip and the debt-only
     // formatters (`debtHeadline` / `debtTag` / `debtRead` / `debtBalanceColor` / `debtSigned`) moved there
     // with it — they had no other caller in SleepView.
+
+    // MARK: - 5. Rest-score trend (260906)
+
+    /// The same trend block the Day tab carries, pointed at the stored Rest score.
+    ///
+    /// Sleep previously had one fixed 30-day duration chart and no way to widen it, while the Trends
+    /// page carried the windowed views for every other metric. This brings the per-metric trend home
+    /// to the tab that owns the metric: window selector, a like-for-like comparison that scales with
+    /// the window, and the calendar strip that reads consistency at a glance.
+    ///
+    /// Reads `sleep_performance` — the SAME stored series the Rest hero at the top of this screen
+    /// shows — so the hero and the trend cannot disagree about a night.
+    @ViewBuilder
+    private var restTrend: some View {
+        ScoreTrendSection(title: "Rest trend", valuesByDay: restByDay,
+                          cacheIdentity: "rest-trend",
+                          windows: Self.restWindows, window: $restWindow,
+                          lowLabel: "Poor", highLabel: "Excellent")
+    }
 
     // MARK: - 4. 30-day asleep-hours trend
 
