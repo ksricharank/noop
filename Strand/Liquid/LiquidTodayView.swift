@@ -21,6 +21,8 @@ struct LiquidTodayView: View {
     @AppStorage(DayCycleMode.storageKey) private var dayCycleModeRaw = DayCycleMode.sleepOnset.rawValue
     private var dayCycleMode: DayCycleMode { DayCycleMode.persisted(dayCycleModeRaw) }
     @EnvironmentObject var repo: Repository
+    /// 260921: the strap-log sink for the charge-display ledger (see `chargeShown` below).
+    @EnvironmentObject private var live: LiveState
     @EnvironmentObject var router: NavRouter
     @EnvironmentObject var profile: ProfileStore
     // For the pull-to-sync gesture (#334): a pull kicks a manual strap history offload via ble.syncNow().
@@ -158,6 +160,9 @@ struct LiquidTodayView: View {
     /// the other caches. It composes `TodayView.lastScoredRecoveryDay`, which is O(days) — exactly the scan
     /// this cache exists to keep out of body. Never resolved in body.
     @State private var cachedChargeDisplay: ChargeDisplay = .noData
+    /// 260921: the last display state written to the strap log, so the `chargeShown` ledger
+    /// records TRANSITIONS only — an idle screen costs nothing and a flip reads as a list.
+    @State private var lastLoggedChargeDisplay: ChargeDisplay?
     /// Flips true once the first load() completes. Until then the hero gauges + sky render STATIC so the
     /// launch data-churn (refresh publish + BLE/HR notifies) isn't fighting 4 live canvases + CoreMotion.
     @State private var dataLoaded = false
@@ -1865,6 +1870,30 @@ struct LiquidTodayView: View {
             priorScored: priorScored,
             calibrationNights: calNights,
             todayKey: tkey)
+        // 260921 CHARGE-DISPLAY LEDGER — what the SCREEN showed, and from which branch.
+        //
+        // The report this answers: "at 06:30 the charge reads 36, then updates to 63." Both the
+        // store value and the widget snapshot are now logged at write time, but neither says what
+        // the user actually saw — and the three `ChargeDisplay` branches are visually near-identical
+        // (same ring, same number; only a small pill distinguishes a CARRIED prior day from a
+        // freshly scored one). Without this line a carried 36 and a mis-scored 36 read the same in
+        // an export, which is exactly the ambiguity that kept this open.
+        //
+        // Emitted only when the resolved display CHANGES, so an idle screen costs nothing and the
+        // log reads as a transition list — the shape a flip report needs.
+        if cachedChargeDisplay != lastLoggedChargeDisplay {
+            let branch: String
+            switch cachedChargeDisplay {
+            case .scored:      branch = "scored"
+            case .carried:     branch = "carried(prior-day)"
+            case .calibrating: branch = "calibrating"
+            default:           branch = "none"
+            }
+            live.append(log: "chargeShown day=\(tkey) branch=\(branch) "
+                                  + "todayRecovery=\(day?.recovery.map { String(Int($0.rounded())) } ?? "nil") "
+                                  + "offset=\(selectedDayOffset)")
+            lastLoggedChargeDisplay = cachedChargeDisplay
+        }
 
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: selectedLogicalDay)

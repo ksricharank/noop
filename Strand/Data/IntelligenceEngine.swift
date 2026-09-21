@@ -1834,6 +1834,15 @@ final class IntelligenceEngine: ObservableObject {
         // #1005: write the loop's updated reuse cache back to the (main-actor) stored property. The pass ran
         // to completion above (`.value` awaited), so there is no concurrent access.
         dayScanCache = updatedDayScanCache
+        // 260921: did the day loop stop early? Hoisted here — it was previously derived at the very END
+        // of the function, thousands of lines AFTER the recovery recompute and the persist, so the one
+        // place that needed to know a pass was partial could not see it. The value is unchanged; only
+        // the point of derivation moves, and the late `wasAbandoned` now reads this.
+        let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
+        // A pass whose baseline cannot be trusted to judge a night: a light pass (today-only by
+        // design) or an abandoned full pass (stopped at night N of maxDays). Both fold a baseline
+        // shorter than the window the score is supposed to be relative to.
+        let partialBaseline = lightPass || wasAbandoned
         // #1538: the pass after the day loop was never measured. The cost line above brackets the loop and
         // is emitted the moment it returns, so a pass whose time went somewhere later reported a small
         // prep/score and no account of the rest — which is where the steps calibration was re-folding sixty
@@ -2012,9 +2021,22 @@ final class IntelligenceEngine: ObservableObject {
         // The recovery values already persisted for this window (260903). A LIGHT pass reuses
         // these instead of recomputing against its own 2-night baseline — see the `recovery`
         // assignment in the pass-2 loop for why that recomputation was wrong. Read once, and only
-        // for a light pass (the full pass recomputes every day anyway).
+        // for a pass whose baseline is PARTIAL (a light pass, or the 260921 abandoned full pass);
+        // a completed full pass recomputes every day anyway.
+        //
+        // 260921: an ABANDONED full pass needs the same protection, for the same reason. The
+        // `break` in the day loop leaves the pass with only the newest N nights scored, and on a
+        // strap-only install those N nights ARE the baseline — so recovery below would be z-scored
+        // against a window far shorter than 21. Measured against the shipped scorer: one night read
+        // Charge 64 folded from 4 nights and 30 folded from 21. That is the same 22 -> 47 flip the
+        // light-pass guard was written for, arriving by a second route the `lightPass` flag cannot
+        // see, and each abandoned pass overwrites the last completed one's answer.
+        //
+        // Keyed on BASELINE SUFFICIENCY (`partialBaseline`), not on which kind of pass this is: the
+        // invariant is "do not judge a night against a window we did not actually score", and a
+        // third truncation route would otherwise need a third flag.
         var storedRowByDay: [String: DailyMetric] = [:]
-        if lightPass {
+        if lightPass || partialBaseline {
             // Same window the pass scores: [now - (maxDays-1) days, today], derived here rather
             // than reusing `oldestDay`/`newestDay`, which are declared further down.
             let fromDay = AnalyticsEngine.dayString(nowLocalMidnight - (maxDays - 1) * 86_400,
@@ -2195,7 +2217,7 @@ final class IntelligenceEngine: ObservableObject {
             // A light pass does not re-judge the night at all — the merge below restores every
             // scored-night field from the stored row, recovery included. Computing it here would
             // be wasted work against a baseline the light window cannot support.
-            let recovery = lightPass ? nil : Self.recomputeRecovery(daily, baselines2)
+            let recovery = partialBaseline ? nil : Self.recomputeRecovery(daily, baselines2)
             let skinDev = daily.skinTempDevC
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
@@ -2287,8 +2309,28 @@ final class IntelligenceEngine: ObservableObject {
             // leaves every target input as the last full pass computed it.
             let scored = daily.with(recovery: recovery, skinTempDevC: skinDev,
                                     skinTempC: night.nightlySkin)
-            dailies.append(lightPass ? scored.lightPassMerged(over: storedRowByDay[daily.day])
-                                     : scored)
+            // 260921 CHARGE-WRITE LEDGER — always-on, one line per day whose recovery this pass
+            // WRITES, and the evidence the 36<->67 report could not be settled without.
+            //
+            // Rare-event rules do not apply: the question is not "did something unusual happen" but
+            // "which pass wrote the number on screen, and what baseline was behind it" — unanswerable
+            // after the fact because only the final value survives in the store. Every field is a
+            // count, a score or a local token; no PII. Cost is a string per scored day, on a path
+            // that already formats several.
+            //
+            // `nValid` is the tell: a full pass on a settled install reads ~21, and anything far
+            // below it on a `kind=full` line means the pass was judging a night against a window it
+            // never scored — which `partialBaseline` should now have made impossible.
+            let chargeKind = lightPass ? "light" : (wasAbandoned ? "abandoned" : "full")
+            let wroteText = recovery.map { String(Int($0.rounded())) } ?? "nil(preserved)"
+            let keptText = storedRowByDay[daily.day]?.recovery.map { String(Int($0.rounded())) } ?? "none"
+            diagnosticSink?("chargeWrite day=\(daily.day) kind=\(chargeKind) "
+                            + "wrote=\(wroteText) stored=\(keptText) "
+                            + "hrvNValid=\(baselines2.hrv?.nValid.description ?? "nil") "
+                            + "hrvStatus=\(baselines2.hrv.map { String(describing: $0.status) } ?? "nil") "
+                            + "scanned=\(scoredNights.count)/\(maxDays) trigger=\(trigger)", nil)
+            dailies.append(partialBaseline ? scored.lightPassMerged(over: storedRowByDay[daily.day])
+                                           : scored)
             if let rest = AnalyticsEngine.Rest.composite(daily: daily) {
                 restPoints.append(MetricPoint(day: daily.day, key: "sleep_performance", value: rest))
             }
@@ -2967,7 +3009,6 @@ final class IntelligenceEngine: ObservableObject {
         // night 3 would mark eighteen unscored nights as done and no later trigger would revisit
         // them. Skipping both leaves the state exactly as an interrupted pass already leaves it — the
         // debt mark stays set, and the next trigger re-runs under a policy that can defer properly.
-        let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
         if wasAbandoned {
             RescoreStats.recordAbandoned()
             let elapsed = Self.activeSeconds(since: reScoreStart)
