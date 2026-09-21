@@ -38,8 +38,6 @@ struct SleepView: View {
     // leaf-scoping pattern and HealthView.swift:17-22), so a tick refreshes only that leaf.
     @EnvironmentObject var intelligence: IntelligenceEngine
 
-    /// Whether to draw the per-stage breakdown bars under the hypnogram (260920). Default OFF.
-    @AppStorage(SleepLayoutPrefs.showStageBarsKey) private var showStageBars = false
 
     /// Memoized snapshot of every expensive derivation (latest Night with its intervals
     /// resolved once, the seven metric series, the trend points, the typical means). Rebuilt
@@ -872,7 +870,7 @@ struct SleepView: View {
                     height: NoopMetrics.chartHeight,
                     tint: StrandPalette.restColor,
                     chart: { stageBar(s) },
-                    footer: { stageBreakdownRows(s) }
+                    footer: { stageBreakdownRows(s, model: model) }
                 )
             }
             // #407 — subordinate movement/restlessness trace UNDER the hypnogram, on the SAME timeline, for
@@ -975,12 +973,12 @@ struct SleepView: View {
                     // Oura/Garmin three things in one card disagreed. Ramp-aware rows name and colour every
                     // stage correctly, which IS the key; a legend above a correct key is the redundancy
                     // that was reported.
-                    // 260920: OFF by default. The hypnogram above already shows the night's
-                    // architecture; the four bars restate it as numbers, which is useful when you
-                    // want them and a wall of bars when you do not. Settings → Sleep turns them on.
-                    if showStageBars {
-                        stageBreakdownRows(s, palette: style.stagePalette)
-                    }
+                    // 260920: always shown again. The bars were briefly gated behind a Settings
+                    // toggle because they restated the hypnogram as numbers — but now that each
+                    // row also carries its "vs typical" delta, the block is the ONLY place the
+                    // comparison lives, and a reading that has to be switched on in Settings is
+                    // one nobody finds. The toggle went with the `StagesVsTypicalCard` it replaced.
+                    stageBreakdownRows(s, palette: style.stagePalette, model: model)
             }
         )
     }
@@ -1346,12 +1344,17 @@ struct SleepView: View {
     /// proportional bar in the stage colour over a faint track, and the right-aligned duration. Same data
     /// as the prior footer (`s.rem` / `s.deep` / `s.light` / `s.awake` over `s.total`) — no new numbers.
     @ViewBuilder
-    private func stageBreakdownRows(_ s: Stages, palette: SleepStagePalette = .noop) -> some View {
+    private func stageBreakdownRows(_ s: Stages, palette: SleepStagePalette = .noop,
+                                    model: SleepModel? = nil) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
-            stageBreakdownRow(.rem,   minutes: s.rem,   total: s.total, percent: stageSharePercent(.rem, s), palette: palette)
-            stageBreakdownRow(.deep,  minutes: s.deep,  total: s.total, percent: stageSharePercent(.deep, s), palette: palette)
-            stageBreakdownRow(.light, minutes: s.light, total: s.total, percent: stageSharePercent(.light, s), palette: palette)
-            stageBreakdownRow(.awake, minutes: s.awake, total: s.total, percent: stageSharePercent(.awake, s), palette: palette)
+            // 260920: each row now carries its own "vs typical" delta, which used to be a whole
+            // separate `StagesVsTypicalCard`. One widget, both readings — the maintainer's ask.
+            // Awake has no typical mean in the model (nor did the old card show one), so it
+            // renders without a delta rather than with a fabricated zero.
+            stageBreakdownRow(.rem,   minutes: s.rem,   total: s.total, percent: stageSharePercent(.rem, s), palette: palette, typical: model?.typicalRemMin)
+            stageBreakdownRow(.deep,  minutes: s.deep,  total: s.total, percent: stageSharePercent(.deep, s), palette: palette, typical: model?.typicalDeepMin)
+            stageBreakdownRow(.light, minutes: s.light, total: s.total, percent: stageSharePercent(.light, s), palette: palette, typical: model?.typicalLightMin)
+            stageBreakdownRow(.awake, minutes: s.awake, total: s.total, percent: stageSharePercent(.awake, s), palette: palette, typical: nil)
         }
     }
 
@@ -1374,7 +1377,8 @@ struct SleepView: View {
     /// row highlights that stage and recedes the rest; tapping the selected row again clears the highlight.
     @ViewBuilder
     private func stageBreakdownRow(_ stage: SleepStage, minutes: Double, total: Double, percent: Int,
-                                   palette: SleepStagePalette = .noop) -> some View {
+                                   palette: SleepStagePalette = .noop,
+                                   typical: Double? = nil) -> some View {
         let color = StrandPalette.sleepStageColor(stage, palette: palette)
         let fraction = total > 0 ? min(1, max(0, minutes / total)) : 0
         let isSelected = selectedStage == stage
@@ -1396,10 +1400,23 @@ struct SleepView: View {
             // The NOOP signature: a segmented PipBar that counts up to the share-of-night fraction,
             // tinted in the stage colour over the canonical inset track. Flat, crisp, no glow.
             PipBar(value: fraction * 100, segments: 20, tint: color, height: 8)
-            Text(durationText(minutes))
-                .font(StrandFont.captionNumber)
-                .foregroundStyle(StrandPalette.textPrimary)
-                .frame(width: 60, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(durationText(minutes))
+                    .font(StrandFont.captionNumber)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                // The absorbed "vs typical" reading. Green when above the personal mean and amber
+                // below — for AWAKE that is inverted, since more time awake is the worse night.
+                if let typical, typical > 0 {
+                    let diff = minutes - typical
+                    let better = stage == .awake ? diff < 0 : diff > 0
+                    Text("\(diff >= 0 ? "+" : "−")\(durationText(abs(diff))) vs typ")
+                        .font(StrandFont.caption)
+                        .foregroundStyle(abs(diff) < 1 ? StrandPalette.textTertiary
+                                         : (better ? StrandPalette.statusPositive
+                                            : StrandPalette.metricAmber))
+                }
+            }
+            .frame(width: 78, alignment: .trailing)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
