@@ -75,14 +75,6 @@ enum SleepSection: String, CaseIterable, Identifiable {
 /// and is a direct twin of `TodayLayoutPrefs` with a `sleep.` key namespace.
 enum SleepLayoutPrefs {
     /// UserDefaults key — a comma-joined list of `SleepSection` rawValues in display order.
-    /// Whether the per-stage breakdown bars (Awake / Light / Deep / REM) are drawn under the
-    /// hypnogram (260920, maintainer: "I want the detailed breakdown bars ... to be hidden by
-    /// default and I want to be able to configure the widget to enable them").
-    ///
-    /// Default OFF. Stored INVERTED — the key means "show" — because a `Bool` reads `false` when
-    /// unset, which is exactly the default wanted here, so no seeding is needed.
-    static let showStageBarsKey = "sleep.showStageBars"
-
     static let orderKey = "sleep.sectionOrder"
     /// UserDefaults key — a comma-joined list of explicitly hidden `SleepSection` rawValues.
     static let hiddenKey = "sleep.hiddenSections"
@@ -144,8 +136,22 @@ enum SleepLayoutPrefs {
 
     /// The cards Sleep should render, preserving the full saved order while filtering only the user's
     /// explicit hidden set. At least one visible card is enforced by the editor, not the decoder.
+    /// Sections OFF until switched on. 260920: `stagesVsTypical` — its whole content (each stage's
+    /// delta against the personal mean) now renders inside the stage-breakdown rows under the
+    /// hypnogram, at the maintainer's request to "use one widget for two things". Leaving it shown
+    /// would put the same comparison on the page twice.
+    ///
+    /// Default-hidden rather than DELETED: removing the rawValue would make every stored layout
+    /// containing it decode short, and the recovery rule appends missing cards — it cannot restore
+    /// an order it never saw. A wearer who wants the standalone card back can still un-hide it.
+    static let defaultHidden: Set<SleepSection> = [.stagesVsTypical]
+
+    static func effectiveHidden(hiddenRaw: String) -> Set<SleepSection> {
+        hiddenRaw.isEmpty ? defaultHidden : Set(decodeHidden(hiddenRaw))
+    }
+
     static func visibleOrder(orderRaw: String, hiddenRaw: String) -> [SleepSection] {
-        let hidden = Set(decodeHidden(hiddenRaw))
+        let hidden = effectiveHidden(hiddenRaw: hiddenRaw)
         return decodeOrder(orderRaw).filter { !hidden.contains($0) }
     }
 }
