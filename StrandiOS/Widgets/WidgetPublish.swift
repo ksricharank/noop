@@ -156,6 +156,23 @@ extension WidgetSnapshot {
         let previousSnap = load()
         let unseenOnly = WidgetSnapshot.changedOnlyInUnrenderedFields(from: previousSnap, to: snap)
         let reloaded = saveAndReloadIfChanged(snap, previous: previousSnap)
+        // 260921 CHARGE-PUBLISH LEDGER — the widget half of the 36-vs-67 divergence.
+        //
+        // The app reads Charge live from the store; the widget reads this FROZEN snapshot, targets
+        // and all. So "widget says 36, app says 67" needs three facts that nothing else records:
+        // which Charge was baked in, which DAY it came from (`widgetAnchor` legitimately carries a
+        // prior scored day forward, so a snapshot can be right about a day that is not today), and
+        // whether WidgetKit was actually asked to reload or the request was withheld by the
+        // background budget — a withheld reload leaves a correct snapshot behind a stale face,
+        // which looks identical to a wrong value from the outside.
+        //
+        // Always-on and counts-only, same privacy class as the glance line beside it.
+        let anchorKey = day?.day ?? "none"
+        let todayKey = Repository.localDayKey(now)
+        model.live.append(log: "chargePublish anchor=\(anchorKey)\(anchorKey == todayKey ? "" : " (carried)") "
+                        + "charge=\(snap.recovery.map(String.init) ?? "nil") "
+                        + "prevCharge=\(previousSnap?.recovery.map(String.init) ?? "none") "
+                        + "reloadRequested=\(reloaded) bg=\(Self.isBackground)")
         WidgetPublishStats.recordFullFinished(
             glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
                 + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-") "
