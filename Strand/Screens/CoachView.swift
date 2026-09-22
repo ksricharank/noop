@@ -31,8 +31,18 @@ struct CoachView: View {
     @State private var keyFix: String = ""
     /// Whether the model selector is in free-text "Custom…" mode.
     @State private var customModel: Bool = false
-    /// The id typed in the "Custom…" field.
+    /// The id typed in the "Custom…" field. Shared by the setup card's inline field and the connected
+    /// header's prompt — only one of the two is ever on screen.
     @State private var customModelDraft: String = ""
+    /// Whether the connected header's free-text model-id prompt is showing.
+    @State private var showConnectedCustomModel: Bool = false
+    /// Whether the provider-configuration sheet is showing (the gear). Presenting the same setup card
+    /// as a sheet rather than routing through `isConfigured` means reaching it never requires being
+    /// disconnected, and dismissing it never requires saving anything.
+    @State private var showProviderConfig: Bool = false
+    /// Whether the "Forget key" confirmation is showing. Deleting a credential asks first — the old
+    /// gear did it on a single tap with no way to undo.
+    @State private var showForgetKeyConfirm: Bool = false
     @FocusState private var composerFocused: Bool
 
     /// K2: confirmation gate for the destructive "Clear conversation" toolbar action.
@@ -81,6 +91,20 @@ struct CoachView: View {
                 } else {
                     suggestionChips
                 }
+                // Why Today's synthesis is blank. It fails silently by design there — the card falls
+                // back to the rule-based read rather than showing a provider error — which left no way
+                // to tell a broken provider from a quiet one. This is where that question gets answered.
+                if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
+                    errorBanner("Today's synthesis: \(synthesisError)")
+                }
+                // What the last generation actually DID — which model ran, whether a fallback was
+                // attempted, and how it ended. Without this the retry is invisible: a blank result
+                // cannot be told apart from a retry that ran and failed, which is precisely the
+                // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
+                if let trace = coach.lastAttemptTrace, !trace.isEmpty {
+                    attemptTraceNote(trace)
+                }
+                suggestionChips
                 composer
                 // K12: show a rough token estimate when the draft is non-empty.
                 if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -113,14 +137,23 @@ struct CoachView: View {
                     .disabled(coach.messages.isEmpty)
                 }
                 ToolbarItem {
-                    Button(role: .destructive) {
-                        coach.disconnect()
+                    // OPENS the provider configuration; it does not destroy anything.
+                    //
+                    // This was a `.destructive` button that called `disconnect()` on a single tap, with
+                    // no confirmation — labelled "Disconnect" but wearing a gear, which reads as
+                    // settings. Tapping it deleted the saved key and dropped the user into the setup
+                    // card, and under the old single-slot store that was the ONLY stored key. A gear
+                    // that silently destroys a credential is a trap regardless of its label, so the
+                    // gear now means what it looks like it means. Forgetting a key is still available,
+                    // as a named and confirmed action inside the card.
+                    Button {
+                        showProviderConfig = true
                         keyDraft = ""
                     } label: {
-                        Label("Disconnect", systemImage: "gearshape")
+                        Label("Configure providers", systemImage: "gearshape")
                     }
-                    .help("Forget the saved key and disconnect")
-                    .accessibilityLabel("Disconnect provider")
+                    .help("Add or replace API keys and switch provider")
+                    .accessibilityLabel("Configure providers")
                 }
             }
         }
@@ -185,6 +218,32 @@ struct CoachView: View {
         // a conversation exists.
         .onChangeCompat(of: coach.dataConsent) { _ in
             Task { await coach.startBriefIfNeeded() }
+        }
+        .task(id: coach.dataConsent) { await coach.startBriefIfNeeded() }
+        // The gear's destination: the same provider-configuration card, presented so it can always be
+        // left. Dismissing requires nothing — no key, no save — which is the property the old
+        // disconnect-into-the-card path lacked and the whole reason it was a dead end.
+        .sheet(isPresented: $showProviderConfig) {
+            NavigationStack {
+                ScrollView {
+                    setupCard.padding(16)
+                }
+                .background(StrandPalette.surfaceBase.ignoresSafeArea())
+                .navigationTitle("Providers")
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { showProviderConfig = false }
+                    }
+                }
+            }
+        }
+        // Saving a key from the sheet has done its job — close it and return to the chat rather than
+        // leaving the user on a configuration screen wondering whether it took.
+        .onChangeCompat(of: coach.hasKey) { hasKey in
+            if hasKey && showProviderConfig { showProviderConfig = false }
         }
     }
 
@@ -279,14 +338,45 @@ struct CoachView: View {
                         .accessibilityLabel("API key")
                 }
 
-                HStack {
+                HStack(spacing: 10) {
                     if coach.provider == .custom {
                         NoopButton("Connect", systemImage: "link", kind: .primary, action: connectCustom)
                             .disabled(coach.customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     } else {
-                        NoopButton("Save key", systemImage: "key.fill", kind: .primary, action: saveKey)
+                        NoopButton(coach.hasKey ? "Replace key" : "Save key",
+                                   systemImage: "key.fill", kind: .primary, action: saveKey)
                             .disabled(keyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+
+                    // Forgetting a key is now a NAMED, confirmed action rather than the side effect of
+                    // tapping a gear. Shown only for a provider that has something to forget.
+                    if coach.hasKey {
+                        NoopButton("Forget key", systemImage: "trash", kind: .secondary) {
+                            showForgetKeyConfirm = true
+                        }
+                        .accessibilityLabel("Forget the saved \(coach.provider.displayName) key")
+                    }
+
+                    // The way OUT of this card, and it has to live HERE.
+                    //
+                    // "Save key" is disabled while the key field is empty, and that field is transient:
+                    // cleared after every save and never prefilled from the Keychain, because a stored
+                    // secret cannot be read back into a field. So selecting a provider with no stored
+                    // key leaves the card with every control dead. There is no toolbar in this state
+                    // either — `isConfigured` gates it — so the card must carry its own exit.
+                    //
+                    // Switching BACK is the action that helps, and the provider Picker above can do it,
+                    // but only if the user works out that the Picker is the escape. This states it:
+                    // jump straight to a provider that is ready, named so it is obvious where it goes.
+                    if let ready = readyProviderToReturnTo {
+                        NoopButton("Back to \(ready.displayName)", systemImage: "arrow.uturn.backward",
+                                   kind: .secondary) {
+                            coach.provider = ready
+                            keyDraft = ""
+                        }
+                        .accessibilityLabel("Return to \(ready.displayName), which already has a key")
+                    }
+
                     Spacer()
                 }
 
@@ -303,6 +393,24 @@ struct CoachView: View {
                 privacyFootnote
             }
         }
+        .confirmationDialog("Forget the saved \(coach.provider.displayName) key?",
+                            isPresented: $showForgetKeyConfirm, titleVisibility: .visible) {
+            Button("Forget key", role: .destructive) {
+                coach.clearKey()
+                keyDraft = ""
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The key is deleted from the Keychain and has to be pasted again to use \(coach.provider.displayName). Your other providers' keys are not affected.")
+        }
+    }
+
+    /// A provider other than the selected one that is already usable, if any — the destination for the
+    /// setup card's escape hatch. Nil when nothing is configured yet (a first run, where the card is the
+    /// correct place to be and there is nowhere to go back TO), so the button appears only when it can
+    /// actually rescue someone.
+    private var readyProviderToReturnTo: AIProvider? {
+        AIProvider.allCases.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
     }
 
     /// Model selector: a Picker over `coach.availableModels` with a free-text "Custom…" path and a
@@ -387,9 +495,46 @@ struct CoachView: View {
 
     // MARK: - Connected state
 
+    /// Connected header. The model half of the pill is a live menu, not a label: switching models
+    /// within the connected provider used to be reachable ONLY through the setup card, which renders
+    /// only while disconnected — so the sole route was the Disconnect button, and disconnecting forgot
+    /// the key. Changing model therefore cost a re-entry of the key every single time. The key and the
+    /// model are unrelated, so the menu changes the model in place and touches no credential.
     private var connectedHeader: some View {
         HStack(spacing: 10) {
-            StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+            Menu {
+                Picker("Model", selection: connectedModelSelection) {
+                    ForEach(coach.availableModels, id: \.self) { m in
+                        Text(m).tag(m)
+                    }
+                }
+                Divider()
+                Button("Custom model id…") { showConnectedCustomModel = true }
+                Button {
+                    Task { await coach.refreshModels() }
+                } label: {
+                    Label("Refresh models", systemImage: "arrow.clockwise")
+                }
+                Divider()
+                // The PROVIDER switcher belongs here too, not only in the setup card. Switching to a
+                // provider with no stored key drops you into that card, whose own Picker is then the
+                // only way back — but its Save button is dead while the key field is empty, and the
+                // field can never be prefilled from the Keychain. That is a dead end reachable by
+                // ordinary use. Offering the switch from the connected header means a provider that
+                // already HAS a key is always one tap away, without passing through the card at all.
+                Picker("Provider", selection: $coach.provider) {
+                    ForEach(AIProvider.allCases) { p in
+                        // Mark which providers can be switched to without typing anything, so the
+                        // choice that strands you is visibly distinct from the ones that don't.
+                        Text(coach.hasStoredKey(for: p) ? "\(p.displayName) ✓" : p.displayName).tag(p)
+                    }
+                }
+            } label: {
+                StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Provider \(coach.provider.displayName), model \(coach.model). Change model")
+
             Spacer()
             if coach.sending {
                 StatePill("Thinking", tone: .accent, pulsing: true)
@@ -408,6 +553,20 @@ struct CoachView: View {
             connectionMenu
             #endif
         }
+        // Free-text id, same escape hatch the setup card offers, for a model the picker doesn't list.
+        .alert("Custom model id", isPresented: $showConnectedCustomModel) {
+            TextField("Model id", text: $customModelDraft)
+            Button("Use") { applyCustomModel() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Send requests to \(coach.provider.displayName) using this model id.")
+        }
+    }
+
+    /// Binds the connected-header menu straight to `coach.model`. No "Custom…" sentinel here — the
+    /// free-text path is its own menu item, so every tag in this picker is a real model id.
+    private var connectedModelSelection: Binding<String> {
+        Binding(get: { coach.model }, set: { coach.model = $0 })
     }
 
     #if os(iOS)
@@ -541,39 +700,66 @@ struct CoachView: View {
             // The reply sits on a frosted Charge-tinted surface, a card, not a flat box.
             // K8: context menu (long-press / right-click) with Copy, Share, and Save actions.
             HStack {
-                Markdown(message.text)
-                    .markdownTheme(.strand)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
-                    .frame(maxWidth: 560, alignment: .leading)
-                    // K8: Copy / Share / Save context menu on assistant replies.
-                    .contextMenu {
-                        Button {
-                            #if os(macOS)
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(message.text, forType: .string)
-                            #else
-                            UIPasteboard.general.string = message.text
-                            #endif
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
+                VStack(alignment: .leading, spacing: 4) {
+                    Markdown(message.text)
+                        .markdownTheme(.strand)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
+                        // K8: Copy / Share / Save context menu on assistant replies.
+                        .contextMenu {
+                            Button {
+                                #if os(macOS)
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(message.text, forType: .string)
+                                #else
+                                UIPasteboard.general.string = message.text
+                                #endif
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                            }
+                            ShareLink(item: message.text) {
+                                Label("Share", systemImage: "square.and.arrow.up")
+                            }
+                            Button {
+                                saveAdvice(message.text)
+                            } label: {
+                                Label("Save to Journal", systemImage: "square.and.pencil")
+                            }
                         }
-                        ShareLink(item: message.text) {
-                            Label("Share", systemImage: "square.and.arrow.up")
-                        }
-                        Button {
-                            saveAdvice(message.text)
-                        } label: {
-                            Label("Save to Journal", systemImage: "square.and.pencil")
-                        }
+
+                    // Attribution on EVERY reply, naming whichever model wrote it.
+                    //
+                    // It used to appear only for a fallback, which made the label's absence carry the
+                    // real information — "this came from the model you picked" — and that is invisible
+                    // to anyone who does not already know the rule. Naming the model every time makes
+                    // each reply self-describing; a substitution then stands out because the name
+                    // differs from the picker, not because a label materialised.
+                    //
+                    // The fallback case still says so in words, since the model name alone does not
+                    // tell you a substitution happened unless you remember what you had selected.
+                    if let model = message.generatedByModel {
+                        Text(message.cameFromFallback
+                             ? "generated by \(model) (fallback)"
+                             : "generated by \(model)")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(message.cameFromFallback
+                                             ? StrandPalette.textSecondary
+                                             : StrandPalette.textTertiary)
+                            .padding(.horizontal, 4)
                     }
+                }
+                .frame(maxWidth: 560, alignment: .leading)
                 Spacer(minLength: 48)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Coach said: \(message.text)")
+            .accessibilityLabel(message.generatedByModel.map { model in
+                message.cameFromFallback
+                    ? "Coach said, generated by \(model) as a fallback: \(message.text)"
+                    : "Coach said, generated by \(model): \(message.text)"
+            } ?? "Coach said: \(message.text)")
         }
     }
 
@@ -649,6 +835,25 @@ struct CoachView: View {
         guard !trimmed.isEmpty else { return }
         coach.setKey(trimmed)
         keyFix = ""
+    }
+
+    /// What the last generation did. Informational, not an error — it reports a successful fallback as
+    /// readily as a failed one, because an answer that quietly came from a different model than the one
+    /// named in the picker is its own kind of confusion. Tertiary styling so it reads as a footnote
+    /// rather than competing with a real error banner above it.
+    private func attemptTraceNote(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(StrandPalette.textTertiary)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Model attempt: \(message)")
     }
 
     private var suggestionChips: some View {
