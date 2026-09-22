@@ -86,7 +86,7 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
         let shouldRetry: [AICoachError] = [
             .timedOut,
             .emptyReply("finishReason MAX_TOKENS"),
-            .rateLimited,
+            .rateLimited("quota exceeded"),
             .transientServer(503, "model is overloaded"),
             .server(400, "bad request"),
             .network("connection reset"),
@@ -140,7 +140,7 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
     /// label would make the trace unreadable exactly when it is needed most.
     func testEveryFailureHasAShortLabel() {
         let cases: [AICoachError] = [
-            .noKey, .emptyQuestion, .badKey, .rateLimited, .timedOut,
+            .noKey, .emptyQuestion, .badKey, .rateLimited("quota exceeded"), .timedOut,
             .server(500, "boom"), .network("offline"), .decode,
             .emptyReply("nothing"), .keySaveFailed, .badCustomURL("bad"),
             .transientServer(503, "overloaded")
@@ -165,7 +165,7 @@ final class AICoachTimeoutFallbackTests: XCTestCase {
     /// lighter-model fallback is for. Excluded at first on the wrong assumption that a 429 applies to
     /// the whole account; a real 429 on gemini-pro-latest with flash-lite working proved otherwise.
     func testRateLimitEarnsARetry() {
-        XCTAssertTrue(AICoachError.rateLimited.deservesLighterModelRetry,
+        XCTAssertTrue(AICoachError.rateLimited("quota exceeded").deservesLighterModelRetry,
                       "a per-model rate limit is the main case the lighter-model fallback rescues")
     }
 }

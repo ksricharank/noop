@@ -41,6 +41,26 @@ enum BatteryDiag {
         unflushed[label, default: 0] += 1
     }
 
+    /// 260903: the same count, split by whether the phone was LOCKED when the notification landed.
+    ///
+    /// A per-channel total cannot answer the battery question it exists for. The 260903-1145 log
+    /// showed puffin=35701 today and 102906 yesterday, and the halving is only good news if the
+    /// remainder is arriving while the user is actually looking at something. Wakes while LOCKED
+    /// are the pure cost — nobody is reading a screen, and each one resumes the process — so they
+    /// are the number a duty-cycle change has to move. Counted under the same label with a
+    /// ".locked" suffix, so the existing per-channel lines are untouched and the split is additive.
+    static func recordNotify(_ label: String, locked: Bool, now: Date = Date()) {
+        recordNotify(label, now: now)
+        if locked {
+            notifyCounts[label + lockedSuffix, default: 0] += 1
+            unflushed[label + lockedSuffix, default: 0] += 1
+        }
+    }
+
+    /// The marker that makes a key a SUBSET view of its channel rather than a channel of its own.
+    /// Named once so the recorder and the totals can never disagree about what it is.
+    static let lockedSuffix = ".locked"
+
     // MARK: Cross-session persistence
     //
     // Per-process counters alone cannot answer the day question: the process that holds the
@@ -126,7 +146,9 @@ enum BatteryDiag {
     static func formatNotifyLine(counts: [String: Int], seconds: TimeInterval) -> String? {
         guard !counts.isEmpty, seconds >= 0, seconds.isFinite else { return nil }
         let span = max(seconds, 1)
-        let total = counts.values.reduce(0, +)
+        // Channels once each — the `.locked` keys are a subset view, not extra channels. Counting
+        // them again doubled the rate too: the 260914 header read "9126/h" for a real ~4600/h.
+        let total = counts.filter { !$0.key.hasSuffix(lockedSuffix) }.values.reduce(0, +)
         let parts = counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
             .map { "\($0.key)=\($0.value)" }
         // Under ten minutes, an hourly extrapolation is noise dressed as a rate — the 260828-0731
@@ -143,9 +165,15 @@ enum BatteryDiag {
 
     /// Pure formatter for one persisted day bucket — same channel ordering as the session line.
     /// Nil when the bucket is empty (a day with no strap contact stays silent).
+    ///
+    /// 260914: the total counts each channel ONCE. `recordNotify(_:locked:)` files a locked wake under
+    /// BOTH `"puffin"` and `"puffin.locked"`, so a plain `values.reduce(0, +)` counted every locked
+    /// notification twice: the 260914 log reported "189873 total" for a day whose real figure was
+    /// ~104463, and that inflated number was about to be chased as the largest battery term in the app.
+    /// The `.locked` keys are a SUBSET view for attribution, never an additional channel.
     static func formatDayLine(label: String, counts: [String: Int]) -> String? {
         guard !counts.isEmpty else { return nil }
-        let total = counts.values.reduce(0, +)
+        let total = counts.filter { !$0.key.hasSuffix(lockedSuffix) }.values.reduce(0, +)
         let parts = counts.sorted { ($0.value, $1.key) > ($1.value, $0.key) }
             .map { "\($0.key)=\($0.value)" }
         return "BLE wakes \(label): " + parts.joined(separator: " ") + " — \(total) total"
