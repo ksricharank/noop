@@ -24,7 +24,10 @@ struct SleepCustomizationSheet: View {
         _hiddenSectionsRaw = hiddenSectionsRaw
 
         let fullOrder = SleepLayoutPrefs.decodeOrder(sectionOrderRaw.wrappedValue)
-        let hiddenSet = Set(SleepLayoutPrefs.decodeHidden(hiddenSectionsRaw.wrappedValue))
+        // `effectiveHidden`, not `decodeHidden`: `stagesVsTypical` is hidden by default since
+        // 260920, and seeding this list from the raw stored set would show it here as "Shown"
+        // while the page hid it — the same page/sheet disagreement the Trends sheet hit.
+        let hiddenSet = SleepLayoutPrefs.effectiveHidden(hiddenRaw: hiddenSectionsRaw.wrappedValue)
         let d = EditableLayoutDraft(
             visible: fullOrder.filter { !hiddenSet.contains($0) },
             hidden: fullOrder.filter { hiddenSet.contains($0) }
@@ -92,6 +95,7 @@ extension SleepSection {
     /// SF Symbol shown beside the card's name in the Arrange sheet.
     var customizationIcon: String {
         switch self {
+        case .insight:         return "sparkles"
         case .sleepMarks:      return "bed.double"
         case .stages:          return "chart.bar.xaxis"
         case .bodyClock:       return "clock.badge.checkmark"
@@ -99,6 +103,7 @@ extension SleepSection {
         case .sleepDebt:       return "arrow.down.right.circle"
         case .stagesVsTypical: return "chart.bar"
         case .asleepDuration:  return "clock"
+        case .restTrend:       return "chart.line.uptrend.xyaxis"
         }
     }
 
@@ -106,6 +111,7 @@ extension SleepSection {
     /// rest palette with the accent for the log/marks entry.
     var customizationTint: Color {
         switch self {
+        case .insight:         return StrandPalette.accent
         case .sleepMarks:      return StrandPalette.accent
         case .stages:          return StrandPalette.restColor
         case .bodyClock:       return StrandPalette.restColor
@@ -113,6 +119,7 @@ extension SleepSection {
         case .sleepDebt:       return StrandPalette.effortColor
         case .stagesVsTypical: return StrandPalette.restColor
         case .asleepDuration:  return StrandPalette.restBright
+        case .restTrend:       return StrandPalette.restColor
         }
     }
 }

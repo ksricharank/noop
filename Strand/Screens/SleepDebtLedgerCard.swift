@@ -56,8 +56,13 @@ struct SleepDebtLedgerCard: View {
                         // from the recurrence's current debt estimate.
                         debtDeltaBars(ledger)
                         Divider().overlay(StrandPalette.hairline)
+                        // 260922: the bars are RAW per-night deltas; the headline is the CARRIED debt
+                        // (55% carries to the next night, settled under 10 min, a surplus never banks).
+                        // Eight red bars beside "On target" read as a contradiction until both figures
+                        // sit side by side, so the plain sum of the bars is shown as "Net vs need".
                         ChartFooter([
-                            ("Balance", debtSigned(ledger.balanceMin)),
+                            ("Carried debt", debtSigned(ledger.balanceMin)),
+                            ("Net vs need", debtSigned(ledger.nights.reduce(0) { $0 + $1.deltaMin })),
                             ("Per-night need", durationText(ledger.needMin)),
                             ("Nights", "\(ledger.nightCount)"),
                         ])
@@ -126,6 +131,12 @@ struct SleepDebtLedgerCard: View {
             ? String(localized: "the last night")
             : String(localized: "the last \(nights) nights")
         if ledger.magnitudeMin < SleepDebt.onTargetBandMin {
+            // 260922: "on target" means the CARRIED debt has settled. When the raw nights still sum
+            // short, say both, or the red bars above contradict the green headline.
+            let net = ledger.nights.reduce(0) { $0 + $1.deltaMin }
+            if net < -SleepDebt.onTargetBandMin {
+                return String(localized: "No carried debt — recent nights paid it down — but you ran \(durationText(-net)) short of your need in total across \(span).")
+            }
             return String(localized: "You've effectively met your current sleep need across \(span).")
         }
         let mag = durationText(ledger.magnitudeMin)

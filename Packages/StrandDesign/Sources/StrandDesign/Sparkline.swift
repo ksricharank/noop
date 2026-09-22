@@ -9,6 +9,36 @@ import SwiftUI
 // with an optional crisp leading dot at the latest sample and a faint area
 // wash (WHOOP-flat: no bloom). Designed to sit in a card/tile or the menu-bar popover.
 
+/// Preferences for how the inline sparklines draw (260920).
+///
+/// The KEY STRING is the contract — a `.noobak` round-trip carries the setting by key, not by
+/// symbol name — so it is fixed here the same way `QuietMotionPrefs.enabledKey` is.
+public enum SparklinePrefs {
+    /// "Simple sparklines": draw through a fixed-size `Canvas` instead of a `GeometryReader`.
+    ///
+    /// The maintainer isolated the Sleep tab's Night-detail grid (7 sparkline tiles) and the Trends
+    /// tab's Daily-signals block as the only two cards whose presence made their page scroll badly,
+    /// and the lag followed the CARDS rather than their position — the signature of per-instance
+    /// work on every layout pass, not of drawing.
+    ///
+    /// `GeometryReader` is that work: it participates in layout on every pass and propagates size
+    /// upward, and there are seven of them in one grid inside a scrolling `LazyVGrid`. The reader is
+    /// not needed — the only thing read from it is `geo.size`, and every call site already pins the
+    /// frame (`StatTile` uses `.frame(height: 22)`), so a `Canvas` at that same fixed size draws the
+    /// identical line with no layout participation at all.
+    ///
+    /// Shipped as a TOGGLE rather than a silent default because the cause of this lag was wrong six
+    /// times before the maintainer bisected it on-device; a switch lets the next report compare the
+    /// two directly instead of trusting a claim. Default ON, since the Canvas path is strictly less
+    /// work and visually identical.
+    /// Stored INVERTED — the key means "use the rich GeometryReader path" — so an untouched
+    /// install reads `false` and gets the cheap one. A default-ON preference over a `Bool` that
+    /// is `false` when unset has to be phrased this way or it defaults off by accident.
+    public static let richKey = "noop.richSparklines"
+
+    public static var simple: Bool { !UserDefaults.standard.bool(forKey: richKey) }
+}
+
 public struct Sparkline: View {
 
     public var values: [Double]
@@ -34,7 +64,7 @@ public struct Sparkline: View {
         lineWidth: CGFloat = 2,
         showsArea: Bool = true,
         showsHead: Bool = true,
-        showsHover: Bool = true,
+        showsHover: Bool = Sparkline.hoverIsReachable,
         valueFormat: @escaping (Double) -> String = { Sparkline.defaultValueString($0) },
         indexLabel: ((Int) -> String)? = nil
     ) {
@@ -47,6 +77,32 @@ public struct Sparkline: View {
         self.showsHover = showsHover
         self.valueFormat = valueFormat
         self.indexLabel = indexLabel
+    }
+
+    /// Whether a pointer hover can reach this view AT ALL on the current platform.
+    ///
+    /// On iPhone it cannot. The hover affordance is pointer-only — the comment on the
+    /// `.accessibilityLabel` below has said so since it was written ("dead on touch") — but it was
+    /// still built on every sparkline: an `.onContinuousHover`, a `.contentShape(Rectangle())` and
+    /// an `.animation(_:value:)` inside a `GeometryReader`, per tile.
+    ///
+    /// That is free when a page has one sparkline and expensive when it has seven. The maintainer
+    /// isolated exactly this (260920): the Sleep tab's Night-detail grid (7 tiles) and the Trends
+    /// tab's Daily-signals block were the ONLY two cards whose presence made their whole page
+    /// scroll badly — and the lag followed the cards rather than their position, which is the
+    /// signature of a per-tile cost paid on every body evaluation, not of the drawing itself.
+    ///
+    /// iPadOS and visionOS DO have pointers, so this is `os(iOS) && !targetEnvironment(macCatalyst)`
+    /// gated on `UIDevice.current.userInterfaceIdiom` rather than a blanket iOS exclusion — an iPad
+    /// with a trackpad keeps the affordance it can actually use.
+    ///
+    /// A call site may still pass `showsHover:` explicitly to override this default either way.
+    public static var hoverIsReachable: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        return true
+        #endif
     }
 
     /// The hovered x-position in local coordinates.
@@ -75,7 +131,82 @@ public struct Sparkline: View {
         StrandPalette.sample(stops: gradient.stops, at: 1.0)
     }
 
+    /// Read through `@AppStorage` rather than `SparklinePrefs.simple` directly, so flipping the
+    /// Settings toggle re-renders every sparkline immediately instead of at the next relaunch. The
+    /// static accessor stays for non-SwiftUI readers and for the default-OFF semantics.
+    @AppStorage(SparklinePrefs.richKey) private var richSparklines = false
+
     public var body: some View {
+        // The cheap path (default): a Canvas that draws into whatever size the parent already gave
+        // it, with NO GeometryReader and no layout participation. Visually identical — same
+        // polyline, same area wash, same head dot, same gradient sampling.
+        //
+        // The hover affordance is absent here by construction, which costs nothing on a phone: it
+        // is pointer-only and unreachable on touch (see `hoverIsReachable`). A pointer device that
+        // wants it turns the rich path back on.
+        if richSparklines {
+            richBody
+        } else {
+            simpleBody
+        }
+    }
+
+    /// Fixed-size Canvas rendering. Everything is computed from the `size` the Canvas is handed,
+    /// exactly as `points(in:)` computed it from `geo.size`.
+    private var simpleBody: some View {
+        Canvas { ctx, size in
+            let pts = points(in: size)
+            guard pts.count > 1 else { return }
+            if showsArea {
+                ctx.fill(Path(areaPathCG(pts, in: size)),
+                         with: .linearGradient(Gradient(colors: [areaWashColor, .clear]),
+                                               startPoint: .zero,
+                                               endPoint: CGPoint(x: 0, y: size.height)))
+            }
+            ctx.stroke(Path(linePathCG(pts)),
+                       with: .linearGradient(gradient,
+                                             startPoint: .zero,
+                                             endPoint: CGPoint(x: size.width, y: 0)),
+                       style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+            if showsHead, let head = pts.last {
+                let r = lineWidth * 1.1
+                ctx.fill(Path(ellipseIn: CGRect(x: head.x - r, y: head.y - r,
+                                                width: r * 2, height: r * 2)),
+                         with: .color(headColor))
+                let ri = lineWidth * 0.5
+                ctx.fill(Path(ellipseIn: CGRect(x: head.x - ri, y: head.y - ri,
+                                                width: ri * 2, height: ri * 2)),
+                         with: .color(StrandPalette.tipCore))
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(axSummary))
+    }
+
+    /// Path builders shared with the Canvas path. `Path` here rather than the SwiftUI `Shape`
+    /// wrappers so one definition serves both renderers and they cannot drift.
+    private func linePathCG(_ pts: [CGPoint]) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = pts.first else { return path }
+        path.move(to: first)
+        for p in pts.dropFirst() { path.addLine(to: p) }
+        return path
+    }
+
+    private func areaPathCG(_ pts: [CGPoint], in size: CGSize) -> CGPath {
+        let path = CGMutablePath()
+        guard let first = pts.first, let last = pts.last else { return path }
+        path.move(to: first)
+        for p in pts.dropFirst() { path.addLine(to: p) }
+        path.addLine(to: CGPoint(x: last.x, y: size.height))
+        path.addLine(to: CGPoint(x: first.x, y: size.height))
+        path.closeSubpath()
+        return path
+    }
+
+    /// The original GeometryReader rendering, kept behind the preference so the two can be
+    /// compared directly on-device and so pointer platforms keep the hover affordance.
+    private var richBody: some View {
         GeometryReader { geo in
             let pts = points(in: geo.size)
             ZStack {
@@ -132,15 +263,13 @@ public struct Sparkline: View {
                     )
                 }
             }
-            .animation(StrandMotion.fade, value: hoverX)
-            .contentShape(Rectangle())
-            .onContinuousHover(coordinateSpace: .local) { phase in
-                guard showsHover else { return }
-                switch phase {
-                case .active(let location): hoverX = location.x
-                case .ended: hoverX = nil
-                }
-            }
+            // Attached ONLY when a pointer can reach this view. Gating the CALLBACK (the previous
+            // `guard showsHover else { return }` inside it) still built the tracker, the hit-test
+            // shape and an animation observer for every tile — the work is in attaching them, not
+            // in running them, and on a touch device none of it can ever fire. `hoverModifiers`
+            // keeps one view TYPE in both branches, so this never changes view identity.
+            .animation(showsHover ? StrandMotion.fade : nil, value: hoverX)
+            .hoverModifiers(enabled: showsHover) { hoverX = $0 }
             // The line is pointer-hover only (dead on touch); give VoiceOver a
             // spoken summary of the series so the trend isn't silent on iPhone.
             .accessibilityElement(children: .ignore)
@@ -228,4 +357,32 @@ private func sampleHR() -> [Double] {
     .preferredColorScheme(.dark)
 }
 #endif
+// MARK: - Conditional hover attachment
+
+private extension View {
+    /// Attaches the pointer-hover tracker, its hit-test shape and its crossfade — or none of them.
+    ///
+    /// Written as ONE modifier returning a single concrete type rather than an `if` in the caller's
+    /// body: a conditional modifier puts the two states in different `_ConditionalContent` branches,
+    /// which changes view identity and would tear down and rebuild the sparkline (and lose any
+    /// `@State` under it) if the condition ever moved. It cannot move here — it is a per-platform
+    /// constant — but the cheap habit is the one worth keeping, and #519 in `RootTabView` is this
+    /// exact bug in the gesture layer.
+    @ViewBuilder
+    func hoverModifiers(enabled: Bool, onX: @escaping (CGFloat?) -> Void) -> some View {
+        if enabled {
+            self
+                .contentShape(Rectangle())
+                .onContinuousHover(coordinateSpace: .local) { phase in
+                    switch phase {
+                    case .active(let location): onX(location.x)
+                    case .ended: onX(nil)
+                    }
+                }
+        } else {
+            self
+        }
+    }
+}
+
 #endif

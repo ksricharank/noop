@@ -27,6 +27,9 @@ import SwiftUI
 /// One reorderable Sleep card. The rawValue is the stable persisted identifier — keep it byte-identical to
 /// the Android `SleepSection` enum so a backup/restore reads the same layout on either OS.
 enum SleepSection: String, CaseIterable, Identifiable {
+    /// 260919: the tab's LLM read, arrangeable like every other card so it can be moved or hidden.
+    /// Defaults to sitting just before Stages, at the maintainer's request.
+    case insight
     case sleepMarks
     case stages
     case bodyClock
@@ -34,12 +37,18 @@ enum SleepSection: String, CaseIterable, Identifiable {
     case sleepDebt
     case stagesVsTypical
     case asleepDuration
+    /// 260906: the Rest-score trend — window selector, like-for-like comparison and calendar strip,
+    /// the same block the Day tab carries. Sleep previously had only a fixed 30-day duration chart
+    /// and no way to widen it (maintainer: "do the same thing wrt trends on sleep in the dedicated
+    /// sleep tab").
+    case restTrend
 
     var id: String { rawValue }
 
     /// The card's display label in the Arrange sheet — matches the Android `SleepSection.title`.
     var title: String {
         switch self {
+        case .insight:         return String(localized: "What last night says")
         case .sleepMarks:      return String(localized: "Sleep marks")
         case .stages:          return String(localized: "Stages")
         case .bodyClock:       return String(localized: "Body clock")
@@ -47,6 +56,7 @@ enum SleepSection: String, CaseIterable, Identifiable {
         case .sleepDebt:       return String(localized: "Sleep-debt ledger")
         case .stagesVsTypical: return String(localized: "Stages vs typical")
         case .asleepDuration:  return String(localized: "Asleep duration")
+        case .restTrend:       return String(localized: "Rest trend")
         }
     }
 
@@ -55,7 +65,8 @@ enum SleepSection: String, CaseIterable, Identifiable {
     /// with Stages for now — it's drawn inside the stages hero; making it an independently arrangeable
     /// card is a follow-up that requires hoisting the hero's edit/delete callbacks.)
     static let defaultOrder: [SleepSection] = [
-        .sleepMarks, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
+        .sleepMarks, .insight, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration,
+        .restTrend,
     ]
 }
 
@@ -125,8 +136,22 @@ enum SleepLayoutPrefs {
 
     /// The cards Sleep should render, preserving the full saved order while filtering only the user's
     /// explicit hidden set. At least one visible card is enforced by the editor, not the decoder.
+    /// Sections OFF until switched on. 260920: `stagesVsTypical` — its whole content (each stage's
+    /// delta against the personal mean) now renders inside the stage-breakdown rows under the
+    /// hypnogram, at the maintainer's request to "use one widget for two things". Leaving it shown
+    /// would put the same comparison on the page twice.
+    ///
+    /// Default-hidden rather than DELETED: removing the rawValue would make every stored layout
+    /// containing it decode short, and the recovery rule appends missing cards — it cannot restore
+    /// an order it never saw. A wearer who wants the standalone card back can still un-hide it.
+    static let defaultHidden: Set<SleepSection> = [.stagesVsTypical]
+
+    static func effectiveHidden(hiddenRaw: String) -> Set<SleepSection> {
+        hiddenRaw.isEmpty ? defaultHidden : Set(decodeHidden(hiddenRaw))
+    }
+
     static func visibleOrder(orderRaw: String, hiddenRaw: String) -> [SleepSection] {
-        let hidden = Set(decodeHidden(hiddenRaw))
+        let hidden = effectiveHidden(hiddenRaw: hiddenRaw)
         return decodeOrder(orderRaw).filter { !hidden.contains($0) }
     }
 }

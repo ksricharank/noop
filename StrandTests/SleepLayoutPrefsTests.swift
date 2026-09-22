@@ -20,7 +20,10 @@ final class SleepLayoutPrefsTests: XCTestCase {
         XCTAssertEqual(encoded, "nightDetail,sleepMarks,asleepDuration,stages,sleepDebt,stagesVsTypical")
         // `bodyClock` is absent from the saved order, so decode inserts it at its default position — the
         // migration path every newly-added section takes for an existing customised layout.
-        XCTAssertEqual(SleepLayoutPrefs.decodeOrder(encoded), [.bodyClock] + reordered)
+        // 260919: `insight` is newer than every token in the saved order, so it too inserts at its
+        // default position — ahead of bodyClock, which is the same migration path.
+        XCTAssertEqual(SleepLayoutPrefs.decodeOrder(encoded),
+                       [.insight, .bodyClock] + reordered + [.restTrend])
     }
 
     /// A saved order that leads with `asleepDuration` and ends on `sleepMarks` keeps those two placements
@@ -30,7 +33,10 @@ final class SleepLayoutPrefsTests: XCTestCase {
         let decoded = SleepLayoutPrefs.decodeOrder("asleepDuration,sleepMarks")
         XCTAssertEqual(decoded.count, SleepSection.allCases.count)
         XCTAssertEqual(decoded, [
-            .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration, .sleepMarks,
+            .insight, .stages, .bodyClock, .nightDetail, .sleepDebt, .stagesVsTypical, .asleepDuration, .sleepMarks,
+            // 260906: restTrend is newer than both saved tokens, so it inserts at its default
+            // position — the tail — exactly the migration path every added section takes.
+            .restTrend,
         ])
     }
 
@@ -58,7 +64,7 @@ final class SleepLayoutPrefsTests: XCTestCase {
         let order = "nightDetail,sleepMarks,asleepDuration,stages,sleepDebt,stagesVsTypical"
         XCTAssertEqual(
             SleepLayoutPrefs.visibleOrder(orderRaw: order, hiddenRaw: "asleepDuration,sleepDebt"),
-            [.bodyClock, .nightDetail, .sleepMarks, .stages, .stagesVsTypical]
+            [.insight, .bodyClock, .nightDetail, .sleepMarks, .stages, .stagesVsTypical, .restTrend]
         )
         XCTAssertEqual(SleepLayoutPrefs.decodeOrder(order).count, SleepSection.allCases.count)
     }
@@ -79,10 +85,16 @@ final class SleepLayoutPrefsTests: XCTestCase {
     func testSectionRawKeysAreStableAndUnique() {
         let raws = SleepSection.allCases.map(\.rawValue)
         XCTAssertEqual(raws.count, Set(raws).count)
-        // Pin the exact wire strings — they cross the .noopbak boundary and must match Android byte-for-byte.
+        // Pin the exact wire strings so a rename is a deliberate act: they are the persisted tokens
+        // in `sleep.sectionOrder`, and a changed raw value silently resets a customised layout.
+        //
+        // 260906 correction: this key is NOT in the .noopbak whitelist, so it does NOT have to match
+        // Android byte-for-byte — Android already carries two platform-only sections (hoursVsNeeded,
+        // consistency) for that reason, as its own SleepLayoutPrefs says. `restTrend` is likewise
+        // Apple-only; a cross-OS restore never reads these.
         XCTAssertEqual(raws, [
-            "sleepMarks", "stages", "bodyClock", "nightDetail", "sleepDebt", "stagesVsTypical",
-            "asleepDuration",
+            "insight", "sleepMarks", "stages", "bodyClock", "nightDetail", "sleepDebt",
+            "stagesVsTypical", "asleepDuration", "restTrend",
         ])
     }
 }
