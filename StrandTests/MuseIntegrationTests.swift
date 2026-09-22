@@ -61,6 +61,33 @@ final class MuseIntegrationTests: XCTestCase {
                                             updatesPerDay: 4, anchorMinuteOfDay: anchor))
     }
 
+    /// 260922: a digest with no night in it is not ready. The 260921-0737 file was exactly that.
+    func testReadinessRequiresLastNight() {
+        var input = MuseIntegration.Input(recapDay: "2026-09-20", recapScore: nil, recapMetric: nil,
+                                          nightMetric: nil, todayMetric: nil, todayDay: "2026-09-21")
+        XCTAssertFalse(input.isReady)
+        input.nightMetric = DailyMetric(day: "2026-09-21", totalSleepMin: 507, efficiency: 0.93, deepMin: 104,
+                                        remMin: 133, lightMin: 271, disturbances: nil, restingHr: 64, avgHrv: 33,
+                                        recovery: 62, strain: nil, exerciseCount: nil, spo2Pct: nil,
+                                        skinTempDevC: nil, respRateBpm: nil, steps: nil, activeKcalEst: nil,
+                                        spo2Red: nil, spo2Ir: nil, avgSdnn: nil, skinTempC: nil)
+        XCTAssertTrue(input.isReady)
+    }
+
+    /// The slot start the readiness grace is measured from: the most recent boundary at or before now.
+    func testCurrentSlotStartWalksBackBeforeTheAnchor() {
+        let cal = Calendar.current
+        let anchor = 7 * 60
+        let at9 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 9))!
+        let at5 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 5))!
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at9, updatesPerDay: 1, anchorMinuteOfDay: anchor),
+                       cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 7)))
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, updatesPerDay: 1, anchorMinuteOfDay: anchor),
+                       cal.date(from: DateComponents(year: 2026, month: 9, day: 19, hour: 7)))
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, updatesPerDay: 4, anchorMinuteOfDay: anchor),
+                       cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 1)))
+    }
+
     /// The retired hour + interval pair maps onto the new setting once: 24 h → 1, 6 h → 4.
     func testUpdatesPerDayMigratesFromTheRetiredInterval() {
         let d = UserDefaults.standard

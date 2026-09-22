@@ -147,18 +147,16 @@ enum MuseIntegration {
     /// scheduled hour has passed today, and we have not already written since that hour — which
     /// makes a missed day (phone off, app not launched) catch up on the next launch rather than
     /// being silently skipped, while a second launch the same afternoon does not rewrite.
-    static func isDue(now: Date,
-                      lastWrittenMs: Int,
-                      updatesPerDay: Int,
-                      anchorMinuteOfDay: Int,
-                      calendar: Calendar = .current) -> Bool {
+    /// The start of the cadence slot `now` falls in. Slots run from the anchor in 24/N-hour steps; the
+    /// current one is the most recent boundary at or before `now`. Before today's anchor that is one of
+    /// yesterday's, which is why this walks BACK rather than clamping — otherwise a cadence would go
+    /// silent from midnight to the anchor.
+    static func currentSlotStart(now: Date, updatesPerDay: Int, anchorMinuteOfDay: Int,
+                                 calendar: Calendar = .current) -> Date? {
         let n = clampUpdates(updatesPerDay)
         let anchor = min(max(anchorMinuteOfDay, 0), 24 * 60 - 1)
         guard let todaysAnchor = calendar.date(bySettingHour: anchor / 60, minute: anchor % 60,
-                                               second: 0, of: now) else { return false }
-        // Slots run from the anchor in 24/N-hour steps. The current slot is the most recent boundary
-        // at or before `now`; before today's anchor that is one of yesterday's, which is why this walks
-        // BACK rather than clamping — otherwise a cadence would go silent from midnight to the anchor.
+                                               second: 0, of: now) else { return nil }
         let step = 86_400.0 / Double(n)
         var slot = todaysAnchor
         if now < todaysAnchor {
@@ -166,6 +164,21 @@ enum MuseIntegration {
         } else {
             while slot.addingTimeInterval(step) <= now { slot = slot.addingTimeInterval(step) }
         }
+        return slot
+    }
+
+    /// How long past a slot's start the runner waits for last night to be scored before writing an
+    /// honest-but-thin digest anyway (a night the strap was not worn must not silence the day).
+    static let readinessGraceSeconds: TimeInterval = 6 * 3_600
+
+    static func isDue(now: Date,
+                      lastWrittenMs: Int,
+                      updatesPerDay: Int,
+                      anchorMinuteOfDay: Int,
+                      calendar: Calendar = .current) -> Bool {
+        guard let slot = currentSlotStart(now: now, updatesPerDay: updatesPerDay,
+                                          anchorMinuteOfDay: anchorMinuteOfDay, calendar: calendar)
+        else { return false }
         guard lastWrittenMs > 0 else { return true }
         let last = Date(timeIntervalSince1970: TimeInterval(lastWrittenMs) / 1000)
         // Due when the last write predates the slot we are in: a missed slot catches up at the next
@@ -216,6 +229,17 @@ extension MuseIntegration {
         var coachToday: String?
         var coachRecap: String?
         var coachSleep: String?
+        /// 260922: the Sleep tab's debt ledger — tonight's target is the digest's most-asked number.
+        var sleepLedger: SleepDebtLedger?
+        /// 260922: the same deterministic INSIGHTS block the Trends coach receives.
+        var insights: String?
+
+        /// 260922: whether the digest is worth writing yet. The 260921-0737 file was written at the
+        /// instant of an app launch whose store had just been gutted by an abandoned pass — "no data
+        /// for today", "no sleep last night", "yesterday not scored" — and because a write settles the
+        /// day's slot, that stood as the day's digest. The one thing a morning digest cannot do
+        /// without is last night; everything else degrades honestly in words.
+        var isReady: Bool { (nightMetric?.totalSleepMin ?? 0) > 0 }
     }
 
     /// Build the digest.
@@ -293,8 +317,40 @@ extension MuseIntegration {
             out.append("The night that ended on the morning of \(n.day).")
             out.append("")
             out.append(contentsOf: sleepBullets(n))
+            let typicalWindow = i.recentDays.filter { $0.day < n.day }.suffix(30)
+            if typicalWindow.count >= 5 {
+                let typ = Array(typicalWindow)
+                var vs: [String] = []
+                func delta(_ label: String, _ v: Double?, _ t: Double?) {
+                    guard let v, let t, t > 0 else { return }
+                    let d = v - t
+                    vs.append("\(label) \(d >= 0 ? "+" : "−")\(hoursOrNot(abs(d)))")
+                }
+                delta("total", n.totalSleepMin, SleepModel.typicalTotalMin(days: typ))
+                delta("deep", n.deepMin, SleepModel.typicalStageMin(days: typ, \.deepMin))
+                delta("REM", n.remMin, SleepModel.typicalStageMin(days: typ, \.remMin))
+                delta("light", n.lightMin, SleepModel.typicalStageMin(days: typ, \.lightMin))
+                if !vs.isEmpty {
+                    out.append("- Versus my typical night (last \(typ.count)): " + vs.joined(separator: ", "))
+                }
+            }
         } else {
             out.append("- No sleep recorded for last night.")
+        }
+        if let l = i.sleepLedger, l.nightCount > 0 {
+            let tonight = DailyTargets.sleepNeedTonightMin(needMin: l.needMin, debtBalanceMin: l.balanceMin)
+            let net = l.nights.reduce(0) { $0 + $1.deltaMin }
+            out.append("")
+            out.append("Sleep debt (last \(l.nightCount) nights, the Sleep tab's ledger):")
+            out.append("- Sleep tonight: " + hoursOrNot(Double(tonight))
+                       + " — my " + hoursOrNot(l.needMin) + " need"
+                       + (tonight > Int(l.needMin.rounded())
+                          ? " plus " + hoursOrNot(Double(tonight) - l.needMin) + " toward the carried debt"
+                          : ""))
+            out.append("- Carried debt: " + (l.magnitudeMin < SleepDebt.onTargetBandMin
+                                              ? "none — on target"
+                                              : hoursOrNot(l.magnitudeMin) + (l.isDebt ? " short" : " surplus")))
+            out.append("- Net versus need over the window: " + (net >= 0 ? "+" : "−") + hoursOrNot(abs(net)))
         }
         if let c = i.coachSleep, !c.isEmpty {
             out.append("")
@@ -327,6 +383,10 @@ extension MuseIntegration {
             if !s.missing.isEmpty {
                 out.append("- Not recorded (no data, NOT a zero): \(s.missing.joined(separator: ", "))")
             }
+        } else if let stored = i.recentQualityScores[i.recapDay] {
+            let n = Int(stored.rounded())
+            out.append("Day quality: \(n >= 0 ? "+" : "")\(n) (\(DayQualityScore.band(n))) — the stored score; "
+                       + "the component breakdown could not be recomputed from the rows on hand.")
         } else {
             out.append("Day quality: not scored — too little data for this day.")
         }
@@ -359,6 +419,15 @@ extension MuseIntegration {
         // Training load, the sleep-debt ledger and per-signal z-scores. Emitted VERBATIM from the
         // same builder the coach context uses, so the digest and anything the coach says are
         // reading one set of numbers rather than two that can drift.
+        if let insights = i.insights, !insights.isEmpty {
+            out.append("## What the last weeks say")
+            out.append("")
+            out.append("Computed on-device and gated (a relationship is listed only with n >= 10, |r| >= 0.3, p < 0.1).")
+            out.append("")
+            out.append(insights)
+            out.append("")
+        }
+
         if let derived = i.derivedTrends, !derived.isEmpty {
             out.append("## Where this is heading")
             out.append("")
