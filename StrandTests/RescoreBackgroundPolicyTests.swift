@@ -9,20 +9,33 @@ import XCTest
 /// night goes unscored while the app waits for a background task that may not arrive for hours. Neither
 /// failure is visible from inside a single run, so they are pinned here rather than discovered on
 /// someone's wrist.
+///
+/// v18 uplift note: upstream's #2296 replaced the measured-duration deferral with rest-pacing, so the
+/// tests that pinned `backgroundBudgetSeconds` and `lastCompletedPassSeconds` are gone with the rule
+/// they described. The fork's sleep-window rule survives that change unaltered and is pinned below.
 final class RescoreBackgroundPolicyTests: XCTestCase {
 
     private func decide(background: Bool = true,
-                        realUpdate: Bool = true,
+                        inWindow: Bool = false,
                         unfinished: Bool = false,
+                        deferralOnly: Bool = false,
+                        realUpdate: Bool = true,
                         running: Bool = false) -> RescoreBackgroundPolicy.Decision {
         RescoreBackgroundPolicy.decide(isBackground: background,
-                                       isRealUpdate: realUpdate,
+                                       inSleepWindow: inWindow,
                                        rescoreAlreadyOwed: unfinished,
+                                       owedByWindowDeferralOnly: deferralOnly,
+                                       isRealUpdate: realUpdate,
                                        passInProgress: running)
     }
 
     private func isDeferred(_ d: RescoreBackgroundPolicy.Decision) -> Bool {
         if case .deferToBackgroundTask = d { return true }
+        return false
+    }
+
+    private func isDeferredToWindowEnd(_ d: RescoreBackgroundPolicy.Decision) -> Bool {
+        if case .deferUntilSleepWindowEnds = d { return true }
         return false
     }
 
@@ -36,57 +49,22 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
         XCTAssertEqual(decide(background: false, realUpdate: false), .run)
     }
 
-    // MARK: - A real update runs, paced
+    // MARK: - Background pacing (upstream #2296)
 
-    /// An offload in the background runs now. It paces itself under the CPU limit and resumes across
-    /// wakes, so how long it takes is no longer a reason to hand it to a processing task that iOS may not
-    /// grant until the afternoon — which is when last night's scores used to appear.
-    func testABackgroundOffloadRuns() {
-        XCTAssertEqual(decide(), .run)
-    }
-
-    // MARK: - The livelock
-
-    /// An earlier pass marked itself started and never finished, and nothing is running now: that pass
-    /// was killed. Attempting it again on every offload is what burned the phone in #1538.
-    func testAnInterruptedPriorAttemptDefersInsteadOfRetrying() {
-        XCTAssertTrue(isDeferred(decide(unfinished: true)))
-    }
-
-    /// A pass running in THIS process reads as owed through its own started-mark. That is not a killed
-    /// pass, and deferring on it recorded a newer debt the running pass could then never settle (#1681),
-    /// so every later offload deferred too. The engine re-arms a follow-up pass for a mid-run trigger.
-    func testARunningPassIsNotMistakenForAKilledOne() {
-        XCTAssertEqual(decide(unfinished: true, running: true), .run)
-    }
-
-    // MARK: - The backstop
-
-    /// The steady-state tick cannot tell live HR from a real change, and a paced pass costs minutes, so a
-    /// backgrounded tick does not run. Real updates run their own.
-    func testABackgroundedBackstopDoesNotRun() {
-        guard case .deferToBackgroundTask(let reason) = decide(realUpdate: false) else {
-            return XCTFail("expected the backstop to be skipped")
-        }
-        XCTAssertTrue(reason.contains("backstop"), reason)
-    }
-
-    // MARK: - Pacing
-
-    /// Resting as long as it worked holds a backgrounded pass near 50% CPU, under the 80% iOS kills at.
-    func testABackgroundedPassRestsAsLongAsItWorked() {
-        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 6, isBackground: true), 6)
-    }
-
-    /// No CPU limit applies in the foreground, and the user is waiting on the result.
+    /// The foreground never rests: no CPU limit applies and the user is waiting on the result.
     func testTheForegroundNeverRests() {
-        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 6, isBackground: false), 0)
+        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 10, isBackground: false), 0)
     }
 
-    /// Work measured on the uptime clock can include a suspension; resting for all of it would stall a
-    /// pass that has already been idle.
-    func testARestIsCapped() {
-        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 3_600, isBackground: true),
+    /// A backgrounded pass rests for as long as the night's work took, so it sits near 50% duty.
+    func testABackgroundedPassRestsForAsLongAsItWorked() {
+        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 4, isBackground: true), 4)
+    }
+
+    /// Capped, because `uptimeNanoseconds` keeps advancing while the process is merely suspended — an
+    /// uncapped rest would stall a pass that has already been idle.
+    func testTheRestIsCapped() {
+        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 600, isBackground: true),
                        RescoreBackgroundPolicy.maxBackgroundRestSeconds)
     }
 
@@ -102,5 +80,148 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     func testTheShippedPacingConstants() {
         XCTAssertEqual(RescoreBackgroundPolicy.backgroundRestPerWorkSecond, 1.0)
         XCTAssertEqual(RescoreBackgroundPolicy.maxBackgroundRestSeconds, 30)
+    }
+
+    // MARK: - The sleep window (the overnight storm)
+
+    /// The motivating case: a pass the other rules would wave through — and DID, 22 times in the
+    /// motivating overnight log — still defers inside the sleep window. Nobody can see the score, and
+    /// the pass contends with the very offloads that keep triggering it all night.
+    func testAFastPassStillDefersInsideTheSleepWindow() {
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true)))
+    }
+
+    /// The window outranks the owed rule, in that exact order: an in-window pass must resolve to the
+    /// post-window settle, never to a background task — a processing task favours idle, and idle on a
+    /// phone worn to bed is 3 a.m.
+    func testTheWindowResolvesToItsEndNotToABackgroundTask() {
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true, unfinished: true)))
+        XCTAssertTrue(isDeferredToWindowEnd(decide(inWindow: true, realUpdate: false)))
+    }
+
+    /// Foreground still outranks the window — opening the app at 3 a.m. is an explicit ask for fresh
+    /// scores, and there is no suspension deadline.
+    func testForegroundOutranksTheWindow() {
+        XCTAssertEqual(decide(background: false, inWindow: true), .run)
+    }
+
+    /// Daytime (out-of-window) behaviour follows the cadence rules, whatever the lock state. This is the
+    /// dogfooding ask — scoring follows the offload cadence during the day, never the lock.
+    func testDaytimeBehaviourFollowsTheCadenceRules() {
+        XCTAssertEqual(decide(inWindow: false), .run)
+        XCTAssertTrue(isDeferred(decide(inWindow: false, realUpdate: false)))
+    }
+
+    // MARK: - The morning settle (debt kinds)
+
+    /// The night's coalesced debt — owed ONLY by window deferrals, never attempted — runs at the first
+    /// post-window trigger. This IS the "one update once sleep is done": without this rule the owed
+    /// check would bounce the morning pass to a background task that may not arrive for hours.
+    func testAWindowDeferralDebtRunsAtTheFirstPostWindowTrigger() {
+        XCTAssertEqual(decide(unfinished: true, deferralOnly: true), .run)
+    }
+
+    /// A debt WITH attempt evidence (a killed pass) keeps the full #1538 escalation — "unfinished" is
+    /// evidence about this install right now. The deferral-only flag must never leak onto it.
+    func testAKilledPassDebtStillEscalates() {
+        XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: false)))
+    }
+
+    /// A pass running in THIS process is not evidence of a killed one (#1681): its own started-mark is
+    /// what reads as owed, so deferring on it recorded a newer debt the running pass never settled.
+    func testAPassInProgressIsNotEvidenceOfAKilledPass() {
+        XCTAssertEqual(decide(unfinished: true, running: true), .run)
+    }
+
+    /// The backstop tick does not re-score while backgrounded; every real update runs its own pass.
+    func testTheBackstopTickDoesNotRescoreInTheBackground() {
+        XCTAssertTrue(isDeferred(decide(realUpdate: false)))
+    }
+
+    // MARK: - The settle-side gate (the 260829 treadmill)
+
+    private func settle(locked: Bool = true,
+                        inWindow: Bool = false,
+                        sinceLast: Double? = nil,
+                        untilWindowEnd: Double? = nil,
+                        spacing: Double = RescoreBackgroundPolicy.lockedSettleSpacingSeconds)
+        -> RescoreBackgroundPolicy.SettleDecision {
+        RescoreBackgroundPolicy.settleDecision(isLocked: locked,
+                                               inSleepWindow: inWindow,
+                                               secondsSinceLastLockedSettle: sinceLast,
+                                               secondsUntilSleepWindowEnd: untilWindowEnd,
+                                               spacingSeconds: spacing)
+    }
+
+    private func isSkip(_ d: RescoreBackgroundPolicy.SettleDecision) -> Bool {
+        if case .skip = d { return true }
+        return false
+    }
+
+    /// An unlocked settle is the original #1538 escalation and always runs — the gate exists for the
+    /// locked treadmill, and must not slow the case the processing task was built for.
+    func testAnUnlockedSettleAlwaysRuns() {
+        XCTAssertEqual(settle(locked: false), .run)
+        XCTAssertEqual(settle(locked: false, sinceLast: 60), .run)
+    }
+
+    /// A settle fired inside the sleep window skips — a task scheduled before the window opened can
+    /// still fire mid-night — and carries the window's remaining seconds so the re-arm lands past its
+    /// end rather than probing every half hour until morning.
+    func testAnInWindowSettleSkipsUntilTheWindowEnds() {
+        let d = settle(inWindow: true, untilWindowEnd: 7200)
+        guard case .skip(_, let retry) = d else { return XCTFail("must skip inside the window") }
+        XCTAssertEqual(retry, 7200)
+    }
+
+    /// One locked settle per spacing window: 38 passes in the motivating day, each completing into
+    /// "debt NOT settled" because a +N locked sync landed new rows mid-pass. The first is worth having
+    /// (the morning widget paint); every repeat inside the spacing is waste and skips, with the
+    /// remaining spacing as the retry so the re-armed task does not probe early.
+    func testALockedSettleRunsAtMostOncePerSpacing() {
+        XCTAssertEqual(settle(sinceLast: nil), .run)
+        let d = settle(sinceLast: 1800, spacing: 10800)
+        guard case .skip(_, let retry) = d else { return XCTFail("a recent locked settle must skip") }
+        XCTAssertEqual(retry, 9000)
+        XCTAssertEqual(settle(sinceLast: 10800, spacing: 10800), .run)   // the boundary re-opens
+    }
+
+    /// An unreadable elapsed value (clock change, corrupted default) means "unknown", and unknown runs —
+    /// same direction as the measured-cost gate: refusing to score on a value we cannot read is the
+    /// worse failure.
+    func testAnUnreadableElapsedRunsRatherThanSkips() {
+        XCTAssertEqual(settle(sinceLast: -30), .run)
+        XCTAssertEqual(settle(sinceLast: .nan), .run)
+        XCTAssertEqual(settle(sinceLast: .infinity), .run)
+    }
+
+    /// The window rule outranks the spacing rule, so a mid-night settle names the window (and its end)
+    /// rather than a spacing that may expire while still inside it.
+    func testTheWindowOutranksTheSpacing() {
+        let d = settle(inWindow: true, sinceLast: 999_999, untilWindowEnd: 3600)
+        guard case .skip(let reason, let retry) = d else { return XCTFail("must skip") }
+        XCTAssertTrue(reason.contains("sleep window"))
+        XCTAssertEqual(retry, 3600)
+    }
+    // MARK: - Deferral cause tokens (260906)
+
+    /// The reason string stays the human-readable log line; the cause is the stable token a counter can
+    /// be keyed on without breaking when the wording changes. These are the tokens that appear on the
+    /// strap log's "Re-score dropped:" line, so a rename here silently renames a field someone reads.
+    func testEachDeferralCarriesItsStableCauseToken() {
+        guard case .deferUntilSleepWindowEnds(_, let windowCause) = decide(inWindow: true) else {
+            return XCTFail("expected a window deferral")
+        }
+        XCTAssertEqual(windowCause, .sleepWindow)
+
+        guard case .deferToBackgroundTask(_, let backstopCause) = decide(realUpdate: false) else {
+            return XCTFail("expected a backstop deferral")
+        }
+        XCTAssertEqual(backstopCause, .backstopSkipped)
+
+        guard case .deferToBackgroundTask(_, let owedCause) = decide(unfinished: true) else {
+            return XCTFail("expected an owed deferral")
+        }
+        XCTAssertEqual(owedCause, .alreadyOutstanding)
     }
 }
