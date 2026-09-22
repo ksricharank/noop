@@ -162,6 +162,10 @@ final class AppModel: ObservableObject {
     // via BiofeedbackPrefs so a relaunch can't re-fire), carried verbatim between evaluations.
     private var rrBuf: [Int] = []
     private var stressState = BiofeedbackPrefs.loadStressState()
+    // HISTORY: a `breatheCue` level (`@Published Bool?` — the Live Activity's red-digits read, and
+    // before that its # marker) lived here for one build (270–271). Retired 260830 with the card's
+    // HR column: the HRV-dip signal reaches the user through the stress check-in's strap buzz +
+    // screen notification now (see `evaluateStress`), which the detector's EVENT form already gates.
 
     /// Import source currently writing to the local store, if any.
     @Published private var activeImportSource: DataSourceImportKind?
@@ -212,6 +216,9 @@ final class AppModel: ObservableObject {
     private var smartAlarmRearmTimer: Timer?
 
     init() {
+        // FORK (260830): first-run Today layout — Synthesis-first with the hero hidden (its numbers
+        // repeat in Key Metrics). A one-time seed; every user customisation thereafter wins.
+        TodayLayoutPrefs.seedForkDefaultsIfNeverCustomised()
         let live = LiveState()
         self.live = live
         // SEED every subsystem with the same id (`deviceId`, "my-whoop" at launch). The store/registry
@@ -222,6 +229,9 @@ final class AppModel: ObservableObject {
         self.repo = Repository(deviceId: deviceId)
         self.coach = AICoachEngine(repo: repo)
         self.intelligence = IntelligenceEngine(repo: repo, profile: profile, deviceId: deviceId)
+        // 260922: the per-tab load ledger + screen-side rare-event lines write into the same strap log
+        // through a static sink, so no SCREEN has to hold `@EnvironmentObject var live` (see `ScreenLedger`).
+        ScreenLedger.emit = { [live] line in live.append(log: line) }
         // Route the engine's per-day scoring diagnostic into the SAME shareable strap log every other
         // subsystem writes to (PII-scrubbed by `live.append(log:)`), so a bug report ships proof of what
         // was computed per day. `live` is captured strongly (created just above) , the engine outlives the
@@ -233,6 +243,14 @@ final class AppModel: ObservableObject {
         // inert (one UserDefaults bool read) when the mode is off. `live` is captured strongly, as above.
         self.repo.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
         self.gpsRecorder.workoutsLog = { [live] line in live.append(log: line, domain: .workouts) }
+        // The daily-targets bundle prices its session and exercise calories through the Keytel model,
+        // which needs the user's profile; the Repository doesn't own one, so it borrows this closure
+        // (the healthWriteBack idiom). Captured strongly like the sinks above — the store outlives
+        // the scene. Falls back to the estimator suite's standard profile when never set (tests).
+        self.repo.liveTargetsProfile = { [profile] in
+            UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
+                        age: Double(profile.age), sex: profile.sex)
+        }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
@@ -712,6 +730,282 @@ final class AppModel: ObservableObject {
         // exist. The bridge coalesces a call that lands during an in-flight write-back.
         await healthWriteBack?()
         #endif
+        await runTargetAutomations()
+        await fireHydrationReminderIfDue()
+    }
+
+    /// Target-driven automations (260901: morning brief + pacing nudges + the wind-down's dynamic
+    /// sleep-target need). Called wherever a completed score/publish lands — the same "fresh data,
+    /// no UI attached" moments the widget publish rides — so the brief arrives with the morning
+    /// score and a pace check lands within one sync (~10 min) of its check-in time. Every decision
+    /// is the pure `TargetAutomations` policy; this hook only gathers today's values and posts.
+    /// The pacing window's start: the end of TODAY's main sleep (the longest session ending
+    /// today — naps end later and must not shrink the window; an overnight fragment ends earlier
+    /// and must not stretch it), falling back to the quiet-hours end until the night is scored.
+    /// Clamped to sane wake hours either way.
+    private func pacingWakeMinute(now: Date, todayStartTs: Int) async -> Int {
+        let sessions = await repo.sleepSessions(from: todayStartTs, to: Int(now.timeIntervalSince1970))
+            .filter { $0.endTs > todayStartTs }
+        let fallback = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        guard let main = sessions.max(by: { ($0.endTs - $0.effectiveStartTs) < ($1.endTs - $1.effectiveStartTs) })
+        else { return TargetAutomations.clampWakeMinute(fallback) }
+        let comps = Calendar.current.dateComponents([.hour, .minute],
+                                                    from: Date(timeIntervalSince1970: TimeInterval(main.endTs)))
+        return TargetAutomations.clampWakeMinute((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+    }
+
+    private func runTargetAutomations() async {
+        let targets = repo.cachedLiveTargets()
+        // B: the wind-down reminder tracks tonight's computed sleep target (inert unless opted in;
+        // reschedules only when the applied value changes). Works on both platforms.
+        WindDownNudge.applyTargetNeed(minutes: targets.sleepNeedTonightMin)
+        #if os(iOS)
+        let now = Date()
+        let todayKey = Repository.localDayKey(now)
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        // A: the morning brief — once per day, after the first post-wake score (anchor = today).
+        let anchor = Repository.widgetAnchor(days: repo.days, now: now)
+        if TargetAutomations.briefWanted(enabled: TargetAutomations.briefEnabled,
+                                         anchorDay: anchor?.day, todayKey: todayKey,
+                                         minuteOfDay: minuteOfDay,
+                                         earliestMinute: TargetAutomations.briefEarliestMinute,
+                                         lastFiredDay: TargetAutomations.briefLastFiredDay()) {
+            let text = TargetAutomations.briefText(
+                charge: anchor?.recovery.map { Int($0.rounded()) },
+                sessionMinutes: targets.sessionMinutes,
+                sessionHrBpm: targets.sessionHrBpm,
+                restDay: targets.restDay,
+                sleepNeedMin: targets.sleepNeedTonightMin,
+                stepsTarget: targets.stepsTarget)
+            TargetAutomations.markBriefFired(day: todayKey)   // before the async post: once means once
+            TargetAutomations.post(identifier: "auto-morning-brief", title: text.title, body: text.body)
+            buzzForNudgeIfEnabled(.morningBrief)
+            live.append(log: "Automation: morning brief posted (\(text.body))")
+        }
+        // E: the pacing check-ins — at most one nudge per checkpoint per day, only when behind.
+        let mask = TargetAutomations.pacingFiredMask(today: todayKey)
+        let todayStartTs = Int(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
+        let (nudge, newMask) = TargetAutomations.pacingDecision(
+            enabled: TargetAutomations.pacingEnabled,
+            minuteOfDay: minuteOfDay,
+            intervalHours: TargetAutomations.pacingIntervalHours,
+            dayStartMinute: TargetAutomations.pacingEnabled
+                ? await pacingWakeMinute(now: now, todayStartTs: todayStartTs)
+                : TargetAutomations.clampWakeMinute(0),
+            firedMask: mask,
+            steps: targets.stepsToday, stepsTarget: targets.stepsTarget,
+            kcalToday: targets.kcalToday, kcalTarget: targets.kcalTargetKcal,
+            effortToday: targets.effortTodayStored, effortTarget: targets.effortTarget,
+            sessionMinutes: targets.sessionMinutes,
+            windowStartMinute: TargetAutomations.pacingStartMinute,
+            windowStopMinute: TargetAutomations.pacingStopMinute)
+        if newMask != mask { TargetAutomations.setPacingFiredMask(newMask, today: todayKey) }
+        if let nudge {
+            // The title is written by the coach when one is configured — a line scaled to how far
+            // behind the day is (260902). One short call per check-in, and ANY failure (no
+            // provider, no consent, timeout, over-long reply) falls back to the static "Behind
+            // pace" the decision already carries, so the notification never waits on the network
+            // to be useful.
+            let status = nudge.behind.map { item -> String in
+                let pct = item.pace > 0
+                    ? Int((Double(item.pace - item.actual) / Double(item.pace) * 100).rounded())
+                    : 0
+                return "\(item.label): \(item.actual) of \(item.pace) expected by now "
+                    + "(day goal \(item.goal)) — \(pct)% behind pace"
+            }.joined(separator: "\n")
+            let title = await coach.notificationTitle(status: status) ?? nudge.title
+            if let outcome = coach.lastNotificationTitleOutcome {
+                live.append(log: "Automation: pace-check title — \(outcome)")
+            }
+            TargetAutomations.post(identifier: "auto-pace-check", title: title, body: nudge.body)
+            buzzForNudgeIfEnabled(.paceCheck)
+            live.append(log: "Automation: pace check posted ("
+                        + nudge.body.replacingOccurrences(of: "\n", with: " · ") + ")")
+        }
+        #endif
+    }
+
+    /// Log one cup from a strap double-tap (260905).
+    ///
+    /// Maintainer request: "a tap on the device adding a cup of water without me having to do
+    /// anything on the phone itself."
+    ///
+    /// Writes through `Repository.logHydration` — the SAME call the +Cup button and the
+    /// notification's "Add a cup" action make — so the tap, the Today card, the hydration screen
+    /// and the reminder can never disagree about the day's cups. In particular it inherits the
+    /// serialisation added on 260904, so a double-tap landing while a tap on the phone is in flight
+    /// cannot lose either write.
+    ///
+    /// Fires the confirmation buzz on the `.water` cue, which is the honest signal here: a double
+    /// tap has no on-screen feedback by definition, so without a buzz the wearer cannot tell a
+    /// logged cup from an unrecognised gesture. The buzz is skipped when the wearer has turned that
+    /// cue off, same as every other nudge.
+    ///
+    /// Deliberately a WHOLE cup, not a half: the gesture is coarse and unprompted, so it should mean
+    /// the common case. Half cups stay on the notification action and the app, where the wearer is
+    /// already choosing an amount.
+    ///
+    /// No-op when hydration tracking is off — a tap should not silently create a log for a feature
+    /// the wearer has not enabled. The gesture then falls through as if unbound, and the log line
+    /// says why rather than leaving a mystery.
+    private func logCupFromDoubleTap() {
+        guard UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) else {
+            live.append(log: "Double-tap: water not logged — hydration tracking is off")
+            return
+        }
+        Task { @MainActor in
+            let total = await repo.logHydration(amountMl: HydrationGoal.cupML)
+            buzzForNudgeIfEnabled(.water)
+            let cups = HydrationGoal.cups(fromML: total)
+            live.append(log: "Double-tap: logged a cup (\(cups) cups today)")
+            // 260907: confirm on screen, with an Undo. The buzz says "something happened" but cannot
+            // say WHAT — and on a gesture with no on-screen feedback that is the whole question. The
+            // undo is the half that answers the over-sensitivity report: it makes a false positive
+            // costless rather than merely visible. iOS-only (UserNotifications on macOS has no
+            // equivalent surface here, and the strap double-tap is a phone feature).
+            #if os(iOS)
+            // The entry id is read back so Undo removes THIS cup specifically. "Undo the most recent
+            // entry" would be wrong: a reminder-driven cup or an in-app +Cup landing in between would
+            // become the thing deleted instead of the accidental tap.
+            let day = Repository.localDayKey(Date())
+            if let goal = repo.cachedLiveTargets().waterTargetCups,
+               let entry = repo.hydrationEntries(day: day).max(by: { $0.loggedAt < $1.loggedAt }) {
+                WaterTapConfirmation.post(cups: cups, goalCups: goal,
+                                          entryId: entry.id, day: day)
+            }
+            #endif
+            // Refresh the widget faces so the new count is on the Lock Screen too. iOS-only —
+            // `WidgetSnapshot` is excluded from the macOS target.
+            #if os(iOS)
+            await WidgetSnapshot.publish(from: self)
+            #endif
+        }
+    }
+
+    /// Buzz the strap alongside a NOOP-posted notification (260903), when the user has asked for
+    /// it. No-op when the toggle is off or the link cannot carry a command — `canBuzz` requires an
+    /// encrypted bond, so a disconnected or charging strap simply gets no cue rather than the app
+    /// pretending one landed. The breathe cue buzzes on its own path already (it has since it
+    /// shipped) and does not route through here.
+    func buzzForNudgeIfEnabled(_ cue: TargetAutomations.BuzzCue) {
+        guard TargetAutomations.buzzEnabled(cue), canBuzz else { return }
+        // The ACKNOWLEDGED sequence, not the bare `buzz(loops:)` write (260903). A plain
+        // RUN_HAPTICS_PATTERN "can be silently ignored (WHOOP 4.0 via the Siri shortcut) or dropped
+        // unacked on a busy link" — see `BLEManager.buzzStrapOnce` — and a nudge fires on the
+        // post-offload path, which is exactly a busy link. It also adds the runAlarm follow-up a
+        // 5/MG needs, which the bare write omits entirely.
+        //
+        // So a nudge buzz uses the same hardware-confirmed path the Live "Buzz strap" button and
+        // the Buzz Strap App Intent use. Being felt is the whole point of the feature; a cue that
+        // is written but not felt is indistinguishable from one that never fired.
+        buzzStrapOnce()
+    }
+
+    /// Wire the hydration reminder's "Logged a cup" action to the EXISTING tracker, and keep the
+    /// reminder's copy current. Called once at startup (see `StrandApp`).
+    ///
+    /// The action writes through `Repository.logHydration` — the same call the app's +Cup button
+    /// makes — so the notification, the Today card and the hydration screen can never disagree
+    /// about the day's cups. After the write the snapshot is refreshed so the NEXT reminder states
+    /// the new count.
+    func installHydrationReminderSink() {
+        Self.titleCoach = coach
+        // 260907: Undo for a strap-tap confirmation. Deletes the exact entry the notification was
+        // posted for (by id), through the SAME per-entry delete the hydration detail screen uses, so
+        // an undone cup cannot leave the total and the entry list disagreeing.
+        NotificationPresenter.shared.waterUndoSink = { [weak self] entryId, day, done in
+            Task { @MainActor in
+                guard let self else { done(); return }
+                _ = await self.repo.deleteHydrationEntry(id: entryId, day: day)
+                self.live.append(log: "Double-tap: cup undone from the confirmation notification")
+                #if os(iOS)
+                await WidgetSnapshot.publish(from: self)
+                #endif
+                done()
+            }
+        }
+        NotificationPresenter.shared.hydrationActionSink = { [weak self] amountMl, done in
+            Task { @MainActor in
+                guard let self else { done(); return }
+                _ = await self.repo.logHydration(amountMl: amountMl)
+                // Confirm the log on the wrist, the same way the stress check-in confirms its
+                // nudge — this is the one water moment the app IS awake for (the action woke it),
+                // so unlike the scheduled reminder itself the buzz can actually land.
+                self.buzzForNudgeIfEnabled(.water)
+                // No snapshot to refresh any more: the next reminder reads the live count when it
+                // fires from the sync path.
+                // The WIDGET's water pair is republished by the `hydrationSeq` hook in
+                // StrandiOSApp, which covers this write and the in-app +/- alike — see there.
+                done()
+            }
+        }
+    }
+
+    /// Fire the water reminder if a slot has passed (260903, sync-driven).
+    ///
+    /// Rides the strap sync rather than a calendar trigger, so the app is AWAKE when the reminder
+    /// posts: it can buzz the strap, and it reads the LIVE cup count instead of a snapshot written
+    /// at schedule time. The cost is punctuality — the reminder lands at the first sync after its
+    /// slot, typically within ~10 minutes — which on a hydration nudge is immaterial.
+    func fireHydrationReminderIfDue() async {
+        guard HydrationReminder.isEnabled else { return }
+        let now = Date()
+        let dayKey = Repository.localDayKey(now)
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let minuteOfDay = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        let lastFired = HydrationReminder.lastFiredSlot(today: dayKey)
+        // Read the stop ONCE and thread it into both calls: it resolves through the sleep-window
+        // fallback, so two reads either side of a midnight settings edit could disagree and make
+        // `reminderWanted` and `dueSlot` describe different grids.
+        let stopMinute = HydrationReminder.stopMinute
+        guard HydrationReminder.reminderWanted(
+                enabled: true,
+                minuteOfDay: minuteOfDay,
+                startMinute: HydrationReminder.startMinute,
+                intervalMinutes: HydrationReminder.intervalMinutes,
+                lastFiredSlot: lastFired,
+                stopMinute: stopMinute),
+              let due = HydrationReminder.dueSlot(minuteOfDay: minuteOfDay,
+                                                  startMinute: HydrationReminder.startMinute,
+                                                  intervalMinutes: HydrationReminder.intervalMinutes,
+                                                  stopMinute: stopMinute)
+        else { return }
+
+        // The goal comes from the SAME LiveTargets the Today row renders — never from
+        // `hydrationGoalML`, the retired millilitre formula, which is how the notification came to
+        // read "2/16" against the row's "3/19".
+        guard let goalCups = repo.cachedLiveTargets().waterTargetCups else { return }
+
+        // CLAIM THE SLOT FIRST — before any await (260904).
+        //
+        // Reported from the device: two water notifications a second apart, "5/21" then "6/21".
+        // The mark used to sit after the three awaits below, one of which (`notificationTitle`) is
+        // a network call to the LLM that can take seconds. This function has TWO callers — the
+        // post-offload path and the deferred re-score settle — and both are `await`ed from
+        // @MainActor code, so a second entry runs at the first suspension point, sails through the
+        // same guard (the slot is still unmarked), and posts its own notification. Each read the
+        // cup count at a different instant, which is exactly the 5-then-6 that was observed.
+        //
+        // The old comment said "Mark BEFORE posting" and meant it; the awaits had simply grown in
+        // front of it since. Marking here makes the claim atomic with respect to the guard: no
+        // suspension between the two, so the second entry sees the slot taken and returns.
+        HydrationReminder.markFired(slot: due, today: dayKey)
+
+        // The ENTRY LIST's figure, which is what the Today row shows — see
+        // `hydrationTotalForDisplay`. Reading the running-total series here is how the reminder came
+        // to say "5 of 21" on a day the row read 8.
+        let total = await repo.hydrationTotalForDisplay(day: dayKey)
+        let title = await coach.notificationTitle(
+            status: HydrationReminder.coachStatus(totalML: total, goalCups: goalCups))
+        if let outcome = coach.lastNotificationTitleOutcome {
+            live.append(log: "Automation: water-reminder title — \(outcome)")
+        }
+        HydrationReminder.post(totalML: total, goalCups: goalCups, title: title)
+        buzzForNudgeIfEnabled(.water)
+        live.append(log: "Automation: water reminder posted (slot \(due / 60):"
+                    + String(format: "%02d", due % 60) + ")")
     }
 
     private func refreshAfterCompletedBackfill() async {
@@ -770,6 +1064,15 @@ final class AppModel: ObservableObject {
             }
         }
         await refreshV5Signals()
+        // 260919: the freshly-landed rows may have moved the very numbers the Today synthesis is
+        // describing. The report: "when I wake up in the morning, the app takes a while to update
+        // with the strap data — but the coach summary is already generated and then is stale."
+        // Exactly that — the open-triggered generation wins the race against the morning sync, and
+        // nothing regenerated it afterwards. A no-op unless the data actually changed under a
+        // paragraph that already exists (see `refreshSynthesisIfDataChanged`), so a sync that banks
+        // nothing new costs no provider call. Its own task: this is a network round-trip, and the
+        // widget publish and automations below must not queue behind it.
+        Task { [coach] in await coach.refreshSynthesisIfDataChanged() }
         #if os(iOS)
         // #980: a strap backfill routinely completes while the app is BACKGROUNDED (it runs as a
         // bluetooth-central, so it stays alive to receive the offload). The only other widget-publish
@@ -777,7 +1080,34 @@ final class AppModel: ObservableObject {
         // never rewrite the shared App-Group snapshot or call WidgetCenter.reloadAllTimelines — the
         // widget kept showing yesterday's numbers. Publishing here, on the real "new data landed"
         // signal, pushes the fresh snapshot to the home-screen widget without needing a foreground.
+        //
+        // ORDER (260831): the publish runs BEFORE the retro stress scan below, deliberately. Both ride
+        // this post-offload moment, but the publish is the user-visible surface and the scan is a nudge
+        // that tolerates a sync of lateness by design — so if iOS suspends or kills the process partway
+        // through this function, the widgets have already been fed. The frozen-widget report could not
+        // rule out the scan starving the publish; this ordering makes that starvation impossible
+        // regardless of what the scan costs.
         await WidgetSnapshot.publish(from: self)
+        #endif
+        await runTargetAutomations()
+        await fireHydrationReminderIfDue()
+        // 260922: the Integration digest rides the same background moment as every other post-offload
+        // chore — this is how the file lands "the first time the app is live in the morning" without
+        // the app being opened. Idempotent per slot (`MuseIntegration.isDue`): a sync every ~10 minutes
+        // writes once per slot and is silent otherwise.
+        await MuseIntegrationRunner.runIfDue(repo: repo, coach: nil, log: { [live] in live.append(log: $0) })
+        // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
+        // banked R-R becomes readable — replay it through the live detector so the island-less mode
+        // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.
+        // Instrumented (260831): an unmeasured every-sync background step is exactly the shape the
+        // battery-attribution doctrine says must carry a counter; RetroScanStats is one header line.
+        let scanStarted = Date()
+        await scanOffloadedRRForStress()
+        RetroScanStats.record(millis: Int(Date().timeIntervalSince(scanStarted) * 1000),
+                              waitMs: retroScanWaitMs,
+                              replayMs: retroScanReplayMs,
+                              beats: retroScanBeats)
+        #if os(iOS)
         // #1021: same reasoning as the widget publish above, for Apple Health. The only automatic
         // write-back ran on scenePhase == .active, in the same block that KICKS this offload - so it
         // raced the data it was meant to publish and last night's sleep reached Health an app-open late.
@@ -1117,8 +1447,16 @@ final class AppModel: ObservableObject {
     private func evaluateStress() {
         let fresh = live.rr.filter { $0 > 300 && $0 < 2000 }   // plausible R-R (30–200 bpm)
         guard !fresh.isEmpty else { return }
+        // The retro scan's ownership signal: while live beats flow, the LIVE loop is the detector
+        // and the post-offload replay must stand down (see `scanOffloadedRRForStress`).
+        lastLiveRRAt = Date()
         rrBuf.append(contentsOf: fresh)
         if rrBuf.count > 120 { rrBuf.removeFirst(rrBuf.count - 120) }
+
+        // HISTORY: the breathe CUE (`StressOnsetDetector.breatheCue`, the Live Activity's red-digits
+        // level read) ran unconditionally here for one build (270–271) and owned the shared EMA
+        // baseline's advancement. Retired 260830 with the card's HR column — the nudge path below is
+        // the sole detector again and the sole owner of the baseline, exactly the pre-260830 shape.
 
         // Inert unless the master toggle is on; the engine owns every gate (auto-nudge, exercise gate,
         // quiet hours, rate limit, edge).
@@ -1136,14 +1474,110 @@ final class AppModel: ObservableObject {
         stressState = decision.nextState
         BiofeedbackPrefs.saveStressState(decision.nextState)
         guard decision.shouldNudge else { return }
-        if canBuzz { buzz(loops: UInt8(clamping: decision.buzzLoops)) }
+        // The stress check-in has always buzzed on its own path; the 260903 per-cue switch can now
+        // silence it like any other nudge, without disabling the check-in itself.
+        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
+            buzz(loops: UInt8(clamping: decision.buzzLoops))
+        }
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)
+        // 260830: the visible half of the nudge — a screen notification saying WHAT the buzz meant
+        // ("take a deep breath"). Rides the exact decision the buzz rode (already de-duped,
+        // rate-limited, quiet-hours- and exercise-gated by the detector); the sub-toggle only
+        // controls presentation. NOTE the physics this inherits: the detector needs live R-R, so
+        // with continuous HRV set to overnight-only there is NO daytime detection — this fires only
+        // while the stream is actually running.
+        if behavior.stressNotify { BreatheNotifier.post() }
+        BreatheCueStats.recordFire(retro: false)   // sensitivity calibration evidence (260901)
         live.append(log: "Stress check-in , HRV dipped while still")
     }
 
     /// Whether the encrypted channel is up so a confirming buzz can actually fire (the command
     /// characteristic is gated on bond; an un-encrypted live-HR-only link can't buzz).
     private var canBuzz: Bool { live.bonded && live.encryptedBond }
+
+    // MARK: - Burst-retrospective stress detection (260830)
+
+    /// When live R-R last flowed — while it does, the live loop above is the detector and the
+    /// post-offload replay stands down (its window fast-forwards) so the two can never double-process
+    /// the same beats.
+    private var lastLiveRRAt: Date = .distantPast
+    /// Unix-seconds high-water mark of R-R already replayed (persisted so a relaunch can't re-scan).
+    private static let retroScanWatermarkKey = "stress.retroScanWatermarkTs"
+    /// Phase timings for the CURRENT retro scan (260903), read by the caller for RetroScanStats.
+    /// Instance state rather than return values because the scan has many early returns, each of
+    /// which should still report whatever phases it reached.
+    private var retroScanWaitMs = 0
+    private var retroScanReplayMs = 0
+    private var retroScanBeats = 0
+
+    /// A dip older than this at scan time gets no buzz — "go breathe" 45+ minutes late is noise, not
+    /// coaching. The state still advances, so the baseline keeps learning from every synced beat.
+    private static let retroMaxDipAgeSec = 45 * 60
+    /// The scan never reaches further back than this, whatever the watermark says (a phone that sat
+    /// off overnight must not replay eight hours on the first sync — the freshness bound would drop
+    /// every nudge from it anyway, and quiet hours already own the night).
+    private static let retroScanHorizonSec = 2 * 3600
+
+    /// Replay freshly OFFLOADED R-R through the stress detector — the island-less default mode's
+    /// daytime path (maintainer, 260830: with continuous HRV overnight-only there are no daytime
+    /// live ticks, so each ~15-minute sync is where a dip can first be seen). Runs once per completed
+    /// offload; the pure replay (`StressOnsetDetector.replayOffloaded`) applies the exact live gates
+    /// — edge, sustain, rate limit, exercise band, quiet hours computed at each beat's own historical
+    /// time — and the buzz/notification/card fire only when the detected moment is still fresh
+    /// (≤ 45 min). By construction the nudge arrives up to one sync cadence late; the notification
+    /// says so rather than implying "right now".
+    func scanOffloadedRRForStress() async {
+        retroScanWaitMs = 0
+        retroScanReplayMs = 0
+        retroScanBeats = 0
+        let cfg = BiofeedbackPrefs.stressConfig()
+        guard cfg.enabled, cfg.autoNudge else { return }
+        let now = Int(Date().timeIntervalSince1970)
+        let d = UserDefaults.standard
+        // Live stream active (or just was): the live loop owns these beats. Fast-forward the
+        // watermark so the replay never re-processes what live evaluation already advanced the
+        // shared EMA/rate-limit state over.
+        guard Date().timeIntervalSince(lastLiveRRAt) > 300 else {
+            d.set(now, forKey: Self.retroScanWatermarkKey)
+            return
+        }
+        let watermark = d.object(forKey: Self.retroScanWatermarkKey) as? Int ?? 0
+        let from = max(watermark + 1, now - Self.retroScanHorizonSec)
+        // 260903 phase timing: the two awaits below can QUEUE on the WhoopStore actor behind a
+        // re-score's throttled reads, which is the suspected shape of the 9.9-minute scan in the
+        // 260903-1145 log. Timed separately from the pure replay so the next log can attribute it
+        // instead of inviting a guess. `retroScanWaitMs`/`retroScanReplayMs` are handed to
+        // RetroScanStats by the caller.
+        let waitStarted = Date()
+        guard from < now, let store = await repo.storeHandle() else { return }
+        let rows = (try? await store.rrIntervals(deviceId: repo.deviceId, from: from, to: now,
+                                                 limit: 20_000)) ?? []
+        retroScanWaitMs = Int(Date().timeIntervalSince(waitStarted) * 1000)
+        d.set(now, forKey: Self.retroScanWatermarkKey)
+        guard rows.count >= StressOnsetDetector.minBeats else { return }
+        retroScanBeats = rows.count
+        let replayStarted = Date()
+        let scan = StressOnsetDetector.replayOffloaded(
+            beats: rows.map { (ts: $0.ts, rrMs: $0.rrMs) },
+            sessionActive: stressNudgeCenter.pending != nil,
+            state: stressState,
+            config: cfg,
+            tzOffsetSec: TimeZone.current.secondsFromGMT())
+        retroScanReplayMs = Int(Date().timeIntervalSince(replayStarted) * 1000)
+        stressState = scan.nextState
+        BiofeedbackPrefs.saveStressState(scan.nextState)
+        guard let at = scan.nudgeAtSec, now - at <= Self.retroMaxDipAgeSec else { return }
+        let minutesAgo = max(0, (now - at) / 60)
+        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
+            buzz(loops: UInt8(clamping: cfg.buzzLoops))
+        }
+        if behavior.stressNotify { BreatheNotifier.post(minutesAgo: minutesAgo) }
+        BreatheCueStats.recordFire(retro: true)    // sensitivity calibration evidence (260901)
+        stressNudgeCenter.present(fastRMSSD: scan.fastRMSSD, baselineRMSSD: scan.baselineRMSSD)
+        // Rare-event evidence (the diagnostics doctrine): a retro nudge names its lateness, so a
+        // log reader can tell the sync-delayed path from the live one.
+        live.append(log: "Stress check-in (from sync) , HRV dipped while still ~\(minutesAgo) min ago")
+    }
 
     /// Start scanning for the strap. When no model is given, use the one the user
     /// picked (persisted under "selectedWhoopModel"), so every scan entry point ,
@@ -1469,12 +1903,27 @@ final class AppModel: ObservableObject {
     /// Post the local notification mirroring the inactivity (sedentary) wrist nudge. Called right after
     /// `BLEManager.maybeBuzzInactivity` fires its buzz (see crossLaneNotes). `minutes` = the seated bout
     /// length the detector reported. No-op on macOS and when wrist alerts are off.
+    /// The live coach, lent to this type's STATIC notification posters (260903) so they can ask for
+    /// a written title. Weak: the poster must never keep the model alive, and a nil reference simply
+    /// means the static title is used. Set once in `installHydrationReminderSink`.
+    private static weak var titleCoach: AICoachEngine?
+
     static func postInactivity(minutes: Int) {
         #if os(iOS)
         let body = minutes > 0
             ? String(localized: "You've been seated for about \(minutes) min. Time to move.")
             : String(localized: "Time to move. You've been seated a while.")
-        postWristAlert(identifier: "inactivity-nudge", title: String(localized: "Move reminder"), body: body)
+        // 260903: the coach titles this nudge too, on the same shared generator + fallback as the
+        // pace check and the water reminder. Posted from inside the task so the notification
+        // carries the written title when there is one; the buzz itself already fired independently
+        // in BLEManager, so nothing the user feels waits on this.
+        let staticTitle = String(localized: "Move reminder")
+        Task { @MainActor in
+            let title = await Self.titleCoach?.notificationTitle(
+                status: "Movement: I have been sitting still for a while and should get up")
+            Self.postWristAlert(identifier: "inactivity-nudge",
+                                title: title ?? staticTitle, body: body)
+        }
         #endif
     }
 
@@ -1746,11 +2195,45 @@ final class AppModel: ObservableObject {
     /// session, and two deliberate taps are not something a rack does by accident.
     var strapDoubleTapOverride: (() -> Void)?
 
+    /// Double-tap events seen but not yet forming a complete gesture (260920). Empty whenever
+    /// `WaterTapPrefs.requiredTaps == 1`, which is the default.
+    private var pendingDoubleTaps: [Date] = []
+
     private func handleDoubleTap() {
         let now = Date()
+        // 260907: the window is user-configurable (Automations → Double-tap). The old 1.2 s constant
+        // is what the "still feels sensitive" report was raised against, so the default moved to 2 s
+        // and the knob lets the wearer trade sensitivity for certainty themselves. This is the
+        // SEPARATE-taps guard; one physical tap firing once is handled structurally by the 16.13
+        // event-timestamp dedup in FrameRouter and is not a knob.
+        // 260920: require N events inside a window before acting, when the wearer has asked for it.
+        // A clap fires ONE strap event; a deliberate tap-tap/pause/tap-tap fires two.
+        //
+        // ORDER MATTERS. This runs BEFORE the separate-taps debounce below, because the two guards
+        // want opposite things from a closely-spaced second event: the debounce exists to swallow
+        // it, and a multi-event gesture is built out of exactly that. Running the debounce first
+        // would reject the second half of every gesture and the count could never be reached.
+        //
+        // The debounce still applies to the COMPLETED gesture, which is what it was always for —
+        // two cups should not be logged seconds apart.
+        let need = WaterTapPrefs.requiredTaps
+        if need > 1 {
+            let outcome = WaterTapPrefs.gestureCompletes(
+                now: now,
+                pending: pendingDoubleTaps,
+                requiredTaps: need,
+                gestureWindowSeconds: WaterTapPrefs.gestureWindow)
+            pendingDoubleTaps = outcome.pending
+            guard outcome.fires else {
+                live.append(log: "Double-tap \(outcome.pending.count) of \(need): waiting for the rest of the gesture")
+                return
+            }
+        }
         let since = now.timeIntervalSince(lastDoubleTapAt)
-        guard since > 1.2 else {   // debounce repeats
-            live.append(log: String(format: "Double-tap ignored: %.1f s after the previous one (debounce 1.2 s)", since))
+        let tapWindow = Double(WaterTapPrefs.window)
+        guard since > tapWindow else {
+            live.append(log: String(format: "Double-tap ignored: %.1f s after the previous one (window %.1f s)",
+                                    since, tapWindow))
             return
         }
         lastDoubleTapAt = now
@@ -1779,6 +2262,7 @@ final class AppModel: ObservableObject {
         case .markMoment: markMoment()
         case .sleepMark: markSleep()
         case .hapticClock: ble.buzzTimeNow(is24h: Self.localeUses24HourClock)
+        case .logWater: logCupFromDoubleTap()
         case .runShortcut: MacActions.runShortcut(shortcut)
         }
     }

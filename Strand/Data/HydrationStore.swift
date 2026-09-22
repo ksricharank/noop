@@ -17,6 +17,17 @@ import StrandAnalytics
 // detail shows the honest day figure. Everything stays on-device; nothing is synced.
 
 enum HydrationStore {
+
+    /// Hand-logged millilitres for ONE day, synchronously — the day-quality card's water read.
+    ///
+    /// The per-entry log lives in UserDefaults, so a PAST day is readable without the store actor
+    /// and without an async hop mid-render. The `Repository` cache cannot serve this: it holds the
+    /// current day only, by design. Manual only, matching what the Today row counts.
+    @MainActor
+    static func manualML(day dayKey: String) -> Double {
+        HydrationEntries.total(Repository.hydrationEntries(day: dayKey))
+    }
+
     /// Source/device id the hydration total is written under — its own local-only source so it is never
     /// confused with strap-imported or computed metrics. MUST match the Android `SOURCE_ID`.
     static let sourceId = "hydration"
@@ -126,6 +137,44 @@ extension Repository {
         await metricSeriesValue(key: HydrationStore.key, day: day)
     }
 
+    /// Set the day's hand-logged running total back to zero.
+    ///
+    /// Writes through the same idempotent `upsertMetricSeries` path every other hydration write
+    /// uses, so it cannot diverge from how the app banks a total. Exists for the concurrency tests,
+    /// which must start from a known-zero row: the entry list lives in UserDefaults and the running
+    /// total in SQLite, so clearing only the former left a stale row that made a re-run look
+    /// exactly like the lost-write bug those tests guard (see `HydrationConcurrentLogTests`).
+    func resetHydrationSeries(day: String) async {
+        guard let store = await storeHandle() else { return }
+        _ = try? await store.upsertMetricSeries(
+            [MetricPoint(day: day, key: HydrationStore.key, value: 0)],
+            deviceId: HydrationStore.sourceId)
+    }
+
+    /// The hand-logged total as the ENTRY LIST reports it — the display's source of truth.
+    ///
+    /// Two records of the same water exist: the per-entry list in UserDefaults (one append per tap)
+    /// and the `metricSeries` row (a running total). The list is the more reliable of the two,
+    /// because appending an entry cannot lose a tap, whereas the series row is a read-modify-write.
+    ///
+    /// 260904: they had drifted. Fast +/- taps launched concurrent `logHydration` tasks that each
+    /// read the same running total and wrote back their own increment, losing the others — so the
+    /// Today row (entries) read 8 cups while the series row said 5, and the water reminder, which
+    /// read the series, honestly reported "5 of 21". The serialisation in `logHydration` stops the
+    /// loss; reading the list here means a reminder AGREES WITH THE ROW even if a series write is
+    /// ever lost again for some other reason.
+    ///
+    /// Synchronous: UserDefaults, no store actor.
+    func hydrationManualTotalFromEntries(day: String) -> Double {
+        HydrationEntries.total(Self.hydrationEntries(day: day))
+    }
+
+    /// What the reminder should state: the entry list's hand-logged water plus imported water.
+    /// The display half comes from the same place the Today row's does, by construction.
+    func hydrationTotalForDisplay(day: String) async -> Double {
+        hydrationManualTotalFromEntries(day: day) + (await hydrationImportedTotal(day: day))
+    }
+
     /// Only what came from the platform health store (#949). Replaced wholesale by each sync.
     func hydrationImportedTotal(day: String) async -> Double {
         await metricSeriesValue(key: HydrationStore.importedKey, day: day)
@@ -191,6 +240,7 @@ extension Repository {
         // Only on a real change — this bump re-reads the Today card, and firing it on every sync made the
         // card redo its hydration read for nothing. Same reason as logHydration: hydration writes never
         // bump refreshSeq, so the card has no other signal.
+        refreshHydrationCache()
         noteHydrationChanged()
     }
 
@@ -201,7 +251,28 @@ extension Repository {
     @discardableResult
     func logHydration(amountMl: Int, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        guard amountMl > 0, let store = await storeHandle() else { return await hydrationTotal(day: dayKey) }
+        guard amountMl > 0 else { return await hydrationTotal(day: dayKey) }
+        // SERIALISED (260904). Everything below is a read-modify-write, and the callers are
+        // fire-and-forget `Task`s from a button — so without this, tapping + three times quickly
+        // ran three of them concurrently, each reading the SAME `current` and writing
+        // `current + half a cup`. Two of the three increments were lost.
+        //
+        // The on-screen counter still looked right, because `bumpHydrationOptimistically` moves a
+        // synchronous cache and never misses a tap. Only the STORE fell behind — so the Today row
+        // read 6 cups while the row in SQLite said 5, and the water reminder (which reads the
+        // store, correctly) honestly reported "5 of 21". Reported from the device as a wrong
+        // notification; it was really a lost write.
+        //
+        // `Repository` is @MainActor, so the interleaving was purely at these await points and a
+        // serial gate is enough — no locking needed.
+        return await withHydrationLock {
+            await self.logHydrationUnlocked(amountMl: amountMl, dayKey: dayKey)
+        }
+    }
+
+    /// The actual read-modify-write. Callers MUST hold the hydration gate — use `logHydration`.
+    private func logHydrationUnlocked(amountMl: Int, dayKey: String) async -> Double {
+        guard let store = await storeHandle() else { return await hydrationTotal(day: dayKey) }
         // MANUAL total, never the combined one (#949) — see `hydrationManualTotal`.
         let current = await hydrationManualTotal(day: dayKey)
         let next = current + Double(amountMl)
@@ -212,6 +283,7 @@ extension Repository {
         let entries = HydrationEntries.adding(Self.hydrationEntries(day: dayKey), amountMl: amountMl)
         Self.writeHydrationEntries(entries, day: dayKey)
         // #989: hydration writes never bump refreshSeq, so tell the Today card directly.
+        refreshHydrationCache(day: dayKey)
         noteHydrationChanged()
         // `next` is the manual row; callers of this return value display it, so hand back the combined
         // figure (#949). Every in-tree caller discards it and re-reads, but a caller that trusted it
@@ -220,6 +292,13 @@ extension Repository {
     }
 
     // MARK: - Per-entry edit/delete (#798)
+
+    /// Re-derive the synchronous hydration cache the targets path reads (260903). Cheap (one
+    /// UserDefaults array read) and idempotent, so it is safe on every mutation and every sync.
+    func refreshHydrationCache(day: String? = nil) {
+        let dayKey = day ?? Repository.localDayKey(Date())
+        setHydrationCache(day: dayKey, totalML: HydrationEntries.total(Self.hydrationEntries(day: dayKey)))
+    }
 
     /// Today (or `day`)'s individual logged drinks, oldest first, as persisted in UserDefaults. Empty when
     /// nothing has been logged that day. Local-only; never synced.
@@ -233,9 +312,16 @@ extension Repository {
     @discardableResult
     func deleteHydrationEntry(id: UUID, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        let next = HydrationEntries.removing(Self.hydrationEntries(day: dayKey), id: id)
-        Self.writeHydrationEntries(next, day: dayKey)
-        return await rebankHydrationTotal(entries: next, day: dayKey)
+        // Serialised with every other hydration mutation (260904). Without the gate this can
+        // overtake a queued `logHydration` and re-bank a day total derived from an entry list that
+        // does not yet contain that log — the same lost-write class, arriving by the other door.
+        // Ordering matters as well as exclusion: a minus that overtook its own plus would look for
+        // an entry that had not been written yet.
+        return await withHydrationLock {
+            let next = HydrationEntries.removing(Self.hydrationEntries(day: dayKey), id: id)
+            Self.writeHydrationEntries(next, day: dayKey)
+            return await self.rebankHydrationTotal(entries: next, day: dayKey)
+        }
     }
 
     /// Set an existing entry's amount (a non-positive amount deletes it), then re-derive + re-bank the day
@@ -243,22 +329,39 @@ extension Repository {
     @discardableResult
     func updateHydrationEntry(id: UUID, amountMl: Int, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
-        let next = HydrationEntries.updating(Self.hydrationEntries(day: dayKey), id: id, amountMl: amountMl)
-        Self.writeHydrationEntries(next, day: dayKey)
-        return await rebankHydrationTotal(entries: next, day: dayKey)
+        // Serialised for the same reason as the delete above.
+        return await withHydrationLock {
+            let next = HydrationEntries.updating(Self.hydrationEntries(day: dayKey), id: id,
+                                                 amountMl: amountMl)
+            Self.writeHydrationEntries(next, day: dayKey)
+            return await self.rebankHydrationTotal(entries: next, day: dayKey)
+        }
     }
 
     /// Re-derive the day total from `entries` and upsert it into `metricSeries` (the canonical total). The
     /// per-entry list is the source of truth for an edited/deleted day; this keeps the rest of the app in sync.
     @discardableResult
     private func rebankHydrationTotal(entries: [HydrationEntry], day dayKey: String) async -> Double {
-        let total = HydrationEntries.total(entries)
+        // RE-READ the list rather than trusting the snapshot the caller computed (260904).
+        //
+        // `storeHandle()` below is an await, so between the caller's read and this write another
+        // hydration mutation can have appended an entry. Banking the caller's stale snapshot then
+        // overwrote the series with a total that omitted it — the series and the entry list ended up
+        // disagreeing even though the mutations themselves were correctly serialised. Found by
+        // `testALogAndARemovalStayOrdered`, not by review.
+        //
+        // The entry list is the source of truth for an edited day, so deriving the banked total from
+        // its CURRENT contents is both cheaper than re-plumbing the callers and correct by
+        // construction: whatever the list says at write time is what gets stored.
+        let total = HydrationEntries.total(Self.hydrationEntries(day: dayKey))
+        _ = entries   // the caller's snapshot is now advisory only; see above
         if let store = await storeHandle() {
             _ = try? await store.upsertMetricSeries(
                 [MetricPoint(day: dayKey, key: HydrationStore.key, value: total)],
                 deviceId: HydrationStore.sourceId)
         }
         // #989: edits/deletes funnel through here; tell the Today card directly (see logHydration).
+        refreshHydrationCache(day: dayKey)
         noteHydrationChanged()
         // The entry list only ever describes hand-logged drinks, so re-deriving from it must not be
         // allowed to erase the imported row — write the manual figure, return the combined one (#949).
@@ -267,7 +370,7 @@ extension Repository {
 
     // MARK: - Entry persistence (UserDefaults JSON, one array per local day)
 
-    fileprivate static func hydrationEntries(day dayKey: String) -> [HydrationEntry] {
+    static func hydrationEntries(day dayKey: String) -> [HydrationEntry] {
         guard let data = UserDefaults.standard.data(forKey: HydrationStore.entriesKey(forDay: dayKey)),
               let decoded = try? JSONDecoder().decode([HydrationEntry].self, from: data) else { return [] }
         return decoded.sorted { $0.loggedAt < $1.loggedAt }
@@ -314,4 +417,13 @@ extension Repository {
     func hydrationGoalML(profileSex: String) -> Int {
         HydrationGoal.dailyGoalML(sex: profileSex, effort: today?.strain)
     }
+}
+
+/// One-slot holder so `Repository.withHydrationLock` can return the value its chained `Task`
+/// produced. The task must be `Task<Void, …>` for the chain to be type-uniform across different
+/// mutation return types, so the result travels out of band. MainActor-confined, like everything
+/// that touches it.
+@MainActor
+final class HydrationResultBox<T> {
+    var value: T?
 }
