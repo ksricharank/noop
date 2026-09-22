@@ -71,6 +71,10 @@ struct TrendsView: View {
     /// be read against the rest. Cups rather than millilitres because that is the only unit any
     /// water surface in the app displays.
     @State private var waterCupsByDay: [String: Double] = [:]
+    /// 260922: the unified card's series, built ONCE per data change instead of per body. Seven full
+    /// passes over `repo.days` used to run on every body evaluation — and the 1 Hz heart-rate sink
+    /// re-evaluates bodies continuously while the strap is connected.
+    @State private var multiMetricSeries: [MultiMetric: [String: Double]] = [:]
 
     // The unified card's configuration (260920).
     // One stored selection PER STYLE (260920). `@AppStorage` needs a literal key, so the three are
@@ -110,10 +114,9 @@ struct TrendsView: View {
                         onConfigure: { configuringStyle = style })
     }
 
-    /// Every series the unified card can draw, assembled from what this page already holds. Built
-    /// per body rather than cached: each entry is a dictionary the page has in hand, and the card
-    /// windows and measures them once in its own `resolved`.
-    private var multiMetricSeries: [MultiMetric: [String: Double]] {
+    /// Every series the unified card can draw, assembled from what this page already holds. Built in
+    /// the `.task` below (keyed on the data), never per body — see `multiMetricSeries`.
+    private func buildMultiMetricSeries() -> [MultiMetric: [String: Double]] {
         [.charge: seriesByDay { $0.recovery },
          .hrv: seriesByDay { $0.avgHrv },
          .restingHr: seriesByDay { $0.restingHr.map(Double.init) },
@@ -419,6 +422,14 @@ struct TrendsView: View {
                 if ml > 0 { out[d.day] = Double(HydrationGoal.cups(fromML: ml)) }
             }
             waterCupsByDay = out
+        }
+        // 260922: the unified card's seven day-keyed series, rebuilt only when the data behind them
+        // changes. Keyed on the three loaded series' counts too, so a late-arriving Rest / day-quality /
+        // water load refreshes the card once.
+        .task(id: "\(repo.refreshSeq)-\(repo.days.count)-\(sleepPerfByDay.count)-\(dayQualityByDay.count)-\(waterCupsByDay.count)") {
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            multiMetricSeries = buildMultiMetricSeries()
+            ScreenLedger.recordLoad(screen: "trends", restored: false, since: t0)
         }
     }
 

@@ -309,26 +309,20 @@ public enum DailyTargets {
     /// (`Rest.populationNeedFloorHours` — 8 h adult, 9 h under-18) adjusted by today's charge band,
     /// last night's Rest, the multi-signal readiness read, and the capped junior debt term —
     /// clamped to the stated 7–10 h bounds.
-    public static func sleepNeedTonightMin(age: Int?,
-                                           charge: Int?,
-                                           restScore: Int?,
-                                           readiness: ReadinessEngine.Level,
-                                           debtBalanceMin: Double) -> Int {
-        var need = AnalyticsEngine.Rest.populationNeedFloorHours(age: age) * 60.0
-        if let charge {
-            if charge <= recoverChargeCeiling { need += sleepChargeAdjRecoverMin }
-            else if charge < pushChargeFloor { need += sleepChargeAdjMaintainMin }
-        }
-        if let rest = restScore {
-            if rest < poorRestScore { need += sleepRestAdjPoorMin }
-            else if rest >= greatRestScore { need += sleepRestAdjGreatMin }
-        }
-        switch readiness {
-        case .rundown: need += sleepReadinessAdjRundownMin
-        case .strained: need += sleepReadinessAdjStrainedMin
-        case .primed: need += sleepReadinessAdjPrimedMin
-        case .balanced, .insufficient: break
-        }
+
+    /// Tonight's sleep target (minutes): the personal need plus a share of any carried debt.
+    ///
+    /// 260922: ONE need everywhere. Three figures used to coexist — the ledger's per-night need,
+    /// this target (a population floor with charge / rest / readiness notches), and the Day-quality
+    /// "needed" (yesterday's copy of this target) — and read 8h27, 8h05 and 7.6h across one screen
+    /// set for one body. `needMin` is now the caller's canonical personal need
+    /// (`SleepModel.personalNeedMin`, the estimator Rest is scored against), and the ONLY adjustment
+    /// is the debt term: a quarter of a carried deficit beyond the deadband, capped at 45 minutes.
+    /// The charge / rest / readiness notches are retired: they were the unexplained gap between the
+    /// need and the target, and a target that cannot be derived from the two numbers beside it is
+    /// noise. Bounds unchanged (7-10 h).
+    public static func sleepNeedTonightMin(needMin: Double, debtBalanceMin: Double) -> Int {
+        var need = needMin
         let debt = max(0, -debtBalanceMin)
         if debt > debtDeadbandMin { need += min(sleepDebtCapMin, debt * sleepDebtShare) }
         return Int(min(max(need, sleepFloorMin), sleepCapMin).rounded())

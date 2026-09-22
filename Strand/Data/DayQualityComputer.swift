@@ -135,7 +135,10 @@ enum DayQualityComputer {
             waterCups: waterCups,
             waterTargetCups: waterTargetCups,
             sleepMin: nightRow?.totalSleepMin,
-            sleepNeedMin: targets.sleepNeedTonightMin,
+            // 260922: a finished day is graded against the canonical personal need, not against the
+            // copy of "tonight's target" that stood on that day (which read 7.6h beside a ledger need
+            // of 8h27). One need everywhere — see `SleepModel.personalNeedMin`.
+            sleepNeedMin: Int(SleepModel.personalNeedMin(days: upToDay).rounded()),
             hrv: nightRow?.avgHrv,
             hrvBaseline: hrvBaseline,
             restingHr: nightRow?.restingHr,

@@ -21,8 +21,6 @@ struct LiquidTodayView: View {
     @AppStorage(DayCycleMode.storageKey) private var dayCycleModeRaw = DayCycleMode.sleepOnset.rawValue
     private var dayCycleMode: DayCycleMode { DayCycleMode.persisted(dayCycleModeRaw) }
     @EnvironmentObject var repo: Repository
-    /// 260921: the strap-log sink for the charge-display ledger (see `chargeShown` below).
-    @EnvironmentObject private var live: LiveState
     @EnvironmentObject var router: NavRouter
     @EnvironmentObject var profile: ProfileStore
     // For the pull-to-sync gesture (#334): a pull kicks a manual strap history offload via ble.syncNow().
@@ -482,7 +480,7 @@ struct LiquidTodayView: View {
         // (fork: offset 0 follows the CALENDAR day, so the page must re-resolve at 00:00, not wait
         // for the next data refresh to bump refreshSeq). `dayCycleModeRaw` joins it upstream-side, so
         // switching between calendar and sleep-onset day cycles also re-resolves immediately.
-        .task(id: "\(repo.refreshSeq)-\(selectedDayOffset)-\(repo.hydrationSeq)-\(hydrationEnabled)-\(dayCycleModeRaw)-\(Repository.localDayKey(Date()))") {
+        .task(id: loadTaskKey) {
             DashboardCardPrefs.migrateLegacyStepsAverage()
             await load()
         }
@@ -1828,6 +1826,24 @@ struct LiquidTodayView: View {
     // MARK: - Data
 
     private func load() async {
+        let loadKey = loadTaskKey
+        let loadStarted = DispatchTime.now().uptimeNanoseconds
+        // 260922: a same-key re-mount (tab away and back with nothing changed) restores the whole
+        // output in memory instead of re-running ~20 store reads — the 200k-row raw-HR query and the
+        // full-history StressModel among them. This is the classic Today's #849/#932 cache, which
+        // upstream's liquid rewrite never carried over. The key is the exact string the `.task(id:)`
+        // runs on, so every input this load depends on is in it; a data change bumps `refreshSeq`
+        // and misses on purpose.
+        if repo.liquidTodayCacheKey == loadKey, let c = repo.liquidTodayCache as? LiquidTodayCache {
+            restore(from: c)
+            ScreenLedger.recordLoad(screen: "today", restored: true, since: loadStarted)
+            return
+        }
+        defer {
+            repo.liquidTodayCacheKey = loadKey
+            repo.liquidTodayCache = snapshotForCache()
+            ScreenLedger.recordLoad(screen: "today", restored: false, since: loadStarted)
+        }
         // #989: today's hydration total + goal. One metricSeries row + a UserDefaults read, same as classic
         // TodayView.reloadHydration(). Cleared when the feature is off so the card can't show a stale total.
         if hydrationEnabled {
@@ -1889,7 +1905,7 @@ struct LiquidTodayView: View {
             case .calibrating: branch = "calibrating"
             default:           branch = "none"
             }
-            live.append(log: "chargeShown day=\(tkey) branch=\(branch) "
+            ScreenLedger.log("chargeShown day=\(tkey) branch=\(branch) "
                                   + "todayRecovery=\(day?.recovery.map { String(Int($0.rounded())) } ?? "nil") "
                                   + "offset=\(selectedDayOffset)")
             lastLoggedChargeDisplay = cachedChargeDisplay
@@ -2093,6 +2109,41 @@ struct LiquidTodayView: View {
 
         // First load done — bring the hero gauges + sky to life now the launch churn has settled.
         if !dataLoaded { withAnimation(.easeIn(duration: 0.4)) { dataLoaded = true } }
+    }
+
+    /// Every input `load()` depends on, as one string — the `.task(id:)` key AND the cache key.
+    private var loadTaskKey: String {
+        "\(repo.refreshSeq)-\(selectedDayOffset)-\(repo.hydrationSeq)-\(hydrationEnabled)-\(dayCycleModeRaw)-\(Repository.localDayKey(Date()))"
+    }
+
+    private func snapshotForCache() -> LiquidTodayCache {
+        LiquidTodayCache(
+            cachedChargeDisplay: cachedChargeDisplay, cachedDisplayDay: cachedDisplayDay,
+            cachedReadiness: cachedReadiness, cachedVitalsDay: cachedVitalsDay, cachedRespDay: cachedRespDay,
+            cachedHrvDay: cachedHrvDay, cachedRestingHrDay: cachedRestingHrDay,
+            cachedSkinTempReadingDay: cachedSkinTempReadingDay,
+            restScore: restScore, heroProviderByMetric: heroProviderByMetric, stress: stress,
+            fitnessAge: fitnessAge, vo2max: vo2max, vitality: vitality,
+            spo2CandidateByDay: spo2CandidateByDay, stepsEst: stepsEst, importedStepsDay: importedStepsDay,
+            importedActiveKcalDay: importedActiveKcalDay, hrValues: hrValues, hrSegments: hrSegments,
+            workouts: workouts, kSparks: kSparks, liveTodayStrain: liveTodayStrain,
+            hostedSleepModel: hostedSleepModel, hostedStressHours: hostedStressHours,
+            hydrationTotalML: hydrationTotalML, hydrationGoalML: hydrationGoalML)
+    }
+
+    private func restore(from c: LiquidTodayCache) {
+        cachedChargeDisplay = c.cachedChargeDisplay; cachedDisplayDay = c.cachedDisplayDay
+        cachedReadiness = c.cachedReadiness; cachedVitalsDay = c.cachedVitalsDay; cachedRespDay = c.cachedRespDay
+        cachedHrvDay = c.cachedHrvDay; cachedRestingHrDay = c.cachedRestingHrDay
+        cachedSkinTempReadingDay = c.cachedSkinTempReadingDay
+        restScore = c.restScore; heroProviderByMetric = c.heroProviderByMetric; stress = c.stress
+        fitnessAge = c.fitnessAge; vo2max = c.vo2max; vitality = c.vitality
+        spo2CandidateByDay = c.spo2CandidateByDay; stepsEst = c.stepsEst; importedStepsDay = c.importedStepsDay
+        importedActiveKcalDay = c.importedActiveKcalDay; hrValues = c.hrValues; hrSegments = c.hrSegments
+        workouts = c.workouts; kSparks = c.kSparks; liveTodayStrain = c.liveTodayStrain
+        hostedSleepModel = c.hostedSleepModel; hostedStressHours = c.hostedStressHours
+        hydrationTotalML = c.hydrationTotalML; hydrationGoalML = c.hydrationGoalML
+        dataLoaded = true
     }
 
     // MARK: - Derived (sync, off repo.today / repo.days)
@@ -3270,4 +3321,36 @@ private extension View {
         }
         #endif
     }
+}
+
+/// 260922: everything `LiquidTodayView.load()` produces, held by `Repository.liquidTodayCache` (type-erased
+/// there, so the Data layer does not depend on a screen type) and restored on a same-key re-mount.
+struct LiquidTodayCache {
+    let cachedChargeDisplay: LiquidTodayView.ChargeDisplay
+    let cachedDisplayDay: DailyMetric?
+    let cachedReadiness: ReadinessEngine.Readiness?
+    let cachedVitalsDay: DailyMetric?
+    let cachedRespDay: DailyMetric?
+    let cachedHrvDay: DailyMetric?
+    let cachedRestingHrDay: DailyMetric?
+    let cachedSkinTempReadingDay: DailyMetric?
+    let restScore: Double?
+    let heroProviderByMetric: [String: ScoreInputProvider]
+    let stress: Double?
+    let fitnessAge: Double?
+    let vo2max: Double?
+    let vitality: Double?
+    let spo2CandidateByDay: [String: Double]
+    let stepsEst: Double?
+    let importedStepsDay: Int?
+    let importedActiveKcalDay: Double?
+    let hrValues: [Double]
+    let hrSegments: [String]
+    let workouts: [WorkoutRow]
+    let kSparks: [String: [(String, Double)]]
+    let liveTodayStrain: Double?
+    let hostedSleepModel: SleepModel?
+    let hostedStressHours: [DaytimeStress.HourPoint]
+    let hydrationTotalML: Double?
+    let hydrationGoalML: Int?
 }

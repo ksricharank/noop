@@ -882,10 +882,9 @@ final class Repository: ObservableObject {
 
         // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
         // the coach context): the population-anchored upper-quartile need.
-        let nightlyMinutes = days.compactMap(\.totalSleepMin)
-        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
-            nightlyHours: nightlyMinutes.map { $0 / 60.0 },
-            age: nil) * 60.0
+        // 260922: ONE need everywhere — `SleepModel.personalNeedMin` (its doc names the three
+        // figures this replaced). Tonight's target below is this need plus the debt share, nothing else.
+        let ledgerNeedMin = SleepModel.personalNeedMin(days: days)
         // Credit naps exactly as `SleepModel.debtLedger` does, through the SAME helper, so the two
         // ledgers cannot drift again. With an empty map this is `totalSleepMin` unchanged.
         let ledger = SleepDebt.ledger(
@@ -907,10 +906,7 @@ final class Repository: ObservableObject {
                 DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
             },
             restDay: session == nil,
-            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
-                                                                  charge: charge,
-                                                                  restScore: restScore,
-                                                                  readiness: readiness,
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(needMin: ledgerNeedMin,
                                                                   debtBalanceMin: ledger.balanceMin),
             stepsToday: todayRow?.steps,
             stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
@@ -928,11 +924,7 @@ final class Repository: ObservableObject {
                 kcalTarget: DailyTargets.dayKcalTarget(session: session, profile: profile,
                                                        restingHr: latestRhr),
                 stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
-                sleepNeedMin: DailyTargets.sleepNeedTonightMin(age: age.map { Int($0) },
-                                                               charge: charge,
-                                                               restScore: restScore,
-                                                               readiness: readiness,
-                                                               debtBalanceMin: ledger.balanceMin),
+                sleepNeedMin: DailyTargets.sleepNeedTonightMin(needMin: ledgerNeedMin, debtBalanceMin: ledger.balanceMin),
                 age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
                 debtBalanceMin: ledger.balanceMin,
                 waterTargetCups: waterTargetCups,
@@ -1302,6 +1294,17 @@ final class Repository: ObservableObject {
     /// #849: the last history-wide snapshot Today built, so a re-mount can RESTORE it (in-memory, no queries)
     /// instead of re-running the heavy reload. Paired with `todayHistoryWideLoadedSeq`. Not @Published.
     var todayHistoryWideCache: TodayHistoryWideCache?
+    /// 260922: the liquid Today's whole `load()` output, keyed by the exact string its `.task(id:)`
+    /// runs on. The same idea as `todayHistoryWideCache` (#849/#932): upstream's liquid rewrite
+    /// never carried that cache over, so every return to the tab re-ran ~20 store reads — a 200k-row
+    /// HR query and a full-history StressModel among them — for byte-identical data. A re-mount whose
+    /// key matches restores in memory instead. Not @Published: bookkeeping, never drives the UI.
+    var liquidTodayCacheKey = ""
+    var liquidTodayCache: Any?
+    /// 260922: the Sleep tab's heavy loads (every session, per-session motion, the Rest series) for
+    /// the `refreshSeq` they were read at — a same-seq re-mount restores instead of re-reading.
+    var sleepViewLoadedSeq = -1
+    var sleepViewCache: Any?
 
     /// #833 (Insights freeze): macOS destroys + cold-mounts the NavigationSplitView detail on every sidebar
     /// switch (RootView keys it with `.id`), so InsightsView's `@State` is torn down each time and its

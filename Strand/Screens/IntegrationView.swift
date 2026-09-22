@@ -14,8 +14,7 @@ struct IntegrationView: View {
 
     @State private var enabled = MuseIntegration.isEnabled
     @State private var basename = MuseIntegration.filename
-    @State private var hour = MuseIntegration.hourOfDay
-    @State private var intervalHours = MuseIntegration.intervalHours
+    @State private var updatesPerDay = MuseIntegration.updatesPerDay
     @State private var includeCoach = MuseIntegration.includesCoachNarratives
     @State private var folderLabel = MuseIntegration.folderLabel()
     @State private var lastMs = MuseIntegration.lastWrittenMs
@@ -121,7 +120,7 @@ struct IntegrationView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Write it daily").font(StrandFont.body)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Generates once a day, when you next open NOOP after the hour below.")
+                        Text("Written in the background on a strap sync — opening NOOP is not required. How often is set below.")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -133,35 +132,20 @@ struct IntegrationView: View {
                 }
                 HStack(alignment: .center, spacing: 16) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Generate after").font(StrandFont.body)
+                        Text("Updates per day").font(StrandFont.body)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Pick roughly when you wake. A day that is missed catches up the next time you open NOOP.")
+                        Text("Once means the first time NOOP is running after your sleep window ends (\(anchorLabel)). Twice adds one twelve hours later, and so on — evenly spaced, no clock time to pick. A missed slot catches up at the next sync.")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
-                    Picker("Generate after", selection: $hour) {
-                        ForEach(0..<24, id: \.self) { h in Text(hourLabel(h)).tag(h) }
-                    }
-                    .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
-                    .onChangeCompat(of: hour) { h in MuseIntegration.hourOfDay = h }
-                }
-                HStack(alignment: .center, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("How often").font(StrandFont.body)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Hours between writes. The first write of each day lands at the hour above; this says how often to refresh it after that.")
-                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                    Picker("How often", selection: $intervalHours) {
-                        ForEach(MuseIntegration.intervalOptions, id: \.self) { h in
-                            Text(intervalLabel(h)).tag(h)
+                    Picker("Updates per day", selection: $updatesPerDay) {
+                        ForEach(Array(MuseIntegration.updatesPerDayRange), id: \.self) { n in
+                            Text(n == 1 ? String(localized: "once") : String(localized: "\(n)× a day")).tag(n)
                         }
                     }
                     .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
-                    .onChangeCompat(of: intervalHours) { h in MuseIntegration.intervalHours = h }
+                    .onChangeCompat(of: updatesPerDay) { n in MuseIntegration.updatesPerDay = n }
                 }
                 Text(lastMs > 0 ? "Last written: \(relativeTime(lastMs))" : "Not written yet.")
                     .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
@@ -311,6 +295,12 @@ struct IntegrationView: View {
 
     /// "24 h — once a day", "6 h — 4× a day". Names both the interval the wearer picked and what it
     /// means in practice, because "6" alone does not say whether it is six writes or six hours.
+    /// The sleep window's end, as the slot anchor shown in the cadence footnote.
+    private var anchorLabel: String {
+        let m = MuseIntegration.anchorMinuteOfDay
+        return String(format: "%d:%02d", m / 60, m % 60)
+    }
+
     private func intervalLabel(_ h: Int) -> String {
         let times = max(1, 24 / h)
         if times == 1 { return String(localized: "24 h — once a day") }

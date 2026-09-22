@@ -41,8 +41,7 @@ final class TargetsExplainerTests: XCTestCase {
         let effortTarget = DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
         let kcalTarget = DailyTargets.dayKcalTarget(session: session, profile: profile, restingHr: 55)
         let stepsTarget = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
-        let sleepNeed = DailyTargets.sleepNeedTonightMin(age: 34, charge: charge, restScore: rest,
-                                                         readiness: .balanced, debtBalanceMin: -40)
+        let sleepNeed = DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -40)
         let hr = DailyTargets.sessionHrBpm(session: session!, restingHr: 55, age: 34)
 
         let blocks = TargetsExplainer.lines(
@@ -164,8 +163,7 @@ final class TargetsExplainerTests: XCTestCase {
             effortTarget: 0,
             kcalTarget: kcalTarget,
             stepsTarget: DailyTargets.stepsTarget(charge: 20, readiness: .rundown),
-            sleepNeedMin: DailyTargets.sleepNeedTonightMin(age: 34, charge: 20, restScore: 40,
-                                                           readiness: .rundown, debtBalanceMin: 0),
+            sleepNeedMin: DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: 0),
             age: 34, restingHr: 60, profile: profile, debtBalanceMin: 0)
 
         XCTAssertEqual(blocks.count, 3)

@@ -1940,6 +1940,42 @@ final class IntelligenceEngine: ObservableObject {
             histRhrByDay[d.day] = d.restingHr.map(Double.init)
             histRespByDay[d.day] = d.respRateBpm
         }
+        // 260922 THE BASELINE FIX. On a strap-only install `hist` (the imported id) is empty, so
+        // the HRV/RHR/resp baselines were folded ENTIRELY from the nights this pass scanned. A
+        // completed pass scans 21 and gets a real baseline; a partial pass — the light pass, or a
+        // full pass the abort gate stopped at night 1 — scanned one or two and could score nothing,
+        // so today's Charge waited for a foreground open. Every morning, therefore: yesterday's
+        // carry on the widget and the app's first paint, then today's ~30-60 s later. The
+        // 260922-0717 log shows exactly that (`stored=none` on today's light passes until the open).
+        //
+        // A partial pass now folds the OTHER nights of the standard window from its own stored
+        // computed rows — the values a completed pass wrote — and only for days it did not scan,
+        // so nothing it is about to rewrite feeds its own baseline (the Kotlin twin's stated
+        // "read-before-persist" hazard). A completed pass scans every day of the window: the set
+        // below is empty and its output is byte-identical. Android has no partial passes (no light
+        // pass, no abort gate), so this path has no twin to keep in step; the completed-pass
+        // arithmetic is unchanged on both platforms.
+        //
+        // The read covers the STANDARD window (21 nights), not this pass's `maxDays` — a light pass
+        // asks for 2 days and needs the other 19 from the store. `storedRowByDay` is reused by the
+        // merge below (it used to be read only there, after the baselines were already built).
+        var storedRowByDay: [String: DailyMetric] = [:]
+        if partialBaseline {
+            let baselineDays = max(maxDays, 21)
+            let fromDay = AnalyticsEngine.dayString(nowLocalMidnight - (baselineDays - 1) * 86_400,
+                                                    offsetSec: tzOffset)
+            let toDay = AnalyticsEngine.dayString(nowLocalMidnight, offsetSec: tzOffset)
+            let existing = (try? await store.dailyMetrics(deviceId: computedId,
+                                                          from: fromDay, to: toDay)) ?? []
+            for row in existing { storedRowByDay[row.day] = row }
+            for (day, row) in storedRowByDay where nightlyHrvByDay[day] == nil {
+                // Key-absence checks, exactly as `mergeNightlyIntoHistory`: an imported night keeps
+                // its value (even a nil one); a stored computed night fills only a MISSING key.
+                if histHrvByDay[day] == nil { histHrvByDay[day] = row.avgHrv }
+                if histRhrByDay[day] == nil { histRhrByDay[day] = row.restingHr.map(Double.init) }
+                if histRespByDay[day] == nil { histRespByDay[day] = row.respRateBpm }
+            }
+        }
         Self.mergeNightlyIntoHistory(&histHrvByDay, nightlyHrvByDay)
         Self.mergeNightlyIntoHistory(&histRhrByDay, nightlyRhrByDay)
         Self.mergeNightlyIntoHistory(&histRespByDay, nightlyRespByDay)
@@ -1966,6 +2002,7 @@ final class IntelligenceEngine: ObservableObject {
         var respSourceByDay: [String: String] = [:]
         for (day, owner) in resolvedScoreOwnerByDay { respSourceByDay[day] = owner }
         for d in hist where respSourceByDay[d.day] == nil { respSourceByDay[d.day] = deviceId }
+        for day in storedRowByDay.keys where respSourceByDay[day] == nil { respSourceByDay[day] = deviceId }
         // rhr/resp/skin honour the Charge-wide recalibration epoch (noop.recoveryBaselineEpoch); 0 = no-op,
         // so this is byte-identical to the plain fold until the user taps Recalibrate, at which point the
         // whole Charge build-up (HRV + resting HR + resp + skin) re-anchors together.
@@ -2035,17 +2072,7 @@ final class IntelligenceEngine: ObservableObject {
         // Keyed on BASELINE SUFFICIENCY (`partialBaseline`), not on which kind of pass this is: the
         // invariant is "do not judge a night against a window we did not actually score", and a
         // third truncation route would otherwise need a third flag.
-        var storedRowByDay: [String: DailyMetric] = [:]
-        if lightPass || partialBaseline {
-            // Same window the pass scores: [now - (maxDays-1) days, today], derived here rather
-            // than reusing `oldestDay`/`newestDay`, which are declared further down.
-            let fromDay = AnalyticsEngine.dayString(nowLocalMidnight - (maxDays - 1) * 86_400,
-                                                    offsetSec: tzOffset)
-            let toDay = AnalyticsEngine.dayString(nowLocalMidnight, offsetSec: tzOffset)
-            let existing = (try? await store.dailyMetrics(deviceId: computedId,
-                                                          from: fromDay, to: toDay)) ?? []
-            for row in existing { storedRowByDay[row.day] = row }
-        }
+        // (`storedRowByDay` is read ABOVE the baseline fold since 260922 — see "THE BASELINE FIX".)
 
         let baselines2 = AnalyticsEngine.ProfileBaselines(
             // HRV honours noop.hrvBaselineEpoch; rhr/resp/skin honour noop.recoveryBaselineEpoch via their
@@ -2199,25 +2226,13 @@ final class IntelligenceEngine: ObservableObject {
             daily = DayCycleIntelligenceIntegration.applying(physiologicalSteps, to: daily)
             daily = Self.recomputeRecoveryDaily(daily, nightlySkinTempC: night.nightlySkin,
                                                baselines: baselines2)
-            // A LIGHT pass must not recompute recovery (260903, the flip-flopping Charge).
-            //
-            // Recovery is a z-score against the HRV/RHR BASELINES, and on a strap-only install
-            // (no WHOOP export) those baselines are built ENTIRELY from the nights this pass
-            // itself scored — `hist` reads the imported device id, which is empty here, so
-            // `nightlyHrvByDay` is the only source. A 2-day light pass therefore folds a 2-night
-            // baseline, against which a genuinely suppressed night looks normal: the same night
-            // scored Charge 22 on the full 21-night window and 47 on the light pass's, and the
-            // two alternated as each pass overwrote the other — Charge and every target priced
-            // off it changed on every app open.
-            //
-            // The light pass's job is today's accumulators (steps/kcal/strain), never the scored
-            // night. So it KEEPS the stored recovery: the value the last full pass computed
-            // against the real baseline. Nil stays nil (an unscored night is not invented), and
-            // the next full pass recomputes normally.
-            // A light pass does not re-judge the night at all — the merge below restores every
-            // scored-night field from the stored row, recovery included. Computing it here would
-            // be wasted work against a baseline the light window cannot support.
-            let recovery = partialBaseline ? nil : Self.recomputeRecovery(daily, baselines2)
+            // Recovery is a z-score against the HRV/RHR baselines. Until 260922 a partial pass had no
+            // usable baseline on a strap-only install (its own scanned nights were the only source),
+            // so it could not compute this honestly and was forced to nil — the 260903 light-pass
+            // guard, then the 260921 abandoned-pass guard. The baseline now folds from stored history
+            // for a partial pass (see "THE BASELINE FIX"), so every pass computes recovery against
+            // the real window. What a PARTIAL pass may WRITE is decided at the merge below.
+            let recovery = Self.recomputeRecovery(daily, baselines2)
             let skinDev = daily.skinTempDevC
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
@@ -2321,16 +2336,34 @@ final class IntelligenceEngine: ObservableObject {
             // `nValid` is the tell: a full pass on a settled install reads ~21, and anything far
             // below it on a `kind=full` line means the pass was judging a night against a window it
             // never scored — which `partialBaseline` should now have made impossible.
+            // 260922: a partial pass may FILL a blank Charge, never overwrite one. `lightPassMerged`
+            // still takes every scored-night field from the stored row (the maintainer's rule: the
+            // light pass is for numerators). With the baseline folded from stored history, a partial
+            // pass's recovery is now scored against the real window — so for a day with NO stored
+            // Charge yet (a new day, before the morning open) the fresh value stands, and today's
+            // Charge exists on the widget before the app is opened. A day a completed pass already
+            // judged keeps that judgement until the next completed pass.
+            let stored = storedRowByDay[daily.day]
+            let toPersist: DailyMetric
+            if partialBaseline {
+                var merged = scored.lightPassMerged(over: stored)
+                if merged.recovery == nil, let fresh = recovery {
+                    merged = merged.with(recovery: fresh, skinTempDevC: merged.skinTempDevC,
+                                         skinTempC: merged.skinTempC)
+                }
+                toPersist = merged
+            } else {
+                toPersist = scored
+            }
             let chargeKind = lightPass ? "light" : (wasAbandoned ? "abandoned" : "full")
-            let wroteText = recovery.map { String(Int($0.rounded())) } ?? "nil(preserved)"
-            let keptText = storedRowByDay[daily.day]?.recovery.map { String(Int($0.rounded())) } ?? "none"
+            let wroteText = toPersist.recovery.map { String(Int($0.rounded())) } ?? "nil"
+            let keptText = stored?.recovery.map { String(Int($0.rounded())) } ?? "none"
             diagnosticSink?("chargeWrite day=\(daily.day) kind=\(chargeKind) "
                             + "wrote=\(wroteText) stored=\(keptText) "
                             + "hrvNValid=\(baselines2.hrv?.nValid.description ?? "nil") "
                             + "hrvStatus=\(baselines2.hrv.map { String(describing: $0.status) } ?? "nil") "
                             + "scanned=\(scoredNights.count)/\(maxDays) trigger=\(trigger)", nil)
-            dailies.append(partialBaseline ? scored.lightPassMerged(over: storedRowByDay[daily.day])
-                                           : scored)
+            dailies.append(toPersist)
             if let rest = AnalyticsEngine.Rest.composite(daily: daily) {
                 restPoints.append(MetricPoint(day: daily.day, key: "sleep_performance", value: rest))
             }

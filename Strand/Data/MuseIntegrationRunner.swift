@@ -33,17 +33,32 @@ enum MuseIntegrationRunner {
         return try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
     }
 
-    /// Run only if the configured hour has passed and today's digest has not been written.
-    /// Called on app foreground; silent on every failure, because a background chore must never
-    /// surface an error over whatever the wearer actually opened the app to do. The failure is
-    /// recorded in `MuseIntegration.lastError` and shown on the settings screen.
-    static func runIfDue(repo: Repository, coach: AICoachEngine? = nil, now: Date = Date()) async {
-        guard MuseIntegration.isEnabled, MuseIntegration.hasFolder else { return }
-        guard MuseIntegration.isDue(now: now,
-                                    lastWrittenMs: MuseIntegration.lastWrittenMs,
-                                    hourOfDay: MuseIntegration.hourOfDay,
-                                    intervalHours: MuseIntegration.intervalHours) else { return }
-        _ = try? await run(repo: repo, coach: coach, now: now)
+    /// Run only if the current cadence slot has not been written yet (260922: N slots a day from the
+    /// sleep window's end — see `MuseIntegration.isDue`). Called from every completed strap offload
+    /// (background), from launch and from scene-phase `.active`; idempotent per slot, so all three may
+    /// fire freely. Never surfaces an error over whatever the wearer opened the app to do: failures go
+    /// to `MuseIntegration.lastError` (the settings screen) and to `log`.
+    ///
+    /// `log` is the strap-log line this chore never had. Emitted only when something HAPPENS — a
+    /// write, a failure, or a due slot with no usable folder — never on the common "not due" return,
+    /// which runs on every sync and would flood the log.
+    static func runIfDue(repo: Repository, coach: AICoachEngine? = nil, now: Date = Date(),
+                         log: ((String) -> Void)? = nil) async {
+        guard MuseIntegration.isEnabled else { return }
+        let n = MuseIntegration.updatesPerDay
+        let anchor = MuseIntegration.anchorMinuteOfDay
+        guard MuseIntegration.isDue(now: now, lastWrittenMs: MuseIntegration.lastWrittenMs,
+                                    updatesPerDay: n, anchorMinuteOfDay: anchor) else { return }
+        guard MuseIntegration.hasFolder else {
+            log?("integration: due but no usable folder (bookmark missing or stale) — not written")
+            return
+        }
+        do {
+            _ = try await run(repo: repo, coach: coach, now: now)
+            log?(String(format: "integration: written (%d/day, slots from %02d:%02d)", n, anchor / 60, anchor % 60))
+        } catch {
+            log?("integration: write FAILED — \(error.localizedDescription)")
+        }
     }
 
     // MARK: Gathering

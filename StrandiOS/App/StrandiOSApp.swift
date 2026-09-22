@@ -549,6 +549,12 @@ struct StrandiOSApp: App {
                     // watch only ever holds placeholder data on a real device.
                     await watch.pushLatest(from: model)
                 }
+                // 260922: the Integration digest's foreground catch-up. Its only trigger was the tab
+                // shell's launch-time `.task`, and a bluetooth-central app can go days without a real
+                // launch — so "the first open after the hour" was often days late. The post-offload
+                // hook (AppModel) is the primary path now; this covers a morning with no sync.
+                Task { await MuseIntegrationRunner.runIfDue(repo: model.repo, coach: nil,
+                                                            log: { [model] in model.live.append(log: $0) }) }
             } else if phase == .background {
                 // Re-submit on every transition because iOS may discard an old best-effort request.
                 HealthWritebackBackgroundScheduler.updateSchedule(
@@ -563,7 +569,10 @@ struct StrandiOSApp: App {
                 // #114: capture the LAST in-app live state on the way out so the Home widget matches what
                 // the user just saw — its battery/HR/score otherwise lag to the last FOREGROUND refreshSeq
                 // bump. One reload per app-exit is low-frequency and well within WidgetKit's daily budget.
-                Task { await WidgetSnapshot.publish(from: model) }
+                // 260922: `userInitiated` — the sentence above was true of the daily CAP but this publish
+                // was still subject to the background SPACING gate (see `saveAndReloadIfChanged`), and a
+                // coalesced exit publish is exactly a widget that disagrees with the app just minimised.
+                Task { await WidgetSnapshot.publish(from: model, userInitiated: true) }
                 // #155: refresh the Documents/noop_sync.txt drop file the user's Siri Shortcut logs
                 // into Apple Health. Gated inside writeIfEnabled on the opt-in default (OFF) — a
                 // no-op until the user turns on Shortcuts Export.

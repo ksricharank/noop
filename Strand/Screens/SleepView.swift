@@ -228,23 +228,40 @@ struct SleepView: View {
             // refreshSeq; snaps back to the newest day and rebuilds the model so offset 0 reflects
             // the freshly-loaded blocks. (#170)
             .task(id: repo.refreshSeq) {
-                allSessions = await repo.allSleepSessions()
-                // Load the learned habitual midsleep the engine used, so the main-night pick aligns to it
-                // (a shift/late sleeper) instead of only the cold-start band. nil under threshold. (#547)
-                habitualMidsleepSec = await repo.habitualMidsleepSec()
-                // Per-epoch motion for every block (#407), keyed by detected start. mergeDay reads only the
-                // already-resolved group's entries — this just pre-fetches them all so the model build is sync.
-                motionByStart = await repo.sessionMotions(sessions: allSessions)
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                // 260922: a same-seq re-mount (tab away and back with nothing new) restores the four
+                // heavy loads from `repo.sleepViewCache` instead of re-reading every session, every
+                // session's motion and the Rest series. Same idea as the Today caches.
+                let restored: Bool
+                if repo.sleepViewLoadedSeq == repo.refreshSeq, let c = repo.sleepViewCache as? SleepViewCache {
+                    allSessions = c.allSessions
+                    habitualMidsleepSec = c.habitualMidsleepSec
+                    motionByStart = c.motionByStart
+                    restByDay = c.restByDay
+                    restored = true
+                } else {
+                    allSessions = await repo.allSleepSessions()
+                    // The learned habitual midsleep the engine used, so the main-night pick aligns to it
+                    // (a shift/late sleeper) instead of only the cold-start band. nil under threshold. (#547)
+                    habitualMidsleepSec = await repo.habitualMidsleepSec()
+                    // Per-epoch motion for every block (#407), keyed by detected start, pre-fetched so the
+                    // model build is sync.
+                    motionByStart = await repo.sessionMotions(sessions: allSessions)
+                    // 260906: the stored Rest series for the trend section, on the same trigger.
+                    let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+                    restByDay = Dictionary(rest.map { ($0.day, $0.value) },
+                                           uniquingKeysWith: { _, last in last })
+                    repo.sleepViewCache = SleepViewCache(allSessions: allSessions, habitualMidsleepSec: habitualMidsleepSec,
+                                                         motionByStart: motionByStart, restByDay: restByDay)
+                    repo.sleepViewLoadedSeq = repo.refreshSeq
+                    restored = false
+                }
                 nightOffset = 0
                 navNight = nil
                 modelKey = dataKey
                 navDaysCache = SleepModel.navDays(navSessions: navSessions)
                 model = buildModel()
-                // 260906: the stored Rest series for the trend section, on the same trigger — a
-                // freshly scored night re-reads it, exactly like the Trends page's own series loads.
-                let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
-                restByDay = Dictionary(rest.map { ($0.day, $0.value) },
-                                       uniquingKeysWith: { _, last in last })
+                ScreenLedger.recordLoad(screen: "sleep", restored: restored, since: t0)
             }
             .sheet(item: $wakeEdit) { edit in
                 // The night's RECORDED coverage for the #940 guards: from the immutable detected
@@ -3081,3 +3098,11 @@ private extension Repository {
     }
 }
 #endif
+
+/// 260922: the Sleep tab's re-mount cache (see the `.task(id: repo.refreshSeq)` in `SleepView`).
+struct SleepViewCache {
+    let allSessions: [CachedSleepSession]
+    let habitualMidsleepSec: Int?
+    let motionByStart: [Int: [Double]]
+    let restByDay: [String: Double]
+}

@@ -1664,7 +1664,21 @@ final class AICoachEngine: ObservableObject {
                 : "no provider configured"
             return nil
         }
-        let instruction = Self.dayQualityStatus(day: day, score: score)
+        // 260922: the day IN CONTEXT — where this score sits against my previous 30, computed on-device,
+        // so the model can say whether "solid" is a good day for me or simply a typical one.
+        var context = ""
+        let dqSeries = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+        let recent = dqSeries.filter { $0.day < day }.suffix(30)
+        if recent.count >= 7 {
+            let mean = recent.map(\.value).reduce(0, +) / Double(recent.count)
+            let c = DayQualityInsights.consistency(
+                valuesByDay: Dictionary(recent.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l }))
+            context = String(format: "\n\nCONTEXT (computed on-device): my mean over the previous %d scored days is %+.0f, "
+                             + "so this day is %+.0f against my own recent norm. %d of those %d days were positive; "
+                             + "the positive streak running into this day was %d.",
+                             recent.count, mean, Double(score.total) - mean, c.positiveDays, c.totalDays, c.currentStreak)
+        }
+        let instruction = Self.dayQualityStatus(day: day, score: score) + context
             + "\n\n---\n\n" + dayQualityPrompt
         do {
             let reply = try await callProvider(key: key, messages: [(.user, instruction)])
@@ -1708,6 +1722,17 @@ final class AICoachEngine: ObservableObject {
         facts += window.map { "  " + dayLine($0) }.joined(separator: "\n")
         let derived = Self.derivedTrendsBlock(days: window)
         if !derived.isEmpty { facts += "\n\n" + derived }
+        // 260922: pre-computed INSIGHTS. The model was asked to find trends in a table of daily rows
+        // and produced generalities; the deterministic engines this app already ships (weekly digest,
+        // lagged correlations, day-quality consistency, streaks) find them better, so they are handed
+        // over ranked and gated, and the model's job becomes the "so what".
+        let dqSeries = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+        let dqByDay = Dictionary(dqSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l })
+        let restSeries = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+        let restByDay = Dictionary(restSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l })
+        let insights = Self.trendsInsightsBlock(days: window, restByDay: restByDay, dayQualityByDay: dqByDay,
+                                                today: Repository.localDayKey(Date()))
+        if !insights.isEmpty { facts += "\n\n" + insights }
         return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
             self.lastTrendsOutcome = outcome
         }
@@ -1751,6 +1776,26 @@ final class AICoachEngine: ObservableObject {
         // cannot print different balances — the divergence fixed in 18.12 arrived exactly by two
         // surfaces computing this separately. Both figures the card shows are stated: the BALANCE
         // and the PER-NIGHT NEED, which is the baseline, not tonight's target.
+        // 260922: the stage split against MY typical — the same means the Sleep tab's stage rows show
+        // as "+/- vs typ" — so the model can say which part of the night was unusual instead of
+        // guessing from one night's raw minutes.
+        let typicalWindow = Array(repo.days.filter { $0.day < night.day }.suffix(30))
+        if typicalWindow.count >= 5 {
+            func stageLine(_ label: String, _ v: Double?, _ typ: Double?) -> String? {
+                guard let v, let typ, typ > 0 else { return nil }
+                return String(format: "  %@ %.0f min vs my typical %.0f min (%+.0f)", label, v, typ, v - typ)
+            }
+            let stageLines = [
+                stageLine("deep", night.deepMin, SleepModel.typicalStageMin(days: typicalWindow, \.deepMin)),
+                stageLine("REM", night.remMin, SleepModel.typicalStageMin(days: typicalWindow, \.remMin)),
+                stageLine("light", night.lightMin, SleepModel.typicalStageMin(days: typicalWindow, \.lightMin)),
+                stageLine("total", night.totalSleepMin, SleepModel.typicalTotalMin(days: typicalWindow)),
+            ].compactMap { $0 }
+            if !stageLines.isEmpty {
+                facts += "\n\nTHIS NIGHT'S STAGES VS MY TYPICAL (last \(typicalWindow.count) nights):\n"
+                    + stageLines.joined(separator: "\n")
+            }
+        }
         let ledger = SleepModel.debtLedger(days: repo.days,
                                            napSleepMinByDay: repo.napSleepMinByDay)
         if ledger.nightCount > 0 {
@@ -1777,9 +1822,8 @@ final class AICoachEngine: ObservableObject {
                 // The two figures above are DIFFERENT quantities and the model must not present
                 // them as one disagreeing with itself — which is precisely how they read to the
                 // maintainer across three builds before the Today target was removed.
-                facts += "\n  (the ledger's per-night need is my usual night; tonight's target is"
-                    + " that adjusted for today's charge, rest, readiness and debt — they are not"
-                    + " the same number and neither is wrong.)"
+                facts += "\n  (tonight's target is the ledger's per-night need plus a share of any"
+                    + " carried sleep debt — the same need, not a second one.)"
             }
         }
         return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
@@ -1931,27 +1975,27 @@ final class AICoachEngine: ObservableObject {
     /// the others cannot. Today reads the current moment, Recap grades a finished day, Sleep reads
     /// last night — so this one is banned from all three and must talk about DIRECTION over weeks.
     static let defaultTrendsPrompt = """
-    The numbers above are my metrics over an extended window — weeks, not one day. Write 2-4 short \
-    bullets about the TREND, for the person whose body it is, in the second person.
+    The numbers above are my metrics over an extended window — weeks, not one day — followed by an \
+    INSIGHTS block computed on-device: week-over-week means, load balance, the relationships in the \
+    window that clear a statistical gate, consistency and streaks. Those findings are already found. \
+    Your job is the SO WHAT. Write 2-4 short bullets for the person whose body it is, in the second person.
 
-    Your lens is DIRECTION AND DURATION. What earns a mention:
-    - A metric that has moved consistently across the window, with roughly how long it has been \
-    moving. A direction sustained for two weeks is a finding; one bad day inside it is not.
-    - A reversal or a plateau after a run — the point where something stopped doing what it was \
-    doing is often the most informative thing in a window.
-    - A relationship that only a long window shows: training load accumulating ahead of recovery, \
-    sleep debt building, a baseline itself drifting.
+    Your lens is DIRECTION AND DURATION: what has been moving, for how long, and where it stopped. \
+    Take the INSIGHTS in the order given (they are ranked) and, for each one worth a bullet, say:
+    - what it means for me — not a restatement of the numbers, which I can read;
+    - what to do about it this week, concretely — or what to watch for if nothing needs doing;
+    - how sure to be: a moderate link over 12 pairs is a lead, not a law.
 
     Rules:
     - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
     not rescale, do not compute a new figure, and never supply a number that is not there. If a \
     figure you want is absent, describe the finding in words with no number at all.
-    - Do NOT report today's values, grade a single day, or discuss last night. Other screens own \
-    those, and repeating them here wastes the only view that can see weeks.
+    - Prefer the INSIGHTS block over the daily rows; use the rows only to illustrate an insight.
+    - Do NOT report today's values, grade a single day, or discuss last night. Other screens own those.
     - Anchor claims in the window: say "over the last three weeks", not "recently".
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
-    - If the window genuinely holds no trend worth reporting, say so in one line. A flat period is \
-    a real finding and padding it is worse than brevity.
+    - If the INSIGHTS block is empty, or the window genuinely holds no trend worth reporting, say so \
+    in one line. A flat period is a real finding and padding it is worse than brevity.
     - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
     short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
     """
@@ -2565,6 +2609,106 @@ final class AICoachEngine: ObservableObject {
     ///
     /// Each sub-block is INDEPENDENTLY nil-guarded: a user with 6 nights gets the sleep-debt line and no
     /// training-load line, rather than a fabricated ratio. Returns "" when nothing qualifies.
+    /// 260922: the INSIGHTS block for the Trends narrative — computed on-device, ranked and bounded, so
+    /// the model explains findings instead of hunting for them in a table of rows.
+    ///
+    /// Every line is deterministic and GATED: a week-over-week move only when both weeks hold >= 3
+    /// days; a correlation only with n >= 10, |r| >= 0.3 and p < 0.1; consistency only over >= 7 scored
+    /// days. Absent evidence produces no line, never a hedge — the prompt is told an empty block is a
+    /// finding in itself.
+    nonisolated static func trendsInsightsBlock(days: [DailyMetric],
+                                               restByDay: [String: Double],
+                                               dayQualityByDay: [String: Double],
+                                               today: String) -> String {
+        guard days.count >= 7 else { return "" }
+        var lines: [String] = []
+        let dayKeys = Set(days.map(\.day))
+        func byDay(_ pick: (DailyMetric) -> Double?) -> [String: Double] {
+            Dictionary(days.compactMap { d in pick(d).map { (d.day, $0) } }, uniquingKeysWith: { _, l in l })
+        }
+
+        // 1. This week vs last, per metric (Monday-anchored, like the Trends digest card).
+        let digest = WeeklyDigestEngine.build(
+            byMetric: [.charge: byDay { $0.recovery }, .effort: byDay { $0.strain },
+                       .hrv: byDay { $0.avgHrv }, .rhr: byDay { $0.restingHr.map(Double.init) },
+                       .rest: restByDay.filter { dayKeys.contains($0.key) }],
+            anchorDay: today)
+        var weekly: [String] = []
+        for m in digest.metrics {
+            let cmp = m.weekOverWeek
+            guard cmp.current.n >= 3, cmp.previous.n >= 3 else { continue }
+            let unit = m.metric.unit.isEmpty ? "" : " " + m.metric.unit
+            var line = String(format: "%@: this week %.0f%@ vs last week %.0f%@ (%+.0f; %d and %d days)",
+                              m.metric.label, cmp.current.mean, unit, cmp.previous.mean, unit, cmp.delta,
+                              cmp.current.n, cmp.previous.n)
+            if let base = m.baselineMean, let vs = m.vsBaseline {
+                line += String(format: "; vs my %.0f%@ baseline %+.0f", base, unit, vs)
+            }
+            weekly.append(line)
+        }
+        if !weekly.isEmpty {
+            lines.append("Week over week (Monday-anchored means):")
+            lines += weekly.map { "  • " + $0 }
+        }
+        if digest.balance != .insufficient { lines.append("Load balance: " + digest.balance.sentence) }
+        if let sd = digest.sleepConsistencySD {
+            lines.append(String(format: "Sleep timing consistency this week: SD %.0f min (lower is steadier).", sd))
+        }
+
+        // 2. What one day does to the next — lagged Pearson, gated. A night is keyed by the morning
+        // it ended on, so "sleep -> that day" is lag 0 and "day -> that night's reading" is lag 1.
+        func series(_ pick: (DailyMetric) -> Double?) -> [(day: String, value: Double)] {
+            days.compactMap { d in pick(d).map { (day: d.day, value: $0) } }
+        }
+        let sleepS = series { $0.totalSleepMin.map { $0 / 60.0 } }
+        let hrvS = series { $0.avgHrv }
+        let effortS = series { $0.strain }
+        let chargeS = series { $0.recovery }
+        let dqS = dayQualityByDay.filter { dayKeys.contains($0.key) }.map { (day: $0.key, value: $0.value) }
+        func corrLine(_ label: String, _ c: Correlation?) -> String? {
+            guard let c, c.n >= 10, abs(c.r) >= 0.3, c.pApprox < 0.1 else { return nil }
+            return String(format: "  • %@: %@ %@ link (r %+.2f over %d pairs)", label,
+                          abs(c.r) >= 0.6 ? "strong" : "moderate", c.r > 0 ? "positive" : "negative", c.r, c.n)
+        }
+        let corr = [
+            corrLine("Sleep hours -> that day's Charge", CorrelationEngine.lagged(x: sleepS, y: chargeS, lagDays: 0)),
+            corrLine("Sleep hours -> that day's Effort", CorrelationEngine.lagged(x: sleepS, y: effortS, lagDays: 0)),
+            corrLine("Sleep hours -> that day's Day quality", CorrelationEngine.lagged(x: sleepS, y: dqS, lagDays: 0)),
+            corrLine("Effort -> the following night's HRV", CorrelationEngine.lagged(x: effortS, y: hrvS, lagDays: 1)),
+            corrLine("Effort -> the following day's Charge", CorrelationEngine.lagged(x: effortS, y: chargeS, lagDays: 1)),
+        ].compactMap { $0 }
+        if !corr.isEmpty {
+            lines.append("Relationships in this window (only those clearing n>=10, |r|>=0.3, p<0.1):")
+            lines += corr
+        }
+
+        // 3. Day-quality consistency.
+        if dqS.count >= 7 {
+            let c = DayQualityInsights.consistency(
+                valuesByDay: Dictionary(dqS.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l }))
+            if let share = c.positiveShare {
+                lines.append(String(format: "Day quality: %d of %d scored days positive (%.0f%%); current streak %d, longest %d.",
+                                    c.positiveDays, c.totalDays, share * 100, c.currentStreak, c.longestStreak))
+            }
+        }
+
+        // 4. Nights meeting the personal need — the one need every surface shows.
+        let need = SleepModel.personalNeedMin(days: days)
+        let nights = days.filter { ($0.totalSleepMin ?? 0) > 0 }.sorted { $0.day < $1.day }
+        if nights.count >= 7 {
+            let met = nights.filter { ($0.totalSleepMin ?? 0) >= need }
+            let st = StreakCalculator.streaks(dayKeys: nights.map(\.day),
+                                              qualified: nights.map { ($0.totalSleepMin ?? 0) >= need },
+                                              today: today)
+            lines.append(String(format: "Nights meeting my %.1fh need: %d of %d; current streak %d, longest %d.",
+                                need / 60.0, met.count, nights.count, st.current, st.longest))
+        }
+
+        guard !lines.isEmpty else { return "" }
+        return (["INSIGHTS (computed on-device — deterministic and ranked; your job is what to DO about them):"]
+                + lines).joined(separator: "\n")
+    }
+
     nonisolated static func derivedTrendsBlock(days: [DailyMetric]) -> String {
         guard !days.isEmpty else { return "" }
         var lines: [String] = []
@@ -2596,9 +2740,7 @@ final class AICoachEngine: ObservableObject {
         // `DailyMetric` rows with no session detail. The coach therefore reports a debt that is
         // never smaller than the screens' — it under-credits sleep rather than inventing it, which
         // is the safe direction for a figure that drives advice to rest.
-        let ledgerNeedMin = AnalyticsEngine.Rest.personalizedNeedHours(
-            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
-            age: nil) * 60.0
+        let ledgerNeedMin = SleepModel.personalNeedMin(days: days)   // 260922: the one need
         let ledger = SleepDebt.ledger(series: days.map { (day: $0.day, totalSleepMin: $0.totalSleepMin) },
                                       needHours: ledgerNeedMin / 60.0)
         if ledger.nightCount > 0 {

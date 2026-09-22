@@ -54,44 +54,41 @@ enum MuseIntegration {
 
     /// Hour of the local day the FIRST write of each day happens, 0–23. Defaults to 7am — the
     /// maintainer generates this "when I wake up".
-    static var hourOfDay: Int {
-        get {
-            guard UserDefaults.standard.object(forKey: hourKey) != nil else { return 7 }
-            return min(max(UserDefaults.standard.integer(forKey: hourKey), 0), 23)
-        }
-        set { UserDefaults.standard.set(min(max(newValue, 0), 23), forKey: hourKey) }
-    }
-
+    /// 260922: ONE cadence setting — how many times a day the digest is written (1...12), evenly
+    /// spaced from the END OF THE SLEEP WINDOW (the app's own "morning" boundary, default 07:00,
+    /// the same setting the re-score settle and the light-pass blackout read). No clock time to
+    /// pick: 1 is "once, the first time the app is live after waking"; 2 adds one twelve hours
+    /// later; and so on. Replaces the hour picker + interval pair, which the migration below reads once.
+    static let updatesPerDayKey = "integration.updatesPerDay"
+    static let updatesPerDayRange = 1...12
+    static let defaultUpdatesPerDay = 1
+    /// Retired (260922); read only by the migration in `updatesPerDay`.
     static let intervalKey = "integration.intervalHours"
 
-    /// Hours between writes (260920, maintainer: "24 meaning once a day, 12 meaning twice, 6 meaning
-    /// 4 times"). The first write of a day still lands at `hourOfDay`; this says how often to write
-    /// AFTER that.
-    ///
-    /// Only divisors of 24 are offered, so the writes land at the same clock times every day rather
-    /// than drifting — with 5, say, the fourth write would fall on the next day and the cadence
-    /// would walk around the clock.
-    static let intervalOptions = [1, 2, 3, 4, 6, 8, 12, 24]
-    static let defaultIntervalHours = 24
-
-    static var intervalHours: Int {
+    static var updatesPerDay: Int {
         get {
-            guard UserDefaults.standard.object(forKey: intervalKey) != nil else {
-                return defaultIntervalHours
+            let d = UserDefaults.standard
+            if d.object(forKey: updatesPerDayKey) != nil { return clampUpdates(d.integer(forKey: updatesPerDayKey)) }
+            if d.object(forKey: intervalKey) != nil {          // 24 h → 1, 12 h → 2, 6 h → 4 …
+                let h = d.integer(forKey: intervalKey)
+                return clampUpdates(h > 0 ? 24 / h : defaultUpdatesPerDay)
             }
-            return clampInterval(UserDefaults.standard.integer(forKey: intervalKey))
+            return defaultUpdatesPerDay
         }
-        set { UserDefaults.standard.set(clampInterval(newValue), forKey: intervalKey) }
+        set { UserDefaults.standard.set(clampUpdates(newValue), forKey: updatesPerDayKey) }
     }
 
-    /// Clamped on READ as well as write: a value can arrive from a restored backup, and a 0 there
-    /// would make every launch write the file.
-    static func clampInterval(_ h: Int) -> Int {
-        intervalOptions.contains(h) ? h : defaultIntervalHours
+    static func clampUpdates(_ n: Int) -> Int {
+        min(max(n, updatesPerDayRange.lowerBound), updatesPerDayRange.upperBound)
     }
 
-    /// How many times a day the current setting writes. Display-only.
-    static var writesPerDay: Int { max(1, 24 / intervalHours) }
+    /// Minute of the local day the slots are anchored on: the sleep window's end.
+    static var anchorMinuteOfDay: Int {
+        UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+    }
+
+    static var writesPerDay: Int { updatesPerDay }
 
     /// Whether to include the coach's own narrative text in the digest. Off by default: it costs a
     /// provider call per write, and the numbers are the part another tool cannot recompute.
@@ -152,37 +149,27 @@ enum MuseIntegration {
     /// being silently skipped, while a second launch the same afternoon does not rewrite.
     static func isDue(now: Date,
                       lastWrittenMs: Int,
-                      hourOfDay: Int,
-                      intervalHours: Int = 24,
+                      updatesPerDay: Int,
+                      anchorMinuteOfDay: Int,
                       calendar: Calendar = .current) -> Bool {
-        let anchorHour = min(max(hourOfDay, 0), 23)
-        let step = clampInterval(intervalHours)
-        guard let todaysAnchor = calendar.date(bySettingHour: anchorHour,
-                                               minute: 0, second: 0, of: now) else { return false }
-
-        // The most recent slot boundary at or before `now`. Slots run from the anchor hour in
-        // `step`-hour jumps; before today's anchor the relevant one is yesterday's last slot, which
-        // is why this walks BACK from the anchor rather than clamping to it. Without that, a 6-hour
-        // cadence would go silent between midnight and the anchor every single day.
+        let n = clampUpdates(updatesPerDay)
+        let anchor = min(max(anchorMinuteOfDay, 0), 24 * 60 - 1)
+        guard let todaysAnchor = calendar.date(bySettingHour: anchor / 60, minute: anchor % 60,
+                                               second: 0, of: now) else { return false }
+        // Slots run from the anchor in 24/N-hour steps. The current slot is the most recent boundary
+        // at or before `now`; before today's anchor that is one of yesterday's, which is why this walks
+        // BACK rather than clamping — otherwise a cadence would go silent from midnight to the anchor.
+        let step = 86_400.0 / Double(n)
         var slot = todaysAnchor
         if now < todaysAnchor {
-            while slot > now {
-                guard let earlier = calendar.date(byAdding: .hour, value: -step, to: slot) else {
-                    return false
-                }
-                slot = earlier
-            }
+            while slot > now { slot = slot.addingTimeInterval(-step) }
         } else {
-            while let next = calendar.date(byAdding: .hour, value: step, to: slot), next <= now {
-                slot = next
-            }
+            while slot.addingTimeInterval(step) <= now { slot = slot.addingTimeInterval(step) }
         }
-
         guard lastWrittenMs > 0 else { return true }
         let last = Date(timeIntervalSince1970: TimeInterval(lastWrittenMs) / 1000)
-        // Due when the last write predates the slot we are currently in. A missed slot therefore
-        // catches up at the next launch instead of being skipped, and a second launch inside the
-        // same slot does not rewrite.
+        // Due when the last write predates the slot we are in: a missed slot catches up at the next
+        // opportunity, and a second opportunity inside the same slot does not rewrite.
         return last < slot
     }
 }
@@ -497,7 +484,9 @@ extension MuseIntegration {
 
     /// Whether a destination has been chosen at all.
     static var hasFolder: Bool {
-        useInternalFolder || UserDefaults.standard.data(forKey: bookmarkKey) != nil
+        // 260922: resolve the bookmark rather than trust that bytes exist — a stale one passed this
+        // guard and failed silently at write time, which from outside is a file that never appears.
+        useInternalFolder || resolveFolder() != nil
     }
 
     /// The #52 picker-free fallback, mirrored from `FolderBackup`: NOOP's own Files-visible folder,

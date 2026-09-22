@@ -23,38 +23,56 @@ final class MuseIntegrationTests: XCTestCase {
 
     // MARK: Cadence
 
-    func testIsDueOnlyAfterTheHourAndOncePerDay() {
+    func testIsDueOncePerSlotFromTheSleepWindowEnd() {
         let cal = Calendar.current
-        let now = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 9))!
-        let beforeHour = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 5))!
+        let anchor = 7 * 60   // the sleep window ends 07:00
+        func at(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            cal.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
+        }
+        func ms(_ d: Date) -> Int { Int(d.timeIntervalSince1970 * 1000) }
+        let now = at(20, 9), beforeAnchor = at(20, 5)
 
-        // Never written: due. 260920 — this now holds BEFORE the anchor hour too, because the
-        // cadence walks back to the previous slot (yesterday's 07:00) rather than clamping to
-        // today's. The old assertion here said a never-written file at 05:00 was NOT due, which
-        // meant a fresh setup before the anchor hour sat idle until the hour came round for no
-        // reason, and — once intervals landed — a 6-hourly cadence went silent from midnight to
-        // the anchor every single day. Writing is the right answer in both cases.
-        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: 0, hourOfDay: 7))
-        XCTAssertTrue(MuseIntegration.isDue(now: beforeHour, lastWrittenMs: 0, hourOfDay: 7))
-        // ...and a file already written in that earlier slot is not rewritten.
-        let writtenYesterdayEvening = cal.date(from: DateComponents(year: 2026, month: 9, day: 19,
-                                                                   hour: 20))!
-        XCTAssertFalse(MuseIntegration.isDue(
-            now: beforeHour,
-            lastWrittenMs: Int(writtenYesterdayEvening.timeIntervalSince1970 * 1000),
-            hourOfDay: 7))
+        // Never written: due, before or after the anchor (before it, the slot walks back to yesterday's).
+        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: 0, updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        XCTAssertTrue(MuseIntegration.isDue(now: beforeAnchor, lastWrittenMs: 0, updatesPerDay: 1, anchorMinuteOfDay: anchor))
 
-        // Already written after today's trigger: not due again.
-        let writtenAt8 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 8))!
-        XCTAssertFalse(MuseIntegration.isDue(now: now,
-                                             lastWrittenMs: Int(writtenAt8.timeIntervalSince1970 * 1000),
-                                             hourOfDay: 7))
+        // Written yesterday evening: yesterday's slot is served, so 05:00 today is NOT due …
+        XCTAssertFalse(MuseIntegration.isDue(now: beforeAnchor, lastWrittenMs: ms(at(19, 20)),
+                                             updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        // … and 09:00 today IS: a new slot began at 07:00.
+        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(19, 20)),
+                                            updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        // Written at 08:00 today: same slot, not again.
+        XCTAssertFalse(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(20, 8)),
+                                             updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        // A missed day catches up rather than being skipped.
+        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(19, 8)),
+                                            updatesPerDay: 1, anchorMinuteOfDay: anchor))
 
-        // Written YESTERDAY: due again today — a missed day catches up rather than being skipped.
-        let yesterday = cal.date(from: DateComponents(year: 2026, month: 9, day: 19, hour: 8))!
-        XCTAssertTrue(MuseIntegration.isDue(now: now,
-                                            lastWrittenMs: Int(yesterday.timeIntervalSince1970 * 1000),
-                                            hourOfDay: 7))
+        // Twice a day: slots at 07:00 and 19:00. Written at 08:00 → not due at 15:00, due at 19:30.
+        XCTAssertFalse(MuseIntegration.isDue(now: at(20, 15), lastWrittenMs: ms(at(20, 8)),
+                                             updatesPerDay: 2, anchorMinuteOfDay: anchor))
+        XCTAssertTrue(MuseIntegration.isDue(now: at(20, 19, 30), lastWrittenMs: ms(at(20, 8)),
+                                            updatesPerDay: 2, anchorMinuteOfDay: anchor))
+        // Four a day from 07:00: 07, 13, 19, 01. Written at 19:10 → not due at 23:00, due at 01:30.
+        XCTAssertFalse(MuseIntegration.isDue(now: at(20, 23), lastWrittenMs: ms(at(20, 19, 10)),
+                                             updatesPerDay: 4, anchorMinuteOfDay: anchor))
+        XCTAssertTrue(MuseIntegration.isDue(now: at(21, 1, 30), lastWrittenMs: ms(at(20, 19, 10)),
+                                            updatesPerDay: 4, anchorMinuteOfDay: anchor))
+    }
+
+    /// The retired hour + interval pair maps onto the new setting once: 24 h → 1, 6 h → 4.
+    func testUpdatesPerDayMigratesFromTheRetiredInterval() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: MuseIntegration.updatesPerDayKey)
+        d.set(6, forKey: MuseIntegration.intervalKey)
+        XCTAssertEqual(MuseIntegration.updatesPerDay, 4)
+        d.set(24, forKey: MuseIntegration.intervalKey)
+        XCTAssertEqual(MuseIntegration.updatesPerDay, 1)
+        MuseIntegration.updatesPerDay = 3
+        XCTAssertEqual(MuseIntegration.updatesPerDay, 3, "an explicit setting wins over the migration")
+        d.removeObject(forKey: MuseIntegration.updatesPerDayKey)
+        d.removeObject(forKey: MuseIntegration.intervalKey)
     }
 
     // MARK: Day arithmetic

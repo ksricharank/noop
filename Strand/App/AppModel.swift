@@ -229,6 +229,9 @@ final class AppModel: ObservableObject {
         self.repo = Repository(deviceId: deviceId)
         self.coach = AICoachEngine(repo: repo)
         self.intelligence = IntelligenceEngine(repo: repo, profile: profile, deviceId: deviceId)
+        // 260922: the per-tab load ledger + screen-side rare-event lines write into the same strap log
+        // through a static sink, so no SCREEN has to hold `@EnvironmentObject var live` (see `ScreenLedger`).
+        ScreenLedger.emit = { [live] line in live.append(log: line) }
         // Route the engine's per-day scoring diagnostic into the SAME shareable strap log every other
         // subsystem writes to (PII-scrubbed by `live.append(log:)`), so a bug report ships proof of what
         // was computed per day. `live` is captured strongly (created just above) , the engine outlives the
@@ -1088,6 +1091,11 @@ final class AppModel: ObservableObject {
         #endif
         await runTargetAutomations()
         await fireHydrationReminderIfDue()
+        // 260922: the Integration digest rides the same background moment as every other post-offload
+        // chore — this is how the file lands "the first time the app is live in the morning" without
+        // the app being opened. Idempotent per slot (`MuseIntegration.isDue`): a sync every ~10 minutes
+        // writes once per slot and is silent otherwise.
+        await MuseIntegrationRunner.runIfDue(repo: repo, coach: nil, log: { [live] in live.append(log: $0) })
         // Burst-retrospective stress detection (260830): this completed offload is the moment freshly
         // banked R-R becomes readable — replay it through the live detector so the island-less mode
         // (no daytime stream) still gets its buzz + "take a deep breath", up to one sync late.

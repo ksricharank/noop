@@ -67,12 +67,13 @@ final class AbandonedPassBaselineTests: XCTestCase {
 
     // MARK: - The guard itself
 
-    /// The engine's rule, transcribed from `analyzeRecent` pass 2: a pass whose baseline is partial
-    /// contributes no recovery, and the merge restores the stored one.
+    /// The engine's rule, transcribed from `analyzeRecent` pass 2 (260922): a partial pass may FILL
+    /// a blank Charge from the fresh value — now scored against the stored 21-night baseline — but
+    /// never overwrite one a completed pass wrote; a completed pass always writes fresh.
     private func recoveryWritten(lightPass: Bool, wasAbandoned: Bool,
                                  computed: Double?, stored: Double?) -> Double? {
         let partialBaseline = lightPass || wasAbandoned
-        return partialBaseline ? stored : computed
+        return partialBaseline ? (stored ?? computed) : computed
     }
 
     func testAbandonedFullPassPreservesTheStoredCharge() {
@@ -138,10 +139,14 @@ final class AbandonedPassBaselineTests: XCTestCase {
         XCTAssertEqual(full.from, "2026-09-01")
     }
 
-    func testPartialPassWithNoStoredRowLeavesTheDayUnscored() {
-        // A genuinely new day abandoned before a full pass ever ran: nil is honest. Inventing a
-        // truncated estimate here is exactly what produced the flip.
-        XCTAssertNil(recoveryWritten(lightPass: false, wasAbandoned: true,
-                                     computed: 64, stored: nil))
+    func testPartialPassFillsABlankChargeFromTheRealBaseline() {
+        // 260922: a NEW day (no stored Charge yet) scored by a background partial pass — now against
+        // the stored 21-night baseline, so the fresh value is honest and stands. This is the morning
+        // Charge appearing on the widget before the app is opened. (Before the baseline fix this
+        // asserted nil: a partial pass had no usable baseline, so inventing a value was the flip.)
+        XCTAssertEqual(recoveryWritten(lightPass: false, wasAbandoned: true,
+                                       computed: 64, stored: nil), 64)
+        XCTAssertEqual(recoveryWritten(lightPass: true, wasAbandoned: false,
+                                       computed: 64, stored: nil), 64)
     }
 }

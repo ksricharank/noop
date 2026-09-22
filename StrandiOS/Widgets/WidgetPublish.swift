@@ -42,7 +42,7 @@ extension WidgetSnapshot {
     /// recovery-derived fields (the same carry-over Today does), so the widget never blanks right after
     /// the rollover yet always describes today.
     @MainActor
-    static func publish(from model: AppModel) async {
+    static func publish(from model: AppModel, userInitiated: Bool = false) async {
         await refreshWidgetPresence()
         // 260831 instrumentation: begun/finished counted separately — a publish that enters here and
         // never reaches the save decision is a hang or process death INSIDE this path, which the
@@ -155,7 +155,7 @@ extension WidgetSnapshot {
         // unrendered-change probe both describe the transition this publish is about to make.
         let previousSnap = load()
         let unseenOnly = WidgetSnapshot.changedOnlyInUnrenderedFields(from: previousSnap, to: snap)
-        let reloaded = saveAndReloadIfChanged(snap, previous: previousSnap)
+        let reloaded = saveAndReloadIfChanged(snap, previous: previousSnap, budgetExempt: userInitiated)
         // 260921 CHARGE-PUBLISH LEDGER — the widget half of the 36-vs-67 divergence.
         //
         // The app reads Charge live from the store; the widget reads this FROZEN snapshot, targets
@@ -176,7 +176,7 @@ extension WidgetSnapshot {
                         + "charge=\(snap.recovery.map(String.init) ?? "nil") "
                         + "prevCharge=\(previousSnap?.recovery.map(String.init) ?? "none") "
                         + "battery=\(snap.batteryPct.map(String.init) ?? "nil") "
-                        + "reloadRequested=\(reloaded) bg=\(Self.isBackground)")
+                        + "reloadRequested=\(reloaded) bg=\(Self.isBackground) exempt=\(userInitiated)")
         WidgetPublishStats.recordFullFinished(
             glance: "steps=\(snap.stepsDisplay ?? "-") cal=\(snap.calDisplay ?? "-") "
                 + "effort=\(snap.effortNT ?? "-") sleep=\(snap.sleepDisplay ?? "-") "
@@ -241,7 +241,8 @@ extension WidgetSnapshot {
     @MainActor
     @discardableResult
     private static func saveAndReloadIfChanged(_ snap: WidgetSnapshot,
-                                               previous: WidgetSnapshot? = nil) -> Bool {
+                                               previous: WidgetSnapshot? = nil,
+                                               budgetExempt: Bool = false) -> Bool {
         let previous = previous ?? load()
         if renderedContentChanged(from: previous, to: snap) {
             // ALWAYS save, even when the reload is withheld. The snapshot is the source of truth the
@@ -251,7 +252,13 @@ extension WidgetSnapshot {
             snap.save(previousSeries: previous?.hrSeries ?? [])
             // 260906: foreground reloads are budget-EXEMPT, so while the app is open the widget
             // tracks it exactly and the gate is bypassed. Only background requests are paced.
-            guard isBackground else {
+            // 260922: `budgetExempt` is the publish that runs as the app LEAVES the foreground — one per
+            // exit, user-initiated, and the one whose whole job is to make the widget match what was
+            // just on screen. By the time it ran, `applicationState` already read `.background`, so it
+            // was routed through the spacing gate below and coalesced whenever a strap sync had
+            // published within the previous 120 s: the app showed current numbers, the widget kept the
+            // face from before the open. That is the "widgets differ after I minimise" report.
+            guard isBackground, !budgetExempt else {
                 WidgetSnapshot.ExtensionStats.recordReloadRequested()
                 WidgetCenter.shared.reloadAllTimelines()
                 return true

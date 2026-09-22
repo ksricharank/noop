@@ -173,31 +173,23 @@ final class DailyTargetsTests: XCTestCase {
 
     /// The composition: the 8 h adult population base, plus the charge band's ask, last night's
     /// Rest, the readiness read, and the capped junior debt term.
-    func testSleepNeedComposesTheBodysDay() {
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 81,
-                                                        readiness: .balanced, debtBalanceMin: -400),
-                       480 + 45)
-        // 480 base + 20 (maintain band) + 15 (strained) + 5 (the debt term: a 20-minute deficit is
-        // OUTSIDE the 10-minute deadband, so a quarter of it is asked back tonight). The debt term
-        // was originally omitted from this expectation, which made the case assert 515 against a
-        // correct 520 — the code was right and the arithmetic here was short by one term.
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 50, restScore: 60,
-                                                        readiness: .strained, debtBalanceMin: -20),
-                       480 + 20 + 15 + 5)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 81, restScore: 90,
-                                                        readiness: .primed, debtBalanceMin: 0),
-                       480 - 15 - 15)
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: nil, charge: nil, restScore: nil,
-                                                        readiness: .insufficient, debtBalanceMin: 0),
-                       480)
+    func testSleepNeedIsThePersonalNeedPlusADebtShare() {
+        // 260922: one need everywhere. No charge / rest / readiness notches — the target is the
+        // canonical personal need plus a quarter of a carried deficit beyond the deadband, capped.
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 507, debtBalanceMin: 0), 507)
+        // A 20-minute deficit is outside the 10-minute deadband: a quarter of it is asked back.
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -20), 485)
+        // Inside the deadband: nothing is asked back.
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -8), 480)
+        // A large deficit is capped at 45 minutes.
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -400), 525)
+        // A surplus never lowers the target below the need.
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: 300), 480)
     }
 
-    /// The stated 7–10 h bounds hold when everything stacks one way.
+    /// The stated 7-10 h bounds hold.
     func testSleepNeedClampsToTheStatedBounds() {
-        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(age: 35, charge: 20, restScore: 40,
-                                                        readiness: .rundown, debtBalanceMin: -400),
-                       600)
-        XCTAssertGreaterThanOrEqual(DailyTargets.sleepNeedTonightMin(
-            age: 35, charge: 81, restScore: 90, readiness: .primed, debtBalanceMin: 300), 420)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 590, debtBalanceMin: -400), 600)
+        XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 400, debtBalanceMin: 0), 420)
     }
 }
