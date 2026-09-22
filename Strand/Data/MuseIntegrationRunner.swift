@@ -53,9 +53,23 @@ enum MuseIntegrationRunner {
             log?("integration: due but no usable folder (bookmark missing or stale) — not written")
             return
         }
+        // 260922: do not write a digest with no night in it. The 260921-0737 file was written at the
+        // instant of a launch whose store an abandoned pass had just gutted, and because the write
+        // settled the slot, "no data / no sleep / not scored" stood as the day's digest. Wait for last
+        // night to be scored — the post-offload hook re-tries on every sync — but not forever: past
+        // the grace window an honest thin digest is written rather than none (a night unworn must not
+        // silence the day).
+        let input = await gather(repo: repo, coach: coach, now: now)
+        if !input.isReady,
+           let slot = MuseIntegration.currentSlotStart(now: now, updatesPerDay: n, anchorMinuteOfDay: anchor),
+           now.timeIntervalSince(slot) < MuseIntegration.readinessGraceSeconds {
+            log?("integration: due but last night is not scored yet — waiting for the next sync")
+            return
+        }
         do {
-            _ = try await run(repo: repo, coach: coach, now: now)
-            log?(String(format: "integration: written (%d/day, slots from %02d:%02d)", n, anchor / 60, anchor % 60))
+            _ = try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
+            log?(String(format: "integration: written (%d/day, slots from %02d:%02d%@)", n, anchor / 60, anchor % 60,
+                        input.isReady ? "" : ", THIN — no night on hand after the grace window"))
         } catch {
             log?("integration: write FAILED — \(error.localizedDescription)")
         }
@@ -122,6 +136,14 @@ enum MuseIntegrationRunner {
         let trendWindow = Array(history.suffix(90))
         let derived = AICoachEngine.derivedTrendsBlock(days: trendWindow)
         input.derivedTrends = derived.isEmpty ? nil : derived
+        // 260922: the Sleep tab's ledger (tonight's target is the digest's most-asked number) and the
+        // same INSIGHTS block the Trends coach receives, so the file says what the weeks mean.
+        input.sleepLedger = SleepModel.debtLedger(days: history, napSleepMinByDay: repo.napSleepMinByDay)
+        let restSeries = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+        let restByDay = Dictionary(restSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l })
+        let insights = AICoachEngine.trendsInsightsBlock(days: trendWindow, restByDay: restByDay,
+                                                        dayQualityByDay: input.recentQualityScores, today: todayDay)
+        input.insights = insights.isEmpty ? nil : insights
 
         // Coach narratives are OPT-IN: each is a provider call, and the digest is useful without
         // them. When they fail they are simply absent — a digest missing a paragraph is fine, a
