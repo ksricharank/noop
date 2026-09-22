@@ -58,9 +58,10 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         XCTAssertEqual(t.effortTodayStored, 12)
 
         // Sleep composes through the same chain (8 h nights → no ledger debt beyond the deadband).
+        // 260922: the target is the canonical need plus the debt share — with 8 h nights the need is
+        // the adult 8 h floor and there is no debt, so the target is the need.
         XCTAssertEqual(t.sleepNeedTonightMin,
-                       DailyTargets.sleepNeedTonightMin(age: 30, charge: 80, restScore: 81,
-                                                        readiness: readiness, debtBalanceMin: 0))
+                       DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: 0))
     }
 
     /// No charge (calibrating install): the session defaults to the maintain base rather than

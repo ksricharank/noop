@@ -169,6 +169,9 @@ enum DayQualityPrefs {
         // from this string is exactly how the 260908 migration silently failed.
         "\(scaleVersion)/\(executionSharePct)/\(loadFactorPct)/\(overshootCapPct)"
             + "/\(normalSteps),\(normalKcal),\(normalEffort),\(normalWaterCups),\(normalSleepMin)"
+            // 260922: the Sleep component's target moved from the day's "tonight" copy to the canonical
+            // personal need (`SleepModel.personalNeedMin`) — a formula change, so history re-scores.
+            + "/need21"
     }
 
     /// True when tonight's scoring has already run for `day` under the current settings.
