@@ -22,14 +22,14 @@ final class TodayLayoutPrefsTests: XCTestCase {
     }
 
     /// The v1 upgrade path: an order saved by the FIRST cut (6 sections — no hero/liveSession, which were
-    /// pinned then) must surface the two new sections at the TOP (their default position), not teleport
-    /// them to the bottom of the user's saved order.
+    /// pinned then) must surface the two new sections at their default-order position (fork default:
+    /// right after Synthesis), not teleport them to the bottom of the user's saved order.
     func testSavedOrderFromFirstCutInsertsHeroAndSessionAtTheirDefaultPosition() {
         let firstCut = "synthesis,keyMetrics,workouts,heartRate,recoveryVitals,yourCards"
         XCTAssertEqual(
             TodayLayoutPrefs.decodeOrder(firstCut),
-            // journal(8) follows everything saved → appended; addedCards(10) is last, appended after it.
-            [.hero, .liveSession, .synthesis, .keyMetrics, .workouts, .heartRate, .recoveryVitals, .yourCards, .menstrualCycle, .journal, .addedCards]
+            // journal(9) follows everything saved → appended; addedCards(10) is last, appended after it.
+            [.synthesis, .liveSession, .hero, .keyMetrics, .workouts, .heartRate, .recoveryVitals, .yourCards, .menstrualCycle, .journal, .addedCards]
         )
     }
 
@@ -37,7 +37,7 @@ final class TodayLayoutPrefsTests: XCTestCase {
         let partial = "heartRate,synthesis,keyMetrics,recoveryVitals"
         XCTAssertEqual(
             TodayLayoutPrefs.decodeOrder(partial),
-            [.hero, .liveSession, .workouts, .heartRate, .synthesis, .keyMetrics, .recoveryVitals, .yourCards, .menstrualCycle, .journal, .addedCards]
+            [.liveSession, .hero, .workouts, .heartRate, .synthesis, .keyMetrics, .recoveryVitals, .yourCards, .menstrualCycle, .journal, .addedCards]
         )
     }
 
@@ -45,7 +45,7 @@ final class TodayLayoutPrefsTests: XCTestCase {
         let messy = "yourCards,BOGUS,yourCards,heartRate, ,heartRate"
         XCTAssertEqual(
             TodayLayoutPrefs.decodeOrder(messy),
-            [.hero, .liveSession, .synthesis, .keyMetrics, .workouts, .recoveryVitals, .yourCards, .heartRate, .menstrualCycle, .journal, .addedCards]
+            [.synthesis, .liveSession, .hero, .keyMetrics, .workouts, .recoveryVitals, .yourCards, .heartRate, .menstrualCycle, .journal, .addedCards]
         )
     }
 
@@ -82,6 +82,30 @@ final class TodayLayoutPrefsTests: XCTestCase {
 
     /// defaultOrder must cover EVERY case: the never-hide merge iterates it, so a case missing from the
     /// default order could otherwise be dropped from render (Android) or mis-sorted (iOS).
+    /// The fork's first-run seed (260830): hero hidden ONLY when the user has never customised — a
+    /// one-time write, so un-hiding the hero later is never fought. Empty-string hidden ("the user
+    /// explicitly un-hid everything") must NOT re-trigger it.
+    func testForkSeedHidesHeroOnlyOnAVirginLayout() {
+        let d = UserDefaults(suiteName: "test-today-fork-seed")!
+        d.removePersistentDomain(forName: "test-today-fork-seed")
+
+        TodayLayoutPrefs.seedForkDefaultsIfNeverCustomised(defaults: d)
+        XCTAssertEqual(d.string(forKey: TodayLayoutPrefs.hiddenKey), "hero")
+
+        // The user un-hides everything (the sheet writes an empty hidden list): a later launch's
+        // seed must leave that choice alone.
+        d.set("", forKey: TodayLayoutPrefs.hiddenKey)
+        TodayLayoutPrefs.seedForkDefaultsIfNeverCustomised(defaults: d)
+        XCTAssertEqual(d.string(forKey: TodayLayoutPrefs.hiddenKey), "")
+
+        // A saved ORDER alone (hidden never touched) also counts as customised.
+        d.removePersistentDomain(forName: "test-today-fork-seed")
+        d.set("synthesis,hero", forKey: TodayLayoutPrefs.orderKey)
+        TodayLayoutPrefs.seedForkDefaultsIfNeverCustomised(defaults: d)
+        XCTAssertNil(d.string(forKey: TodayLayoutPrefs.hiddenKey))
+        d.removePersistentDomain(forName: "test-today-fork-seed")
+    }
+
     func testDefaultOrderCoversEveryCase() {
         XCTAssertEqual(Set(TodaySection.defaultOrder), Set(TodaySection.allCases))
         XCTAssertEqual(TodaySection.defaultOrder.count, TodaySection.allCases.count)
