@@ -148,9 +148,7 @@ struct CoachSettingsView: View {
                     // leaving the reader to guess how much that is: the sport, how long, how far and how
                     // hard, per session. This toggle is the only place someone is asked to agree to it.
                     // Android says the same sentence (#2033).
-                    Text(coach.dataConsent
-                         ? "On: your charge, rest, HRV and workouts are sent to the provider, each workout with its sport, duration, distance and heart rate."
-                         : "Off: the coach answers generally and sends none of your metrics.")
+                    Text(consentLine)
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -160,6 +158,19 @@ struct CoachSettingsView: View {
                     .accessibilityLabel("Let the coach use my data")
             }
         }
+    }
+
+    /// What the consent toggle's state means for THIS provider. The on-device model reads the same
+    /// summary but nothing leaves the phone, and saying "sent to the provider" there would be false.
+    private var consentLine: String {
+        if coach.provider == .appleOnDevice {
+            return coach.dataConsent
+                ? String(localized: "On: your charge, rest, HRV and workouts are read by Apple's on-device model. Nothing leaves \(Platform.deviceNounPhrase).")
+                : String(localized: "Off: the coach answers generally and reads none of your metrics.")
+        }
+        return coach.dataConsent
+            ? String(localized: "On: your charge, rest, HRV and workouts are sent to the provider, each workout with its sport, duration, distance and heart rate.")
+            : String(localized: "Off: the coach answers generally and sends none of your metrics.")
     }
 
     /// The v5 second opt-in: include a SUMMARY of the new on-device signals (strongest n-of-1 patterns +

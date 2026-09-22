@@ -231,10 +231,21 @@ enum AICoachError: LocalizedError {
     case emptyReply(String)   // #1074: verbatim provider-error / empty-reply text (byte-parity with Android emptyReplyMessage)
     case keySaveFailed
     case badCustomURL(String)
+    /// 260922, on-device provider: the request did not fit the on-device model's 4,096-token window
+    /// even after `OnDeviceContextBudget` trimmed it twice. Its own case because the fix is the
+    /// wearer's (less history, fewer opt-ins), not a retry's.
+    case contextTooLarge
+    /// A failure reported by Apple's on-device model, already worded for the wearer by
+    /// `AppleOnDeviceClient.mapError` (a guardrail, a missing download, a background rate limit).
+    case onDevice(String)
 
     var errorDescription: String? {
         switch self {
         case .badCustomURL(let message):
+            return message
+        case .contextTooLarge:
+            return "Too much data for the on-device model, even after trimming. Clear the conversation or turn off the extra data opt-ins in Coach settings, then try again."
+        case .onDevice(let message):
             return message
         case .noKey:
             return "Add your own API key first to use the coach."
@@ -284,6 +295,8 @@ enum AICoachError: LocalizedError {
         case .emptyReply:       return "empty reply"
         case .keySaveFailed:    return "key save failed"
         case .badCustomURL:     return "bad server URL"
+        case .contextTooLarge:  return "too much context"
+        case .onDevice:         return "on-device model"
         }
     }
 
@@ -320,6 +333,9 @@ enum AICoachError: LocalizedError {
         // model would fail identically and only cost the user another wait. Excluded so the one retry
         // is spent where it can actually help.
         case .noKey, .emptyQuestion, .badKey, .keySaveFailed, .badCustomURL: return false
+        // The on-device provider has one model, so there is nothing lighter to retry on; and a
+        // context that did not fit will not fit a second time.
+        case .contextTooLarge, .onDevice: return false
         // Everything else retries. Enumerating what CANNOT work, rather than guessing which failures
         // can, is the lesson of this bug: each attempt to predict the retry-worthy set missed the one
         // that mattered — first timeouts only (missed empty replies), then rate limits (missed 503s).
@@ -395,6 +411,7 @@ final class AICoachEngine: ObservableObject {
             // happens. Twin of the Kotlin `selectProvider`.
             errorText = nil
             keyRejected = false
+            prepareProviderIfNeeded()
         }
     }
     @Published var model: String {
@@ -505,6 +522,27 @@ final class AICoachEngine: ObservableObject {
         if let stored, !stored.isEmpty { return stored }
         return Self.defaultSystemPrompt
     }
+
+    /// What is actually SENT as the instructions: the coach prompt, plus the on-device rider when the
+    /// on-device model is answering. `systemPrompt` stays the wearer's editable text; the rider is
+    /// appended at send time so switching provider never rewrites their prompt.
+    var effectiveSystemPrompt: String {
+        provider == .appleOnDevice ? systemPrompt + "\n\n" + Self.onDeviceInstructionSuffix : systemPrompt
+    }
+
+    /// The rider for Apple's on-device model (260922). A ~3B model follows the long coaching prompt
+    /// loosely: it pads, restates the table, and rounds numbers it was not given. These are the
+    /// constraints that hold it to the coach's contract — verbatim numbers, brevity, no invention —
+    /// stated in the imperative the small model responds to. Appended, never merged into the editable
+    /// prompt, so it applies only when this provider is the one answering.
+    static let onDeviceInstructionSuffix = """
+    ON-DEVICE MODE. You are a small model running on the wearer's phone, so:
+    - Answer in at most 180 words. Short paragraphs or up to four bullets. No headings, no tables.
+    - Use ONLY numbers that appear in the data you were given, exactly as written. If a figure is not \
+    there, say it was not measured. Never estimate, round, or invent a value.
+    - Do not repeat the data back; interpret it. Lead with the one thing that matters most.
+    - Follow any format the request itself specifies over these defaults, except the word limit.
+    """
 
     /// The user's stored prompt override, or the default when nothing custom is set. The UI binds its
     /// editor to this: writing persists the override; writing a blank string clears it (back to default).
@@ -917,13 +955,32 @@ final class AICoachEngine: ObservableObject {
     /// providers can be switched to without typing anything, so a switch that would strand the user in
     /// the setup card is visibly distinct from one that lands straight in the chat.
     func hasStoredKey(for candidate: AIProvider) -> Bool {
-        candidate == .custom ? customConnected : AIKeyStore.read(owner: candidate.rawValue) != nil
+        switch candidate {
+        case .custom: return customConnected
+        case .appleOnDevice: return AppleOnDeviceModel.isAvailable
+        default: return AIKeyStore.read(owner: candidate.rawValue) != nil
+        }
     }
 
     /// True once the coach can actually send: a stored key for the cloud providers, or, for the
     /// Custom (local) provider, a committed base URL (a key is optional there, as local servers
     /// usually need none). Gates the setup card vs. the live chat.
-    var isConfigured: Bool { provider == .custom ? customConnected : hasKey }
+    var isConfigured: Bool {
+        switch provider {
+        case .custom: return customConnected
+        // Keyless and connectionless: ready whenever the device can run it (260922).
+        case .appleOnDevice: return AppleOnDeviceModel.isAvailable
+        default: return hasKey
+        }
+    }
+
+    /// Load the selected provider's resources ahead of the first request, where that means anything.
+    /// Only the on-device model has anything to load — the network providers connect per request.
+    /// Called by the Coach screen on appear so the first answer does not also pay for the model load.
+    func prepareProviderIfNeeded() {
+        guard provider == .appleOnDevice else { return }
+        AppleOnDeviceModel.prewarm(instructions: effectiveSystemPrompt)
+    }
 
     /// The key to send with a request: the stored key, or an empty string for the keyless Custom
     /// provider. `nil` means "not configured", the caller surfaces `.noKey`.
@@ -933,7 +990,7 @@ final class AICoachEngine: ObservableObject {
     /// provider's key.
     private var resolvedKey: String? {
         if let k = AIKeyStore.read(owner: provider.rawValue) { return k }
-        return provider == .custom ? "" : nil
+        return (provider == .custom || provider.isKeyless) ? "" : nil
     }
 
     /// Commit the Custom (local) provider once the user has entered a server URL. Optionally stores a
@@ -2339,7 +2396,7 @@ final class AICoachEngine: ObservableObject {
             let reply = try await provider.client.send(
                 key: key,
                 model: attempted,
-                systemPrompt: systemPrompt,
+                systemPrompt: effectiveSystemPrompt,
                 messages: messages,
                 session: session
             )
@@ -2361,7 +2418,7 @@ final class AICoachEngine: ObservableObject {
                 let reply = try await provider.client.send(
                     key: key,
                     model: fallback,
-                    systemPrompt: systemPrompt,
+                    systemPrompt: effectiveSystemPrompt,
                     messages: messages,
                     session: session
                 )
@@ -2398,7 +2455,7 @@ final class AICoachEngine: ObservableObject {
         try await provider.client.streamWithImage(
             key: key,
             model: model,
-            systemPrompt: systemPrompt,
+            systemPrompt: effectiveSystemPrompt,
             messages: messages,
             inlineImage: inlineImage,
             session: session,

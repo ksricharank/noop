@@ -159,6 +159,10 @@ targets:
       - package: ZIPFoundation
       - package: OuraProtocol
       - package: PolarProtocol
+      # Apple's on-device language model (coach provider, 260922). Weak: the framework exists only on
+      # macOS 26+, and the app still launches on 13 — the provider hides itself there.
+      - sdk: FoundationModels.framework
+        weak: true
   StrandTests:
     type: bundle.unit-test
     platform: macOS
@@ -360,6 +364,9 @@ targets:
       - package: MarkdownUI
       - package: ZIPFoundation
       - package: PolarProtocol
+      # Same as the macOS target: weak-linked, iOS 26+ only, hidden below that.
+      - sdk: FoundationModels.framework
+        weak: true
       - target: NOOPiOSWidgets
       # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
       # installs by riding inside its iOS companion; without this it would never reach a paired watch.

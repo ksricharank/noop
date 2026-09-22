@@ -182,6 +182,8 @@ struct CoachView: View {
         // `startBriefIfNeeded` only ever runs over the network when BOTH of the above left the
         // transcript genuinely empty.
         .task {
+            // 260922: load the on-device model before the first question, not during it.
+            coach.prepareProviderIfNeeded()
             await coach.loadPersistedMessagesIfNeeded()
             // Gated on the transcript BEFORE consuming. `consumeStoredBrief()` clears the unconsumed
             // flag, and `surfaceScheduledBrief` then drops the text if a transcript exists, so a brief
@@ -283,7 +285,9 @@ struct CoachView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
 
-                Text("Coach uses your own API key. Pick a provider, paste a key, and choose a model. Your key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make.")
+                Text(AppleOnDeviceModel.isAvailable
+                     ? "Coach uses your own API key, or Apple's on-device model, which needs none. Pick a provider, paste a key if it takes one, and choose a model. A key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make."
+                     : "Coach uses your own API key. Pick a provider, paste a key, and choose a model. Your key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -292,7 +296,7 @@ struct CoachView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Provider").strandOverline()
                     Picker("Provider", selection: $coach.provider) {
-                        ForEach(AIProvider.allCases) { p in
+                        ForEach(AIProvider.selectable) { p in
                             Text(p.displayName).tag(p)
                         }
                     }
@@ -339,6 +343,12 @@ struct CoachView: View {
                     }
                 }
 
+                if coach.provider == .appleOnDevice {
+                    // 260922: nothing to configure. The model is the system's, there is no key, and
+                    // `isConfigured` is already true when this is selectable — so this card is only
+                    // reached from the Configure-providers sheet, where it says what to expect.
+                    onDeviceNote
+                } else {
                 // Model
                 modelSelector
 
@@ -401,6 +411,7 @@ struct CoachView: View {
 
                     Spacer()
                 }
+                }
 
                 // Whatever the last attempt from THIS card ran into. The setup card had no error line
                 // at all, so every way it can fail before a key is committed failed silently: a Refresh
@@ -427,12 +438,39 @@ struct CoachView: View {
         }
     }
 
+    /// What the setup card says for Apple's on-device model: where it runs, what it costs, and how it
+    /// differs from the cloud providers (a small model with a short memory), so the first answer's
+    /// brevity reads as designed rather than broken.
+    private var onDeviceNote: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text("Runs entirely on \(Platform.deviceNounPhrase) using Apple Intelligence. No key, no account, no network — your data never leaves the device, and it works offline.")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "iphone.gen3")
+                    .foregroundStyle(StrandPalette.accent)
+            }
+            Text("It is a small model with a short memory: answers are brief, and long conversations are trimmed to fit. For deeper analysis, switch to a cloud provider from the header.")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let note = AppleOnDeviceModel.unavailabilityNote {
+                Text(note)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.signalYellow)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     /// A provider other than the selected one that is already usable, if any — the destination for the
     /// setup card's escape hatch. Nil when nothing is configured yet (a first run, where the card is the
     /// correct place to be and there is nowhere to go back TO), so the button appears only when it can
     /// actually rescue someone.
     private var readyProviderToReturnTo: AIProvider? {
-        AIProvider.allCases.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
+        AIProvider.selectable.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
     }
 
     /// Model selector: a Picker over `coach.availableModels` with a free-text "Custom…" path and a
@@ -545,7 +583,7 @@ struct CoachView: View {
                 // ordinary use. Offering the switch from the connected header means a provider that
                 // already HAS a key is always one tap away, without passing through the card at all.
                 Picker("Provider", selection: $coach.provider) {
-                    ForEach(AIProvider.allCases) { p in
+                    ForEach(AIProvider.selectable) { p in
                         // Mark which providers can be switched to without typing anything, so the
                         // choice that strands you is visibly distinct from the ones that don't.
                         Text(coach.hasStoredKey(for: p) ? "\(p.displayName) ✓" : p.displayName).tag(p)
@@ -626,11 +664,16 @@ struct CoachView: View {
                 Label("Clear conversation", systemImage: "trash")
             }
             .disabled(coach.messages.isEmpty)
-            Button(role: .destructive) {
-                coach.disconnect()
-                keyDraft = ""
-            } label: {
-                Label("Disconnect", systemImage: "gearshape")
+            // Nothing to disconnect FROM on the keyless on-device provider: there is no key to forget
+            // and no server to leave, and the action would land the wearer back on the same chat.
+            // Switching provider is the header's job.
+            if !coach.provider.isKeyless {
+                Button(role: .destructive) {
+                    coach.disconnect()
+                    keyDraft = ""
+                } label: {
+                    Label("Disconnect", systemImage: "gearshape")
+                }
             }
         } label: {
             // Same affordance DevicesView uses for its per-device menu, headline size included. The
@@ -1110,11 +1153,20 @@ struct CoachView: View {
     }
     #endif
 
+    private var privacyFootnoteText: String {
+        switch coach.provider {
+        case .custom:
+            return String(localized: "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask.")
+        case .appleOnDevice:
+            return String(localized: "Coach is running on \(Platform.deviceNounPhrase) with Apple Intelligence. Nothing leaves it — not your data, not your questions.")
+        default:
+            return String(localized: "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
+        }
+    }
+
     private var privacyFootnote: some View {
         Label {
-            Text(coach.provider == .custom
-                 ? "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask."
-                 : "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
+            Text(privacyFootnoteText)
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
