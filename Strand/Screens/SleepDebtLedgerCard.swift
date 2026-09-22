@@ -60,11 +60,16 @@ struct SleepDebtLedgerCard: View {
                         // (55% carries to the next night, settled under 10 min, a surplus never banks).
                         // Eight red bars beside "On target" read as a contradiction until both figures
                         // sit side by side, so the plain sum of the bars is shown as "Net vs need".
+                        // 260922 (second pass), maintainer: "should I sleep tonight for 8h 43 or
+                        // 8h 43 + 1h 22?" — the card must ANSWER that, so tonight's target leads the
+                        // footer, computed by the same `DailyTargets` rule the coach and the widget use
+                        // (need + a quarter of carried debt beyond the deadband, capped). Short labels:
+                        // the previous four overflowed their columns.
                         ChartFooter([
-                            ("Carried debt", debtSigned(ledger.balanceMin)),
-                            ("Net vs need", debtSigned(ledger.nights.reduce(0) { $0 + $1.deltaMin })),
-                            ("Per-night need", durationText(ledger.needMin)),
-                            ("Nights", "\(ledger.nightCount)"),
+                            ("Tonight", durationText(Double(tonightMin(ledger)))),
+                            ("Need", durationText(ledger.needMin)),
+                            ("Carried", debtSigned(ledger.balanceMin)),
+                            ("Net", debtSigned(netMin(ledger))),
                         ])
                     }
                 }
@@ -125,25 +130,39 @@ struct SleepDebtLedgerCard: View {
     }
 
     /// Plain-English read of the current actionable estimate.
+    /// Tonight's target by the ONE rule every surface uses (260922): the personal need plus a quarter of
+    /// any carried debt beyond the deadband, capped at 45 minutes.
+    private func tonightMin(_ ledger: SleepDebtLedger) -> Int {
+        DailyTargets.sleepNeedTonightMin(needMin: ledger.needMin, debtBalanceMin: ledger.balanceMin)
+    }
+
+    /// The plain sum of the bars: how far the window's nights ran over or under the need in total.
+    private func netMin(_ ledger: SleepDebtLedger) -> Double {
+        ledger.nights.reduce(0) { $0 + $1.deltaMin }
+    }
+
     private func debtRead(_ ledger: SleepDebtLedger) -> String {
         let nights = ledger.nightCount
         let span = nights == 1
             ? String(localized: "the last night")
             : String(localized: "the last \(nights) nights")
+        let tonight = durationText(Double(tonightMin(ledger)))
+        let need = durationText(ledger.needMin)
+        let net = netMin(ledger)
         if ledger.magnitudeMin < SleepDebt.onTargetBandMin {
-            // 260922: "on target" means the CARRIED debt has settled. When the raw nights still sum
-            // short, say both, or the red bars above contradict the green headline.
-            let net = ledger.nights.reduce(0) { $0 + $1.deltaMin }
             if net < -SleepDebt.onTargetBandMin {
-                return String(localized: "No carried debt — recent nights paid it down — but you ran \(durationText(-net)) short of your need in total across \(span).")
+                return String(localized: "Tonight: \(tonight). No carried debt — recent nights paid it down — though you ran \(durationText(-net)) short of your need in total across \(span).")
             }
-            return String(localized: "You've effectively met your current sleep need across \(span).")
+            return String(localized: "Tonight: \(tonight). You've effectively met your \(need) need across \(span).")
         }
-        let mag = durationText(ledger.magnitudeMin)
         if ledger.isDebt {
-            return String(localized: "Add about \(mag) to your base sleep target tonight. Meeting that complete sleep need clears the displayed debt; recent shortfalls carry forward at a reduced weight.")
+            let extra = Double(tonightMin(ledger)) - ledger.needMin
+            let extraText = extra >= 1
+                ? String(localized: " — your \(need) need plus \(durationText(extra)) toward the \(durationText(ledger.magnitudeMin)) carried debt")
+                : String(localized: " — your \(need) need; the carried debt is inside the deadband")
+            return String(localized: "Sleep about \(tonight) tonight\(extraText). Recent shortfalls carry forward at a reduced weight, so the debt clears over a few good nights, not one.")
         }
-        return String(localized: "You've effectively met your current sleep need across \(span).")
+        return String(localized: "Tonight: \(tonight). You've effectively met your \(need) need across \(span).")
     }
 
     /// Color the balance by size: balanced → positive green, modest debt → warning,

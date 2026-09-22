@@ -81,7 +81,8 @@ struct DayQualityCard: View {
                 if let score {
                     headline(score)
                     computationSection
-                    coachLink
+                    // 260922, maintainer: the "Ask the Coach" link appeared twice on the Recap tab — here
+                    // and under "What it means". It belongs with the summary it follows up on.
                 } else {
                     // Honest empty state. A score needs a finished day with enough of it recorded,
                     // so a fresh install legitimately has nothing to show yet.
@@ -261,29 +262,6 @@ struct DayQualityCard: View {
         return pct > 0
             ? "Yesterday's targets were harder than your recent average, so the execution half was scaled up \(pct)%."
             : "Yesterday's targets were easier than your recent average, so the execution half was scaled down \(abs(pct))%."
-    }
-
-    /// "Ask the Coach", mirroring the Today synthesis's affordance (260904, maintainer request).
-    ///
-    /// Worth having here specifically because the coach now receives the day-quality HISTORY — the
-    /// recent run plus both 7-day averages — so a question asked from this card lands in a
-    /// conversation that can already see the trend the card is showing.
-    private var coachLink: some View {
-        HStack {
-            Spacer()
-            Button {
-                router.openCoach()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "sparkles").font(StrandFont.caption)
-                    Text("Ask the Coach").font(StrandFont.caption.weight(.semibold))
-                }
-                .foregroundStyle(StrandPalette.accent)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(Text("Opens the AI Coach chat"))
-        }
-        .padding(.top, 2)
     }
 
     // MARK: - Loading

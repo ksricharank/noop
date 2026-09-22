@@ -23,6 +23,11 @@ struct TabInsightCard: View {
     /// Produces the text from the engine the card owns. Takes it as a parameter so the tab
     /// roots do not have to hold — and therefore observe — the engine themselves.
     let generate: (AICoachEngine) async -> String?
+    /// 260922: this tab's last generation outcome (e.g. `\.lastSleepOutcome`), so a FAILED request is
+    /// reported as what it was. The card used to show "Set up a coach provider in Settings" for any
+    /// nil result — a timed-out or rate-limited request on a fully configured provider included —
+    /// which read as a broken connection that was never broken.
+    var lastOutcome: ((AICoachEngine) -> String?)? = nil
     /// Whether the section starts open. Recap's does (260919, maintainer request): it is the tab's
     /// headline read, and a section that has to be opened to be seen is one that is not read.
     ///
@@ -118,7 +123,7 @@ struct TabInsightCard: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if !inFlight {
-                    Text("No summary available. Set up a coach provider in Settings to get one.")
+                    Text(fallbackCopy)
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -171,6 +176,18 @@ struct TabInsightCard: View {
 
     /// `force` bypasses the cache — the Regenerate button's path. Everything else (first expand,
     /// a subject change) keeps the cached text so returning to a tab does not re-spend a call.
+    /// What to say when there is no text: the provider's own reason when one is configured (a
+    /// timeout, a rate limit, an empty reply), the set-up hint only when there is nothing to call.
+    private var fallbackCopy: String {
+        guard coach.isConfigured else {
+            return String(localized: "No summary available. Set up a coach provider in Settings to get one.")
+        }
+        if let reason = lastOutcome?(coach), !reason.isEmpty, !reason.hasPrefix("written") {
+            return String(localized: "Couldn't write this summary — \(reason). Tap ↻ to try again.")
+        }
+        return String(localized: "No summary yet. Tap ↻ to write one.")
+    }
+
     private func load(force: Bool = false) async {
         if !force { guard textSubject != subject || text == nil else { return } }
         guard !inFlight else { return }

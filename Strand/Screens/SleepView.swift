@@ -251,20 +251,7 @@ struct SleepView: View {
             // refreshSeq; snaps back to the newest day and rebuilds the model so offset 0 reflects
             // the freshly-loaded blocks. (#170)
             .task(id: repo.refreshSeq) {
-<<<<<<< HEAD
                 let refresh = repo.refreshSeq
-                let sessions = await repo.allSleepSessions()
-                // Load the learned habitual midsleep the engine used, so the main-night pick aligns to it
-                // (a shift/late sleeper) instead of only the cold-start band. nil under threshold. (#547)
-                let habitual = await repo.habitualMidsleepSec()
-                // Per-epoch motion for every block (#407), keyed by detected start. mergeDay reads only the
-                // already-resolved group's entries — this just pre-fetches them all so the model build is sync.
-                let motions = await repo.sessionMotions(sessions: sessions)
-                guard !Task.isCancelled, refresh == repo.refreshSeq else { return }
-                allSessions = sessions
-                habitualMidsleepSec = habitual
-                motionByStart = motions
-=======
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 // 260922: a same-seq re-mount (tab away and back with nothing new) restores the four
                 // heavy loads from `repo.sleepViewCache` instead of re-reading every session, every
@@ -277,15 +264,19 @@ struct SleepView: View {
                     restByDay = c.restByDay
                     restored = true
                 } else {
-                    allSessions = await repo.allSleepSessions()
+                    let sessions = await repo.allSleepSessions()
                     // The learned habitual midsleep the engine used, so the main-night pick aligns to it
                     // (a shift/late sleeper) instead of only the cold-start band. nil under threshold. (#547)
-                    habitualMidsleepSec = await repo.habitualMidsleepSec()
+                    let habitual = await repo.habitualMidsleepSec()
                     // Per-epoch motion for every block (#407), keyed by detected start, pre-fetched so the
                     // model build is sync.
-                    motionByStart = await repo.sessionMotions(sessions: allSessions)
+                    let motions = await repo.sessionMotions(sessions: sessions)
                     // 260906: the stored Rest series for the trend section, on the same trigger.
                     let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+                    guard !Task.isCancelled, refresh == repo.refreshSeq else { return }
+                    allSessions = sessions
+                    habitualMidsleepSec = habitual
+                    motionByStart = motions
                     restByDay = Dictionary(rest.map { ($0.day, $0.value) },
                                            uniquingKeysWith: { _, last in last })
                     repo.sleepViewCache = SleepViewCache(allSessions: allSessions, habitualMidsleepSec: habitualMidsleepSec,
@@ -293,23 +284,14 @@ struct SleepView: View {
                     repo.sleepViewLoadedSeq = repo.refreshSeq
                     restored = false
                 }
->>>>>>> 3cc717371 (A partial pass folds its baseline from stored history; one sleep need; the screens stop reloading)
                 nightOffset = 0
                 navNight = nil
                 modelKey = dataKey
                 navDaysCache = SleepModel.navDays(navSessions: navSessions)
                 model = buildModel()
-<<<<<<< HEAD
                 loadedSleepRefresh = refresh
                 observeResultChange()
-                // 260906: the stored Rest series for the trend section, on the same trigger — a
-                // freshly scored night re-reads it, exactly like the Trends page's own series loads.
-                let rest = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
-                restByDay = Dictionary(rest.map { ($0.day, $0.value) },
-                                       uniquingKeysWith: { _, last in last })
-=======
                 ScreenLedger.recordLoad(screen: "sleep", restored: restored, since: t0)
->>>>>>> 3cc717371 (A partial pass folds its baseline from stored history; one sleep need; the screens stop reloading)
             }
             .sheet(item: $wakeEdit) { edit in
                 // The night's RECORDED coverage for the #940 guards: from the immutable detected
@@ -566,6 +548,7 @@ struct SleepView: View {
                     else { return nil }
                     return await coach.sleepNarrative(night: row)
                 },
+                lastOutcome: { $0.lastSleepOutcome },
                 startsExpanded: true,
                 showsAskCoach: true,
                 coachFollowUp: { summary in
@@ -1595,10 +1578,10 @@ struct SleepView: View {
                 .frame(height: 124)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 2)
-            stageTimelineRow(.awake, minutes: s.awake, percent: stageSharePercent(.awake, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.rem,   minutes: s.rem,   percent: stageSharePercent(.rem, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.light, minutes: s.light, percent: stageSharePercent(.light, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.deep,  minutes: s.deep,  percent: stageSharePercent(.deep, s), intervals: smoothed, origin: origin, span: span)
+            stageTimelineRow(.awake, minutes: s.awake, percent: stageSharePercent(.awake, s), intervals: smoothed, origin: origin, span: span, typical: nil)
+            stageTimelineRow(.light, minutes: s.light, percent: stageSharePercent(.light, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalLightMin)
+            stageTimelineRow(.deep,  minutes: s.deep,  percent: stageSharePercent(.deep, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalDeepMin)
+            stageTimelineRow(.rem,   minutes: s.rem,   percent: stageSharePercent(.rem, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalRemMin)
             // onset · midpoint · wake clock labels, aligned with the rows' inner strips.
             HStack {
                 Text(Self.stageAxisFormatter.string(from: night.onsetDate))
@@ -1682,7 +1665,7 @@ struct SleepView: View {
                     .lineLimit(2)
             }
         } else {
-            Text("Tap a stage to compare with your 30-day typical.")
+            Text("“vs typ” is your 30-day typical. Tap a stage to isolate it.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
         }
@@ -1743,7 +1726,8 @@ struct SleepView: View {
     /// the selected row keeps its colour + gains a border while every other row's segments grey out.
     @ViewBuilder
     private func stageTimelineRow(_ stage: SleepStage, minutes: Double, percent: Int,
-                                  intervals: [SleepInterval], origin: TimeInterval, span: TimeInterval) -> some View {
+                                  intervals: [SleepInterval], origin: TimeInterval, span: TimeInterval,
+                                  typical: Double? = nil) -> some View {
         let color = StrandPalette.sleepStageColor(stage)
         let isSelected = selectedStage == stage
         let dimmed = selectedStage != nil && !isSelected
@@ -1757,9 +1741,23 @@ struct SleepView: View {
                     .font(StrandFont.captionNumber)
                     .foregroundStyle(dimmed ? StrandPalette.textTertiary : color)
                 Spacer()
-                Text(durationText(minutes))
-                    .font(StrandFont.captionNumber)
-                    .foregroundStyle(StrandPalette.textPrimary)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(durationText(minutes))
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    // 260922, maintainer: "combine the stages vs typical widget info into the stages
+                    // breakdown widget" — the delta against the 30-day typical rides the row header,
+                    // so one card carries the night AND how it compares. Green above the personal
+                    // mean, amber below; AWAKE has no typical (the model carries none) and shows nothing.
+                    if let typical, typical > 0 {
+                        let diff = minutes - typical
+                        let better = stage == .awake ? diff < 0 : diff > 0
+                        Text("\(diff >= 0 ? "+" : "−")\(durationText(abs(diff))) vs typ")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(abs(diff) < 1 ? StrandPalette.textTertiary
+                                             : (better ? StrandPalette.statusPositive : StrandPalette.metricAmber))
+                    }
+                }
             }
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {

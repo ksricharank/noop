@@ -62,10 +62,14 @@ final class SleepLayoutPrefsTests: XCTestCase {
 
     func testVisibleOrderFiltersHiddenWithoutChangingSavedOrder() {
         let order = "nightDetail,sleepMarks,asleepDuration,stages,sleepDebt,stagesVsTypical"
+        // 260922: `stagesVsTypical` is RETIRED (its delta rides the Stages rows) — it decodes, so a
+        // stored layout survives, but it never renders, hidden set or not.
         XCTAssertEqual(
             SleepLayoutPrefs.visibleOrder(orderRaw: order, hiddenRaw: "asleepDuration,sleepDebt"),
-            [.insight, .bodyClock, .nightDetail, .sleepMarks, .stages, .stagesVsTypical, .restTrend]
+            [.insight, .bodyClock, .nightDetail, .sleepMarks, .stages, .restTrend]
         )
+        XCTAssertFalse(SleepLayoutPrefs.visibleOrder(orderRaw: order, hiddenRaw: "").contains(.stagesVsTypical),
+                       "a retired card must not render even when nothing is hidden")
         XCTAssertEqual(SleepLayoutPrefs.decodeOrder(order).count, SleepSection.allCases.count)
     }
 
