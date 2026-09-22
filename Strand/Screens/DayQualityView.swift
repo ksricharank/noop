@@ -354,6 +354,7 @@ struct DayQualityView: View {
                         guard let breakdown = browsedBreakdown else { return nil }
                         return await coach.dayQualityNarrative(day: day, score: breakdown)
                     },
+                    lastOutcome: { $0.lastDayQualityOutcome },
                     startsExpanded: true,
                     showsAskCoach: true,
                     coachFollowUp: { summary in

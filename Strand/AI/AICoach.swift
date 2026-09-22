@@ -1681,17 +1681,19 @@ final class AICoachEngine: ObservableObject {
         let instruction = Self.dayQualityStatus(day: day, score: score) + context
             + "\n\n---\n\n" + dayQualityPrompt
         do {
-            let reply = try await callProvider(key: key, messages: [(.user, instruction)])
+            let reply = try await callNarrativeProvider(key: key, messages: [(.user, instruction)])
             let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty else {
                 lastDayQualityOutcome = "empty reply"
                 return nil
             }
             lastDayQualityOutcome = "written by \(lastAnsweringModel ?? "model")"
+            ScreenLedger.log("coach: recap summary — \(lastDayQualityOutcome ?? "written")")
             return clean
         } catch {
             lastDayQualityOutcome = "request failed: "
                 + ((error as? AICoachError)?.errorDescription ?? error.localizedDescription)
+            ScreenLedger.log("coach: recap summary — \(lastDayQualityOutcome ?? "failed")")
             return nil
         }
     }
@@ -1735,6 +1737,7 @@ final class AICoachEngine: ObservableObject {
         if !insights.isEmpty { facts += "\n\n" + insights }
         return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
             self.lastTrendsOutcome = outcome
+            ScreenLedger.log("coach: trends summary — \(outcome ?? "written")")
         }
     }
 
@@ -1828,6 +1831,7 @@ final class AICoachEngine: ObservableObject {
         }
         return await runNarrative(key: key, facts: facts, instruction: sleepPrompt) { outcome in
             self.lastSleepOutcome = outcome
+            ScreenLedger.log("coach: sleep summary — \(outcome ?? "written")")
         }
     }
 
@@ -1838,11 +1842,26 @@ final class AICoachEngine: ObservableObject {
     ///
     /// Factored out rather than copied three times: the failure contract is the part worth having
     /// exactly one of, since a narrative that throws must never reach a tab as an error string.
+    /// 260922: the tab summaries regenerate together on a new build (new facts, new subject), and a
+    /// free-tier provider answers a burst of four with 429s for the later ones. The card then showed
+    /// "Set up a coach provider" — wrong, and invisible in the strap log. One retry after a pause for
+    /// a rate limit only; every other failure is still reported at once.
+    private func callNarrativeProvider(key: String,
+                                       messages: [(role: ChatMessage.Role, content: String)]) async throws -> String {
+        do {
+            return try await callProvider(key: key, messages: messages)
+        } catch let failure as AICoachError {
+            guard case .rateLimited = failure else { throw failure }
+            try await Task.sleep(nanoseconds: 20_000_000_000)
+            return try await callProvider(key: key, messages: messages)
+        }
+    }
+
     private func runNarrative(key: String, facts: String, instruction: String,
                               outcome: @escaping (String?) -> Void) async -> String? {
         do {
-            let reply = try await callProvider(key: key,
-                                               messages: [(.user, facts + "\n\n---\n\n" + instruction)])
+            let reply = try await callNarrativeProvider(key: key,
+                                                        messages: [(.user, facts + "\n\n---\n\n" + instruction)])
             let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty else {
                 outcome("empty reply")

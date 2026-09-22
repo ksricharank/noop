@@ -23,7 +23,9 @@ struct SleepCustomizationSheet: View {
         _sectionOrderRaw = sectionOrderRaw
         _hiddenSectionsRaw = hiddenSectionsRaw
 
+        // Retired cards are not offered at all (260922) — see `SleepLayoutPrefs.retired`.
         let fullOrder = SleepLayoutPrefs.decodeOrder(sectionOrderRaw.wrappedValue)
+            .filter { !SleepLayoutPrefs.retired.contains($0) }
         // `effectiveHidden`, not `decodeHidden`: `stagesVsTypical` is hidden by default since
         // 260920, and seeding this list from the raw stored set would show it here as "Shown"
         // while the page hid it — the same page/sheet disagreement the Trends sheet hit.

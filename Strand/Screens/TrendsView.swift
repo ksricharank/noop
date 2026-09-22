@@ -667,6 +667,7 @@ struct TrendsView: View {
                     generate: { coach in
                         await coach.trendsNarrative(windowDays: range.days ?? repo.days.count)
                     },
+                    lastOutcome: { $0.lastTrendsOutcome },
                     startsExpanded: true,
                     showsAskCoach: true,
                     coachFollowUp: { summary in
@@ -1014,10 +1015,10 @@ struct TrendsView: View {
                                           valueFormat: { calendarTooltip(metric, $0) })
                                 .padding(.vertical, NoopMetrics.space1 / 2)
                         }
-                        if idx == 0 {
-                            Divider().overlay(StrandPalette.hairline)
-                            legend
-                        }
+                        // 260922, maintainer: "I want the colors for each of charge, day quality etc to
+                        // have a legend that indicates the range right under". One per metric, ends
+                        // labelled with the values the palette's two ends stand for.
+                        legend(for: metric)
                     }
                 }
             }
@@ -1053,33 +1054,47 @@ struct TrendsView: View {
 
     /// The tooltip un-normalises back to the real value, since the cell's colour is the only thing
     /// that needed a common scale.
-    private func calendarTooltip(_ metric: MultiMetric, _ shown: Double) -> String {
+    /// The real value a palette position stands for — the exact inverse of `calendarCells`' scaling,
+    /// so the tooltip and the legend can never disagree with the colours.
+    private func calendarRealValue(_ metric: MultiMetric, shown: Double) -> Double {
         let series = multiMetricSeries[metric] ?? [:]
         let values = series.values
         let lo = values.min() ?? 0, hi = values.max() ?? 1
         let span = hi - lo
         let display = metric.higherIsBetter ? shown : 100 - shown
-        let real: Double
         switch metric {
         case .charge, .sleep:
-            real = display
+            return display
         case .dayQuality:
-            real = display / 100
+            return display / 100
                 * Double(DayQualityScore.publishedMaximum - DayQualityScore.publishedMinimum)
                 + Double(DayQualityScore.publishedMinimum)
         default:
-            real = span > 0 ? lo + display / 100 * span : lo
+            return span > 0 ? lo + display / 100 * span : lo
         }
-        let n = Int(real.rounded())
-        let sign = (metric == .dayQuality && n > 0) ? "+" : ""
-        return metric.unit.isEmpty
-            ? "\(metric.title) \(sign)\(n)"
-            : "\(metric.title) \(n) \(metric.unit)"
     }
 
-    private var legend: some View {
-        HStack(spacing: NoopMetrics.space2) {
-            Text("Depleted")
+    private func calendarValueText(_ metric: MultiMetric, real: Double) -> String {
+        let n = Int(real.rounded())
+        let sign = (metric == .dayQuality && n > 0) ? "+" : ""
+        return metric.unit.isEmpty ? "\(sign)\(n)" : "\(n) \(metric.unit)"
+    }
+
+    private func calendarTooltip(_ metric: MultiMetric, _ shown: Double) -> String {
+        "\(metric.title) \(calendarValueText(metric, real: calendarRealValue(metric, shown: shown)))"
+    }
+
+    /// The palette's two ends, labelled with the values they stand for on THIS metric — the fixed
+    /// 0-100 scale for Charge and Sleep, the published range for Day quality, the window's observed
+    /// min/max for everything else; for a lower-is-better metric (resting HR, respiration) the green
+    /// end is therefore the LOW value. Charge keeps its words beside the numbers.
+    private func legend(for metric: MultiMetric) -> some View {
+        let low = calendarValueText(metric, real: calendarRealValue(metric, shown: 0))
+        let high = calendarValueText(metric, real: calendarRealValue(metric, shown: 100))
+        let lowText = metric == .charge ? String(localized: "Depleted \(low)") : low
+        let highText = metric == .charge ? String(localized: "Peaked \(high)") : high
+        return HStack(spacing: NoopMetrics.space2) {
+            Text(lowText)
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize()
@@ -1088,14 +1103,14 @@ struct TrendsView: View {
                 .frame(height: NoopMetrics.indicatorTrackHeight)
                 .clipShape(Capsule())
                 .accessibilityHidden(true)
-            Text("Peaked")
+            Text(highText)
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize()
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Charge scale, depleted to peaked")
+        .accessibilityLabel("\(metric.title) scale, \(lowText) to \(highText)")
     }
 
     // MARK: Shared bits

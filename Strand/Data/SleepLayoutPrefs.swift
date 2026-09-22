@@ -150,8 +150,13 @@ enum SleepLayoutPrefs {
         hiddenRaw.isEmpty ? defaultHidden : Set(decodeHidden(hiddenRaw))
     }
 
+    /// Cards that no longer render anywhere, whatever a stored layout says (260922): the standalone
+    /// "Stages vs typical" — its delta now rides every stage row of the Stages card, at the
+    /// maintainer's request for one widget. The case survives so stored layouts still decode.
+    static let retired: Set<SleepSection> = [.stagesVsTypical]
+
     static func visibleOrder(orderRaw: String, hiddenRaw: String) -> [SleepSection] {
         let hidden = effectiveHidden(hiddenRaw: hiddenRaw)
-        return decodeOrder(orderRaw).filter { !hidden.contains($0) }
+        return decodeOrder(orderRaw).filter { !hidden.contains($0) && !retired.contains($0) }
     }
 }

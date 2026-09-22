@@ -490,6 +490,7 @@ struct SleepView: View {
                     else { return nil }
                     return await coach.sleepNarrative(night: row)
                 },
+                lastOutcome: { $0.lastSleepOutcome },
                 startsExpanded: true,
                 showsAskCoach: true,
                 coachFollowUp: { summary in
@@ -1482,10 +1483,10 @@ struct SleepView: View {
                 .frame(height: 124)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 2)
-            stageTimelineRow(.awake, minutes: s.awake, percent: stageSharePercent(.awake, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.light, minutes: s.light, percent: stageSharePercent(.light, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.deep,  minutes: s.deep,  percent: stageSharePercent(.deep, s), intervals: smoothed, origin: origin, span: span)
-            stageTimelineRow(.rem,   minutes: s.rem,   percent: stageSharePercent(.rem, s), intervals: smoothed, origin: origin, span: span)
+            stageTimelineRow(.awake, minutes: s.awake, percent: stageSharePercent(.awake, s), intervals: smoothed, origin: origin, span: span, typical: nil)
+            stageTimelineRow(.light, minutes: s.light, percent: stageSharePercent(.light, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalLightMin)
+            stageTimelineRow(.deep,  minutes: s.deep,  percent: stageSharePercent(.deep, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalDeepMin)
+            stageTimelineRow(.rem,   minutes: s.rem,   percent: stageSharePercent(.rem, s), intervals: smoothed, origin: origin, span: span, typical: model?.typicalRemMin)
             // onset · midpoint · wake clock labels, aligned with the rows' inner strips.
             HStack {
                 Text(Self.stageAxisFormatter.string(from: night.onsetDate))
@@ -1569,7 +1570,7 @@ struct SleepView: View {
                     .lineLimit(2)
             }
         } else {
-            Text("Tap a stage to compare with your 30-day typical.")
+            Text("“vs typ” is your 30-day typical. Tap a stage to isolate it.")
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
         }
@@ -1630,7 +1631,8 @@ struct SleepView: View {
     /// the selected row keeps its colour + gains a border while every other row's segments grey out.
     @ViewBuilder
     private func stageTimelineRow(_ stage: SleepStage, minutes: Double, percent: Int,
-                                  intervals: [SleepInterval], origin: TimeInterval, span: TimeInterval) -> some View {
+                                  intervals: [SleepInterval], origin: TimeInterval, span: TimeInterval,
+                                  typical: Double? = nil) -> some View {
         let color = StrandPalette.sleepStageColor(stage)
         let isSelected = selectedStage == stage
         let dimmed = selectedStage != nil && !isSelected
@@ -1644,9 +1646,23 @@ struct SleepView: View {
                     .font(StrandFont.captionNumber)
                     .foregroundStyle(dimmed ? StrandPalette.textTertiary : color)
                 Spacer()
-                Text(durationText(minutes))
-                    .font(StrandFont.captionNumber)
-                    .foregroundStyle(StrandPalette.textPrimary)
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text(durationText(minutes))
+                        .font(StrandFont.captionNumber)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    // 260922, maintainer: "combine the stages vs typical widget info into the stages
+                    // breakdown widget" — the delta against the 30-day typical rides the row header,
+                    // so one card carries the night AND how it compares. Green above the personal
+                    // mean, amber below; AWAKE has no typical (the model carries none) and shows nothing.
+                    if let typical, typical > 0 {
+                        let diff = minutes - typical
+                        let better = stage == .awake ? diff < 0 : diff > 0
+                        Text("\(diff >= 0 ? "+" : "−")\(durationText(abs(diff))) vs typ")
+                            .font(StrandFont.caption)
+                            .foregroundStyle(abs(diff) < 1 ? StrandPalette.textTertiary
+                                             : (better ? StrandPalette.statusPositive : StrandPalette.metricAmber))
+                    }
+                }
             }
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
