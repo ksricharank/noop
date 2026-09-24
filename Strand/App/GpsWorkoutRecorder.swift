@@ -327,7 +327,34 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
     /// Number of accepted route points so far (lets the UI distinguish "recording, no fix yet" from "off").
     @Published private(set) var pointCount = 0
 
-    private let manager = CLLocationManager()
+    // 260903: LAZY, so nothing touches CoreLocation until a workout actually starts.
+    //
+    // `AppModel` builds the recorder eagerly at launch, and constructing a CLLocationManager (plus
+    // assigning its delegate) registers the process with the location daemon there and then — which
+    // on macOS surfaced as location requests every time the app was run, with no workout in sight.
+    // The fork deploys to an iPhone; the macOS target exists to build and to host StrandTests, so a
+    // development Mac was being asked about location purely as a side effect of building.
+    //
+    // Deferring construction is behaviour-preserving on BOTH platforms: every use goes through this
+    // property, `start(...)` is the first thing to touch it, and the configuration that used to run
+    // in `init` now runs in the initializer below — before any caller can observe the manager.
+    private lazy var manager: CLLocationManager = {
+        let m = CLLocationManager()
+        m.delegate = self
+        m.desiredAccuracy = kCLLocationAccuracyBest
+        // ~5 m between callbacks; TrackFilter still gates on accuracy + speed. Matches the cadence intent
+        // of Android's 2 s / 0 m platform request (let the filter, not the platform, do the gating).
+        m.distanceFilter = 5
+        #if os(iOS)
+        // Keep the route accruing while the screen is off, matching Android's foreground-service capture.
+        // Safe only because the iOS target declares the `location` UIBackgroundMode (project.yml); setting
+        // this without that mode would crash when updates start.
+        m.allowsBackgroundLocationUpdates = true
+        m.pausesLocationUpdatesAutomatically = false
+        m.activityType = .fitness
+        #endif
+        return m
+    }()
     private var filter = TrackFilter()
     private var track: [RouteMath.LatLng] = []
     private var startMs: Int64 = 0
@@ -342,21 +369,10 @@ final class GpsWorkoutRecorder: NSObject, ObservableObject {
     var workoutsLog: ((String) -> Void)?
     private var rawFixCount = 0
 
+    /// Deliberately does NOT touch `manager`: see the lazy property above. Constructing the recorder
+    /// must stay free of CoreLocation, or the app registers with the location daemon at launch.
     override init() {
         super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        // ~5 m between callbacks; TrackFilter still gates on accuracy + speed. Matches the cadence intent
-        // of Android's 2 s / 0 m platform request (let the filter, not the platform, do the gating).
-        manager.distanceFilter = 5
-        #if os(iOS)
-        // Keep the route accruing while the screen is off, matching Android's foreground-service capture.
-        // Safe only because the iOS target declares the `location` UIBackgroundMode (project.yml); setting
-        // this without that mode would crash when updates start.
-        manager.allowsBackgroundLocationUpdates = true
-        manager.pausesLocationUpdatesAutomatically = false
-        manager.activityType = .fitness
-        #endif
     }
 
     /// Begin recording a fresh route for a workout started at `startMs` (unix milliseconds). Requests
