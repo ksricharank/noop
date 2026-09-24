@@ -1827,6 +1827,18 @@ final class Repository: ObservableObject {
         return nil
     }
 
+    /// Raw step samples over `[from, to]` from the FIRST id that has any — active strap first,
+    /// mirroring `strapStepTicks` (never merged across ids: two cumulative counters interleaved
+    /// would fabricate deltas). For the coach's sedentary read (260924).
+    func recentStepSamples(from: Int, to: Int) async -> [StepSample] {
+        guard let store = await ensureStore() else { return [] }
+        for id in importedReadIds {   // active strap FIRST
+            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
+            if !samples.isEmpty { return samples }
+        }
+        return []
+    }
+
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
     /// `activityClass` on the sample with the greatest ts, resolving a ts tie in favour of the FIRST list (the
     /// active strap, mirroring the union's active-wins rule). Static + pure so it's unit-testable without a

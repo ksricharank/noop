@@ -2279,30 +2279,61 @@ final class AICoachEngine: ObservableObject {
         }
         // The elapsed-since-movement read. A long quiet stretch is the single most actionable thing
         // this block can surface, and it is not visible anywhere else on the screen.
-        if let stillFor = Self.minutesSinceLastActive(samples: samples, now: to) {
-            lines.append("I have been sedentary for about \(stillFor) minutes"
-                         + " (no sustained heart-rate rise in that time).")
+        //
+        // 260924, "the LLM keeps telling me I have been sitting for 200+ minutes": three defects fed
+        // that line, all fixed in `sedentaryRead`. (1) The clock ran to wall-clock `now`, so hours the
+        // strap simply had not offloaded yet counted as sitting. (2) A window whose HR never rose
+        // 15 bpm above its own floor reported the WHOLE window — a calm desk day was 200+ minutes by
+        // design. (3) Steps were never consulted, so walking without an HR spike counted as sitting.
+        // Movement now anchors on steps where they exist, the claim is measured only over the span
+        // the data actually covers, and a stale claim says so or is dropped.
+        let stepSamples = await repo.recentStepSamples(from: from, to: to)
+        let lastMove = StepsCounter.lastMovementTs(stepSamples)
+        if let read = Self.sedentaryRead(samples: samples, lastMovementTs: lastMove, now: to) {
+            if read.dataAgeMinutes >= 60 {
+                // The strap has not synced in an hour: a "right now" stillness claim from that is a
+                // guess, and the hourly lines above already carry their own clock times.
+            } else if read.dataAgeMinutes >= 20 {
+                lines.append("As of the last strap sync (\(read.dataAgeMinutes) min ago) I had been"
+                             + " sedentary for about \(read.minutes) minutes"
+                             + " (no steps and no sustained heart-rate rise in that span).")
+            } else {
+                lines.append("I have been sedentary for about \(read.minutes) minutes"
+                             + " (no steps and no sustained heart-rate rise in that time).")
+            }
         }
         return lines.joined(separator: "\n")
     }
 
-    /// Minutes since the last sustained rise above rest, or nil when the window never settles.
+    /// The sedentary claim, measured over the span the data actually covers — or nil when there is
+    /// no stretch worth naming.
     ///
-    /// Pure and static so it is testable without a store. "Active" is a sample at least 15 bpm above
-    /// the window's own floor — relative to THIS window rather than to a fixed threshold, because a
-    /// fixed one would call a resting 70 bpm active for one person and never fire for another.
-    nonisolated static func minutesSinceLastActive(samples: [HRSample], now: Int) -> Int? {
-        guard let floor = samples.map(\.bpm).min(), samples.count >= 10 else { return nil }
+    /// Pure and static so it is testable without a store. Movement is EITHER a step burst
+    /// (`lastMovementTs`, from the strap's locomotion counter — direct evidence, so it wins) OR a
+    /// sample at least 15 bpm above the window's own HR floor — relative to THIS window rather than
+    /// a fixed threshold, because a fixed one would call a resting 70 bpm active for one person and
+    /// never fire for another.
+    ///
+    /// `minutes` is measured from the last movement to the NEWEST sample, never to wall-clock `now`:
+    /// the gap between the last offload and now is unobserved, and counting it as stillness is how
+    /// "sitting for 200+ minutes" was manufactured from a strap that had not synced since lunch.
+    /// `dataAgeMinutes` (now − newest sample) is returned so the caller can label or drop a claim
+    /// whose data is stale rather than assert it as the present.
+    nonisolated static func sedentaryRead(samples: [HRSample], lastMovementTs: Int?, now: Int)
+        -> (minutes: Int, dataAgeMinutes: Int)? {
+        guard samples.count >= 10, let floor = samples.map(\.bpm).min(),
+              let newest = samples.map(\.ts).max(), let earliest = samples.map(\.ts).min()
+        else { return nil }
+        let dataEnd = max(newest, lastMovementTs ?? Int.min)
         let activeThreshold = floor + 15
-        guard let lastActive = samples.filter({ $0.bpm >= activeThreshold }).map(\.ts).max() else {
-            // Never rose in the window: report the whole window rather than nil, which is the
-            // honest answer and the one most worth saying.
-            guard let earliest = samples.map(\.ts).min() else { return nil }
-            return max(0, (now - earliest) / 60)
-        }
-        let minutes = (now - lastActive) / 60
+        let hrActive = samples.filter { $0.bpm >= activeThreshold }.map(\.ts).max()
+        // The later of the two evidence streams; a window with neither reports back to its start —
+        // "you have not moved at all in six hours of data" is the claim most worth making.
+        let lastActive = [hrActive, lastMovementTs].compactMap { $0 }.max() ?? earliest
+        let minutes = max(0, (dataEnd - lastActive) / 60)
         // Under 20 minutes is not a sedentary stretch worth naming.
-        return minutes >= 20 ? minutes : nil
+        guard minutes >= 20 else { return nil }
+        return (minutes, max(0, (now - dataEnd) / 60))
     }
 
     /// Pure formatter for the derived stress line, kept separate so it is unit-testable without a store.
