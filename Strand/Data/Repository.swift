@@ -126,6 +126,62 @@ struct SleepDeletionSnapshot: Equatable {
     var sleepState: [Int]?
 }
 
+/// The deterministic daily targets the three-pillar Live Activity card prints and the coach
+/// synthesis cites — one bundle so the two surfaces can never disagree. Every field derives from
+/// `Repository.days` via the constant-explicit `DailyTargets` rules (see that type for the
+/// formulas); the optionals stay nil on thin history rather than guessing (the card then drops the
+/// denominator). Top-level rather than nested in `Repository` so it carries no MainActor isolation —
+/// the coach's `nonisolated` formatters and the widget-facing controller both hold plain values.
+struct LiveTargets: Equatable {
+    // HISTORY: a calm heart-rate ceiling (`hrCeilingBpm`) led this struct for one evening — first
+    // RHR-median+25, then a daytime-beat percentile, then Karvonen — and was retired 260830: the
+    // maintainer replaced the threshold with the live autonomic breathe cue (red HR digits on the
+    // card). Later the same day the card dropped HR entirely (Effort n/t took the column) and the
+    // cue moved to the stress check-in's buzz + notification; `exerciseKcalToday` (the day estimate
+    // minus the resting accrual) went with it — the Cal glance is TOTAL calories now.
+    /// Today's TOTAL calories so far — the raw whole-day HR estimate (`activeKcalEst`), resting
+    /// metabolism included for every worn second. What the card's Cal numerator shows.
+    var kcalToday: Int?
+    /// Today's TOTAL-calorie target: a full day of resting metabolism plus the prescribed session
+    /// through the app's own Keytel model (`DailyTargets.dayKcalTarget`). A REST day's target is
+    /// honestly the resting day alone.
+    var kcalTargetKcal: Int?
+    /// The prescribed session itself, for the coach to narrate ("30 min at ~121 bpm"). Nil = rest day.
+    var sessionMinutes: Int?
+    var sessionHrBpm: Int?
+    /// True when the body's state prescribed REST (rundown readiness / poor-rest notching): the
+    /// effort target then holds at today's current effort, and the coach should say rest, not push.
+    var restDay: Bool = false
+    /// Minutes of sleep to target tonight (population base for the user's age, adjusted by today's
+    /// charge, last night's Rest, the readiness read, and the junior debt term; clamped 7–10 h).
+    var sleepNeedTonightMin: Int?
+    /// Today's steps so far (the day row's calibrated count — @57 ticks ÷ the user's divisor).
+    var stepsToday: Int?
+    /// Today's step target (`DailyTargets.stepsTarget`: charge band base 6k/8k/10k, readiness
+    /// notches, clamp 4k–12k — population guideline numbers banded by TODAY's body, never history).
+    var stepsTarget: Int?
+    /// Today's effort so far on the STORED 0–100 axis — the Effort column's numerator, carried here
+    /// so every surface (widget, card, strip, coach) reads the same value the target was priced from.
+    var effortTodayStored: Int?
+    /// Today's effort target on the STORED 0–100 axis: today's effort plus exactly the prescribed
+    /// session through the app's own strain curve. Displayed on the user's chosen effort scale as
+    /// the Effort column's denominator.
+    var effortTarget: Int?
+    /// Today's water figures (260903) — the SAME numbers the hydration tracker and its Today card
+    /// use, carried here so the synthesis row, the reminder copy, the derivation block and the
+    /// coach context can never disagree about the day's water.
+    ///
+    /// The amount drunk stays in millilitres (that is how the tracker stores drinks, and half-cups
+    /// must not lose precision); the TARGET is in CUPS, because that is the only unit any water
+    /// surface displays and the rule is now legible in it — `baseline cups + effortTarget/10`.
+    /// Nil target = hydration tracking is off.
+    var waterTodayML: Double?
+    var waterTargetCups: Int?
+    /// The four target derivations with today's actual inputs, one line each (`TargetsExplainer`),
+    /// for the optional "how these were set" disclosure under the targets strip (260901).
+    var explainLines: [String] = []
+}
+
 /// Read model over the on-device WhoopStore. Opens its own handle (WAL + busy-timeout makes the
 /// two-handle BLEManager+Repository pattern safe) and publishes the dashboard caches the screens bind to.
 @MainActor
@@ -205,6 +261,116 @@ final class Repository: ObservableObject {
     /// so the card sat stale until an unrelated sync landed. Race-free: Repository is @MainActor.
     @Published private(set) var hydrationSeq = 0
     func noteHydrationChanged() { hydrationSeq += 1 }
+
+    /// Today's hydration total (ml) as a SYNCHRONOUS read, so the targets path (pure, sync, and
+    /// memoized per refresh) can carry water without becoming async (260903). Maintained from the
+    /// same per-entry log the async `hydrationTotal` reads — every mutation goes through
+    /// `logHydration` / `deleteHydrationEntry` / `updateHydrationEntry`, which re-derive this — and
+    /// re-derived on a day roll by `refreshHydrationCache`. Manual entries only, exactly like the
+    /// figure the Today card's ring shows before an import lands.
+    /// Backing store for `hydrationTodayCachedML`. Never read directly — go through the computed
+    /// property, which self-seeds.
+    private var hydrationCachedML: Double = 0
+    private var hydrationCachedDay = ""
+
+    /// Asleep minutes from SEPARATE naps, keyed by wake-day (260920).
+    ///
+    /// The sleep-debt ledger behind the Today sleep target has to credit naps exactly as the Sleep
+    /// tab's ledger does, or the two screens report different debt from the same nights. Nap
+    /// minutes need `CachedSleepSession` rows, which only load asynchronously, while `liveTargets`
+    /// is a synchronous read — so they are derived once per refresh and cached here, the same shape
+    /// as `hydrationCachedML`.
+    ///
+    /// Empty until the first refresh completes, which reproduces the previous (nap-blind) behaviour
+    /// rather than guessing: an absent nap is credited as zero, never as an error.
+    private(set) var napSleepMinByDay: [String: Double] = [:]
+
+    /// Tail of the serialised hydration-mutation chain (260904).
+    ///
+    /// Every hydration write is a read-modify-write (`logHydration` reads the day's total and
+    /// upserts total + amount; the edit/delete paths re-derive the day from its entry list), and the
+    /// call sites are fire-and-forget `Task`s from a +/- button. Concurrent taps therefore read the
+    /// same "current" and each wrote it back plus their own delta, losing every increment but one.
+    ///
+    /// Nil when no mutation is in flight. Each new mutation awaits the previous one's task before
+    /// starting, which makes the whole set serial without a lock — `Repository` is @MainActor, so
+    /// the only interleaving was at the awaits inside these functions.
+    private var hydrationMutationTail: Task<Void, Never>?
+    /// Monotonic id for the queued mutation, so the tail can be cleared only by the mutation that
+    /// actually owns it (`Task` is a struct, so identity comparison is not available).
+    private var hydrationMutationSeq = 0
+    private var hydrationMutationTailSeq = 0
+
+    /// Run `body` after every hydration mutation already queued, and make the next one wait for it.
+    ///
+    /// Deliberately a chained `Task` rather than an actor or a semaphore: the work is already
+    /// main-actor-bound and must stay ordered (a minus that overtakes its plus would delete the
+    /// wrong entry), and this keeps the queue visible in one property rather than hidden in a lock.
+    func withHydrationLock<T>(_ body: @escaping () async -> T) async -> T {
+        // The chained task must cover the BODY, not just the wait for its predecessor.
+        //
+        // A first version had the task await only `previous`, then ran `body()` outside it. That
+        // gate completed the moment its own predecessor finished, so every queued caller's body
+        // still overlapped and the writes were lost exactly as before — the tests showed six logs
+        // in the entry list and one in the series. Enclosing the body is what makes the chain
+        // serial: the next caller's `await previous?.value` cannot return until this body is done.
+        let previous = hydrationMutationTail
+        hydrationMutationSeq += 1
+        let mine = hydrationMutationSeq
+        // Held outside the task so the result survives it (the task is Void; the value is not).
+        let box = HydrationResultBox<T>()
+        let gate = Task { @MainActor in
+            _ = await previous?.value
+            box.value = await body()
+        }
+        hydrationMutationTail = gate
+        hydrationMutationTailSeq = mine
+        await gate.value
+        // Clear the tail only if nothing queued behind this one, so a later mutation still chains
+        // onto us rather than starting concurrently.
+        if hydrationMutationTailSeq == mine { hydrationMutationTail = nil }
+        // Non-nil by construction: the task above always assigns before it completes, and we have
+        // awaited it. The fallback runs the body rather than crashing on a future refactor.
+        if let v = box.value { return v }
+        return await body()
+    }
+
+    /// Today's logged water (ml), derived on FIRST READ and after every mutation.
+    ///
+    /// Self-seeding deliberately (260903): this used to be a plain stored property refreshed only
+    /// by the three mutation sites, so a cold start read 0 until the user happened to log a drink —
+    /// the reported "water counter resets every time I open the app". The drinks themselves were
+    /// never lost (they live in UserDefaults); only this cache started empty. A launch-time call
+    /// would have fixed the symptom and could be forgotten again by the next caller, so the
+    /// invariant is enforced here instead: the value cannot be read before it has been derived for
+    /// the current day.
+    var hydrationTodayCachedML: Double {
+        let today = Repository.localDayKey(Date())
+        if hydrationCachedDay != today { refreshHydrationCache(day: today) }
+        return hydrationCachedML
+    }
+
+    /// Set by `refreshHydrationCache` (in HydrationStore.swift, where the entry reader lives).
+    func setHydrationCache(day: String, totalML: Double) {
+        hydrationCachedDay = day
+        hydrationCachedML = totalML
+    }
+
+    /// Move the water figure the Today row reads IMMEDIATELY, before the store write lands
+    /// (260903). A logged cup otherwise costs four awaits on the SQLite store — `storeHandle`, the
+    /// manual total, the upsert, the imported total — and while a strap sync holds the store actor
+    /// those queue behind it, so the tap felt unresponsive and a count that cannot be watched
+    /// cannot be tracked. The authoritative write still runs right after and re-derives this from
+    /// the stored entries, so a failed write self-corrects on the next refresh rather than leaving
+    /// an invented number. `delta` may be negative (the row's minus control).
+    func bumpHydrationOptimistically(deltaML: Int) {
+        let today = Repository.localDayKey(Date())
+        // Reading the computed property first is what seeds the day (and rolls it), so an
+        // optimistic bump on a fresh launch adds to the REAL total rather than to zero.
+        let current = hydrationTodayCachedML
+        setHydrationCache(day: today, totalML: max(0, current + Double(deltaML)))
+        noteHydrationChanged()
+    }
 
     /// Bumped whenever a period-start row is logged or removed. Cycle surfaces use this lightweight
     /// signal to reload their sensitive local history without forcing a full strap-data refresh.
@@ -632,6 +798,252 @@ final class Repository: ObservableObject {
         return v.map { Int($0.rounded()) }
     }
 
+    /// Pure derivation for `cachedLiveTargets` — static so StrandTests can pin it over fixture rows.
+    /// `charge` is the anchor day's recovery (the same anchor every live surface shares), `restScore`
+    /// that anchor's Rest score (the instance-side `restScore(for:)` read, passed in so this stays
+    /// static), `profile` the user's body metrics for the Keytel/Karvonen math, and `todayKey` the
+    /// future-clock-safe today key (the later of logical/local, as everywhere).
+    ///
+    /// Everything here is body-state, never habit (the maintainer's doctrine — see `DailyTargets`'
+    /// header): the only trailing-window reads are the multi-signal readiness baselines and the
+    /// junior sleep-debt term, both of which describe accumulated physiological state, not precedent.
+    /// - Parameter napSleepMinByDay: asleep minutes from SEPARATE naps, keyed by wake-day.
+    ///   260920: the sleep-debt ledger behind `sleepNeedTonightMin` credited MAIN sleep only, while
+    ///   the Sleep tab's own ledger (`SleepModel.debtLedger`) credited naps too — so on any day with
+    ///   a nap the two screens reported different debt from the same nights, and the Today target
+    ///   was priced off the larger one. The comment below claiming every debt surface shares one
+    ///   reference was true of the NEED and silently false of the SLEEP.
+    ///
+    ///   Defaulted to empty rather than made required: the widget and Live Activity paths build
+    ///   targets without ever loading sleep sessions, and an empty map reproduces the previous
+    ///   behaviour exactly for them instead of forcing a load they cannot afford.
+    static func liveTargets(days: [DailyMetric], charge: Int?, restScore: Int?,
+                            profile: UserProfile,
+                            todayKey: String,
+                            waterTodayML: Double? = nil,
+                            waterEnabled: Bool = false,
+                            napSleepMinByDay: [String: Double] = [:]) -> LiveTargets {
+        // The full read, not just the level: the explainer's "body check" lines print the
+        // signals' actual values against their baselines (260901: no jargon, every line a number).
+        let readinessRead = ReadinessEngine.evaluate(days: days)
+        let readiness = readinessRead.level
+        // The freshest resting measurement there is — last night's RHR, the body's current idle.
+        let latestRhr = days.last(where: { $0.restingHr != nil })?.restingHr
+        let age = profile.age > 0 ? profile.age : nil
+        let todayRow = days.last(where: { $0.day == todayKey })
+        // The prescribed session (nil = rest day), and the two targets priced FROM it: the effort
+        // target is today's effort plus exactly that session through the app's own strain curve,
+        // and the calorie target is the same session through the app's own Keytel model.
+        let session = DailyTargets.sessionPrescription(charge: charge, readiness: readiness,
+                                                       restScore: restScore)
+        // FROZEN effort target (260831, maintainer instruction: "freeze it"): the target is the
+        // prescribed session's worth alone (0 + session through the strain curve), NOT "effort so
+        // far + session". The riding form moved the goalpost all day — walk to 8 and the widget
+        // read "8/67" instead of "8/59" — while Cal/Steps/Sleep stayed fixed at their morning
+        // values. Now all four denominators hold still between morning scores; ambient movement
+        // counts TOWARD the day's one number instead of inflating it. A REST day's target is ZERO,
+        // not nil (260901, maintainer instruction): the displays keep the pair form — "0/0", then
+        // "x/0" as ambient strain accrues — so a rest day still shows whether any effort landed.
+        // The numerator is never clamped to the target on any surface: n > t is a legitimate state
+        // for all three pairs (an over-target day is information, not an error).
+        let effortTarget: Int? = session != nil
+            ? DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+            : 0
+        // Today's water goal, in CUPS, priced off TODAY'S EFFORT TARGET (260903): the baseline for
+        // the user's body plus one cup per 10 points of prescribed effort — the maintainer's rule
+        // ("a target strain of 50 leads to 16 + 50/10 = 21 cups").
+        //
+        // The basis is max(today's effort TARGET, today's effort ACCRUED) — the maintainer's
+        // 260903 refinement. Pricing off the target alone was stable but under-asked on a day
+        // that genuinely went harder than prescribed: sweat loss is real and same-day, so
+        // exceeding the plan should raise the water ask. Taking the MAXIMUM keeps the goalpost
+        // honest in the one direction that matters — the number can only ever GROW during a day,
+        // never shrink, so "cups left" cannot go backwards on you.
+        //
+        // Two earlier bases were wrong and both are worth remembering. Today's accrued strain
+        // ALONE moved the denominator all day INCLUDING downward as the row was rescored (the
+        // reported goalpost-moving). Then YESTERDAY's scored strain: frozen in principle, but the
+        // 2-day light pass keeps REWRITING yesterday's row hours into today, which is how the
+        // derivation came to read "yesterday's effort of 8" when yesterday had finished at 7.
+        // A rest day with no accrued effort prices the body baseline alone.
+        let waterEffortBasis: Double? = {
+            let target = effortTarget.map(Double.init)
+            let accrued = todayRow?.strain
+            switch (target, accrued) {
+            case let (t?, a?): return max(t, a)
+            case let (t?, nil): return t
+            case let (nil, a?): return a
+            case (nil, nil): return nil
+            }
+        }()
+        let waterTargetCups: Int? = waterEnabled
+            ? HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: waterEffortBasis)
+            : nil
+
+        // The debt LEDGER keeps the same reference every debt surface reads (SleepModel.debtNeedMin /
+        // the coach context): the population-anchored upper-quartile need.
+        // 260922: ONE need everywhere — `SleepModel.personalNeedMin` (its doc names the three
+        // figures this replaced). Tonight's target below is this need plus the debt share, nothing else.
+        let ledgerNeedMin = SleepModel.personalNeedMin(days: days)
+        // Credit naps exactly as `SleepModel.debtLedger` does, through the SAME helper, so the two
+        // ledgers cannot drift again. With an empty map this is `totalSleepMin` unchanged.
+        let ledger = SleepDebt.ledger(
+            series: days.map { day in
+                (day: day.day,
+                 totalSleepMin: SleepDebt.creditedSleepMin(
+                    mainSleepMin: day.totalSleepMin,
+                    napSleepMin: napSleepMinByDay[day.day] ?? 0))
+            },
+            needHours: ledgerNeedMin / 60.0)
+        return LiveTargets(
+            // TOTAL calories, both sides (260830): the raw whole-day estimate vs a full resting day
+            // plus the priced session — the mainstream-tracker framing, by maintainer instruction.
+            kcalToday: todayRow?.activeKcalEst.map { Int($0.rounded()) },
+            kcalTargetKcal: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+            sessionMinutes: session?.minutes,
+            sessionHrBpm: session.map {
+                DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+            },
+            restDay: session == nil,
+            sleepNeedTonightMin: DailyTargets.sleepNeedTonightMin(needMin: ledgerNeedMin,
+                                                                  debtBalanceMin: ledger.balanceMin),
+            stepsToday: todayRow?.steps,
+            stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+            effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
+            effortTarget: effortTarget,
+            waterTodayML: waterTodayML,
+            waterTargetCups: waterTargetCups,
+            explainLines: TargetsExplainer.lines(
+                charge: charge, readiness: readinessRead, restScore: restScore,
+                session: session,
+                sessionHrBpm: session.map {
+                    DailyTargets.sessionHrBpm(session: $0, restingHr: latestRhr, age: profile.age)
+                },
+                effortTarget: effortTarget,
+                kcalTarget: DailyTargets.dayKcalTarget(session: session, profile: profile,
+                                                       restingHr: latestRhr),
+                stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
+                sleepNeedMin: DailyTargets.sleepNeedTonightMin(needMin: ledgerNeedMin, debtBalanceMin: ledger.balanceMin),
+                age: age.map { Int($0) }, restingHr: latestRhr, profile: profile,
+                debtBalanceMin: ledger.balanceMin,
+                waterTargetCups: waterTargetCups,
+                effortForWater: waterEffortBasis,
+                waterEffortIsAccrued: {
+                    guard let basis = waterEffortBasis, let accrued = todayRow?.strain else {
+                        return false
+                    }
+                    // Accrued won only if it strictly exceeds the target (a tie reads as the plan).
+                    return accrued >= basis && accrued > Double(effortTarget ?? 0)
+                }()))
+    }
+
+    /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
+    private var liveTargetsMemo = LiveTargetsMemo()
+
+    /// The user's body metrics for the targets' Keytel/Karvonen math, lent by the app layer
+    /// (AppModel owns the Profile; the healthWriteBack closure idiom). Nil in tests and before
+    /// wiring — the estimator suite's standard profile then stands in.
+    var liveTargetsProfile: (() -> UserProfile)?
+
+    /// Cups drunk and the day's cup TARGET for one past day — the day-quality card's water input.
+    ///
+    /// Synchronous, reading the same per-day hydration cache the Today row reads, so the card can
+    /// assemble its breakdown without an async hop mid-render. The target is re-derived from that
+    /// day's own effort ask (`max(target, accrued)`, the live row's basis) rather than read from a
+    /// stored copy, for the same reason the rest of the score's targets are: it must divide by what
+    /// the wearer was actually asked for that day.
+    ///
+    /// Nil when hydration tracking is off or the day logged nothing — absent, not zero.
+    func waterCupsAndTarget(forDay day: String) -> (cups: Int, target: Int)? {
+        guard UserDefaults.standard.bool(forKey: HydrationStore.enabledKey) else { return nil }
+        // Read the per-entry log for that day, not the today-only cache: this card summarises a
+        // PAST day, and the cache legitimately holds only the current one.
+        let ml = HydrationStore.manualML(day: day)
+        guard ml > 0 else { return nil }
+        let upTo = days.filter { $0.day <= day }
+        guard let row = upTo.last(where: { $0.day == day }) else { return nil }
+        let profile = liveTargetsProfile?() ?? UserProfile()
+        let t = Repository.liveTargets(days: upTo, charge: row.recovery.map { Int($0.rounded()) },
+                                       restScore: nil, profile: profile, todayKey: day)
+        let basis = max(Double(t.effortTarget ?? 0), row.strain ?? 0)
+        return (cups: Int((Double(HydrationGoal.halfCups(fromML: ml)) / 2).rounded(.down)),
+                target: HydrationGoal.dailyGoalCups(sex: profile.sex, effortTarget: basis))
+    }
+
+    /// `LiveTargets` for an EXPLICIT past day — what the synthesis strip shows when the wearer
+    /// browses back through the day picker.
+    ///
+    /// Separate from `cachedLiveTargets()` on purpose, and the separation is load-bearing. That method
+    /// is what the Live Activity, the widget faces, the pacing notifications and the coach all read
+    /// (StrandiOSApp, WidgetPublish, AppModel, AICoach) — every one of those MUST stay pinned to today,
+    /// because a widget or a pace notification quoting a browsed historical day would be a worse bug
+    /// than the stale strip this fixes. So the today path keeps its memo and its defaults untouched and
+    /// past days take this road instead.
+    ///
+    /// Returns nil for a day with no row, rather than a zeroed bundle: absent is not the same as zero,
+    /// and the strip renders "—" for a day it has nothing for.
+    ///
+    /// Deliberately NOT memoized. `LiveTargetsMemo`'s key is (refreshSeq, hydrationSeq, logicalKey,
+    /// localKey) — the browsed day is not in it, so routing past days through that memo would return
+    /// today's bundle no matter what was asked for. That is half of the original defect, not a
+    /// performance detail: the call is a filter plus one pure derivation, and it runs on a day change,
+    /// not per frame.
+    ///
+    /// Mirrors `waterCupsAndTarget(forDay:)` above: filter `days` to the browsed day and earlier so the
+    /// baselines see only what was known THEN, and drive the charge band from that day's own row rather
+    /// than from `cachedWidgetAnchor`, which is anchored on today.
+    func liveTargets(forDay day: String) -> LiveTargets? {
+        let upTo = days.filter { $0.day <= day }
+        guard let row = upTo.last(where: { $0.day == day }) else { return nil }
+        let waterOn = UserDefaults.standard.bool(forKey: HydrationStore.enabledKey)
+        let profile = liveTargetsProfile?() ?? UserProfile()
+        // The per-entry hydration log, not `hydrationTodayCachedML` — that cache legitimately holds
+        // only the current day, and reading it here is exactly how water stayed stuck on today.
+        let waterML = waterOn ? HydrationStore.manualML(day: day) : nil
+        return Self.liveTargets(days: upTo,
+                                charge: row.recovery.map { Int($0.rounded()) },
+                                restScore: restScore(for: row),
+                                profile: profile,
+                                todayKey: day,
+                                waterTodayML: waterML,
+                                waterEnabled: waterOn,
+                                // 260920: credit naps, so the sleep target is priced off the same
+                                // debt the Sleep tab shows.
+                                napSleepMinByDay: napSleepMinByDay)
+    }
+
+    /// Memoized `liveTargets` for the Live Activity's per-tick closures — recomputes only on a data
+    /// refresh or a day roll, exactly like `cachedWidgetAnchor` (whose anchor row it also reuses for
+    /// the charge band, keeping the card and the targets on one day).
+    func cachedLiveTargets(now: Date = Date()) -> LiveTargets {
+        let logicalKey = Self.logicalDayKey(now)
+        let localKey = Self.localDayKey(now)
+        return liveTargetsMemo.resolve(seq: refreshSeq, hydrationSeq: hydrationSeq,
+                                       logicalKey: logicalKey, localKey: localKey) {
+            let anchor = cachedWidgetAnchor(now: now)
+            // Water rides the same memo: the figures come from the hydration tracker's own
+            // synchronous caches (`hydrationTodayCachedML` is refreshed by every log + sync), so
+            // the targets stay a pure sync read while still speaking the tracker's numbers.
+            let waterOn = UserDefaults.standard.bool(forKey: HydrationStore.enabledKey)
+            let profile = liveTargetsProfile?() ?? UserProfile()
+            return Self.liveTargets(days: days,
+                                    charge: anchor?.recovery.map { Int($0.rounded()) },
+                                    restScore: anchor.flatMap { restScore(for: $0) },
+                                    profile: profile,
+                                    todayKey: max(logicalKey, localKey),
+                                    waterTodayML: waterOn ? hydrationTodayCachedML : nil,
+                                    waterEnabled: waterOn,
+                                    // 260920: THIS is the path the Today strip, the widgets and the
+                                    // Sleep narrative all read, and it was the one still omitting
+                                    // naps — so 18.12's fix landed on `liveTargets(forDay:)` and
+                                    // left the surface anyone actually looks at unchanged. The
+                                    // maintainer's screenshots showed it: the Sleep card said −20m
+                                    // while the derivation said 45 min short, from the same nights.
+                                    napSleepMinByDay: napSleepMinByDay)
+        }
+    }
+
     /// The recovery-INDEPENDENT overnight-vitals carry (the durable fix for the v8 Today rollover blank):
     /// the freshest strictly-prior day that recorded any of HRV / resting HR / respiratory, so the recovery
     /// VITALS keep reading through the post-04:00 window before tonight's sleep is scored, WITHOUT being
@@ -882,6 +1294,17 @@ final class Repository: ObservableObject {
     /// #849: the last history-wide snapshot Today built, so a re-mount can RESTORE it (in-memory, no queries)
     /// instead of re-running the heavy reload. Paired with `todayHistoryWideLoadedSeq`. Not @Published.
     var todayHistoryWideCache: TodayHistoryWideCache?
+    /// 260922: the liquid Today's whole `load()` output, keyed by the exact string its `.task(id:)`
+    /// runs on. The same idea as `todayHistoryWideCache` (#849/#932): upstream's liquid rewrite
+    /// never carried that cache over, so every return to the tab re-ran ~20 store reads — a 200k-row
+    /// HR query and a full-history StressModel among them — for byte-identical data. A re-mount whose
+    /// key matches restores in memory instead. Not @Published: bookkeeping, never drives the UI.
+    var liquidTodayCacheKey = ""
+    var liquidTodayCache: Any?
+    /// 260922: the Sleep tab's heavy loads (every session, per-session motion, the Rest series) for
+    /// the `refreshSeq` they were read at — a same-seq re-mount restores instead of re-reading.
+    var sleepViewLoadedSeq = -1
+    var sleepViewCache: Any?
 
     /// #833 (Insights freeze): macOS destroys + cold-mounts the NavigationSplitView detail on every sidebar
     /// switch (RootView keys it with `.id`), so InsightsView's `@State` is torn down each time and its
@@ -952,7 +1375,19 @@ final class Repository: ObservableObject {
         let imported = await unionDailyMetrics(store: store, from: fromDay, to: toDay)
         let computed = await unionComputedDailyMetrics(store: store, from: fromDay, to: toDay)
         let apple = (try? await store.dailyMetrics(deviceId: Self.appleHealthSource, from: fromDay, to: toDay)) ?? []
+        // Apple's STEP COUNT lives in `appleDaily`, NOT in the rows above (260905). The apple-health
+        // `DailyMetric` rows carry sleep/HR/HRV/SpO2/respiratory only — `HealthKitBridge` builds them
+        // without a `steps:` argument at all, so the field is always nil there. Reading it from the
+        // daily metrics is how the first cut of the steps preference shipped as a guaranteed no-op.
+        let appleDailyRows = StepsSourcePrefs.prefersAppleHealth
+            ? ((try? await store.appleDaily(deviceId: Self.appleHealthSource,
+                                            from: fromDay, to: toDay)) ?? [])
+            : []
         let activityFile = (try? await store.dailyMetrics(deviceId: Self.activityFileSource, from: fromDay, to: toDay)) ?? []
+        // Read the steps preference HERE, on the main actor, and hand it to the detached merge as a
+        // plain Bool. The merge runs off-actor (see MergedCaches), and reading UserDefaults from
+        // there would be a second source of truth for a value that can change between refreshes.
+        let prefersAppleSteps = StepsSourcePrefs.prefersAppleHealth
         let impSleep = await unionSleepSessions(store: store, from: lo, to: hi)
         let compSleep = await unionComputedSleepSessions(store: store, from: lo, to: hi)
 
@@ -979,9 +1414,14 @@ final class Repository: ObservableObject {
             let editedDays = Self.userEditedDays(compSleep)
             return MergedCaches(
                 importedSleep: fig,
-                days: Self.mergeActivityFileSteps(
-                    into: Self.mergeDaily(imported: imported, computed: computed, userEditedDays: editedDays),
-                    activityFile
+                days: Self.mergeAppleSteps(
+                    into: Self.mergeActivityFileSteps(
+                        into: Self.mergeDaily(imported: imported, computed: computed,
+                                              userEditedDays: editedDays),
+                        activityFile
+                    ),
+                    appleDailyRows,
+                    prefersApple: prefersAppleSteps
                 ),
                 sleeps: Self.mergeSleep(imported: impSleep, computed: compSleep),
                 vitalRows: Self.sourceRows(imported: imported, computed: computed, apple: apple),
@@ -1024,7 +1464,33 @@ final class Repository: ObservableObject {
         // schedules SwiftUI work — but "clear every cache, then publish" is the invariant stated above,
         // and an appended line after the bump is how that invariant quietly stops being true.
         self.exploreAllCache = nil
+        // Nap minutes for the debt ledger (260920). Derived from the sessions this refresh already
+        // read, so it costs no extra query; see `napSleepMinByDay`.
+        // Computed sessions preferred, imported as the fallback — the same precedence the Sleep tab
+        // applies, so both ledgers see the same blocks.
+        self.napSleepMinByDay = Self.napMinutesByWakeDay(
+            sessions: compSleep.isEmpty ? impSleep : compSleep)
         self.refreshSeq += 1
+    }
+
+    /// Group sleep sessions by wake-day and total the minutes credited as NAPS.
+    ///
+    /// A day's sessions are handed to the same `SleepView.napSleepMinutes` rule the Sleep tab uses,
+    /// so "which block was the main sleep and which were naps" is decided in exactly one place. A
+    /// day with a single block yields zero, which is why a normal night adds nothing here.
+    nonisolated static func napMinutesByWakeDay(sessions: [CachedSleepSession],
+                                                habitualMidsleepSec: Int? = nil) -> [String: Double] {
+        var byDay: [String: [CachedSleepSession]] = [:]
+        for s in sessions {
+            let day = localDayKey(Date(timeIntervalSince1970: TimeInterval(s.endTs)))
+            byDay[day, default: []].append(s)
+        }
+        var out: [String: Double] = [:]
+        for (day, blocks) in byDay {
+            let mins = SleepView.napSleepMinutes(blocks, habitualMidsleepSec: habitualMidsleepSec)
+            if mins > 0 { out[day] = mins }
+        }
+        return out
     }
 
     /// Per-source coverage counts for the Freshness Pipeline card. Pure over the rows already read.
@@ -1107,6 +1573,55 @@ final class Repository: ObservableObject {
             } else {
                 byDay[row.day] = row
             }
+        }
+        return byDay.values.sorted { $0.day < $1.day }
+    }
+
+    /// Fold Apple Health's step count into the merged rows when the wearer prefers it (260905).
+    ///
+    /// Maintainer request: one toggle that makes the preferred step count show up "consistent
+    /// everywhere — both the n in the steps n/t as well as the steps tile on the daily page".
+    ///
+    /// THIS is the place that delivers that, and the reason is `Repository.days`: it merges the
+    /// imported and computed sources only — Apple Health is NOT folded into it, which is why the
+    /// two Today views each reach for `appleDaily` separately as a fallback tier. So every reader
+    /// of the merged row (the targets strip's numerator, pacing's proration, the day-quality
+    /// score, the coach context, Workouts, the export) sees the strap's count and nothing else.
+    ///
+    /// Overriding the field HERE means those readers need no knowledge of the preference: they keep
+    /// reading `row.steps` and get whichever source was chosen. The alternative — teaching each
+    /// surface the precedence rule — is how the calorie figure ended up resolved one way on the
+    /// Today tile and another way in the targets strip.
+    ///
+    /// A no-op unless the preference is set AND Apple actually has a count for the day, so a wearer
+    /// on the default never pays for it, and choosing Apple on a day the Watch was not worn falls
+    /// back to the strap rather than blanking the row. `steps > 0` matches the activity-file fold
+    /// above: a stored zero is "no data recorded", not a measured zero.
+    ///
+    /// Steps ONLY. `activeKcalEst` is deliberately untouched — it is NOOP's own HR-derived estimate
+    /// and an input to strain, so swapping its source would silently re-base effort history. That
+    /// is a separate decision, not a side effect of a steps toggle.
+    /// Takes `AppleDaily`, NOT `DailyMetric`: that is where Apple's step count actually lives.
+    /// See the read site in `refresh()` — the apple-health `DailyMetric` rows never carry steps.
+    nonisolated static func mergeAppleSteps(into base: [DailyMetric],
+                                            _ apple: [AppleDaily],
+                                            prefersApple: Bool) -> [DailyMetric] {
+        guard prefersApple, !apple.isEmpty else { return base }
+        var byDay = Dictionary(base.map { ($0.day, $0) }, uniquingKeysWith: { _, last in last })
+        for row in apple {
+            guard let steps = row.steps, steps > 0 else { continue }
+            guard let existing = byDay[row.day] else {
+                // No merged row for the day at all. Mint a steps-only row rather than skipping the
+                // day: a day Apple covered and the strap did not is exactly the case the preference
+                // exists to surface.
+                byDay[row.day] = DailyMetric(day: row.day, totalSleepMin: nil, efficiency: nil,
+                                             deepMin: nil, remMin: nil, lightMin: nil,
+                                             disturbances: nil, restingHr: nil, avgHrv: nil,
+                                             recovery: nil, strain: nil, exerciseCount: nil,
+                                             steps: steps)
+                continue
+            }
+            byDay[row.day] = existing.replacingSteps(steps)
         }
         return byDay.values.sorted { $0.day < $1.day }
     }
@@ -1238,6 +1753,11 @@ final class Repository: ObservableObject {
         return Self.mergeRRByIdentity(lists)
     }
 
+    // HISTORY: `burstAvgHr` (mean HR over the freshest offload burst, anchored at the newest sample,
+    // 2 h staleness abstain) lived here for one build (10.6.0.14.9) as the targets widget's HR cell.
+    // Removed 260830 same-day by maintainer instruction: HR left the targets surfaces entirely —
+    // Effort n/t took the column — and nothing read the average any more.
+
     /// Logical day-start of the most recent day the active device has HR data for, or nil when the store is
     /// empty. Lets the Deep Timeline open on a day that actually has data instead of a possibly-empty today
     /// right after a history sync , the #597 root cause (the timeline was today-only with no way back).
@@ -1305,6 +1825,18 @@ final class Repository: ObservableObject {
             if let ticks = StepsCounter.stepsInWindow(samples) { return ticks }
         }
         return nil
+    }
+
+    /// Raw step samples over `[from, to]` from the FIRST id that has any — active strap first,
+    /// mirroring `strapStepTicks` (never merged across ids: two cumulative counters interleaved
+    /// would fabricate deltas). For the coach's sedentary read (260924).
+    func recentStepSamples(from: Int, to: Int) async -> [StepSample] {
+        guard let store = await ensureStore() else { return [] }
+        for id in importedReadIds {   // active strap FIRST
+            let samples = (try? await store.stepSamples(deviceId: id, from: from, to: to, limit: 200_000)) ?? []
+            if !samples.isEmpty { return samples }
+        }
+        return []
     }
 
     /// Pure pick of the latest classed activity across the union's per-id step lists: the non-nil
