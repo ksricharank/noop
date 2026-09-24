@@ -15,6 +15,8 @@ struct IntegrationView: View {
     @State private var enabled = MuseIntegration.isEnabled
     @State private var basename = MuseIntegration.filename
     @State private var updatesPerDay = MuseIntegration.updatesPerDay
+    @State private var shortcutName = MuseShortcutRunner.shortcutName
+    @State private var shortcutDelay = MuseShortcutRunner.delayMinutes
     @State private var includeCoach = MuseIntegration.includesCoachNarratives
     @State private var folderLabel = MuseIntegration.folderLabel()
     @State private var lastMs = MuseIntegration.lastWrittenMs
@@ -147,6 +149,52 @@ struct IntegrationView: View {
                     .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
                     .onChangeCompat(of: updatesPerDay) { n in MuseIntegration.updatesPerDay = n }
                 }
+                Divider().overlay(StrandPalette.hairline)
+
+                // Chain a Shortcut onto every write (260924): the digest's reader IS a Shortcut, so
+                // the file can ship itself. Blank name = feature off.
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Run a Shortcut after each update").font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Runs the named Shortcut after the delay — give iCloud a minute to upload the file first. If NOOP isn't frontmost when it comes due (iOS only lets the open app launch a Shortcut), it runs at the next opportunity: the next strap sync with the app open, or the next time you open NOOP.")
+                            .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack(spacing: 10) {
+                        TextField("Shortcut name (blank = off)", text: $shortcutName)
+                            .textFieldStyle(.plain)
+                            .font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                            .disableAutocorrection(true)
+                            .onChangeCompat(of: shortcutName) { MuseShortcutRunner.shortcutName = $0 }
+                            .accessibilityLabel("Shortcut name")
+                        Picker("Delay", selection: $shortcutDelay) {
+                            ForEach([0, 1, 2, 3, 5, 10, 15, 30], id: \.self) { m in
+                                Text(m == 0 ? String(localized: "right away") : String(localized: "+\(m) min")).tag(m)
+                            }
+                        }
+                        .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
+                        .onChangeCompat(of: shortcutDelay) { MuseShortcutRunner.delayMinutes = $0 }
+                        .accessibilityLabel("Delay before the Shortcut runs")
+                    }
+                    if !shortcutName.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Button {
+                            MuseShortcutRunner.runNow()
+                        } label: {
+                            Label("Test run now", systemImage: "play.circle")
+                                .font(StrandFont.footnote)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .accessibilityLabel("Run the Shortcut now to test it")
+                    }
+                }
+
                 Text(lastMs > 0 ? "Last written: \(relativeTime(lastMs))" : "Not written yet.")
                     .font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
                 if let err = MuseIntegration.lastError {

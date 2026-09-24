@@ -21,16 +21,21 @@ enum MuseIntegrationRunner {
                     now: Date = Date()) async throws -> URL? {
         guard MuseIntegration.isEnabled, MuseIntegration.hasFolder else { return nil }
         let input = await gather(repo: repo, coach: coach, now: now)
-        return try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
+        let url = try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
+        MuseShortcutRunner.scheduleAfterWrite(now: now)
+        return url
     }
 
-    /// Write regardless of cadence — the "Generate now" button. Same content, same path.
+    /// Write regardless of cadence — the "Generate now" button. Same content, same path, and the
+    /// same Shortcut chain: a manual write is still a write the reader may want shipped.
     @discardableResult
     static func runNow(repo: Repository,
                        coach: AICoachEngine? = nil,
                        now: Date = Date()) async throws -> URL {
         let input = await gather(repo: repo, coach: coach, now: now)
-        return try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
+        let url = try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
+        MuseShortcutRunner.scheduleAfterWrite(now: now)
+        return url
     }
 
     /// Run only if the current cadence slot has not been written yet (260922: N slots a day from the
@@ -44,6 +49,11 @@ enum MuseIntegrationRunner {
     /// which runs on every sync and would flood the log.
     static func runIfDue(repo: Repository, coach: AICoachEngine? = nil, now: Date = Date(),
                          log: ((String) -> Void)? = nil) async {
+        // A pending Shortcut run from an EARLIER write fires here first: this hook runs on every sync
+        // and every foreground, which is exactly the "next possible instance" the fallback promises
+        // (260924). Before the due check on purpose — the pending run belongs to a digest already
+        // written, so "not due for a new digest" must not starve it.
+        MuseShortcutRunner.runIfDue(now: now, log: log)
         guard MuseIntegration.isEnabled else { return }
         let n = MuseIntegration.updatesPerDay
         let anchor = MuseIntegration.anchorMinuteOfDay
@@ -70,6 +80,7 @@ enum MuseIntegrationRunner {
             _ = try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
             log?(String(format: "integration: written (%d/day, slots from %02d:%02d%@)", n, anchor / 60, anchor % 60,
                         input.isReady ? "" : ", THIN — no night on hand after the grace window"))
+            MuseShortcutRunner.scheduleAfterWrite(now: now, log: log)
         } catch {
             log?("integration: write FAILED — \(error.localizedDescription)")
         }

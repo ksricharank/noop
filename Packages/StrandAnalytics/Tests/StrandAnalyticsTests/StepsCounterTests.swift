@@ -75,3 +75,39 @@ final class StepsCounterTests: XCTestCase {
         ]), 70)
     }
 }
+
+/// `lastMovementTs` (260924): the coach's sedentary read anchors on the most recent retained
+/// locomotion increment, under the same gates as `stepsInWindow`.
+final class StepsCounterLastMovementTests: XCTestCase {
+
+    private func s(_ ts: Int, _ counter: Int, _ cls: Int? = nil) -> StepSample {
+        StepSample(ts: ts, counter: counter, activityClass: cls)
+    }
+
+    /// The newest pair with a real burst wins; a later one-tick blip (wrist noise, under minTicks)
+    /// does not move the anchor.
+    func testNewestRetainedBurstWinsAndBlipsDoNot() {
+        let samples = [s(100, 0), s(160, 40), s(220, 40), s(280, 41), s(340, 41)]
+        XCTAssertEqual(StepsCounter.lastMovementTs(samples), 160)
+    }
+
+    /// The u16 counter wraps; the wrap-aware delta still finds the movement.
+    func testWrapAwareDeltaStillCounts() {
+        let samples = [s(100, 0xFFF0), s(160, 20)]   // +48 across the wrap
+        XCTAssertEqual(StepsCounter.lastMovementTs(samples), 160)
+    }
+
+    /// With activity classes present, only walk/run increments count — a classed non-locomotion
+    /// burst (e.g. fidgeting classed 0) is not movement.
+    func testClassedNonLocomotionIsNotMovement() {
+        let samples = [s(100, 0, 1), s(160, 40, 1), s(220, 90, 0)]
+        XCTAssertEqual(StepsCounter.lastMovementTs(samples), 160)
+    }
+
+    /// No retained movement, or too few samples, says nothing.
+    func testQuietWindowSaysNothing() {
+        XCTAssertNil(StepsCounter.lastMovementTs([s(100, 5), s(160, 5), s(220, 6)]))
+        XCTAssertNil(StepsCounter.lastMovementTs([s(100, 5)]))
+        XCTAssertNil(StepsCounter.lastMovementTs([]))
+    }
+}
