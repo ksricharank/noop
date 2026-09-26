@@ -1,0 +1,299 @@
+import Foundation
+import StrandAnalytics
+
+/// The four target derivations with THAT DAY's actual inputs filled in (260901, maintainer's ask,
+/// iterated twice same-day). Final format contract: FOUR blocks (Effort, Cal, Steps, Sleep — the
+/// session ladder lives inside Effort), and EVERY line refers to a number and reads plainly to a
+/// new person — no notch/zone/TRIMP/Karvonen/Keytel/RMR/clamp vocabulary, and "readiness" is
+/// unpacked into the "body check": the signals' actual values against their 30-day baselines.
+///
+/// Pure and static so the wording is pinned by tests. Every block header carries the same number
+/// the strip displays (the caller passes the values straight off the freshly built `LiveTargets`),
+/// and the rungs re-derive through the SAME public `DailyTargets` constants/functions the pricing
+/// used, so the derivation can never drift from the targets.
+enum TargetsExplainer {
+
+    private static func hm(_ minutes: Int) -> String {
+        "\(minutes / 60)h\(String(format: "%02d", minutes % 60))"
+    }
+
+    /// The charge rung: today's Charge against the two published thresholds, naming the band in
+    /// plain words. `pick` renders the value the band selected.
+    private static func chargeRung(_ charge: Int?, low: String, mid: String, high: String) -> String {
+        guard let charge else { return "Charge not scored yet → \(mid)" }
+        if charge >= DailyTargets.pushChargeFloor {
+            return "Charge \(charge) is high (≥\(DailyTargets.pushChargeFloor)) → \(high)"
+        }
+        if charge <= DailyTargets.recoverChargeCeiling {
+            return "Charge \(charge) is low (≤\(DailyTargets.recoverChargeCeiling)) → \(low)"
+        }
+        return "Charge \(charge) is mid-range (\(DailyTargets.recoverChargeCeiling + 1)–"
+             + "\(DailyTargets.pushChargeFloor - 1)) → \(mid)"
+    }
+
+    /// The "body check": the readiness signals' actual numbers vs their baselines, then the
+    /// verdict in plain words — never the internal level name. Compact (no units) for the short
+    /// form used by Steps/Sleep; full (with units) inside Effort.
+    static func bodyCheck(_ read: ReadinessEngine.Readiness, compact: Bool) -> String {
+        var parts: [String] = []
+        for (key, label) in [("hrv", "HRV"), ("rhr", "resting HR")] {
+            guard let sig = read.signals.first(where: { $0.key == key }),
+                  case let .metric(value, baseline, unit, _)? = sig.evidenceData else { continue }
+            let v = Int(value.rounded()), b = Int(baseline.rounded())
+            let u = compact ? "" : unit
+            switch sig.flag {
+            case .good, .neutral:
+                parts.append("\(label) \(v)\(u) ≈ your usual \(b)\(u)")
+            case .watch, .bad:
+                let dir = value > baseline ? "above" : "below"
+                parts.append("\(label) \(v)\(u) \(dir) your usual \(b)\(u)")
+            }
+        }
+        let verdict: String
+        switch read.level {
+        case .primed: verdict = "all strong"
+        case .balanced: verdict = "all normal"
+        case .strained: verdict = "one signal down"
+        case .rundown: verdict = "several signals down"
+        case .insufficient: verdict = "not enough history yet"
+        }
+        guard !parts.isEmpty else { return "body check: \(verdict)" }
+        return "body check: \(parts.joined(separator: ", ")) → \(verdict)"
+    }
+
+    /// Minutes for a rung of the session ladder — the SAME arithmetic `sessionPrescription` uses
+    /// (half the band's minutes / the band's / a third more, rounded to 5), or nil for "no workout".
+    private static func ladderMinutes(base: Int, notch: Int) -> Int? {
+        func rounded5(_ m: Double) -> Int { Int((m / 5).rounded() * 5) }
+        switch notch {
+        case 0: return nil
+        case 1: return rounded5(Double(base) * 0.5)
+        case 2: return base
+        default: return rounded5(Double(base) * 4.0 / 3.0)
+        }
+    }
+
+    /// A rung's consequence: what the workout now is, in minutes — or that there is none.
+    private static func workoutText(_ minutes: Int?, changedFrom prior: Int?) -> String {
+        guard let minutes else { return "no workout today" }
+        guard let prior else { return "back on for \(minutes) min" }
+        if minutes == prior { return "keep \(minutes) min" }
+        return minutes < prior ? "shorten to \(minutes) min" : "step up to \(minutes) min"
+    }
+
+    /// The four blocks, one multi-line string per target. `nil` targets simply omit their block —
+    /// the section shows exactly what the strip shows.
+    static func lines(charge: Int?,
+                      readiness: ReadinessEngine.Readiness,
+                      restScore: Int?,
+                      session: DailyTargets.SessionPrescription?,
+                      sessionHrBpm: Int?,
+                      effortTarget: Int?,
+                      kcalTarget: Int?,
+                      stepsTarget: Int?,
+                      sleepNeedMin: Int?,
+                      age: Int?,
+                      restingHr: Int?,
+                      profile: UserProfile,
+                      debtBalanceMin: Double,
+                      waterTargetCups: Int? = nil,
+                      effortForWater: Double? = nil,
+                      waterEffortIsAccrued: Bool = false) -> [String] {
+        var out: [String] = []
+
+        // ── EFFORT: the session ladder, then the workout priced as the day's effort score ─────
+        // The ladder is re-walked with the same arithmetic `sessionPrescription` used, so each
+        // rung can state the workout length as it stood at that point.
+        let base: Int
+        if let charge {
+            base = charge >= DailyTargets.pushChargeFloor ? DailyTargets.pushSessionMinutes
+                 : (charge <= DailyTargets.recoverChargeCeiling ? DailyTargets.recoverSessionMinutes
+                                                                : DailyTargets.maintainSessionMinutes)
+        } else { base = DailyTargets.maintainSessionMinutes }
+        let notchAfterReadiness: Int
+        switch readiness.level {
+        case .rundown: notchAfterReadiness = 0
+        case .strained: notchAfterReadiness = 1
+        case .balanced, .insufficient: notchAfterReadiness = 2
+        case .primed: notchAfterReadiness = 3
+        }
+        var finalNotch = notchAfterReadiness
+        if let rest = restScore {
+            if rest < DailyTargets.poorRestScore { finalNotch = max(finalNotch - 1, 0) }
+            else if rest >= DailyTargets.greatRestScore { finalNotch = min(finalNotch + 1, 3) }
+        }
+        if let effortTarget {
+            var e: [String] = ["EFFORT TARGET → \(effortTarget)"]
+            e.append(chargeRung(charge,
+                                low: "plan a \(DailyTargets.recoverSessionMinutes) min workout",
+                                mid: "plan a \(DailyTargets.maintainSessionMinutes) min workout",
+                                high: "plan a \(DailyTargets.pushSessionMinutes) min workout"))
+            e.append("   (Charge ≤\(DailyTargets.recoverChargeCeiling) → \(DailyTargets.recoverSessionMinutes) min"
+                     + " · \(DailyTargets.recoverChargeCeiling + 1)–\(DailyTargets.pushChargeFloor - 1)"
+                     + " → \(DailyTargets.maintainSessionMinutes) min"
+                     + " · ≥\(DailyTargets.pushChargeFloor) → \(DailyTargets.pushSessionMinutes) min)")
+            let afterReadiness = ladderMinutes(base: base, notch: notchAfterReadiness)
+            e.append(bodyCheck(readiness, compact: false) + " → "
+                     + workoutText(afterReadiness, changedFrom: base))
+            let afterRest = ladderMinutes(base: base, notch: finalNotch)
+            if let rest = restScore {
+                let restRung: String
+                if rest < DailyTargets.poorRestScore {
+                    restRung = "last night's Rest \(rest) is poor (below \(DailyTargets.poorRestScore))"
+                } else if rest >= DailyTargets.greatRestScore {
+                    restRung = "last night's Rest \(rest) is great (\(DailyTargets.greatRestScore) or above)"
+                } else {
+                    restRung = "last night's Rest \(rest) is mid-range (\(DailyTargets.poorRestScore)–"
+                             + "\(DailyTargets.greatRestScore - 1))"
+                }
+                e.append(restRung + " → " + workoutText(afterRest, changedFrom: afterReadiness))
+            } else {
+                e.append("no Rest score last night → " + workoutText(afterRest, changedFrom: afterReadiness))
+            }
+            e.append("   (Rest below \(DailyTargets.poorRestScore) → shorten it"
+                     + " · \(DailyTargets.greatRestScore) or above → lengthen it)")
+            if let session {
+                if let hr = sessionHrBpm {
+                    let rhr = restingHr ?? 60
+                    let hrmax = Int(DailyTargets.hrMax(age: age.map(Double.init)).rounded())
+                    e.append("workout pace: ~\(hr) bpm — about \(Int(session.hrrFraction * 100))% of the"
+                             + " way up from your resting HR \(rhr) toward your max ~\(hrmax)")
+                }
+                e.append("effort is the app's 0–100 score for a day's exercise:"
+                         + " \(session.minutes) min at that pace scores \(effortTarget)")
+                e.append("target = \(effortTarget) — today's effort so far isn't added in;"
+                         + " finish the workout and you land on it")
+            } else {
+                e.append("target = 0 — anything you do still counts and shows as x/0")
+            }
+            out.append(e.joined(separator: "\n"))
+        }
+
+        // ── CAL: the resting day, plus the workout when there is one ─────────────────────────
+        // The resting part is stated as target − session (exact arithmetic on the displayed
+        // numbers, so the block can never disagree with the strip across rounding).
+        if let kcalTarget {
+            let w = profile.weightKg > 0 ? Int(profile.weightKg) : 70
+            let h = profile.heightCm > 0 ? Int(profile.heightCm) : 170
+            let a = profile.age > 0 ? Int(profile.age) : 30
+            let round = Int(DailyTargets.calorieRoundKcal)
+            var c: [String] = ["CALORIE TARGET → \(kcalTarget)"]
+            if let session {
+                let sessionKcal = DailyTargets.sessionKcal(session: session, profile: profile,
+                                                           restingHr: restingHr)
+                c.append("your body at rest burns ≈ \(kcalTarget - sessionKcal) kcal per 24h"
+                         + " (from weight \(w)kg, height \(h)cm, age \(a))")
+                let hrText = sessionHrBpm.map { " at ~\($0) bpm" } ?? ""
+                c.append("the \(session.minutes) min workout\(hrText) burns ≈ \(sessionKcal) kcal more")
+                c.append("\(kcalTarget - sessionKcal) + \(sessionKcal) = \(kcalTarget)"
+                         + " (rounded to the nearest \(round) so the number doesn't pretend to be exact)")
+            } else {
+                c.append("your body at rest burns ≈ \(kcalTarget) kcal per 24h"
+                         + " (from weight \(w)kg, height \(h)cm, age \(a))")
+                c.append("no workout today → nothing added")
+                c.append("target = \(kcalTarget)"
+                         + " (rounded to the nearest \(round) so the number doesn't pretend to be exact)")
+            }
+            out.append(c.joined(separator: "\n"))
+        }
+
+        // ── STEPS: the charge scale, body-check reduction, bounds ───────────────────────────
+        //
+        // 260906: rewritten with the target itself. The block used to name a "base 8000" from the
+        // old three-band formula and then print a different final number — the arithmetic in the
+        // text did not reach the answer beside it, which is worse than no explanation. It now states
+        // the base the CODE derived (`stepsBaseForCharge`) and shows base − reduction = target, the
+        // same shape the Calorie block uses.
+        if let stepsTarget {
+            let base = DailyTargets.stepsBaseForCharge(charge)
+            var st: [String] = ["STEP TARGET → \(stepsTarget)"]
+            if let charge {
+                st.append("Charge \(charge) → \(base) steps")
+            } else {
+                st.append("Charge not scored yet → \(base) steps")
+            }
+            // The scale, as two endpoints and the slope between them — the honest description of a
+            // continuous curve. Listing three bands would re-describe the formula this replaced.
+            st.append("   (the scale runs Charge \(DailyTargets.recoverChargeCeiling) →"
+                      + " \(DailyTargets.stepsBaseRecoverPerDay) up to Charge \(DailyTargets.pushChargeFloor) →"
+                      + " \(DailyTargets.stepsBasePushPerDay), sliding with every point in between)")
+            let reduction: Int
+            switch readiness.level {
+            case .rundown: reduction = DailyTargets.stepsRundownAdj
+            case .strained: reduction = DailyTargets.stepsStrainedAdj
+            default: reduction = 0
+            }
+            // `bodyCheck` already ENDS in its own verdict ("→ all normal" / "→ one signal down"),
+            // so the reduction is appended as a further arrow rather than as a second verdict —
+            // gluing another clause on produced "→ all normal, nothing taken off", two verdicts in
+            // one line.
+            if reduction != 0 {
+                st.append(bodyCheck(readiness, compact: true) + " → \(reduction) steps")
+            } else {
+                st.append(bodyCheck(readiness, compact: true) + " → no reduction")
+            }
+            st.append("   (several signals down → \(DailyTargets.stepsRundownAdj)"
+                      + " · one down → \(DailyTargets.stepsStrainedAdj))")
+            // Only mention the bounds when one ACTUALLY bit. "never set below 4000 or above 12000 →
+            // 9200" invited the reader to hunt for where 9200 came from and find nothing.
+            //
+            // Compared against the ROUNDED figure, not the raw base: `stepsTarget` has been through
+            // `stepsRoundPerDay`, so comparing it with the unrounded sum made the clamp line fire on
+            // ordinary days that were never clamped.
+            let beforeBounds = Int((Double(base + reduction) / Double(DailyTargets.stepsRoundPerDay))
+                                   .rounded()) * DailyTargets.stepsRoundPerDay
+            if beforeBounds != stepsTarget {
+                st.append("kept inside \(DailyTargets.stepsFloorPerDay)–\(DailyTargets.stepsCapPerDay)"
+                          + " → \(stepsTarget)")
+            } else {
+                st.append("target = \(stepsTarget)"
+                          + " (rounded to the nearest \(DailyTargets.stepsRoundPerDay)"
+                          + " so the number doesn't pretend to be exact)")
+            }
+            out.append(st.joined(separator: "\n"))
+        }
+
+        // 260920: the SLEEP block left this explainer with the target itself. Today's strip no
+        // longer shows a sleep figure, and a derivation for a number that is not on the screen is
+        // the same mismatch in slower form — the wearer expands "How these were set" and finds a
+        // target explained that nothing above it states.
+        //
+        // The Sleep tab owns sleep now: its debt-ledger card carries the baseline need, and
+        // `sleepNarrative` states tonight's target and bedtime. `sleepNeedMin` stays a parameter
+        // because `TargetsExplainerTests` still pins the arithmetic through it.
+        _ = sleepNeedMin
+
+        // ── WATER: body-size baseline in cups, plus a cup per 10 points of effort target ───
+        if let waterTargetCups {
+            let baselineML = HydrationGoal.baselineForSex(profile.sex)
+            let baselineCups = HydrationGoal.cups(fromML: Double(baselineML))
+            let target = Int((effortForWater ?? 0).rounded())
+            let bumpCups = max(0, waterTargetCups - baselineCups)
+            var w: [String] = ["WATER TARGET → \(waterTargetCups) cups"]
+            w.append("baseline for your body: \(baselineCups) cups (\(baselineML) ml at "
+                     + "\(HydrationGoal.cupML) ml a cup)")
+            if target > 0 {
+                // Name WHICH of the two the number came from, or a day that went harder than
+                // prescribed would show a bump the stated basis cannot explain.
+                if waterEffortIsAccrued {
+                    w.append("today's effort so far \(target) adds \(bumpCups) cups"
+                             + " — one cup per 10 points")
+                    w.append("   (you've passed today's plan, so the ask followed the real work —"
+                             + " it can only grow, never shrink)")
+                } else {
+                    w.append("today's effort target \(target) adds \(bumpCups) cups"
+                             + " — one cup per 10 points")
+                    w.append("   (set at this morning's score; if you go past the plan, the ask"
+                             + " follows the real work)")
+                }
+            } else {
+                w.append("rest day, no effort target → +0 cups   (one cup per 10 points when there"
+                         + " is one)")
+            }
+            w.append("\(baselineCups) + \(bumpCups) = \(waterTargetCups) cups")
+            out.append(w.joined(separator: "\n"))
+        }
+
+        return out
+    }
+}

@@ -37,6 +37,10 @@ struct LiquidTodayView: View {
     @EnvironmentObject var intelligence: IntelligenceEngine
     /// True while the unified Refresh (sync kick + forced re-score + coach regeneration) is running.
     @State private var refreshingAll = false
+    /// 260903: the coach's synthesis section, collapsible so the deterministic numbers +
+    /// derivations above it can be read without scrolling past the model's prose. Expanded by
+    /// default — it is the headline of the card — and session-local, like `showDerivations`.
+    @State private var coachSectionExpanded = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Low Power Mode — and the in-app "Reduce motion in NOOP" toggle — pose the sky still too, the
     /// behaviour the comment on the sky branch below has always described. Neither has a SwiftUI
@@ -154,6 +158,9 @@ struct LiquidTodayView: View {
     /// the other caches. It composes `TodayView.lastScoredRecoveryDay`, which is O(days) — exactly the scan
     /// this cache exists to keep out of body. Never resolved in body.
     @State private var cachedChargeDisplay: ChargeDisplay = .noData
+    /// 260921: the last display state written to the strap log, so the `chargeShown` ledger
+    /// records TRANSITIONS only — an idle screen costs nothing and a flip reads as a list.
+    @State private var lastLoggedChargeDisplay: ChargeDisplay?
     /// Flips true once the first load() completes. Until then the hero gauges + sky render STATIC so the
     /// launch data-churn (refresh publish + BLE/HR notifies) isn't fighting 4 live canvases + CoreMotion.
     @State private var dataLoaded = false
@@ -195,15 +202,27 @@ struct LiquidTodayView: View {
 
     // MARK: - Day navigation (ported from classic Today: swipe + calendar, day-keyed reads)
 
-    /// The logical day the selector resolves to (offset 0 = today's logical day, rolls at 04:00).
+    /// The day the selector resolves to (offset 0 = the current LOCAL calendar day).
+    ///
+    /// Fork divergence (260831): upstream anchors Today on the LOGICAL day (rolls at 04:00, so
+    /// between midnight and 4am the page still shows yesterday — header date, Key Metrics
+    /// accumulators, the since-midnight HR chart), and `repo.today`'s #144 anti-blank guard pins
+    /// the prior row even longer. The maintainer wants the calendar day: the accumulators
+    /// (steps / calories / effort) restart at midnight, matching the targets strip and the
+    /// widgets, whose `todayKey` (max of logical/local) already rolls at midnight — at 1am the
+    /// page said "Sunday" with 5,105 steps while the strip counted Monday's 112. The
+    /// recovery-derived values still carry through the existing prior-day paths (lastVitalsDay /
+    /// ChargeDisplay / widgetAnchor), so the page never blanks: carried fields keep describing
+    /// the last scored night — and the targets keep their prior-day denominators — until the new
+    /// night is scored (deliberately "stale" until then, by maintainer instruction).
     private var selectedLogicalDay: Date {
-        let base = Repository.logicalDay(Date())
+        let base = Calendar.current.startOfDay(for: Date())
         return Calendar.current.date(byAdding: .day, value: -selectedDayOffset, to: base) ?? base
     }
-    /// The day key the day-scoped read-outs key on. At offset 0 follows repo.today?.day.
+    /// The day key the day-scoped read-outs key on — the LOCAL calendar key of the selected day
+    /// (fork divergence above; upstream followed `repo.today?.day`, which pre-04:00 is yesterday).
     private var selectedDayKey: String {
-        if selectedDayOffset == 0, let todayKey = repo.today?.day { return todayKey }
-        return Repository.localDayKey(selectedLogicalDay)
+        Repository.localDayKey(selectedLogicalDay)
     }
     /// The DailyMetric shown for the selected day — read from the cache resolved in load() (was an
     /// O(days) `.last(where:)` scan referenced ~23× per body pass; now O(1)).
@@ -236,18 +255,18 @@ struct LiquidTodayView: View {
     /// The Charge hero's resolved state (see `cachedChargeDisplay`), read O(1) from the cache.
     private var chargeDisplay: ChargeDisplay { cachedChargeDisplay }
 
-    /// The actual O(days) resolution. Offset 0 prefers live repo.today; past offsets look up. Run ONCE
-    /// per data/day change from load(), never from body.
+    /// The actual O(days) resolution: the stored row for `selectedDayKey`, every offset alike. Run ONCE
+    /// per data/day change from load(), never from body. (Fork divergence: upstream preferred
+    /// `repo.today` at offset 0, whose #144 guard surfaces YESTERDAY's row until tonight banks —
+    /// here a fresh day honestly resolves to its own, possibly absent, row; the carry paths in
+    /// load() supply the recovery-derived fields.)
     private func resolveDisplayDay() -> DailyMetric? {
-        if selectedDayOffset == 0 {
-            return repo.today ?? repo.days.last(where: { $0.day == selectedDayKey })
-        }
         return repo.days.last(where: { $0.day == selectedDayKey })
     }
     /// How far back navigation can go (whole days from the earliest banked day to today).
     private var earliestDayOffset: Int {
         Self.maxDayOffset(earliestDayKey: repo.freshness.earliestDay,
-                          todayKey: Repository.logicalDayKey(Date()))
+                          todayKey: Repository.localDayKey(Date()))
     }
     /// The big header title: Today / Yesterday / weekday for older days.
     private var dayTitle: String {
@@ -268,7 +287,7 @@ struct LiquidTodayView: View {
             get: { selectedLogicalDay },
             set: { newValue in
                 selectedDayOffset = Self.pickedDayOffset(pickedDate: newValue,
-                                                         anchorLogicalDay: Repository.logicalDay(Date()))
+                                                         anchorLogicalDay: Calendar.current.startOfDay(for: Date()))
                 showDayPicker = false
             }
         )
@@ -362,7 +381,15 @@ struct LiquidTodayView: View {
                         case .workouts: lastWorkoutsSection
                         case .heartRate: heartRateSection
                         case .recoveryVitals: recoveryVitalsSection
-                        case .yourCards: yourCardsSection
+                        // 260920: reads as a continuation of KEY METRICS — no second section
+                        // header — but stays its OWN section so it can be moved and hidden
+                        // independently.
+                        //
+                        // The first attempt nested these rows INSIDE `keyMetricsSection`, which
+                        // made them un-hideable on their own and, worse, deleted them along with
+                        // the tile grid when that was hidden. "One section" meant one visual block,
+                        // not one hideable unit; collapsing the two was the wrong reading.
+                        case .yourCards: dashboardCardsInline
                         case .menstrualCycle:
                             if selectedDayOffset == 0 { MenstrualCycleHomeCard() }
                         // #656: the persistent journal widget (last-7-days strip + tap-through). Now a
@@ -449,7 +476,11 @@ struct LiquidTodayView: View {
         .liquidMediumHaptic(trigger: pullHaptic)
         // hydrationSeq joins the id so logging a drink re-reads the card immediately, the same trigger set
         // classic TodayView's reloadHydration() uses.
-        .task(id: "\(repo.refreshSeq)-\(selectedDayOffset)-\(repo.hydrationSeq)-\(hydrationEnabled)-\(dayCycleModeRaw)") {
+        // The local day key in the id makes the midnight rollover re-run load() on the next repaint
+        // (fork: offset 0 follows the CALENDAR day, so the page must re-resolve at 00:00, not wait
+        // for the next data refresh to bump refreshSeq). `dayCycleModeRaw` joins it upstream-side, so
+        // switching between calendar and sleep-onset day cycles also re-resolves immediately.
+        .task(id: loadTaskKey) {
             DashboardCardPrefs.migrateLegacyStepsAverage()
             await load()
         }
@@ -566,7 +597,7 @@ struct LiquidTodayView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(dayTitle). Tap to pick a day, swipe to change day.")
                 .popover(isPresented: $showDayPicker) {
-                    DatePicker("", selection: dayPickerBinding, in: ...Repository.logicalDay(Date()),
+                    DatePicker("", selection: dayPickerBinding, in: ...Date(),
                                displayedComponents: [.date])
                         .datePickerStyle(.graphical)
                         .labelsHidden()
@@ -1198,28 +1229,59 @@ struct LiquidTodayView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
+                        // 260830: today's three target numbers, big and readable BEFORE the narrative
+                        // that explains them — the targets analogue of Charge · Effort · Rest above.
+                        // Classic twin: the same strip in TodayView.synthesisSection; keep in step.
+                        // Offset 0 passes nil so today keeps the memoized live path every other surface
+                        // reads; a browsed day passes its key so the four n/t pairs follow the picker.
+                        DailyTargetsStrip(day: selectedDayOffset == 0 ? nil : selectedDayKey)
                         // The coach-written synthesis, when the provider has answered TODAY, replaces
                         // the rule-based summary + horizons (its prose covers the same horizons).
                         // Unconfigured / no consent / not-yet-answered / stale-day all fall back to
                         // the rule-based read below, unchanged.
-                        if let ai = coach.synthesisText,
+                        // 260906: `selectedDayOffset == 0` matches the classic Today. The synthesis is
+                        // written ABOUT today (synthesisIsCurrent is freshness, not a day match), so a
+                        // browsed past day must fall through to the rule-based read rather than narrate
+                        // today's numbers under an older date.
+                        if selectedDayOffset == 0, let ai = coach.synthesisText,
                            AICoachEngine.synthesisIsCurrent(generatedAt: coach.synthesisGeneratedAt) {
-                            // LLM replies arrive as Markdown; plain Text showed literal asterisks.
-                            // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
-                            // for this card (see Theme.strandSynthesis).
-                            Markdown(ai)
-                                .markdownTheme(.strandSynthesis)
-                            HStack(spacing: 4) {
-                                Image(systemName: "sparkles").font(StrandFont.caption)
-                                Text("Written by your Coach").font(StrandFont.caption)
-                                // Always names the model that wrote it. Showing it only for a fallback made the
-                                // label's ABSENCE mean "your chosen model", which nobody can read off the
-                                // screen. Twin of the same line in the other Today view; keep them in step.
-                                if let model = coach.synthesisModel {
-                                    Text(coach.synthesisCameFromFallback ? "· \(model) (fallback)" : "· \(model)").font(StrandFont.caption)
+                            // 260903: a titled, collapsible section with a rule above it. Without
+                            // the divider the coach's Markdown ran straight on from the "How these
+                            // were set" derivations and read as one undifferentiated block of text
+                            // — two different kinds of writing (deterministic arithmetic vs the
+                            // model's prose) with nothing marking the seam.
+                            Divider().overlay(StrandPalette.hairline).padding(.top, 2)
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    coachSectionExpanded.toggle()
                                 }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "sparkles").font(StrandFont.caption)
+                                    Text("Written by your Coach")
+                                        .font(StrandFont.overline).tracking(1.2)
+                                    if let model = coach.synthesisModel {
+                                        Text(coach.synthesisCameFromFallback
+                                             ? "· \(model) (fallback)" : "· \(model)")
+                                            .font(StrandFont.caption)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Image(systemName: coachSectionExpanded ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 11, weight: .semibold))
+                                }
+                                .foregroundStyle(StrandPalette.textTertiary)
                             }
-                            .foregroundStyle(StrandPalette.textTertiary)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(coachSectionExpanded
+                                                ? "Collapse the coach's synthesis"
+                                                : "Expand the coach's synthesis")
+                            if coachSectionExpanded {
+                                // LLM replies arrive as Markdown; plain Text showed literal asterisks.
+                                // Rendered through the same MarkdownUI pipeline as the Coach chat, sized
+                                // for this card (see Theme.strandSynthesis).
+                                Markdown(ai)
+                                    .markdownTheme(.strandSynthesis)
+                            }
                         } else {
                             Text(LocalizedStringKey(readiness.summary)).font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textSecondary)
@@ -1485,6 +1547,44 @@ struct LiquidTodayView: View {
         }
     }
 
+    /// The dashboard rows, headerless, hosted inside KEY METRICS (260920). The rows themselves and
+    /// their ordering are unchanged — `yourCardsSection`'s body minus its section header, so the two
+    /// cannot render differently.
+    @ViewBuilder
+    private var dashboardCardsInline: some View {
+        // The SAME two gates `yourCardsSection` applied — hydration off hides its card, coach off
+        // hides the launcher. Dropping either here would have put back a card the wearer switched
+        // off, which is the kind of thing a move like this loses silently.
+        let cards = DashboardCardPrefs.decodeEnabled(dashboardCardsRaw)
+            .filter { hydrationEnabled || $0 != .hydration }
+            .filter { coachEnabled || $0 != .coach }
+        if selectedDayOffset == 0 && !cards.isEmpty {
+            // The divider and the quiet "CARDS" sub-head only make sense as a CONTINUATION of the
+            // tile grid. With Key Metrics hidden — or moved elsewhere in the order — this block is
+            // on its own and needs its own full header, or it reads as a set of orphaned rows under
+            // a rule that divides it from whatever happens to sit above.
+            let followsKeyMetrics = sectionOrder.firstIndex(of: .keyMetrics)
+                .flatMap { km in sectionOrder.firstIndex(of: .yourCards).map { $0 == km + 1 } } ?? false
+            if followsKeyMetrics {
+                Divider().overlay(StrandPalette.hairline).padding(.vertical, 4)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                sectionHead(followsKeyMetrics ? "CARDS" : "YOUR CARDS", trailing: "")
+                Button { customizationDestination = .yourCards } label: {
+                    Text(String(localized: "Edit").uppercased())
+                        .font(StrandFont.overlineScaled(11))
+                        .tracking(1.0)
+                        .foregroundStyle(StrandPalette.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Customise your cards")
+            }
+            ForEach(cards) { card in
+                liquidCard(for: card)
+            }
+        }
+    }
+
     /// One editor-selected Key-Metric tile: the metric's value/tint/fill exactly as the old hard-coded
     /// tiles read them (Android's descriptor map is the twin), plus the metric-catalog `key` that names
     /// both its 14-day spark series and its tap-through detail. Weight has no liquid value source yet —
@@ -1726,6 +1826,24 @@ struct LiquidTodayView: View {
     // MARK: - Data
 
     private func load() async {
+        let loadKey = loadTaskKey
+        let loadStarted = DispatchTime.now().uptimeNanoseconds
+        // 260922: a same-key re-mount (tab away and back with nothing changed) restores the whole
+        // output in memory instead of re-running ~20 store reads — the 200k-row raw-HR query and the
+        // full-history StressModel among them. This is the classic Today's #849/#932 cache, which
+        // upstream's liquid rewrite never carried over. The key is the exact string the `.task(id:)`
+        // runs on, so every input this load depends on is in it; a data change bumps `refreshSeq`
+        // and misses on purpose.
+        if repo.liquidTodayCacheKey == loadKey, let c = repo.liquidTodayCache as? LiquidTodayCache {
+            restore(from: c)
+            ScreenLedger.recordLoad(screen: "today", restored: true, since: loadStarted)
+            return
+        }
+        defer {
+            repo.liquidTodayCacheKey = loadKey
+            repo.liquidTodayCache = snapshotForCache()
+            ScreenLedger.recordLoad(screen: "today", restored: false, since: loadStarted)
+        }
         // #989: today's hydration total + goal. One metricSeries row + a UserDefaults read, same as classic
         // TodayView.reloadHydration(). Cleared when the feature is off so the card can't show a stale total.
         if hydrationEnabled {
@@ -1768,6 +1886,30 @@ struct LiquidTodayView: View {
             priorScored: priorScored,
             calibrationNights: calNights,
             todayKey: tkey)
+        // 260921 CHARGE-DISPLAY LEDGER — what the SCREEN showed, and from which branch.
+        //
+        // The report this answers: "at 06:30 the charge reads 36, then updates to 63." Both the
+        // store value and the widget snapshot are now logged at write time, but neither says what
+        // the user actually saw — and the three `ChargeDisplay` branches are visually near-identical
+        // (same ring, same number; only a small pill distinguishes a CARRIED prior day from a
+        // freshly scored one). Without this line a carried 36 and a mis-scored 36 read the same in
+        // an export, which is exactly the ambiguity that kept this open.
+        //
+        // Emitted only when the resolved display CHANGES, so an idle screen costs nothing and the
+        // log reads as a transition list — the shape a flip report needs.
+        if cachedChargeDisplay != lastLoggedChargeDisplay {
+            let branch: String
+            switch cachedChargeDisplay {
+            case .scored:      branch = "scored"
+            case .carried:     branch = "carried(prior-day)"
+            case .calibrating: branch = "calibrating"
+            default:           branch = "none"
+            }
+            ScreenLedger.log("chargeShown day=\(tkey) branch=\(branch) "
+                                  + "todayRecovery=\(day?.recovery.map { String(Int($0.rounded())) } ?? "nil") "
+                                  + "offset=\(selectedDayOffset)")
+            lastLoggedChargeDisplay = cachedChargeDisplay
+        }
 
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: selectedLogicalDay)
@@ -1969,6 +2111,41 @@ struct LiquidTodayView: View {
         if !dataLoaded { withAnimation(.easeIn(duration: 0.4)) { dataLoaded = true } }
     }
 
+    /// Every input `load()` depends on, as one string — the `.task(id:)` key AND the cache key.
+    private var loadTaskKey: String {
+        "\(repo.refreshSeq)-\(selectedDayOffset)-\(repo.hydrationSeq)-\(hydrationEnabled)-\(dayCycleModeRaw)-\(Repository.localDayKey(Date()))"
+    }
+
+    private func snapshotForCache() -> LiquidTodayCache {
+        LiquidTodayCache(
+            cachedChargeDisplay: cachedChargeDisplay, cachedDisplayDay: cachedDisplayDay,
+            cachedReadiness: cachedReadiness, cachedVitalsDay: cachedVitalsDay, cachedRespDay: cachedRespDay,
+            cachedHrvDay: cachedHrvDay, cachedRestingHrDay: cachedRestingHrDay,
+            cachedSkinTempReadingDay: cachedSkinTempReadingDay,
+            restScore: restScore, heroProviderByMetric: heroProviderByMetric, stress: stress,
+            fitnessAge: fitnessAge, vo2max: vo2max, vitality: vitality,
+            spo2CandidateByDay: spo2CandidateByDay, stepsEst: stepsEst, importedStepsDay: importedStepsDay,
+            importedActiveKcalDay: importedActiveKcalDay, hrValues: hrValues, hrSegments: hrSegments,
+            workouts: workouts, kSparks: kSparks, liveTodayStrain: liveTodayStrain,
+            hostedSleepModel: hostedSleepModel, hostedStressHours: hostedStressHours,
+            hydrationTotalML: hydrationTotalML, hydrationGoalML: hydrationGoalML)
+    }
+
+    private func restore(from c: LiquidTodayCache) {
+        cachedChargeDisplay = c.cachedChargeDisplay; cachedDisplayDay = c.cachedDisplayDay
+        cachedReadiness = c.cachedReadiness; cachedVitalsDay = c.cachedVitalsDay; cachedRespDay = c.cachedRespDay
+        cachedHrvDay = c.cachedHrvDay; cachedRestingHrDay = c.cachedRestingHrDay
+        cachedSkinTempReadingDay = c.cachedSkinTempReadingDay
+        restScore = c.restScore; heroProviderByMetric = c.heroProviderByMetric; stress = c.stress
+        fitnessAge = c.fitnessAge; vo2max = c.vo2max; vitality = c.vitality
+        spo2CandidateByDay = c.spo2CandidateByDay; stepsEst = c.stepsEst; importedStepsDay = c.importedStepsDay
+        importedActiveKcalDay = c.importedActiveKcalDay; hrValues = c.hrValues; hrSegments = c.hrSegments
+        workouts = c.workouts; kSparks = c.kSparks; liveTodayStrain = c.liveTodayStrain
+        hostedSleepModel = c.hostedSleepModel; hostedStressHours = c.hostedStressHours
+        hydrationTotalML = c.hydrationTotalML; hydrationGoalML = c.hydrationGoalML
+        dataLoaded = true
+    }
+
     // MARK: - Derived (sync, off repo.today / repo.days)
 
     /// Cached in load() — ReadinessEngine.evaluate scans the full history and was invoked ~3× per body
@@ -2017,7 +2194,7 @@ struct LiquidTodayView: View {
         if readiness.level == .insufficient,
            let stale = Baselines.nightsSinceNewestValidNight(dayKeys: repo.days.map(\.day),
                                                              nightlyHrv: repo.days.map(\.avgHrv),
-                                                             today: Repository.logicalDayKey(Date())),
+                                                             today: Repository.localDayKey(Date())),
            stale > Baselines.staleDays {
             return String(localized: "No new nights from your strap for \(stale) days. Check it's connected and saving data.")
         }
@@ -3144,4 +3321,36 @@ private extension View {
         }
         #endif
     }
+}
+
+/// 260922: everything `LiquidTodayView.load()` produces, held by `Repository.liquidTodayCache` (type-erased
+/// there, so the Data layer does not depend on a screen type) and restored on a same-key re-mount.
+struct LiquidTodayCache {
+    let cachedChargeDisplay: LiquidTodayView.ChargeDisplay
+    let cachedDisplayDay: DailyMetric?
+    let cachedReadiness: ReadinessEngine.Readiness?
+    let cachedVitalsDay: DailyMetric?
+    let cachedRespDay: DailyMetric?
+    let cachedHrvDay: DailyMetric?
+    let cachedRestingHrDay: DailyMetric?
+    let cachedSkinTempReadingDay: DailyMetric?
+    let restScore: Double?
+    let heroProviderByMetric: [String: ScoreInputProvider]
+    let stress: Double?
+    let fitnessAge: Double?
+    let vo2max: Double?
+    let vitality: Double?
+    let spo2CandidateByDay: [String: Double]
+    let stepsEst: Double?
+    let importedStepsDay: Int?
+    let importedActiveKcalDay: Double?
+    let hrValues: [Double]
+    let hrSegments: [String]
+    let workouts: [WorkoutRow]
+    let kSparks: [String: [(String, Double)]]
+    let liveTodayStrain: Double?
+    let hostedSleepModel: SleepModel?
+    let hostedStressHours: [DaytimeStress.HourPoint]
+    let hydrationTotalML: Double?
+    let hydrationGoalML: Int?
 }

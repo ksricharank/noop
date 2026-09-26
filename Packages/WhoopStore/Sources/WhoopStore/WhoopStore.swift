@@ -162,11 +162,23 @@ public actor WhoopStore {
     // regular (non-async) functions, so overload resolution always selects the synchronous
     // GRDB API — which then blocks on the actor's serial executor (off main thread).
 
+    /// Seconds of ACTIVE time since `t`, excluding any stretch the device spent asleep.
+    ///
+    /// 260914: these counters read `Date()`, which keeps running while iOS suspends the app. A pass
+    /// that was suspended mid-loop reported `reads=608508ms/107` — ten minutes of SQL that never
+    /// happened — and that figure was about to be used to justify narrowing the read window. A
+    /// monotonic clock reports work actually done. (Kotlin twin: `SystemClock.elapsedRealtime` is the
+    /// wrong choice there too; `System.nanoTime` is the match.)
+    @inline(__always)
+    private static func activeSeconds(since t: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1_000_000_000
+    }
+
     @inline(__always)
     func syncRead<T>(_ block: (Database) throws -> T) throws -> T {
-        let t0 = Date()
+        let t0 = DispatchTime.now()
         defer {
-            perfSqlReadSeconds += Date().timeIntervalSince(t0)
+            perfSqlReadSeconds += Self.activeSeconds(since: t0)
             perfSqlReadCount += 1
         }
         return try dbWriter.read(block)
@@ -174,8 +186,8 @@ public actor WhoopStore {
 
     @inline(__always)
     func syncWrite<T>(_ block: (Database) throws -> T) throws -> T {
-        let t0 = Date()
-        defer { perfSqlWriteSeconds += Date().timeIntervalSince(t0) }
+        let t0 = DispatchTime.now()
+        defer { perfSqlWriteSeconds += Self.activeSeconds(since: t0) }
         return try dbWriter.write(block)
     }
 
