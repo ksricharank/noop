@@ -647,6 +647,29 @@ final class IntelligenceEngine: ObservableObject {
         UserDefaults.standard.set(false, forKey: Self.timestampHealPendingKey)
     }
 
+    /// The standard scoring window: the span a completed pass scans and the span every baseline is
+    /// judged against. A pass narrower than this cannot fold a trustworthy baseline from its own scan.
+    nonisolated static let standardWindowDays = 21
+
+    /// Whether a pass's own scan is too narrow to be its baseline (260926). A light pass and an
+    /// abandoned pass always were; the third case is the one the 260926-0837 log paid for — a
+    /// completed, non-light pass invoked with a NARROW window (the re-arm carried a light pass's
+    /// maxDays=2 into a forced re-run). That pass folded its HRV baseline from two nights, judged
+    /// itself "calibrating", and persisted nil Charge over two correctly-scored days, which the UI
+    /// then showed as the carried prior day — the 31 → 63 flip. ANY narrow pass now folds stored
+    /// history and merges over stored rows, whatever its kind.
+    nonisolated static func isPartialBaseline(lightPass: Bool, wasAbandoned: Bool, maxDays: Int) -> Bool {
+        lightPass || wasAbandoned || maxDays < standardWindowDays
+    }
+
+    /// The window a deferred forced re-run uses (260926). Carrying the CURRENT pass's width exists
+    /// for the wide one-shot passes (a 65-day recalibrate must re-run at 65, not 21) — but carrying
+    /// a LIGHT pass's 2-day window into a full re-run is how the 260926 nil-overwrite happened. The
+    /// dropped forced rescore asked for at least the standard window, so that is the floor.
+    nonisolated static func reRunWindowDays(current: Int) -> Int {
+        max(current, standardWindowDays)
+    }
+
     /// Compute on-device scores for each of the last `maxDays` that actually has raw HR data.
     /// Personal baselines (HRV / resting HR) are folded from the imported history, so even the first
     /// live night can be scored against your norm.
@@ -787,10 +810,14 @@ final class IntelligenceEngine: ObservableObject {
             computing = false
             if pendingForcedRescore {
                 pendingForcedRescore = false
-                // Carry THIS pass's window into the re-pass: a heal firing during a wide one-shot pass
-                // must re-score the same width, not the default 21 days (Kotlin re-passes with the same
-                // maxDays; keep the platforms in lockstep).
-                Task { await self.analyzeRecent(maxDays: maxDays, force: true) }
+                // Carry THIS pass's window into the re-pass when it is WIDER than standard: a heal
+                // firing during a wide one-shot pass must re-score the same width. But never carry a
+                // NARROWER one: re-running a light pass's 2-day window with lightPass off produced a
+                // completed "full" pass whose baseline was folded from two nights — calibrating, nil
+                // Charge, persisted over two good days (the 260926-0837 log's 31 → 63 flip). The
+                // dropped forced rescore this re-arm serves wanted the standard window at minimum.
+                Task { await self.analyzeRecent(maxDays: Self.reRunWindowDays(current: maxDays),
+                                                force: true) }
             }
         }
 
@@ -1840,9 +1867,12 @@ final class IntelligenceEngine: ObservableObject {
         // the point of derivation moves, and the late `wasAbandoned` now reads this.
         let wasAbandoned = skippedDayLines.contains { $0.hasPrefix(Self.abandonedLinePrefix) }
         // A pass whose baseline cannot be trusted to judge a night: a light pass (today-only by
-        // design) or an abandoned full pass (stopped at night N of maxDays). Both fold a baseline
-        // shorter than the window the score is supposed to be relative to.
-        let partialBaseline = lightPass || wasAbandoned
+        // design), an abandoned full pass (stopped at night N of maxDays), or — 260926 — ANY pass
+        // invoked with a window narrower than the standard one, whatever its kind. All three fold a
+        // baseline shorter than the window the score is supposed to be relative to, so all three
+        // seed it from stored history and merge over stored rows instead of overwriting them.
+        let partialBaseline = Self.isPartialBaseline(lightPass: lightPass,
+                                                     wasAbandoned: wasAbandoned, maxDays: maxDays)
         // #1538: the pass after the day loop was never measured. The cost line above brackets the loop and
         // is emitted the moment it returns, so a pass whose time went somewhere later reported a small
         // prep/score and no account of the rest — which is where the steps calibration was re-folding sixty
@@ -1961,7 +1991,7 @@ final class IntelligenceEngine: ObservableObject {
         // merge below (it used to be read only there, after the baselines were already built).
         var storedRowByDay: [String: DailyMetric] = [:]
         if partialBaseline {
-            let baselineDays = max(maxDays, 21)
+            let baselineDays = max(maxDays, Self.standardWindowDays)
             let fromDay = AnalyticsEngine.dayString(nowLocalMidnight - (baselineDays - 1) * 86_400,
                                                     offsetSec: tzOffset)
             let toDay = AnalyticsEngine.dayString(nowLocalMidnight, offsetSec: tzOffset)
@@ -2355,7 +2385,9 @@ final class IntelligenceEngine: ObservableObject {
             } else {
                 toPersist = scored
             }
-            let chargeKind = lightPass ? "light" : (wasAbandoned ? "abandoned" : "full")
+            let chargeKind = lightPass ? "light"
+                : (wasAbandoned ? "abandoned"
+                   : (maxDays < Self.standardWindowDays ? "narrow" : "full"))
             let wroteText = toPersist.recovery.map { String(Int($0.rounded())) } ?? "nil"
             let keptText = stored?.recovery.map { String(Int($0.rounded())) } ?? "none"
             diagnosticSink?("chargeWrite day=\(daily.day) kind=\(chargeKind) "
