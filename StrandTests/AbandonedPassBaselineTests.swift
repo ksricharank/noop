@@ -150,3 +150,51 @@ final class AbandonedPassBaselineTests: XCTestCase {
                                        computed: 64, stored: nil), 64)
     }
 }
+
+/// 260926 regression: the third route to the same flip. A forced rescore dropped during a LIGHT
+/// pass was re-armed carrying the light pass's 2-day window — but not its `lightPass` flag. The
+/// re-run was therefore a completed, non-light pass over 2 days: `partialBaseline` was false, the
+/// baseline folded from two nights ("calibrating"), and nil Charge was persisted over two days a
+/// completed pass had scored. The UI fell back to the carried prior day: 31 → 63 on the Today
+/// screen (log 260926-0837, 08:12:20–21).
+///
+/// Two independent fixes, each pinned here: the re-arm floors its window at the standard one, and
+/// `partialBaseline` is keyed on window WIDTH as well as pass kind, so any future narrow caller
+/// merges over stored rows instead of overwriting them.
+final class NarrowPassBaselineTests: XCTestCase {
+
+    /// The invariant: any pass narrower than the standard window is partial, whatever its kind.
+    func testANarrowWindowIsPartialWhateverTheKind() {
+        // The 260926 pass: completed, non-light, 2 days — MUST be partial.
+        XCTAssertTrue(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: false,
+                                                           maxDays: 2))
+        // The kinds that were already partial stay partial at any width.
+        XCTAssertTrue(IntelligenceEngine.isPartialBaseline(lightPass: true, wasAbandoned: false,
+                                                           maxDays: 21))
+        XCTAssertTrue(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: true,
+                                                           maxDays: 21))
+        // A completed standard or wide pass is the one full case.
+        XCTAssertFalse(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: false,
+                                                            maxDays: 21))
+        XCTAssertFalse(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: false,
+                                                            maxDays: 65))
+    }
+
+    /// The re-arm's window: floored at standard so a light pass's width is never carried into a
+    /// full re-run, while a wide one-shot still re-runs at its own width.
+    func testTheReArmFloorsItsWindowAtTheStandardOne() {
+        XCTAssertEqual(IntelligenceEngine.reRunWindowDays(current: 2), 21,
+                       "a light pass's window must not shape the forced re-run")
+        XCTAssertEqual(IntelligenceEngine.reRunWindowDays(current: 21), 21)
+        XCTAssertEqual(IntelligenceEngine.reRunWindowDays(current: 65), 65,
+                       "a recalibrate-all re-runs at its own width")
+    }
+
+    /// The boundary is the standard window itself: one day short is partial.
+    func testTheBoundaryIsTheStandardWindow() {
+        XCTAssertTrue(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: false,
+                                                           maxDays: IntelligenceEngine.standardWindowDays - 1))
+        XCTAssertFalse(IntelligenceEngine.isPartialBaseline(lightPass: false, wasAbandoned: false,
+                                                            maxDays: IntelligenceEngine.standardWindowDays))
+    }
+}
