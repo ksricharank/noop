@@ -525,3 +525,30 @@ final class NotificationTitleCleaningTests: XCTestCase {
     }
 
 }
+
+/// 260927, "the titles aren't legible": the pipeline hardening — artifact stripping and the
+/// over-long detector that earns one corrective retry instead of a silent fragment trim.
+final class NotificationTitleLegibilityTests: XCTestCase {
+
+    /// Open-weight models decorate a one-line ask: markdown bold, backticks, a "Title:" label.
+    /// The decoration goes; the line stays.
+    func testModelDecorationIsStripped() {
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("**Walk off that 3.9k gap**"),
+                       "Walk off that 3.9k gap")
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("Title: Walk off that 3.9k gap"),
+                       "Walk off that 3.9k gap")
+        XCTAssertEqual(AICoachEngine.cleanNotificationTitle("`124 steps — go stretch`"),
+                       "124 steps — go stretch")
+    }
+
+    /// The over-long detector measures the STRIPPED first line: a title that only looks long from
+    /// its markdown is not re-asked, and one genuinely over the cap is.
+    func testOverLongMeasuresTheStrippedLine() {
+        XCTAssertFalse(AICoachEngine.titleOverLong("**Walk off that 3.9k step gap**"),
+                       "31 characters once the bold marks go")
+        XCTAssertTrue(AICoachEngine.titleOverLong(
+            "Your steps are at 124 of 4,000 so a brisk walk would close the gap nicely"))
+        XCTAssertFalse(AICoachEngine.titleOverLong("Nailed the step goal — onward\nand a second line"),
+                       "only the first line is the title")
+    }
+}
