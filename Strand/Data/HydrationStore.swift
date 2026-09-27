@@ -265,6 +265,8 @@ extension Repository {
         //
         // `Repository` is @MainActor, so the interleaving was purely at these await points and a
         // serial gate is enough — no locking needed.
+        beginHydrationMutation()
+        defer { endHydrationMutation() }
         return await withHydrationLock {
             await self.logHydrationUnlocked(amountMl: amountMl, dayKey: dayKey)
         }
@@ -296,6 +298,10 @@ extension Repository {
     /// Re-derive the synchronous hydration cache the targets path reads (260903). Cheap (one
     /// UserDefaults array read) and idempotent, so it is safe on every mutation and every sync.
     func refreshHydrationCache(day: String? = nil) {
+        // 260927: never let a mid-chain derive clobber taps that are still queued — the source of
+        // the 1-2-1-2 flicker on a double press. The final mutation in the chain (and every caller
+        // outside one, e.g. the sync path) still applies the authoritative store-derived total.
+        guard Repository.shouldApplyDerivedCache(pendingMutations: hydrationPendingMutations) else { return }
         let dayKey = day ?? Repository.localDayKey(Date())
         setHydrationCache(day: dayKey, totalML: HydrationEntries.total(Self.hydrationEntries(day: dayKey)))
     }
@@ -317,6 +323,8 @@ extension Repository {
         // does not yet contain that log — the same lost-write class, arriving by the other door.
         // Ordering matters as well as exclusion: a minus that overtook its own plus would look for
         // an entry that had not been written yet.
+        beginHydrationMutation()
+        defer { endHydrationMutation() }
         return await withHydrationLock {
             let next = HydrationEntries.removing(Self.hydrationEntries(day: dayKey), id: id)
             Self.writeHydrationEntries(next, day: dayKey)
@@ -330,6 +338,8 @@ extension Repository {
     func updateHydrationEntry(id: UUID, amountMl: Int, day: String? = nil) async -> Double {
         let dayKey = day ?? Repository.localDayKey(Date())
         // Serialised for the same reason as the delete above.
+        beginHydrationMutation()
+        defer { endHydrationMutation() }
         return await withHydrationLock {
             let next = HydrationEntries.updating(Self.hydrationEntries(day: dayKey), id: id,
                                                  amountMl: amountMl)

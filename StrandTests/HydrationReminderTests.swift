@@ -552,3 +552,18 @@ final class NotificationTitleLegibilityTests: XCTestCase {
                        "only the first line is the title")
     }
 }
+
+/// 260927, "the +/- are super fickle": the rule that stops a double-tap reading 1-2-1-2. A derived
+/// (store-read) total may replace the optimistic cache only when no FURTHER mutation is queued;
+/// mid-chain, the optimistic value — which counted every tap — stands until the last write derives.
+final class HydrationDerivedCacheGateTests: XCTestCase {
+    func testDerivedTotalAppliesOnlyAtTheEndOfTheChain() {
+        XCTAssertTrue(Repository.shouldApplyDerivedCache(pendingMutations: 0),
+                      "outside any mutation (a sync refresh) the store is the truth")
+        XCTAssertTrue(Repository.shouldApplyDerivedCache(pendingMutations: 1),
+                      "the only outstanding mutation is the one deriving — it may converge the cache")
+        XCTAssertFalse(Repository.shouldApplyDerivedCache(pendingMutations: 2),
+                       "a second tap is queued; deriving now would visibly walk the counter back")
+        XCTAssertFalse(Repository.shouldApplyDerivedCache(pendingMutations: 5))
+    }
+}

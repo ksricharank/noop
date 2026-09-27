@@ -77,7 +77,11 @@ struct DailyTargetsStrip: View {
                 // second home, and the derivation block below still explains tonight's sleep need
                 // for anyone who expands it.
                 if targets.waterTargetCups != nil {
-                    waterCell(targets).id(hydrationSeq)
+                    // No `.id(hydrationSeq)` (260927): forcing a new identity per bump re-created
+                    // the cell — and its BUTTONS — under the wearer's finger, so the second press
+                    // of a quick double-tap landed on a control that was being torn down. The value
+                    // re-renders anyway: `hydrationSeq` is @Published and read in this body.
+                    waterCell(targets)
                 } else {
                     // Hydration off: nothing to put here, and a lone Cal cell stretched across the
                     // row would look like a layout fault. An empty spacer keeps the 2×2 grid.
@@ -189,7 +193,13 @@ struct DailyTargetsStrip: View {
     /// half-cup tap cannot silently discard a 500 ml log.
     private func removeHalfCup() async {
         let entries = repo.hydrationEntries()
-        guard let last = entries.last else { return }
+        guard let last = entries.last else {
+            // The optimistic bump already subtracted, but there is nothing in the store to remove
+            // (a stale list racing a fresh day). Re-derive so the counter cannot drift below truth.
+            repo.refreshHydrationCache()
+            repo.noteHydrationChanged()
+            return
+        }
         if last.amountMl > HydrationGoal.halfCupML {
             _ = await repo.updateHydrationEntry(id: last.id,
                                                 amountMl: last.amountMl - HydrationGoal.halfCupML)
