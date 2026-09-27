@@ -118,3 +118,57 @@ final class RepositoryLiveTargetsTests: XCTestCase {
         XCTAssertEqual(snap.stepsAbbrev, "12.4k/10k")
     }
 }
+
+/// 260927: the effort NUMERATOR resolves through `StrainScorer.effectiveEffort` — the same rule the
+/// Today hero ring uses — so the ring, the strip, the widgets and the Live Activity cannot disagree.
+/// The reported bug: ring 5, strip 3/59, widgets 3/59, all on one screen at 07:45, because only the
+/// ring knew about the live recompute and the stored row lagged one pass behind.
+extension RepositoryLiveTargetsTests {
+
+    private func fortnight() -> [DailyMetric] {
+        var days: [DailyMetric] = []
+        for i in 1...14 {
+            days.append(DailyMetric(day: String(format: "2026-08-%02d", i), totalSleepMin: 480,
+                                    efficiency: nil, deepMin: nil, remMin: nil, lightMin: nil,
+                                    disturbances: nil, restingHr: 60, avgHrv: nil, recovery: nil,
+                                    strain: 10, exerciseCount: nil, activeKcalEst: nil))
+        }
+        days.append(DailyMetric(day: "2026-08-15", totalSleepMin: nil, efficiency: nil, deepMin: nil,
+                                remMin: nil, lightMin: nil, disturbances: nil, restingHr: nil,
+                                avgHrv: nil, recovery: nil, strain: 3.4, exerciseCount: nil,
+                                activeKcalEst: nil))
+        return days
+    }
+
+    /// A live estimate ahead of the stored row wins the numerator (effort accrues; the ring already
+    /// shows it), and one behind loses to it (the stored floor of #489 — effort never visibly drops).
+    func testLiveEffortEstimateFoldsIntoTheNumeratorByMax() {
+        let days = fortnight()
+        let ahead = Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                           profile: UserProfile(), todayKey: "2026-08-15",
+                                           liveEffortToday: 5.3)
+        XCTAssertEqual(ahead.effortTodayStored, 5, "the ring's 5 is what every surface must show")
+        let behind = Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                            profile: UserProfile(), todayKey: "2026-08-15",
+                                            liveEffortToday: 1.0)
+        XCTAssertEqual(behind.effortTodayStored, 3, "a sparse live under-read never drops the banked value")
+    }
+
+    /// No estimate = the old behaviour, byte for byte: the stored row alone.
+    func testNoLiveEstimateKeepsTheStoredNumerator() {
+        let t = Repository.liveTargets(days: fortnight(), charge: 80, restScore: 81,
+                                       profile: UserProfile(), todayKey: "2026-08-15")
+        XCTAssertEqual(t.effortTodayStored, 3)
+    }
+
+    /// A live estimate with NO stored row yet (a fresh day before the first pass) stands alone, so
+    /// the strip shows the same early-morning effort the ring does instead of a dash.
+    func testLiveEstimateStandsInForAMissingRow() {
+        var days = fortnight()
+        days.removeLast()   // no row for the 15th at all
+        let t = Repository.liveTargets(days: days, charge: 80, restScore: 81,
+                                       profile: UserProfile(), todayKey: "2026-08-15",
+                                       liveEffortToday: 2.2)
+        XCTAssertEqual(t.effortTodayStored, 2)
+    }
+}
