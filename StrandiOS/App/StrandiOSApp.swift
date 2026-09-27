@@ -113,6 +113,30 @@ struct StrandiOSApp: App {
             setStrapHandler: { [weak model] handler in
                 model?.strapDoubleTapOverride = handler
             }))
+        // 260903: register the hydration category and wire its action sink HERE, in the iOS @main.
+        // Both previously lived only in StrandApp.swift, which is the macOS @main and is excluded
+        // from the iOS target — so on iOS the buttons rendered (post() registers the category just
+        // before posting) but a tap reached a nil `hydrationActionSink` and was dropped silently:
+        // "Add a cup" logged nothing. Reported from the device, 260903.
+        //
+        // In `init` rather than a `.task` on the root view (the macOS shape) because iOS delivers an
+        // action response to a COLD-LAUNCHED app before any view has rendered: a scene-lifecycle
+        // install races exactly the tap that caused the launch. The delegate above has the same
+        // requirement and for the same reason.
+        UNUserNotificationCenter.current().setNotificationCategories([
+            HydrationReminder.category,
+            // 260907: the strap-tap confirmation's Undo action. Registered alongside, because
+            // setNotificationCategories REPLACES the whole set — adding one in a second call would
+            // silently drop the hydration reminder's own actions.
+            WaterTapConfirmation.category,
+        ])
+        // Retire the pre-260903 repeating water reminders (260904). They were scheduled as
+        // `repeats: true` calendar triggers carrying a SNAPSHOT of the cup count, so iOS kept
+        // firing the same frozen "5 of 21 cups" daily — followed seconds later by the correct
+        // figure from the current sync-driven path. Idempotent, so it needs no run-once flag.
+        // In BOTH @main files, like the category and sink above: this file is one platform's only.
+        HydrationReminder.retireLegacyCalendarRequests()
+        model.installHydrationReminderSink()
         // #1538: a strap offload completes while the app is BACKGROUNDED — it stays alive as a
         // bluetooth-central to receive it — and the re-score it triggers took nearly eight minutes on the
         // reporter's install, far longer than that wake survives. The pass is all-or-nothing, so being
@@ -243,40 +267,32 @@ struct StrandiOSApp: App {
                         // While a sync runs its own activity is the useful banner; don't stack the HR one.
                         connected: model.live.connected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                        targets: model.repo.cachedLiveTargets()
                     )
                     pushLiftActivity()
                 }
-                // End the Live Activity the moment the link drops, even if no further HR tick arrives.
+                // Repaint the Live Activity on connection edges, even when no HR tick arrives to
+                // carry them. A DROP never ends the card any more (260829): the end was one-way —
+                // iOS forbids background starts — so charging the strap, or a transient timeout with
+                // the phone locked in a pocket, killed the island until the next app open. The drop
+                // edge paints the not-connected cue instead (holding the last values, plain); the
+                // reconnect edge repaints through the normal update path, whose `bondedEdge` bypasses
+                // the locked spacing so the cue clears immediately.
                 .onReceive(model.live.$connected) { isConnected in
-                    // …EXCEPT while the duty cycle has the phone locked: the link is silenced by
-                    // design there and can time out, and this immediate end was one-way — live ticks
-                    // are gated off while locked and iOS forbids background starts, so the island
-                    // stayed dead until the next app open (260828-0731, locked 07:17:33 → drop
-                    // 07:20:55 → island gone). Hold the frozen average; the reconnect's next sync
-                    // repaints it, and the foreground kick below ends it properly if the strap is
-                    // genuinely gone. This call-site gate is the ONLY disconnect path while locked:
-                    // no BLE link means no live ticks can reach `update` with connected=false.
-                    if !isConnected {
-                        let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-                        if LockedStreamPolicy.holdOnDisconnect(
-                            dutyCycle: LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
-                            locked: DeviceLockState.isLocked(
-                                protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)) {
-                            model.live.append(log: "Duty cycle: link dropped while locked — holding the Lock-Screen average (standing reconnect will repaint)")
-                            return
-                        }
+                    guard isConnected else {
+                        liveActivity.noteDisconnected()
+                        return
                     }
                     // #911: same shared anchor as the heartRate site above, so the Live Activity, the
                     // widget, the watch and Today never disagree about which day they describe. Memoized
                     // (shares the heartRate site's cache; recomputes only on a data refresh or day-roll).
                     let day = model.repo.cachedWidgetAnchor()
                     liveActivity.update(
-                        bpm: isConnected ? (model.bpm ?? model.live.heartRate) : nil,
+                        bpm: model.bpm ?? model.live.heartRate,
                         recovery: day?.recovery.map { Int($0.rounded()) },
                         connected: isConnected && !liftSession.isActive && !model.live.backfilling,
                         effort: day?.strain.map { Int($0.rounded()) },
-                        rest: day.flatMap { model.repo.restScore(for: $0) }
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // The gym session's own banner. Driven off the session's 1 Hz tick so a stage change
@@ -297,7 +313,12 @@ struct StrandiOSApp: App {
                     model.lockedActivityRefresh = { [weak model] in
                         guard let model else { return }
                         let lockedMinutes = UnitPrefs.liveActivityLockedMinutes()
-                        guard LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
+                        // With the Live Activity disabled there is nothing this repaint could reach —
+                        // the controller's own push guards would drop it — so skip the window query
+                        // too: in the island-less default mode (260830) the widget snapshot publish
+                        // is the post-offload surface, and this path should cost literally nothing.
+                        guard UnitPrefs.liveActivityEnabled(),
+                              LockedStreamPolicy.dutyCycleEnabled(lockedMinutes: lockedMinutes),
                               DeviceLockState.isLocked(
                                   protectedDataAvailable: UIApplication.shared.isProtectedDataAvailable)
                         else { return }
@@ -319,8 +340,9 @@ struct StrandiOSApp: App {
                             bpm: avg,
                             recovery: day?.recovery.map { Int($0.rounded()) },
                             effort: day?.strain.map { Int($0.rounded()) },
-                            rest: day.flatMap { model.repo.restScore(for: $0) },
-                            connected: model.live.connected
+                            rest: nil,
+                            connected: model.live.connected,
+                            targets: model.repo.cachedLiveTargets()
                         )
                     }
                 }
@@ -336,14 +358,12 @@ struct StrandiOSApp: App {
                     DeviceLockState.noteWillLock()
                     Task { await model.lockedActivityRefresh?() }
                 }
-                // The UNLOCK edge: locked repaints are deliberately never-stale (iOS 26 REMOVES a
-                // stale activity from both surfaces rather than greying it), so the clock no longer
-                // retires a card whose strap has genuinely gone — this kick does, explicitly. Clear
-                // the latch first (idempotent; observer order with BLEManager's for the same note is
-                // unspecified), then push once with the CURRENT link state: connected → the card
-                // refreshes live a beat before the resubscribed stream's own ticks take over;
-                // disconnected → update() ends it properly (ends, unlike starts, work from the
-                // background). While still locked-held this can't fire — the note IS the unlock.
+                // The UNLOCK edge: clear the latch first (idempotent; observer order with
+                // BLEManager's for the same note is unspecified), then push once with the CURRENT
+                // link state: connected → the card refreshes live a beat before the resubscribed
+                // stream's own ticks take over; disconnected → the card HOLDS with its not-connected
+                // cue (260829 — a drop never ends it; only the toggle or the sleep window does).
+                // While still locked-held this can't fire — the note IS the unlock.
                 .onReceive(NotificationCenter.default.publisher(
                     for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
                     DeviceLockState.noteUnlocked()
@@ -353,7 +373,7 @@ struct StrandiOSApp: App {
                         recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                         connected: model.live.connected,
                         effort: anchorDay?.strain.map { Int($0.rounded()) },
-                        rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                        targets: model.repo.cachedLiveTargets()
                     )
                 }
                 // #911/#759: republish the Home/Lock-Screen widget whenever the dashboard caches actually
@@ -408,6 +428,22 @@ struct StrandiOSApp: App {
                     guard scenePhase == .active else { return }
                     Task { await WidgetSnapshot.publish(from: model) }
                 }
+                // 260903: republish when the day's water changes, so the targets widget's Water pair
+                // (which took Sleep's cell) moves with the app instead of waiting for the next strap
+                // sync. `hydrationSeq` is the one funnel EVERY hydration write already bumps (#989 —
+                // log, edit, delete, and the notification's "Add a cup"), so this single hook covers
+                // the notification action and the in-app +/- buttons without a publish call at each
+                // write site.
+                //
+                // Deliberately NOT scenePhase-gated, unlike the hooks above: the notification action
+                // is handled with the app in the BACKGROUND, which is exactly the case this exists
+                // for. The cost is bounded — hydration writes are deliberate taps, a handful a day
+                // rather than a background cadence, and `saveAndReloadIfChanged` requests no
+                // WidgetKit reload unless a rendered string moved (the face quantizes to whole cups,
+                // so half-cup logs frequently move nothing).
+                .onReceive(model.repo.$hydrationSeq.dropFirst()) { _ in
+                    Task { await WidgetSnapshot.publish(from: model) }
+                }
                 // Apple Health is explicitly opt-in. Once any write type is authorized, keep one
                 // best-effort BGAppRefresh request armed; revoking all write access cancels it.
                 .onChange(of: health.auth) { _, auth in
@@ -455,15 +491,15 @@ struct StrandiOSApp: App {
                 // disconnect, iOS's own lifetime cap — leaves the Lock Screen empty until a
                 // FOREGROUND push. This is that push: same values a live tick would carry, so the
                 // controller restarts the activity the moment the app opens instead of waiting on
-                // tick timing — or, if the strap is genuinely gone (and we're no longer holding a
-                // locked duty-cycle freeze), ends a held one properly.
+                // tick timing. (A disconnected strap no longer ends a held card here — 260829: the
+                // hold + not-connected cue persist until the toggle or the sleep window.)
                 let anchorDay = model.repo.cachedWidgetAnchor()
                 liveActivity.update(
                     bpm: model.live.connected ? (model.bpm ?? model.live.heartRate) : nil,
                     recovery: anchorDay?.recovery.map { Int($0.rounded()) },
                     connected: model.live.connected,
                     effort: anchorDay?.strain.map { Int($0.rounded()) },
-                    rest: anchorDay.flatMap { model.repo.restScore(for: $0) }
+                    targets: model.repo.cachedLiveTargets()
                 )
                 model.drainPendingIntents(router: router)
                 // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
@@ -502,12 +538,23 @@ struct StrandiOSApp: App {
                                 authorized: health.auth == .authorized)
                         }
                     )
+                    // 260919: same stale-summary race as the strap path. The synthesis is generated
+                    // by the scenePhase handler above, and THIS sync lands its rows afterwards — so
+                    // a paragraph written seconds ago can already be describing the wrong numbers.
+                    // A no-op unless the data actually moved under an existing paragraph.
+                    await model.coach.refreshSynthesisIfDataChanged()
                     await WidgetSnapshot.publish(from: model)
                     // Push the wrist on the SAME refresh as the Home-screen widget so the watch, the
                     // widget and Today never disagree about which day they describe. Without this the
                     // watch only ever holds placeholder data on a real device.
                     await watch.pushLatest(from: model)
                 }
+                // 260922: the Integration digest's foreground catch-up. Its only trigger was the tab
+                // shell's launch-time `.task`, and a bluetooth-central app can go days without a real
+                // launch — so "the first open after the hour" was often days late. The post-offload
+                // hook (AppModel) is the primary path now; this covers a morning with no sync.
+                Task { await MuseIntegrationRunner.runIfDue(repo: model.repo, coach: nil,
+                                                            log: { [model] in model.live.append(log: $0) }) }
             } else if phase == .background {
                 // Re-submit on every transition because iOS may discard an old best-effort request.
                 HealthWritebackBackgroundScheduler.updateSchedule(
@@ -522,7 +569,10 @@ struct StrandiOSApp: App {
                 // #114: capture the LAST in-app live state on the way out so the Home widget matches what
                 // the user just saw — its battery/HR/score otherwise lag to the last FOREGROUND refreshSeq
                 // bump. One reload per app-exit is low-frequency and well within WidgetKit's daily budget.
-                Task { await WidgetSnapshot.publish(from: model) }
+                // 260922: `userInitiated` — the sentence above was true of the daily CAP but this publish
+                // was still subject to the background SPACING gate (see `saveAndReloadIfChanged`), and a
+                // coalesced exit publish is exactly a widget that disagrees with the app just minimised.
+                Task { await WidgetSnapshot.publish(from: model, userInitiated: true) }
                 // #155: refresh the Documents/noop_sync.txt drop file the user's Siri Shortcut logs
                 // into Apple Health. Gated inside writeIfEnabled on the opt-in default (OFF) — a
                 // no-op until the user turns on Shortcuts Export.

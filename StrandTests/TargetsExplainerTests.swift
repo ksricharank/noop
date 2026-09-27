@@ -1,0 +1,269 @@
+import XCTest
+@testable import Strand
+import StrandAnalytics
+
+/// Pins the "How these were set" derivations (260901, final format): FOUR blocks, every line a
+/// number in plain language — the readiness verdict unpacked into the "body check" signals, the
+/// session ladder living inside the Effort block. Built from the SAME `DailyTargets` calls the
+/// pricing used, so the stated arithmetic must reproduce the displayed target.
+final class TargetsExplainerTests: XCTestCase {
+
+    private var profile: UserProfile {
+        UserProfile(weightKg: 70, heightCm: 175, age: 34, sex: "male", stepTicksPerStep: 0)
+    }
+
+    /// A readiness read with concrete HRV/RHR evidence, so the body-check line carries numbers.
+    private func readiness(level: ReadinessEngine.Level,
+                           hrv: (Double, Double, ReadinessEngine.Flag)? = (62, 60, .neutral),
+                           rhr: (Double, Double, ReadinessEngine.Flag)? = (55, 56, .neutral))
+        -> ReadinessEngine.Readiness {
+        var signals: [ReadinessEngine.Signal] = []
+        if let (v, b, f) = hrv {
+            signals.append(.init(key: "hrv", label: "HRV",
+                                 evidenceData: .metric(value: v, baseline: b, unit: "ms", decimals: 0),
+                                 detail: "", flag: f))
+        }
+        if let (v, b, f) = rhr {
+            signals.append(.init(key: "rhr", label: "Resting HR",
+                                 evidenceData: .metric(value: v, baseline: b, unit: "bpm", decimals: 0),
+                                 detail: "", flag: f))
+        }
+        return .init(level: level, headline: "", summary: "", signals: signals,
+                     acwr: nil, monotony: nil)
+    }
+
+    func testWorkoutDayBlocksReadPlainlyAndCarryTheExactNumbers() {
+        let charge = 80, rest = 81
+        let read = readiness(level: .balanced)
+        let session = DailyTargets.sessionPrescription(charge: charge, readiness: .balanced,
+                                                       restScore: rest)
+        XCTAssertNotNil(session)
+        let effortTarget = DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+        let kcalTarget = DailyTargets.dayKcalTarget(session: session, profile: profile, restingHr: 55)
+        let stepsTarget = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
+        let sleepNeed = DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: -40)
+        let hr = DailyTargets.sessionHrBpm(session: session!, restingHr: 55, age: 34)
+
+        let blocks = TargetsExplainer.lines(
+            charge: charge, readiness: read, restScore: rest,
+            session: session, sessionHrBpm: hr,
+            effortTarget: effortTarget, kcalTarget: kcalTarget, stepsTarget: stepsTarget,
+            sleepNeedMin: sleepNeed, age: 34, restingHr: 55, profile: profile,
+            debtBalanceMin: -40)
+
+        // 260920: THREE blocks. The SLEEP block left this explainer when the sleep target left the
+        // Today strip — a derivation for a number that is not on the screen is the same
+        // two-figures-disagreeing confusion in slower form. Effort, Calories, Steps remain; water
+        // has its own. The Sleep tab's ledger card and `sleepNarrative` carry sleep now.
+        XCTAssertEqual(blocks.count, 3, "three blocks — the session ladder lives inside Effort")
+        // EFFORT: charge rung with the workout it picked, body-check numbers, Rest rung, the pace
+        // spelled from resting HR toward max, the 0–100 scale defined before it's used.
+        XCTAssertTrue(blocks[0].hasPrefix("EFFORT TARGET → \(effortTarget)"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("Charge 80 is high (≥\(DailyTargets.pushChargeFloor))"
+                                         + " → plan a \(DailyTargets.pushSessionMinutes) min workout"),
+                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("body check: HRV 62ms ≈ your usual 60ms,"
+                                         + " resting HR 55bpm ≈ your usual 56bpm → all normal"
+                                         + " → keep \(session!.minutes) min"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("last night's Rest 81 is mid-range"
+                                         + " (\(DailyTargets.poorRestScore)–\(DailyTargets.greatRestScore - 1))"
+                                         + " → keep \(session!.minutes) min"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("workout pace: ~\(hr) bpm — about "
+                                         + "\(Int(session!.hrrFraction * 100))% of the way up from"
+                                         + " your resting HR 55"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("effort is the app's 0–100 score for a day's exercise:"
+                                         + " \(session!.minutes) min at that pace scores \(effortTarget)"),
+                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("today's effort so far isn't added in"), blocks[0])
+        // CAL: resting part stated as target − session, so the printed sum is exact.
+        let sessionKcal = DailyTargets.sessionKcal(session: session!, profile: profile, restingHr: 55)
+        XCTAssertTrue(blocks[1].hasPrefix("CALORIE TARGET → \(kcalTarget)"), blocks[1])
+        XCTAssertTrue(blocks[1].contains("your body at rest burns ≈ \(kcalTarget - sessionKcal) kcal"
+                                         + " per 24h (from weight 70kg, height 175cm, age 34)"), blocks[1])
+        XCTAssertTrue(blocks[1].contains("the \(session!.minutes) min workout at ~\(hr) bpm burns"
+                                         + " ≈ \(sessionKcal) kcal more"), blocks[1])
+        XCTAssertTrue(blocks[1].contains("\(kcalTarget - sessionKcal) + \(sessionKcal) = \(kcalTarget)"),
+                      blocks[1])
+        // STEPS: the charge-derived base, compact body check, and a closing line that lands on the
+        // target. 260906: the block used to name a "base 8000" from the retired three-band formula
+        // and then print a different final number, so the arithmetic in the text did not reach the
+        // answer beside it.
+        XCTAssertTrue(blocks[2].hasPrefix("STEP TARGET → \(stepsTarget)"), blocks[2])
+        XCTAssertTrue(blocks[2].contains("Charge 80 → \(DailyTargets.stepsBaseForCharge(80)) steps"),
+                      blocks[2])
+        XCTAssertTrue(blocks[2].contains("body check: HRV 62 ≈ your usual 60,"
+                                         + " resting HR 55 ≈ your usual 56 → all normal"
+                                         + " → no reduction"),
+                      blocks[2])
+        XCTAssertTrue(blocks[2].contains("target = \(stepsTarget)"), blocks[2])
+        XCTAssertFalse(blocks[2].contains("base 8000"),
+                       "the retired band language must not reappear: " + blocks[2])
+        // SLEEP: standard need, +0 rungs still printed, the debt payback in plain words.
+        // The sleep block is GONE from this explainer (260920) — asserted absent so a re-add is
+        // deliberate. Its arithmetic is still pinned through `sleepPlanLine` and the Sleep tab.
+        XCTAssertFalse(blocks.contains { $0.hasPrefix("SLEEP TARGET") }, blocks.joined())
+        // The jargon is gone.
+        for word in ["notch", "zone", "TRIMP", "trimp", "Karvonen", "keytel", "Keytel", "rmr",
+                     "clamp", "readiness", "balanced", "rundown"] {
+            for block in blocks {
+                XCTAssertFalse(block.contains(word), "jargon '\(word)' in: \(block)")
+            }
+        }
+    }
+
+    /// The water block names WHICH basis produced the bump, or a day that went harder than
+    /// prescribed would show a number the stated basis cannot explain (260903).
+    func testWaterBlockNamesThePlanOrTheRealWork() {
+        let planned = TargetsExplainer.lines(
+            charge: 80, readiness: readiness(level: .balanced), restScore: 81,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50),
+            effortForWater: 50, waterEffortIsAccrued: false)
+        XCTAssertTrue(planned[0].hasPrefix("WATER TARGET → 21 cups"), planned[0])
+        XCTAssertTrue(planned[0].contains("today's effort target 50 adds 5 cups"), planned[0])
+        XCTAssertTrue(planned[0].contains("one cup per 10 points"), planned[0])
+        XCTAssertTrue(planned[0].contains("16 + 5 = 21 cups"), planned[0])
+
+        // Exceeded the plan: the block says so, and says the ask cannot shrink back.
+        let exceeded = TargetsExplainer.lines(
+            charge: 80, readiness: readiness(level: .balanced), restScore: 81,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 70),
+            effortForWater: 70, waterEffortIsAccrued: true)
+        XCTAssertTrue(exceeded[0].contains("today's effort so far 70 adds 7 cups"), exceeded[0])
+        XCTAssertTrue(exceeded[0].contains("passed today's plan"), exceeded[0])
+        XCTAssertTrue(exceeded[0].contains("can only grow, never shrink"), exceeded[0])
+    }
+
+    /// A rest day with no effort accrued prices the body baseline alone, and says what a real
+    /// day would have added — the same "show the untaken branch" rule the other blocks follow.
+    func testWaterBlockOnARestDayPricesTheBaselineAlone() {
+        let blocks = TargetsExplainer.lines(
+            charge: nil, readiness: readiness(level: .balanced), restScore: nil,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: nil, sleepNeedMin: nil,
+            age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
+            waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil),
+            effortForWater: nil, waterEffortIsAccrued: false)
+        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("baseline for your body: 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("rest day, no effort target → +0 cups"), blocks[0])
+    }
+
+    func testRestDayBlocksExplainTheCancelledWorkoutAndTheZeroTarget() {
+        let read = readiness(level: .rundown, hrv: (41, 60, .bad), rhr: (63, 56, .watch))
+        let kcalTarget = DailyTargets.dayKcalTarget(session: nil, profile: profile, restingHr: 60)
+        let blocks = TargetsExplainer.lines(
+            charge: 20, readiness: read, restScore: 40,
+            session: nil, sessionHrBpm: nil,
+            effortTarget: 0,
+            kcalTarget: kcalTarget,
+            stepsTarget: DailyTargets.stepsTarget(charge: 20, readiness: .rundown),
+            sleepNeedMin: DailyTargets.sleepNeedTonightMin(needMin: 480, debtBalanceMin: 0),
+            age: 34, restingHr: 60, profile: profile, debtBalanceMin: 0)
+
+        XCTAssertEqual(blocks.count, 3)
+        // EFFORT: the body check names the down signals with their numbers and cancels the workout.
+        XCTAssertTrue(blocks[0].hasPrefix("EFFORT TARGET → 0"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("Charge 20 is low (≤\(DailyTargets.recoverChargeCeiling))"),
+                      blocks[0])
+        XCTAssertTrue(blocks[0].contains("body check: HRV 41ms below your usual 60ms,"
+                                         + " resting HR 63bpm above your usual 56bpm"
+                                         + " → several signals down → no workout today"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("target = 0 — anything you do still counts and shows as x/0"),
+                      blocks[0])
+        // CAL: the resting day alone, the no-workout line explicit, sum still exact.
+        XCTAssertTrue(blocks[1].contains("no workout today → nothing added"), blocks[1])
+        XCTAssertTrue(blocks[1].contains("target = \(kcalTarget)"), blocks[1])
+        // STEPS: the charge-derived base and the several-signals reduction.
+        //
+        // The recover base minus the rundown notch lands EXACTLY on the floor (6000 − 2000 = 4000),
+        // so the clamp does not bite and the block closes with the plain "target =" line. That is
+        // the point of the 260906 change: the bounds are cited only when they actually moved the
+        // number, and here they did not — they merely coincide with it.
+        let restDayTarget = DailyTargets.stepsTarget(charge: 20, readiness: .rundown)
+        XCTAssertEqual(restDayTarget, DailyTargets.stepsFloorPerDay)
+        XCTAssertTrue(blocks[2].contains("Charge 20 → \(DailyTargets.stepsBaseForCharge(20)) steps"),
+                      blocks[2])
+        XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj) steps"), blocks[2])
+        XCTAssertTrue(blocks[2].contains("target = \(restDayTarget)"), blocks[2])
+        // SLEEP: no longer explained here at all.
+        XCTAssertFalse(blocks.contains { $0.hasPrefix("SLEEP TARGET") }, blocks.joined())
+    }
+
+    /// The Rest shift can bring a workout BACK after the body check cancelled it — the rungs must
+    /// narrate that honestly ("back on for N min"), not claim a rest day.
+    func testGreatRestReinstatesTheWorkoutAfterARundownBodyCheck() {
+        let read = readiness(level: .rundown, hrv: (41, 60, .bad), rhr: (63, 56, .watch))
+        let session = DailyTargets.sessionPrescription(charge: 80, readiness: .rundown, restScore: 90)
+        XCTAssertNotNil(session, "rundown notched back up by Rest 90 prescribes a short session")
+        let effortTarget = DailyTargets.effortTargetStored(currentEffortStored: nil, session: session)
+        let blocks = TargetsExplainer.lines(
+            charge: 80, readiness: read, restScore: 90,
+            session: session, sessionHrBpm: 130,
+            effortTarget: effortTarget, kcalTarget: nil, stepsTarget: nil,
+            sleepNeedMin: nil, age: 34, restingHr: 60, profile: profile, debtBalanceMin: 0)
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertTrue(blocks[0].contains("→ no workout today"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("last night's Rest 90 is great (\(DailyTargets.greatRestScore)"
+                                         + " or above) → back on for \(session!.minutes) min"), blocks[0])
+    }
+}
+
+/// The step block must ARRIVE at the number it is explaining.
+///
+/// 260906, reported as "the new steps count logic doesn't make sense (at least the explanation
+/// doesn't)". The screenshot showed "Charge 60 is mid-range (34–66) → base 8000 steps" above a
+/// "STEP TARGET → 9200": the continuous curve had shipped in the previous build but the explainer
+/// still described the three bands it replaced, so the stated arithmetic could not reach the
+/// printed answer.
+@MainActor
+final class StepExplainerCoherenceTests: XCTestCase {
+
+    private func stepsBlock(charge: Int) -> String {
+        let readiness = ReadinessEngine.Readiness(level: .balanced, headline: "", summary: "",
+                                                  signals: [], acwr: nil, monotony: nil)
+        let target = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
+        let blocks = TargetsExplainer.lines(
+            charge: charge, readiness: readiness, restScore: nil, session: nil, sessionHrBpm: nil,
+            effortTarget: nil, kcalTarget: nil, stepsTarget: target, sleepNeedMin: nil,
+            age: 34, restingHr: 55, profile: UserProfile(), debtBalanceMin: 0)
+        return blocks.first { $0.hasPrefix("STEP TARGET") } ?? ""
+    }
+
+    /// Across the whole charge range the base the text names must be the base the CODE used, and the
+    /// block must state the final target. A mismatch is the exact defect reported.
+    func testTheStatedBaseMatchesTheDerivedBaseAtEveryCharge() {
+        for charge in stride(from: 0, through: 100, by: 5) {
+            let block = stepsBlock(charge: charge)
+            let base = DailyTargets.stepsBaseForCharge(charge)
+            let target = DailyTargets.stepsTarget(charge: charge, readiness: .balanced)
+            XCTAssertTrue(block.contains("Charge \(charge) → \(base) steps"),
+                          "charge \(charge): the named base must be the derived one — \(block)")
+            XCTAssertTrue(block.contains("\(target)"),
+                          "charge \(charge): the block must state the target it explains — \(block)")
+        }
+    }
+
+    /// The retired band vocabulary must be gone. Leaving "mid-range (34–66)" in place would keep
+    /// describing a formula the app no longer runs.
+    func testTheRetiredBandLanguageIsGone() {
+        for charge in [20, 50, 60, 80] {
+            let block = stepsBlock(charge: charge)
+            XCTAssertFalse(block.contains("mid-range"), "charge \(charge): \(block)")
+            XCTAssertFalse(block.contains("is high (≥"), "charge \(charge): \(block)")
+            XCTAssertFalse(block.contains("is low (≤"), "charge \(charge): \(block)")
+        }
+    }
+
+    /// The bounds line is only worth printing when a bound actually bit. "never set below 4000 or
+    /// above 12000 → 9200" invited the reader to hunt for where 9200 came from and find nothing.
+    func testTheBoundsAreOnlyMentionedWhenTheyBite() {
+        XCTAssertFalse(stepsBlock(charge: 60).contains("kept inside"),
+                       "an unclamped target must not cite the clamp")
+    }
+}
