@@ -2006,6 +2006,11 @@ struct LiquidTodayView: View {
             liveStrainLocal = nil
         }
         liveTodayStrain = liveStrainLocal
+        // 260927: hand the estimate to the Repository so the targets strip, the widgets, the Live
+        // Activity and the coach context resolve the SAME effort numerator as the hero ring — the
+        // ring was the only live-aware surface, and one screen showed 5 on the ring over 3/59 on
+        // the strip. Nil (a past day) leaves the existing hint alone.
+        repo.noteLiveEffortHint(liveStrainLocal, day: selectedDayKey)
 
         async let restA = repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
         async let stressA = repo.series(key: "stress", source: "my-whoop")

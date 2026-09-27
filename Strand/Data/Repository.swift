@@ -839,7 +839,8 @@ final class Repository: ObservableObject {
                             todayKey: String,
                             waterTodayML: Double? = nil,
                             waterEnabled: Bool = false,
-                            napSleepMinByDay: [String: Double] = [:]) -> LiveTargets {
+                            napSleepMinByDay: [String: Double] = [:],
+                            liveEffortToday: Double? = nil) -> LiveTargets {
         // The full read, not just the level: the explainer's "body check" lines print the
         // signals' actual values against their baselines (260901: no jargon, every line a number).
         let readinessRead = ReadinessEngine.evaluate(days: days)
@@ -927,7 +928,14 @@ final class Repository: ObservableObject {
                                                                   debtBalanceMin: ledger.balanceMin),
             stepsToday: todayRow?.steps,
             stepsTarget: DailyTargets.stepsTarget(charge: charge, readiness: readiness),
-            effortTodayStored: todayRow?.strain.map { Int($0.rounded()) },
+            // 260927: the numerator resolves through the SAME rule the Today hero ring uses
+            // (`StrainScorer.effectiveEffort`, #1001 — max of live and stored, since Effort accrues
+            // and must never visibly drop). The ring was live-aware and this was not, so one screen
+            // showed Effort 5 on the ring and 3/59 on the strip — and the widgets, Live Activity,
+            // coach context and digest all inherited the stale 3 from here. One resolver, one number.
+            effortTodayStored: StrainScorer.effectiveEffort(live: liveEffortToday,
+                                                            stored: todayRow?.strain)
+                .map { Int($0.rounded()) },
             effortTarget: effortTarget,
             waterTodayML: waterTodayML,
             waterTargetCups: waterTargetCups,
@@ -957,6 +965,31 @@ final class Repository: ObservableObject {
 
     /// Same #1051-shaped bookkeeping as `widgetAnchorMemo` — the live tick closures read this 1–3×/s.
     private var liveTargetsMemo = LiveTargetsMemo()
+
+    /// The LIVE effort estimate the Today screen last computed (#1001's recompute over today's raw
+    /// HR), handed here so every OTHER consumer of the targets — the strip, the widgets, the Live
+    /// Activity, the coach context, the digest — resolves the same numerator as the hero ring
+    /// (260927). Keyed by day so yesterday's estimate can never inflate a new day; folded via
+    /// `effectiveEffort` (a max), so a stale hint can only ever match what the ring already showed,
+    /// never invent a drop. Nil until the Today screen first computes one; everything then behaves
+    /// exactly as before (stored-only).
+    private var liveEffortHint: (day: String, value: Double)?
+    private(set) var liveEffortSeq = 0
+
+    /// Record the ring's live effort estimate. Nil is ignored rather than clearing: navigating to a
+    /// past day computes no estimate, and forgetting today's would regress the strip mid-scroll.
+    /// The seq bumps only when the ROUNDED value moves, so the targets memo is not rebuilt on every
+    /// screen load for a sub-point change.
+    func noteLiveEffortHint(_ value: Double?, day: String) {
+        guard let value else { return }
+        let rounded = Int(value.rounded())
+        if let hint = liveEffortHint, hint.day == day, Int(hint.value.rounded()) == rounded {
+            liveEffortHint = (day, value)   // keep the freshest raw value without a memo rebuild
+            return
+        }
+        liveEffortHint = (day, value)
+        liveEffortSeq += 1
+    }
 
     /// The user's body metrics for the targets' Keytel/Karvonen math, lent by the app layer
     /// (AppModel owns the Profile; the healthWriteBack closure idiom). Nil in tests and before
@@ -1037,6 +1070,7 @@ final class Repository: ObservableObject {
         let logicalKey = Self.logicalDayKey(now)
         let localKey = Self.localDayKey(now)
         return liveTargetsMemo.resolve(seq: refreshSeq, hydrationSeq: hydrationSeq,
+                                       effortSeq: liveEffortSeq,
                                        logicalKey: logicalKey, localKey: localKey) {
             let anchor = cachedWidgetAnchor(now: now)
             // Water rides the same memo: the figures come from the hydration tracker's own
@@ -1057,7 +1091,13 @@ final class Repository: ObservableObject {
                                     // left the surface anyone actually looks at unchanged. The
                                     // maintainer's screenshots showed it: the Sleep card said −20m
                                     // while the derivation said 45 min short, from the same nights.
-                                    napSleepMinByDay: napSleepMinByDay)
+                                    napSleepMinByDay: napSleepMinByDay,
+                                    // Only a hint for the day the targets are FOR — the same key
+                                    // resolution as `todayRow`, so a pre-04:00 logical day and a
+                                    // hint stamped with it agree.
+                                    liveEffortToday: liveEffortHint.flatMap {
+                                        $0.day == max(logicalKey, localKey) ? $0.value : nil
+                                    })
         }
     }
 
