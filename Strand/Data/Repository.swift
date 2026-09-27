@@ -957,7 +957,11 @@ final class Repository: ObservableObject {
     /// never invent a drop. Nil until the Today screen first computes one; everything then behaves
     /// exactly as before (stored-only).
     private var liveEffortHint: (day: String, value: Double)?
-    private(set) var liveEffortSeq = 0
+    /// @Published like `hydrationSeq`, for the same reason (260927, "still see the 5 and 3"): the
+    /// hint arrives from a view load, which deliberately never bumps `refreshSeq` — so this bump is
+    /// the ONLY signal the targets strip gets. As a plain var the memo recomputed correctly and no
+    /// view ever re-read it: the strip kept its stale numerator until the next unrelated sync.
+    @Published private(set) var liveEffortSeq = 0
 
     /// Record the ring's live effort estimate. Nil is ignored rather than clearing: navigating to a
     /// past day computes no estimate, and forgetting today's would regress the strip mid-scroll.

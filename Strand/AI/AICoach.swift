@@ -626,47 +626,52 @@ final class AICoachEngine: ObservableObject {
     /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write my read for the Today \
-    screen. Tell me WHAT STATE I AM IN right now and how I got here over the last few hours.
+    screen. Tell me WHAT STATE I AM IN right now, how the last hours produced it, and what to do \
+    with the next few. Aim for 150-250 words: a proper read, not a caption. Depth beats breadth — \
+    within any section FEWER IS BETTER, but each point you keep gets the mechanism, not just the \
+    number.
 
     Your lens is MY BODY IN THE PRESENT. Lead with MY LAST 6 HOURS and today's readings; the \
     targets are the LEAST interesting thing you have, because I can read those numbers myself.
 
-    What earns a mention, most important first:
-    - What my heart rate over the last few hours says about my state: resting and calm, elevated, \
-    recovering from something, or unusually high for a quiet stretch. Compare it to MY resting \
-    heart rate, never to population norms.
-    - How long I have been sedentary, if that stretch is notable, and whether it is worth breaking.
-    - How today's readings compare to MY OWN baseline. My data includes z-scores: |z| above 1 is a \
-    real deviation, above 2 is a strong one. A metric inside its normal range is NOT news.
-    - What all of that means for the next few hours: what to do, what to avoid, what to expect.
-    - A watchout worth flagging NOW: a climbing resting HR, sagging HRV or elevated respiratory \
-    rate together can precede illness or accumulated strain.
+    Shape:
+    - Open with ONE bolded line: my state in at most twelve words, committed, no hedging.
+    - THE READ: a short paragraph (2-4 sentences) narrating the last hours as cause and effect — \
+    what my heart rate, movement and stress trace say happened, and the state that leaves me in. \
+    Compare only to MY resting heart rate and MY OWN baseline, never to population norms. My data \
+    includes z-scores: |z| above 1 is a real deviation, above 2 a strong one; a metric inside its \
+    normal range is NOT news, and one real deviation explained well beats three listed. You may \
+    connect two signals into one causal read when the data supports it — say it is a read, not a \
+    fact.
+    - THE NEXT FEW HOURS: two or three concrete moves that follow from the read — what to do, \
+    what to avoid, what to expect it to feel like. If training is on the table, say what kind, \
+    how hard, and why today's state supports or argues against it.
+    - Close with one watchout worth flagging NOW, when the data shows one forming: a climbing \
+    resting HR, sagging HRV or elevated respiratory rate together can precede illness or \
+    accumulated strain. Say what would confirm it and what to change today if it does.
 
     About the targets, specifically:
-    - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I can \
-    read off the screen, and spending a bullet on it wastes the only view that is about right now.
-    - Mention a target ONLY when my current state changes what I should do about it — for example \
-    that a long sedentary stretch plus a low step count makes a walk the obvious next move, or \
-    that today's strain against a poor recovery means the effort target is not worth chasing.
-    - My total calories include resting metabolism on both sides, so an early-day number far below \
-    target is NORMAL. Never read it as a shortfall or urge me to make it up.
+    - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
+    can read off the screen. Mention a target ONLY when my current state changes what I should \
+    do about it — a long sedentary stretch plus a low step count making a walk the obvious next \
+    move, or today's strain against a poor recovery making the effort target not worth chasing.
+    - My total calories include resting metabolism on both sides, so an early-day number far \
+    below target is NORMAL. Never read it as a shortfall or urge me to make it up.
 
     Rules:
     - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
-    night's sleep. Other screens own each of those, and repeating them here costs me the one view \
-    that is about right now.
-    - 2 to 5 bullets. FEWER IS BETTER. If only two things are worth saying, write two.
-    - Each bullet starts with a **bolded claim of at most eight words** — the finding itself — then \
-    an em dash, then one short clause of evidence or what to do. Every number in **bold**.
-    - Order them most notable first. The first bullet is the one thing to read if I read nothing else.
-    - No headings, no sections, no greeting, no sign-off, no prose outside the bullets.
-    - Recent days only where they explain the present — reach back only far enough to make right \
-    now make sense. The multi-week picture belongs to another screen.
-
-    If my last hours are genuinely unremarkable, SAY THAT in one or two bullets — "sitting at rest, \
-    everything in your normal range" is a useful, honest answer, and far better than padding. Never \
-    invent a finding to reach a bullet count. Never cite a number my data does not contain, and \
-    never state a target that differs from TODAY'S TARGETS.
+    night's sleep — other screens own each of those. Reach back only far enough to make right \
+    now make sense.
+    - The sedentary line, when present, states its own timeframe. Quote it faithfully: if it \
+    says "as of the last strap sync", the stillness is as of that sync — never extend it to \
+    this instant.
+    - Every number you write must appear VERBATIM in my data, in **bold**; never invent, \
+    convert or estimate one, and never state a target that differs from TODAY'S TARGETS.
+    - No headings, no greeting, no sign-off — the bolded opening line and short paragraphs are \
+    the whole structure.
+    - If my last hours are genuinely unremarkable, say so plainly in a few sentences and stop. \
+    "Sitting at rest, everything in your normal range" is an honest, useful read. Never invent \
+    a finding to fill the shape; padding past a quiet morning is worse than brevity.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
@@ -1679,16 +1684,30 @@ final class AICoachEngine: ObservableObject {
         }
         let instruction = "\(status)\n\n---\n\n\(notificationTitlePrompt)"
         do {
-            let reply = try await callProvider(key: key, messages: [(.user, instruction)],
+            var reply = try await callProvider(key: key, messages: [(.user, instruction)],
                                                sessionOverride: notificationTitleSession)
+            // 260927, "the titles aren't legible": models routinely blow the 32-character cap, and
+            // the old answer was a silent word-boundary trim — which posts a FRAGMENT ("Only 124
+            // steps so far — time"), the exact illegibility reported. An over-long line now earns
+            // ONE corrective turn (the model sees its own line and the cap restated); the trim
+            // remains only as the last resort when the retry over-runs too.
+            if Self.titleOverLong(reply),
+               let second = try? await callProvider(
+                   key: key,
+                   messages: [(.user, instruction), (.assistant, reply),
+                              (.user, Self.titleRewriteNudge)],
+                   sessionOverride: notificationTitleSession),
+               !Self.titleOverLong(second) {
+                reply = second
+            }
             let clean = Self.cleanNotificationTitle(reply)
-            // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule): a title that came
-            // back unusable is exactly what is missing when someone reports "the coach titles look
-            // generic". Costs a line only when a nudge actually fires.
+            // Always-on, rare-event evidence (the CLAUDE.md diagnostic rule) — and since 260927 the
+            // line carries the POSTED TEXT, because "the titles look wrong" was unanswerable from a
+            // log that only said who wrote them.
             lastNotificationTitleOutcome = clean == nil
                 ? "reply rejected (parroted example, too long, or empty): "
                     + reply.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
-                : "written by \(lastAnsweringModel ?? "model")"
+                : "written by \(lastAnsweringModel ?? "model") — \u{201C}\(clean ?? "")\u{201D}"
             return clean
         } catch {
             lastNotificationTitleOutcome = "request failed: "
@@ -2137,6 +2156,24 @@ final class AICoachEngine: ObservableObject {
     /// plain one. So: strip the shapes the prompt forbids (quotes, trailing punctuation, line
     /// breaks), then TRIM at a word boundary rather than discarding a slightly-long line, and give
     /// up only when even the first words cannot fit. nil = the caller's static title wins.
+    /// The corrective turn for an over-long title. Restates only the cap: the full instruction is
+    /// already in the transcript, and a short scold produces a short line where a re-explanation
+    /// produces another paragraph.
+    nonisolated static let titleRewriteNudge =
+        "That line is over the limit. Reply with ONE line of at most 32 characters — nothing else."
+
+    /// Whether the model's title line exceeds the hard cap AFTER the cleaner's artifact stripping —
+    /// the case worth one corrective retry before settling for a word-boundary trim. Measured on the
+    /// stripped line so a title that only LOOKS long from its markdown is not re-asked.
+    nonisolated static func titleOverLong(_ raw: String) -> Bool {
+        let firstLine = (raw.split(separator: "\n").first.map(String.init) ?? raw)
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "\"", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return firstLine.count > notificationTitleMaxChars
+    }
+
     nonisolated static func cleanNotificationTitle(_ raw: String) -> String? {
         // A model that ignores "no line breaks" usually offers its best line first.
         let firstLine = raw.split(separator: "\n").first.map(String.init) ?? raw
@@ -2145,7 +2182,14 @@ final class AICoachEngine: ObservableObject {
             .replacingOccurrences(of: "\"", with: "")
             .replacingOccurrences(of: "\u{201C}", with: "")
             .replacingOccurrences(of: "\u{201D}", with: "")
+            // 260927, "the titles aren't legible": open-weight models decorate even a one-line ask —
+            // markdown bold, backticks, a "Title:" label. Strip the decoration, keep the line.
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "`", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: ".!  "))
+        if clean.lowercased().hasPrefix("title:") {
+            clean = String(clean.dropFirst("title:".count)).trimmingCharacters(in: .whitespaces)
+        }
         guard !clean.isEmpty else { return nil }
         // A parroted example is a failed generation, not a title.
         let normalized = clean.lowercased()
