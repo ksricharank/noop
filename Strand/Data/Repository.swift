@@ -289,6 +289,27 @@ final class Repository: ObservableObject {
     /// rather than guessing: an absent nap is credited as zero, never as an error.
     private(set) var napSleepMinByDay: [String: Double] = [:]
 
+    /// Hydration mutations accepted but not yet completed (260927, "the +/- are super fickle").
+    ///
+    /// Each authoritative write ends by RE-DERIVING the synchronous cache from the stored entries —
+    /// correct for one tap, and the flicker for two: tap-tap moves the optimistic cache to 2, the
+    /// FIRST write then completes and re-derives 1 (the second is still queued), and the counter
+    /// visibly dips before the second write restores it. 1-2-1-2 on screen for two presses.
+    /// `refreshHydrationCache` therefore applies a derived total only when this says no further
+    /// mutation is queued (`shouldApplyDerivedCache`); mid-chain, the optimistic value — which
+    /// counted every tap — stays, and the LAST write's derive converges the cache to the store.
+    /// Incremented synchronously at each mutator's entry (MainActor, before any await), so a second
+    /// tap is counted before the first write's re-derive can run.
+    private(set) var hydrationPendingMutations = 0
+    func beginHydrationMutation() { hydrationPendingMutations += 1 }
+    func endHydrationMutation() { hydrationPendingMutations = max(0, hydrationPendingMutations - 1) }
+
+    /// Pure pin for the rule above: a derived (store-read) total may replace the optimistic cache
+    /// only when at most the CURRENT mutation is outstanding. `0` covers the sync/refresh callers.
+    nonisolated static func shouldApplyDerivedCache(pendingMutations: Int) -> Bool {
+        pendingMutations <= 1
+    }
+
     /// Tail of the serialised hydration-mutation chain (260904).
     ///
     /// Every hydration write is a read-modify-write (`logHydration` reads the day's total and
