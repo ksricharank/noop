@@ -193,6 +193,27 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Tanaka estimate unless overridden.
+    /// The effective HRmax an EFFORT score is computed against, resolved exactly as `AnalyticsEngine`
+    /// resolves it: the manual override when one is set, else Tanaka from age, else nil.
+    ///
+    /// Deliberately not `hrMax` below, which answers a different question and differs from this one in
+    /// two ways: it rounds Tanaka to an Int, and for an age-less profile it returns 208 rather than nil.
+    /// A day scored through it would not match the day the engine stored either.
+    ///
+    /// #2460: today's live Effort is computed in the Today views rather than read from the scored day,
+    /// and both of them passed Tanaka here with no reference to the override. Because the ring shows
+    /// `StrainScorer.effectiveEffort(live:stored:)`, which is `max(live, stored)`, and an override is
+    /// normally set BECAUSE the real maximum is above the formula, the Tanaka value was not merely
+    /// different, it was always the larger of the two and so always the one displayed. The setting
+    /// therefore did nothing until the day stopped being today. Both views now read this, so the live
+    /// value and the stored day are scored against one number. (Ported from upstream 260927 — the fork's
+    /// v11.8.0 base predates it, and 18.25's strip fold made the divergence prominent: a live value on
+    /// the wrong yardstick reached every targets surface, not just the ring.)
+    var effortHRmax: Double? {
+        if hrMaxOverride > 0 { return Double(hrMaxOverride) }
+        return age > 0 ? StrainScorer.tanakaHRmax(age: Double(age)) : nil
+    }
+
     var hrMax: Int { hrMaxOverride > 0 ? hrMaxOverride : Int((208 - 0.7 * Double(age)).rounded()) }
 
     /// Personalized zone starts after enforcing the same five-value invariant as `HRZones`.
