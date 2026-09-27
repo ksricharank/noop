@@ -45,18 +45,27 @@ struct RootTabView: View {
     @State private var routedPillar: NavRouter.Destination?
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
-    @State private var selectedTab: Int = 0
+    @State private var selectedTab: Int = Tab.today
+
+    /// The tab order lives in `PhoneTab` (Strand/App/PhoneTabOrder.swift) so BOTH platforms compile
+    /// it and a test on the macOS leg can pin it — this file is `#if os(iOS)` and invisible to
+    /// `StrandTests`. `Tab` is a local alias keeping the call sites short.
+    private typealias Tab = PhoneTabIndex
+
+    /// Index of the last tab. Named so the swipe clamp and the tab list cannot disagree — the two
+    /// drifting apart is exactly what a hard-coded bound does silently when a tab is inserted.
+    static let lastTabIndex = PhoneTab.lastIndex
     /// One `NavigationPath` per tab, indexed by tab tag. Re-tapping the already-active tab pops
     /// that tab's stack to its root (#135) by clearing its path — an animated pop that leaves the
     /// root view alive, so an at-root re-tap keeps scroll position and never re-runs `.task`
     /// (#198; the #197 resetID/`.id()` rebuild reset both). Requires the tab roots' first-hop
     /// links to push `TabRoute`/`MoreDestination` VALUES — closure-destination links bypass the path.
-    @State private var tabPaths: [NavigationPath] = Array(repeating: NavigationPath(), count: 5)
+    @State private var tabPaths: [NavigationPath] = Array(repeating: NavigationPath(), count: Tab.count)
     /// One scroll-to-top token per tab. Bumped when the user re-taps the active tab while it's ALREADY
     /// at its root — the other half of the iOS convention #197/#198 left unserved (an at-root re-tap was
     /// a no-op). Threaded into each tab's root via `\.scrollToTopSignal`; ScreenScaffold / LiquidTodayView
     /// scroll to their top anchor when their tab's token changes.
-    @State private var scrollTop: [Int] = Array(repeating: 0, count: 5)
+    @State private var scrollTop: [Int] = Array(repeating: 0, count: Tab.count)
     /// Which More-tab groups are expanded (S2). Insights + Body stay open at rest; Data + App collapse to
     /// just their header until tapped. Persisted (#860 item 2): the user's open/closed choice must SURVIVE
     /// leaving and re-entering the More tab (and relaunch), not reset to the seed every visit. Backed by an
@@ -110,11 +119,14 @@ struct RootTabView: View {
     private var tabSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { v in
-                // Today (tab 0) uses horizontal swipe to change DAYS, so tab-swipe is off there.
-                guard selectedTab != 0 else { return }
+                // Today uses horizontal swipe to change DAYS, so tab-swipe is off there.
+                guard selectedTab != Tab.today else { return }
                 let dx = v.translation.width, dy = v.translation.height
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                // 260906: the clamp is the LAST tab index, which moved with the Day-quality
+                // insertion. Left as a literal 3 it would have made the More tab unreachable by swipe
+                // while every other route still worked — a silent half-failure.
+                let next = min(Self.lastTabIndex, max(0, selectedTab + (dx < 0 ? 1 : -1)))
                 if next != selectedTab {
                     withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                 }
@@ -126,27 +138,34 @@ struct RootTabView: View {
         // its dynamic interaction with scrolling content automatically; older supported releases use
         // the corresponding system material and safe-area behaviour from the same TabView.
         TabView(selection: nativeTabSelection) {
-            tab(todayTabRoot, "Today", "square.grid.2x2", path: $tabPaths[0], scrollSignal: scrollTop[0]).tag(0)
-            tab(TrendsView(), "Trends", "chart.line.uptrend.xyaxis", path: $tabPaths[1], scrollSignal: scrollTop[1]).tag(1)
-            tab(SleepView(), "Sleep", "bed.double", path: $tabPaths[2], scrollSignal: scrollTop[2]).tag(2)
-            // K3: Coach promoted to a top-level tab (was behind the More list). The sparkles icon
-            // matches the More-tab row and the macOS sidebar entry.
-            // Conditional on the master switch. The tags stay LITERAL rather than being renumbered when
-            // Coach is absent: `tabPaths` and `scrollTop` are indexed by tag, and More stays tag 4 in both
-            // shapes, so a wearer's More tab keeps its identity, its navigation path and its scroll
-            // position across a flip instead of inheriting Coach's.
-            if coachEnabled {
-                tab(CoachView(), "Coach", "sparkles", path: $tabPaths[3], scrollSignal: scrollTop[3]).tag(3)
-            }
-            moreTab(path: $tabPaths[4], scrollSignal: scrollTop[4]).tag(4)
+            // v18 uplift: upstream's #2269 promoted Coach to its own tab behind a master switch. The
+            // fork's order has no Coach slot — it is reached from More — so the tab is not taken; the
+            // master switch still applies and is honoured on that row.
+            // Order (260908): Today · Day · Sleep · Trends · More. Trends moved from second to fourth
+            // at the maintainer's request. The daily-use tabs now sit together on the left — today's
+            // state, yesterday's grade, last night's sleep — and Trends, which is the long-horizon
+            // read consulted far less often, sits beside More.
+            tab(todayTabRoot, PhoneTab.today.titleKey, PhoneTab.today.systemImage,
+                path: $tabPaths[Tab.today], scrollSignal: scrollTop[Tab.today]).tag(Tab.today)
+            // 260906: Day quality earned a tab of its own rather than a More row — it is the
+            // retrospective read on a finished day, so it belongs beside the other retrospective tabs.
+            // 260907: `medal` rather than `checkmark.seal`. The seal reads as a verification badge —
+            // "this day is certified" — which is not what a quality score says. A medal is a GRADE,
+            // which is exactly what the tab shows, and it carries the retrospective sense the screen
+            // is built around ("how did that day go") rather than a live reading.
+            //
+            // Deliberately NOT `sparkles`: that is already the Coach's mark, on the More row and in
+            // RootView's sidebar, and reusing it here would make this tab look like a second door to
+            // the coach. Distinct from its neighbours too — a grid, a bed, a line chart.
+            tab(DayQualityView(), PhoneTab.day.titleKey, PhoneTab.day.systemImage,
+                path: $tabPaths[Tab.day], scrollSignal: scrollTop[Tab.day]).tag(Tab.day)
+            tab(SleepView(), PhoneTab.sleep.titleKey, PhoneTab.sleep.systemImage,
+                path: $tabPaths[Tab.sleep], scrollSignal: scrollTop[Tab.sleep]).tag(Tab.sleep)
+            tab(TrendsView(), PhoneTab.trends.titleKey, PhoneTab.trends.systemImage,
+                path: $tabPaths[Tab.trends], scrollSignal: scrollTop[Tab.trends]).tag(Tab.trends)
+            moreTab(path: $tabPaths[Tab.more], scrollSignal: scrollTop[Tab.more]).tag(Tab.more)
         }
         .tint(StrandPalette.accent)
-        // Switching Coach off while STANDING on it leaves `selectedTab` pointing at a tag no tab claims
-        // any more, which renders as an empty tab rather than as an error. Send that wearer to Today, and
-        // only in that case, so a flip made from anywhere else does not move them.
-        .onChangeCompat(of: coachEnabled) { enabled in
-            if !enabled && selectedTab == 3 { selectedTab = 0 }
-        }
         // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
         // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
         // sliding away entirely, so this is the platform's read of the same intent, not a copy of ours.
@@ -183,6 +202,20 @@ struct RootTabView: View {
             Task.detached(priority: .utility) {
                 await FolderBackup.catchUpIfDue(checkpoint: { await backupRepo.checkpointForBackup() })
             }
+            // Integration digest (260920): the same on-launch catch-up shape, and for the same
+            // reason — iOS gives a sideloaded app no dependable daily wake, so "once a day" means
+            // "the first time you open it after the hour you chose". Silent on every failure; the
+            // Integration screen shows `lastError` and the last-written time.
+            //
+            // NOT detached: it needs the main-actor Repository and the coach engine, and the whole
+            // job is a few dictionary lookups plus one small file write. The heavy path (a coach
+            // call per section) is opt-in and already off by default.
+            // `coach: nil` deliberately. Holding an `@EnvironmentObject AICoachEngine` on this tab
+            // shell would subscribe it to all 32 of that object's @Published properties — the exact
+            // scroll regression fixed on 260919. The scheduled digest therefore writes the NUMBERS,
+            // which is the part another tool cannot recompute; the coach paragraphs are available
+            // from "Generate now" on the Integration screen, which already holds the engine.
+            await MuseIntegrationRunner.runIfDue(repo: repo, coach: nil)
         }
         // Quick-action sheet presents with the calm easing (~0.42s) per the README sheet spec —
         // the easing is applied where `quickAction` is set (see `presentQuickAction`), keeping the
@@ -211,23 +244,27 @@ struct RootTabView: View {
                 routedPillar = dest
                 router.requestedDestination = nil
             case .coach:
-                // K3: Coach is now a top-level tab (tag 3) — switch to it directly instead of
-                // presenting it as a pillar sheet.
+                // Upstream's K3 made Coach tab 3 and switched to it by LITERAL. The fork's order is
+                // Today/Day/Sleep/Trends/More, so tag 3 is TRENDS here — "Ask the Coach" landed on the
+                // Trends tab. Coach has no tab of its own in this fork: switch to More and PUSH the
+                // coach destination onto that tab's stack, so the user lands in the chat itself and the
+                // system back button returns them the way they came. Named index, never a literal —
+                // that is what `PhoneTabIndex` exists for.
                 //
-                // Guarded on the master switch, because this route is reachable with Coach OFF. A brief
-                // notification already sitting in Notification Centre still calls `openCoach()` when it is
-                // tapped (StrandApp wires `onCoachBriefTapped` to it), and with no tab claiming tag 3 the
-                // wearer would land on a BLANK tab. Dropping the request leaves them where they were, which
-                // is the honest answer for a feature that is switched off.
+                // Guarded on upstream's #2269 master switch, because this route is reachable with Coach
+                // OFF: a brief notification already sitting in Notification Centre still calls
+                // `openCoach()` when tapped. Dropping the request leaves the wearer where they were,
+                // which is the honest answer for a feature that is switched off.
                 guard coachEnabled else {
                     router.requestedDestination = nil
                     break
                 }
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.more }
+                tabPaths[Tab.more] = NavigationPath([MoreDestination.coach])
                 router.requestedDestination = nil
             case .trends:
                 // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 1 }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.trends }
                 router.requestedDestination = nil
             case .activeWorkout:
                 // The Today active-workout indicator opens Live through the quick-action Live sheet; once
@@ -238,7 +275,7 @@ struct RootTabView: View {
             case .liveSession:
                 // Live Sessions is presented from Today's own Start entry (a cover, not a routed sheet),
                 // so a deep-link lands on the Today tab where that entry lives.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 0 }
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.today }
                 router.requestedDestination = nil
             case .coach:
                 // #1862: the Today Coach launcher hands its question here. Coach is a pillar sheet on
@@ -254,8 +291,8 @@ struct RootTabView: View {
                 // Coach has no tab of its own — it is a More row. Switch to More and PUSH the coach
                 // destination onto that tab's stack, so the user lands in the chat itself rather than on
                 // the More menu, and the system back button returns them the way they came.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = 3 }
-                tabPaths[3] = NavigationPath([MoreDestination.coach])
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.more }
+                tabPaths[Tab.more] = NavigationPath([MoreDestination.coach])
                 router.requestedDestination = nil
             case nil:
                 break
@@ -480,7 +517,13 @@ struct RootTabView: View {
                 moreSection("Insights") {
                     MoreRow("What Moves You", "wand.and.sparkles", .insightsHub)
                     MoreRow("Intelligence", "brain.head.profile", .intelligence)
-                    // K3: Coach promoted to a top-level tab — no longer listed under More.
+                    // Upstream's K3 promoted Coach to a top-level tab and deleted this row. The fork
+                    // keeps its own five-tab order (Today/Day/Sleep/Trends/More), which has no Coach
+                    // tab — so taking upstream's tab layout OUT without putting this row back left
+                    // Coach with no entry point in the shell at all: reachable only from Today's
+                    // "Ask the Coach" button, and not at all once the synthesis card was hidden.
+                    // Restored here, in the section that is open by default (#v17 uplift).
+                    MoreRow("Coach", "sparkles", .coach)
                     MoreRow("Insights", "lightbulb.fill", .insights)
                     MoreRow("Explore", "square.grid.2x2.fill", .explore)
                     MoreRow("Compare", "rectangle.split.2x1.fill", .compare)
@@ -548,7 +591,7 @@ struct RootTabView: View {
         }
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
-        .tabItem { Label("More", systemImage: "ellipsis") }
+        .tabItem { Label(PhoneTab.more.titleKey, systemImage: PhoneTab.more.systemImage) }
     }
 
     /// One titled, COLLAPSIBLE group in the More index (S2): the app's overline (UPPERCASE) becomes a

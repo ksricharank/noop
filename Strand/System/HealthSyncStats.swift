@@ -61,14 +61,31 @@ enum HealthSyncStats {
     private(set) static var writeBackMillis = 0
     private(set) static var refreshMillis = 0
 
+    /// How many write-backs the `writeBackMillis` total is made of (260919).
+    ///
+    /// It used to be divided by `syncs`, which counts only FULL syncs through `sync()` — and the
+    /// dominant write-back path is not that one. `writeBackAfterNewData()` runs after every
+    /// completed strap backfill, ~37 times in the motivating log against `syncs=2`, and carried no
+    /// instrumentation at all. So the header's "writeBack=4s" was the cost of two write-backs
+    /// divided by two syncs, presented beside a number of runs it had not measured, and the
+    /// question it exists to answer — what enabling Apple Health writes actually costs — could not
+    /// be answered from it either way.
+    ///
+    /// Its own counter, incremented wherever a write-back is timed, so the divisor matches the
+    /// numerator whichever path ran.
+    private(set) static var writeBacks = 0
+
     static func recordReadPhase(millis: Int) { readMillis += max(0, millis) }
-    static func recordWriteBackPhase(millis: Int) { writeBackMillis += max(0, millis) }
+    static func recordWriteBackPhase(millis: Int) {
+        writeBacks += 1
+        writeBackMillis += max(0, millis)
+    }
     static func recordRefreshPhase(millis: Int) { refreshMillis += max(0, millis) }
 
     /// Test seam — the counters are process-lifetime, so a suite needs a way back to zero.
     static func reset() {
         wakes = 0; syncs = 0; coalesced = 0; emptyWakes = 0; syncMillis = 0
-        readMillis = 0; writeBackMillis = 0; refreshMillis = 0
+        readMillis = 0; writeBackMillis = 0; refreshMillis = 0; writeBacks = 0
     }
 
     /// The phase split, or "" until something has been measured.
@@ -78,15 +95,23 @@ enum HealthSyncStats {
     static var phaseSuffix: String {
         let total = readMillis + writeBackMillis + refreshMillis
         guard total > 0 else { return "" }
-        return " · per sync: reads=\(ms(readMillis)) writeBack=\(ms(writeBackMillis))"
-            + " refresh=\(ms(refreshMillis)) (wall time, mostly await — not CPU)"
+        // writeBack is averaged over its OWN run count and says so — it does not ride the sync
+        // cadence (see `writeBacks`). reads/refresh remain per-sync, which is the path they run on.
+        return " · per sync: reads=\(ms(readMillis)) refresh=\(ms(refreshMillis))"
+            + " · writeBack=\(per(writeBackMillis, over: writeBacks))×\(writeBacks)"
+            + " (wall time, mostly await — not CPU)"
     }
 
     /// Milliseconds as a per-sync average, in whole seconds when large enough to matter.
-    private static func ms(_ totalMillis: Int) -> String {
-        guard syncs > 0 else { return "—" }
-        let per = totalMillis / syncs
-        return per >= 1000 ? "\(per / 1000)s" : "\(per)ms"
+    private static func ms(_ totalMillis: Int) -> String { per(totalMillis, over: syncs) }
+
+    /// Milliseconds averaged over an explicit run count. A zero count reads "—", never "0ms": no
+    /// measurement and a measurement of nothing are different claims, and the second is the one
+    /// that would be believed.
+    private static func per(_ totalMillis: Int, over runs: Int) -> String {
+        guard runs > 0 else { return "—" }
+        let each = totalMillis / runs
+        return each >= 1000 ? "\(each / 1000)s" : "\(each)ms"
     }
 
     /// One header line, or nothing at all when the observer path never ran this session.
