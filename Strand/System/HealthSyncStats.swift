@@ -74,6 +74,10 @@ enum HealthSyncStats {
     /// Its own counter, incremented wherever a write-back is timed, so the divisor matches the
     /// numerator whichever path ran.
     private(set) static var writeBacks = 0
+    /// Routine write-backs the 260928 spacing floor stood down. Printed beside the run count so the
+    /// next log shows the throttle working rather than the export silently dying.
+    private(set) static var writeBacksSkipped = 0
+    static func recordWriteBackSkipped() { writeBacksSkipped += 1 }
 
     static func recordReadPhase(millis: Int) { readMillis += max(0, millis) }
     static func recordWriteBackPhase(millis: Int) {
@@ -86,6 +90,7 @@ enum HealthSyncStats {
     static func reset() {
         wakes = 0; syncs = 0; coalesced = 0; emptyWakes = 0; syncMillis = 0
         readMillis = 0; writeBackMillis = 0; refreshMillis = 0; writeBacks = 0
+        writeBacksSkipped = 0
     }
 
     /// The phase split, or "" until something has been measured.
@@ -99,6 +104,7 @@ enum HealthSyncStats {
         // cadence (see `writeBacks`). reads/refresh remain per-sync, which is the path they run on.
         return " · per sync: reads=\(ms(readMillis)) refresh=\(ms(refreshMillis))"
             + " · writeBack=\(per(writeBackMillis, over: writeBacks))×\(writeBacks)"
+            + (writeBacksSkipped > 0 ? " skipped=\(writeBacksSkipped)" : "")
             + " (wall time, mostly await — not CPU)"
     }
 

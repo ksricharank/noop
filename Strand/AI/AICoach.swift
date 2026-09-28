@@ -622,52 +622,49 @@ final class AICoachEngine: ObservableObject {
     /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write my read for the Today \
-    screen. Tell me WHAT STATE I AM IN right now, how the last hours produced it, and what to do \
-    with the next few. Aim for 150-250 words: a proper read, not a caption. Depth beats breadth — \
-    within any section FEWER IS BETTER, but each point you keep gets the mechanism, not just the \
-    number.
+    screen. Tell me WHAT STATE I AM IN right now and what to do about it — as SCANNABLE BULLETS, \
+    never a wall of prose. Your lens is MY BODY IN THE PRESENT: lead with MY LAST 6 HOURS and \
+    today's readings; the targets are the LEAST interesting thing you have, because I can read \
+    those numbers myself.
 
-    Your lens is MY BODY IN THE PRESENT. Lead with MY LAST 6 HOURS and today's readings; the \
-    targets are the LEAST interesting thing you have, because I can read those numbers myself.
-
-    Shape:
-    - Open with ONE bolded line: my state in at most twelve words, committed, no hedging.
-    - THE READ: a short paragraph (2-4 sentences) narrating the last hours as cause and effect — \
-    what my heart rate, movement and stress trace say happened, and the state that leaves me in. \
-    Compare only to MY resting heart rate and MY OWN baseline, never to population norms. My data \
-    includes z-scores: |z| above 1 is a real deviation, above 2 a strong one; a metric inside its \
-    normal range is NOT news, and one real deviation explained well beats three listed. You may \
-    connect two signals into one causal read when the data supports it — say it is a read, not a \
-    fact.
-    - THE NEXT FEW HOURS: two or three concrete moves that follow from the read — what to do, \
-    what to avoid, what to expect it to feel like. If training is on the table, say what kind, \
-    how hard, and why today's state supports or argues against it.
-    - Close with one watchout worth flagging NOW, when the data shows one forming: a climbing \
-    resting HR, sagging HRV or elevated respiratory rate together can precede illness or \
-    accumulated strain. Say what would confirm it and what to change today if it does.
+    Shape — this exact skeleton, nothing else:
+    - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging.
+    - Then 5 to 8 bullets, ONE point each, at most ~16 words after the bolded lead. Group them \
+    with these bolded lead-ins, in this order, skipping any group with nothing real to say:
+    - **Now** — what my heart rate, movement and stress trace say happened over the last hours \
+    and the state that leaves me in. Compare only to MY resting heart rate and MY OWN baseline. \
+    My data has z-scores: |z| above 1 is real, above 2 strong; in-range is NOT news. You may \
+    connect two signals into one causal read — flag it as a read, not a fact.
+    - **Next** — one or two concrete moves for the coming hours: what to do, when, how hard, and \
+    what to avoid. If training is on the table, what kind and why today's state supports it.
+    - **Tonight** — the bridge to the night: wind-down guidance keyed to tonight's sleep target \
+    and my usual midsleep from the data. You may state ONE derived clock time ("lights out about \
+    HH:MM") computed from those two numbers — the single exception to the no-derived-numbers \
+    rule, always prefixed "about". Caffeine or heavy-meal cutoffs may anchor on it in words.
+    - **Watch** — at most one watchout forming NOW: climbing resting HR, sagging HRV or elevated \
+    respiratory rate together can precede illness or strain. Say what would confirm it.
 
     About the targets, specifically:
     - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
     can read off the screen. Mention a target ONLY when my current state changes what I should \
-    do about it — a long sedentary stretch plus a low step count making a walk the obvious next \
-    move, or today's strain against a poor recovery making the effort target not worth chasing.
+    do about it.
     - My total calories include resting metabolism on both sides, so an early-day number far \
-    below target is NORMAL. Never read it as a shortfall or urge me to make it up.
+    below target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
 
     Rules:
     - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
     night's sleep — other screens own each of those. Reach back only far enough to make right \
     now make sense.
-    - The sedentary line, when present, states its own timeframe. Quote it faithfully: if it \
-    says "as of the last strap sync", the stillness is as of that sync — never extend it to \
-    this instant.
-    - Every number you write must appear VERBATIM in my data, in **bold**; never invent, \
-    convert or estimate one, and never state a target that differs from TODAY'S TARGETS.
-    - No headings, no greeting, no sign-off — the bolded opening line and short paragraphs are \
-    the whole structure.
-    - If my last hours are genuinely unremarkable, say so plainly in a few sentences and stop. \
-    "Sitting at rest, everything in your normal range" is an honest, useful read. Never invent \
-    a finding to fill the shape; padding past a quiet morning is worse than brevity.
+    - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of \
+    the last strap sync" stillness is as of that sync, never this instant.
+    - Every number you write must appear VERBATIM in my data, in **bold** (the Tonight clock \
+    time is the one exception above). Never invent, convert or estimate any other figure, and \
+    never state a target that differs from TODAY'S TARGETS.
+    - No headings, no greeting, no sign-off, no prose paragraphs — the verdict line and the \
+    bullets are the whole structure. Within a group FEWER IS BETTER; depth beats breadth.
+    - If my last hours are genuinely unremarkable, say so in the verdict plus two bullets and \
+    stop. Never invent a finding to fill a group; a quiet morning reported quietly is the \
+    correct output, not a failure. "unremarkable" is an allowed verdict.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
@@ -679,19 +676,21 @@ final class AICoachEngine: ObservableObject {
     /// caller's static title) — the prompt asks, only the code can guarantee.
     static let defaultNotificationTitlePrompt = """
     Write ONE title for a phone notification about the status below.
+    What the metric MEANS — get the direction right, this is the part that gets botched:
+    - Steps or Effort behind: I need to MOVE — suggest a walk, stairs, a session. Never rest.
+    - Cal is energy BURNED, not eaten. A calorie gap means BE MORE ACTIVE. Never suggest a \
+    snack, a meal, or eating anything — food cannot close a burn gap and the suggestion reads \
+    as nonsense.
+    - Water behind: drink. At or past any target: congratulate briefly, point forward.
     Rules, strictly:
     - At most 32 characters. This is a hard limit — a longer line gets thrown away.
-    - Warm, a little playful, motivating. Never scolding, never guilt-tripping.
-    - Scale it to the size of the gap: a small shortfall suggests something quick; a large one \
-    suggests setting aside real time. If I am already at or past the target, celebrate briefly and \
-    encourage me to keep going rather than implying there is nothing left to do.
-    - No emoji, no quotation marks, no trailing period, no line breaks.
-    - Refer to MY numbers above — name the metric or the figure that is actually behind, so the \
-    line could not have been written without seeing my day.
-    - Do not write a generic line that would fit any day.
-    Shape guide, as a description rather than as text to copy: for a small gap, suggest one quick \
-    concrete action; for a large gap, suggest setting aside a block of real time; when I am at or \
-    past target, congratulate me in a few words and point forward.
+    - A complete thought a stranger could act on: the gap or the win, then one concrete action. \
+    Never a bare fragment, never a metric name with no verb.
+    - Copy my numbers exactly as given: "930/1792" means 930 done of a 1792 target. Name the \
+    figure that is actually behind, so the line could not fit any other day.
+    - Warm, a little playful, motivating. Never scolding. Scale the ask to the gap: small gap, \
+    quick action; big gap, a real block of time.
+    - No emoji, no quotation marks, no trailing period, no line breaks, no "Title:" label.
     Reply with the line only.
     """
 
