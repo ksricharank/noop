@@ -7,28 +7,29 @@ import StrandDesign
 struct NOOPLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: NOOPActivityAttributes.self) { context in
-            // Lock Screen / banner presentation.
+            // Lock Screen / banner presentation: four EQUAL stat columns — HR, Charge, Effort,
+            // Rest — one shared type size, no oversized hero number. HR is a labelled peer of the
+            // others (the old caption-title + 26 pt bpm read as "live beat" even when the locked
+            // duty cycle is showing a window average; equal columns read as the summary they are).
             HStack(spacing: 14) {
                 Image(systemName: "waveform.path.ecg")
                     .font(.title2)
                     .foregroundStyle(StrandPalette.statusCritical)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.attributes.title)
-                        .font(.caption).foregroundStyle(StrandPalette.textSecondary)
-                    Text("\(context.state.bpm.map(String.init) ?? "–") bpm")
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundStyle(StrandPalette.textPrimary)
-                }
                 Spacer()
-                // Charge + Effort (#446) on the banner, mirroring the Dynamic Island expanded stats.
-                HStack(spacing: 12) {
-                    if let r = context.state.recovery {
-                        bannerStat(label: "Charge", value: "\(r)%")
-                    }
-                    if let e = context.state.effort {
-                        bannerStat(label: "Effort", value: "\(e)")
-                    }
-                }
+                // The tilde marks a LIVE beat ("~72", still moving); a window average / frozen value
+                // is the plain settled number. Deliberately this way round: when the phone locks and
+                // pushes stop reaching the card, whatever is on it is by definition not live — the
+                // plain form it is left holding stays honest without needing a repaint.
+                bannerStat(label: "HR", value: hrText(context.state))
+                Spacer()
+                bannerStat(label: "Charge",
+                           value: context.state.recovery.map(String.init) ?? "–")
+                Spacer()
+                bannerStat(label: "Effort",
+                           value: context.state.effort.map(String.init) ?? "–")
+                Spacer()
+                bannerStat(label: "Rest",
+                           value: context.state.rest.map(String.init) ?? "–")
             }
             .padding()
             .activityBackgroundTint(StrandPalette.surfaceBase)
@@ -36,17 +37,20 @@ struct NOOPLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label("\(context.state.bpm.map(String.init) ?? "–")", systemImage: "heart.fill")
+                    Label(hrText(context.state), systemImage: "heart.fill")
                         .foregroundStyle(StrandPalette.statusCritical)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    // Charge + Effort (#446) — one more stat alongside the leading live HR.
+                    // Charge + Effort (#446) + Rest — the same stats the banner carries, one size.
                     HStack(spacing: 10) {
                         if let r = context.state.recovery {
-                            statColumn(label: "Charge", value: "\(r)%")
+                            statColumn(label: "Charge", value: "\(r)")
                         }
                         if let e = context.state.effort {
                             statColumn(label: "Effort", value: "\(e)")
+                        }
+                        if let rhr = context.state.rest {
+                            statColumn(label: "Rest", value: "\(rhr)")
                         }
                     }
                 }
@@ -56,12 +60,22 @@ struct NOOPLiveActivity: Widget {
             } compactLeading: {
                 Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
             } compactTrailing: {
-                Text("\(context.state.bpm.map(String.init) ?? "–")")
+                Text(hrText(context.state))
             } minimal: {
                 Image(systemName: "heart.fill").foregroundStyle(StrandPalette.statusCritical)
             }
         }
     }
+}
+
+/// The HR display string: a LIVE beat carries the tilde ("~72" — still moving), a window average /
+/// frozen value is the plain settled number. `live` is nil on activities written by older builds —
+/// treated as not-live, so an inherited card never claims liveness it can't back. File-scope for the
+/// same reason as `bannerStat`. The `minimal` slot deliberately does NOT use this: it clips rather
+/// than shrinks, and the tilde would cost the third digit of a workout HR.
+private func hrText(_ state: NOOPActivityAttributes.ContentState) -> String {
+    guard let bpm = state.bpm else { return "–" }
+    return state.live == true ? "~\(bpm)" : "\(bpm)"
 }
 
 /// Lock-Screen banner stat column (label over value). File-scope because the `ActivityConfiguration`
@@ -76,7 +90,9 @@ struct NOOPLiveActivity: Widget {
 private func bannerStat(label: String, value: String) -> some View {
     VStack(alignment: .center, spacing: 2) {
         Text(label).font(.caption2).foregroundStyle(StrandPalette.textSecondary)
-        Text(value).font(.headline).foregroundStyle(StrandPalette.textPrimary)
+        // .title3 (one step up from .headline): the four values are the banner's whole payload and
+        // read from a nightstand distance; the labels stay caption2 so the numbers carry the row.
+        Text(value).font(.title3).fontWeight(.semibold).foregroundStyle(StrandPalette.textPrimary)
     }
     .multilineTextAlignment(.center)
     .fixedSize()
