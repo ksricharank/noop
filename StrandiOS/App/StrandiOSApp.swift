@@ -169,6 +169,9 @@ struct StrandiOSApp: App {
         // use the immediate hook below. BGTaskScheduler chooses the actual wake time.
         HealthWritebackBackgroundScheduler.register { [weak bridge] in
             guard let bridge else { return false }
+            // 260928: the routine spacing floor (see HealthWritebackThrottle). A stood-down run is a
+            // success for the scheduler — the data is at most half an hour stale, not lost.
+            guard await HealthWritebackThrottle.admit() else { return true }
             let succeeded = await bridge.writeBackAfterNewData()
             // A person can revoke every write type in Settings while NOOP is closed. Stop requesting
             // wakes once the cold-launched bridge can no longer resume a prior share grant.
@@ -182,6 +185,11 @@ struct StrandiOSApp: App {
         // synced on open only reached Health at the next launch. Weak so the scene owns the bridge's
         // lifetime; the bridge no-ops unless Health was authorized.
         model.healthWriteBack = { [weak bridge] in
+            // 260928: THE hot path — this ran after every ~10-minute strap offload, and each run
+            // rewrote a 14-day Health window (168 by 11:20 in the motivating log, against 4 two days
+            // earlier). The Battery screen's Health-app share was that ingest churn. The floor stands
+            // all but ~2/hour down; a skipped run's days are written by the next admitted one.
+            guard await HealthWritebackThrottle.admit() else { return }
             _ = await bridge?.writeBackAfterNewData()
         }
     }
