@@ -1,5 +1,24 @@
 import Foundation
 enum StorePaths {
+    /// The on-disk footprint of the store and its WAL sidecar, in whole MB, or nil when the path
+    /// cannot resolve. One stat() per file — cheap enough for a log header and a per-pass line.
+    ///
+    /// 260928 instrumentation: the slow-pass logs show SQL statements averaging 2–6 SECONDS wall
+    /// (`store sql reads=1354183ms/260`) with near-zero compute, worsening through a long-lived
+    /// process. The prime suspect for that shape is a WAL that cannot checkpoint under always-on
+    /// readers + a 1 Hz live writer, so every read walks an ever-growing log; `checkpointWAL()` runs
+    /// only after bulk imports today. The theory is MEASURED before anything is changed: if the next
+    /// log shows `wal=` in the hundreds of MB climbing across the day and tracking the slow passes,
+    /// that is the cause; if it stays small, the theory is dead and the I/O throttle is next.
+    static func storeSizesMB() -> (dataMB: Int, walMB: Int)? {
+        guard let path = try? defaultDatabasePath() else { return nil }
+        func mb(_ p: String) -> Int {
+            let bytes = (try? FileManager.default.attributesOfItem(atPath: p)[.size] as? Int) ?? 0
+            return (bytes ?? 0) / 1_048_576
+        }
+        return (mb(path), mb(path + "-wal"))
+    }
+
     /// `<AppSupport>/OpenWhoop/whoop.sqlite`, creating the directory if needed.
     static func defaultDatabasePath() throws -> String {
         let fm = FileManager.default

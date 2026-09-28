@@ -1153,8 +1153,12 @@ final class IntelligenceEngine: ObservableObject {
             // the numerators moving in the background — aborting it would trade a real feature for
             // almost none of the bill. Never fires at offset 0: a pass that scores nothing is waste.
             var abandonedAtOffset: Int?
+            // 260928: the pass's deliberate sleep, tallied so the done-line wall is attributable.
+            var pacedRestSeconds = 0.0
             for offset in 0..<maxDays {
-                if offset > 0 { await RescoreBackgroundScheduler.paceIfBackgrounded(since: &paceMark) }
+                if offset > 0 {
+                    pacedRestSeconds += await RescoreBackgroundScheduler.paceIfBackgrounded(since: &paceMark)
+                }
                 if !lightPass, offset > 0, RescoreBackgroundScheduler.isBackgroundedSnapshot {
                     abandonedAtOffset = offset
                     break
@@ -1855,7 +1859,14 @@ final class IntelligenceEngine: ObservableObject {
             // SQLite; read ≈ sql ⇒ SQLite itself is the slow half. writes>0 says a backfill overlapped.
             skippedDayLines.append("analyzeRecent store sql reads=\(Int(perf.sqlReadSeconds * 1000))ms"
                                    + "/\(perf.sqlReadCount) writes=\(Int(perf.sqlWriteSeconds * 1000))ms "
-                                   + "(pass-wide, all consumers)")
+                                   + "(pass-wide, all consumers)"
+                                   // 260928: the two numbers the slow-pass theory needs on every
+                                   // pass: how much of the wall was DELIBERATE pacing sleep (wall,
+                                   // not CPU — and proportional to store waits by construction),
+                                   // and the WAL's size right now (a checkpoint-starved log makes
+                                   // every read slower as the day wears on; see StorePaths).
+                                   + " paced=\(Int(pacedRestSeconds * 1000))ms"
+                                   + (StorePaths.storeSizesMB().map { " wal=\($0.walMB)MB" } ?? ""))
             return (out, skippedDayLines, dayScanCacheLocal)
         }.value
         // #1005: write the loop's updated reuse cache back to the (main-actor) stored property. The pass ran
