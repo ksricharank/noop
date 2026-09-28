@@ -241,4 +241,48 @@ final class StressOnsetDetectorTests: XCTestCase {
         XCTAssertFalse(d.shouldNudge)
         XCTAssertEqual(d.reason, .notAnEdge)
     }
+
+    // 260901 sensitivity knobs: dropRatio and sustainSeconds ride Config, so a user-raised
+    // threshold fires on a MODERATE dip the shipped default would ignore, and a shorter sustain
+    // confirms sooner. Defaults keep every vector above byte-identical.
+    func test_config_dropRatio_widens_what_counts_as_a_dip() {
+        let sensitive = StressOnsetDetector.Config(enabled: true, autoNudge: true, dropRatio: 0.75)
+        // Baseline RMSSD ~120 (jitter 60). Moderate dip: jitter 40 → RMSSD ~80 — ABOVE the default
+        // threshold (120×0.6=72) but BELOW the sensitive one (120×0.75=90).
+        let highHRV = jittered(900, jitter: 60, 60)
+        let moderate = jittered(900, jitter: 40, 60)
+
+        // Default config: the moderate dip never even arms.
+        var d = StressOnsetDetector.evaluate(rrBuffer: highHRV, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: .initial, config: on, nowSec: 0, tzOffsetSec: 0)
+        d = StressOnsetDetector.evaluate(rrBuffer: moderate, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: d.nextState, config: on, nowSec: 60, tzOffsetSec: 0)
+        XCTAssertEqual(d.reason, .noDip)
+
+        // Sensitive config: same beats arm, hold, fire.
+        d = StressOnsetDetector.evaluate(rrBuffer: highHRV, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: .initial, config: sensitive, nowSec: 0, tzOffsetSec: 0)
+        d = StressOnsetDetector.evaluate(rrBuffer: moderate, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: d.nextState, config: sensitive, nowSec: 60, tzOffsetSec: 0)
+        XCTAssertEqual(d.reason, .awaitingSustain)
+        d = StressOnsetDetector.evaluate(rrBuffer: moderate, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: d.nextState, config: sensitive,
+            nowSec: 60 + sensitive.sustainSeconds, tzOffsetSec: 0)
+        XCTAssertTrue(d.shouldNudge)
+    }
+
+    func test_config_sustainSeconds_confirms_sooner() {
+        let quick = StressOnsetDetector.Config(enabled: true, autoNudge: true, sustainSeconds: 15)
+        let highHRV = jittered(900, jitter: 60, 60)
+        let lowHRV = jittered(900, jitter: 5, 60)
+        var d = StressOnsetDetector.evaluate(rrBuffer: highHRV, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: .initial, config: quick, nowSec: 0, tzOffsetSec: 0)
+        d = StressOnsetDetector.evaluate(rrBuffer: lowHRV, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: d.nextState, config: quick, nowSec: 60, tzOffsetSec: 0)
+        XCTAssertEqual(d.reason, .awaitingSustain)
+        // 15 s later — under the shipped 60 s, but at the configured sustain → fires.
+        d = StressOnsetDetector.evaluate(rrBuffer: lowHRV, currentHR: 70, recentMotionG: 0.0,
+            sessionActive: false, state: d.nextState, config: quick, nowSec: 75, tzOffsetSec: 0)
+        XCTAssertTrue(d.shouldNudge)
+    }
 }

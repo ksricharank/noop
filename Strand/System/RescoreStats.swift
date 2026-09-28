@@ -26,30 +26,48 @@ import Foundation
 @MainActor
 enum RescoreStats {
 
+    /// KEY NAMESPACE (260919). These keys used to be `rss.*`, which `RetroScanStats` ALSO uses —
+    /// and the two collided on `rss.day` and `rss.maxMs`.
+    ///
+    /// The damage was silent and it corrupted the header both types print. Both call `rollIfNeeded`
+    /// against `rss.day`, and each roll zeroes only its OWN key list: whichever type rolled first
+    /// stamped the new day, so the other saw a matching day string, never rolled, and carried
+    /// yesterday's counters into today. And `rss.maxMs` was written by both — `RescoreStats`
+    /// comparing a pass duration, `RetroScanStats` a scan duration — so the strap log's
+    /// "maxMs=148117" on the retro-scan line and "longest 148s" on the re-score line were THE SAME
+    /// STORED INTEGER printed twice, and at most one of the two claims was true.
+    ///
+    /// `RescoreStats` is the newer type, so it moves: `rsc.*`. The rename deliberately abandons the
+    /// old values rather than migrating them — a migration would carry the corrupted numbers
+    /// forward, and one day of counters is worth nothing next to knowing the next log is honest.
+    /// The prefix every key in this type carries. Exposed so a test can assert it does not collide
+    /// with another stats type's namespace — which is exactly the bug this rename fixed.
+    static let keyPrefix = "rsc."
+
     private enum K {
-        static let day = "rss.day"
+        static let day = "rsc.day"
         /// Passes that got past every gate and began real work, keyed by trigger.
-        static let startedPrefix = "rss.started."
+        static let startedPrefix = "rsc.started."
         /// Passes that reached the end and wrote their watermark, keyed by trigger.
-        static let donePrefix = "rss.done."
+        static let donePrefix = "rsc.done."
         /// Triggers that were DROPPED before doing anything — the "already outstanding" and
         /// "over the 20s a background wake can be relied on for" cases. This is the number that
         /// says how much of the churn is self-inflicted: a deferral is work we asked for and threw
         /// away, and 41 of them in a day is a scheduling problem, not a cost of scoring.
-        static let deferredPrefix = "rss.deferred."
+        static let deferredPrefix = "rsc.deferred."
         /// Milliseconds spent in COMPLETED passes, split by where they ran. Background milliseconds
         /// are the battery bill; foreground milliseconds are latency the user felt.
-        static let msFg = "rss.msFg"
-        static let msBg = "rss.msBg"
+        static let msFg = "rsc.msFg"
+        static let msBg = "rsc.msBg"
         /// The single longest completed pass of the day, and its trigger — the 175 s outlier is what
         /// makes a background wake unreliable, and an average would hide it.
-        static let maxMs = "rss.maxMs"
-        static let maxTrigger = "rss.maxTrigger"
+        static let maxMs = "rsc.maxMs"
+        static let maxTrigger = "rsc.maxTrigger"
         /// #1681 debt non-settlements: a pass finished but a newer mark had already landed, so the
         /// debt survived and another full pass is guaranteed. A high count here IS the loop.
-        static let debtUnsettled = "rss.debtUnsettled"
+        static let debtUnsettled = "rsc.debtUnsettled"
         /// Full passes that gave up mid-pass because the app backgrounded (260906).
-        static let abandoned = "rss.abandoned"
+        static let abandoned = "rsc.abandoned"
     }
 
     private static var d: UserDefaults { .standard }

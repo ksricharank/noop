@@ -100,4 +100,33 @@ final class BatteryDiagTests: XCTestCase {
             "BLE wakes today: puffin=900 battery=2 — 902 total")
         XCTAssertNil(BatteryDiag.formatDayLine(label: "today", counts: [:]))
     }
+
+    /// The `.locked` keys are a SUBSET of their channel, not channels of their own.
+    ///
+    /// Every fixture in this file predated the lock split and carried no `.locked` key, so a total
+    /// that summed them was green here and wrong in the field: the 260914 header reported
+    /// "189873 total" and "9126/h" for a day whose real figures were ~104463 and ~4600/h. The
+    /// inflated number then read as the largest battery term in the app. These two cases use the
+    /// shape the recorder actually produces.
+    func testLockedKeysAreNotCountedTwiceInTheSessionTotal() {
+        let counts = ["puffin": 11727, "puffin.locked": 11343, "battery": 20, "battery.locked": 17]
+        let line = BatteryDiag.formatNotifyLine(counts: counts, seconds: 9000)
+        XCTAssertNotNil(line)
+        // 11727 + 20 = 11747, NOT 23107.
+        XCTAssertTrue(line!.contains("11747 total"),
+                      "locked wakes are a subset view, not an extra channel: \(line!)")
+        XCTAssertFalse(line!.contains("23107 total"))
+        // The rate divides the de-duplicated total: 11747 over 2.5 h.
+        XCTAssertTrue(line!.contains("4699/h"), line!)
+        // The per-channel breakdown still SHOWS the locked split — it is the attribution.
+        XCTAssertTrue(line!.contains("puffin.locked=11343"))
+    }
+
+    func testLockedKeysAreNotCountedTwiceInADayLine() {
+        let counts = ["puffin": 104140, "puffin.locked": 85123, "battery": 267, "battery.locked": 213]
+        let line = BatteryDiag.formatDayLine(label: "yesterday", counts: counts)
+        XCTAssertNotNil(line)
+        XCTAssertTrue(line!.contains("104407 total"), line!)
+        XCTAssertFalse(line!.contains("189743 total"))
+    }
 }
