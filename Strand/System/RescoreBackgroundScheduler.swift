@@ -481,12 +481,19 @@ enum RescoreBackgroundScheduler {
     /// the uptime the work since the last rest started at, in nanoseconds. It is left alone until a quantum of
     /// work has built up (`backgroundWorkQuantumSeconds`), so short units run back to back, and it is reset
     /// after a rest or in the foreground.
-    nonisolated static func paceIfBackgrounded(since mark: inout UInt64) async {
+    /// Returns the seconds actually slept, so a pass can report how much of its wall time was
+    /// DELIBERATE pacing rather than work (260928: a 2272 s light pass is unreadable until the
+    /// done-line's wall splits into store-wait, compute and rest — and the rest is proportional to
+    /// measured WALL including store waits, so a contended store both slows the pass and earns it
+    /// longer sleeps; the tally is what shows whether that feedback matters in practice).
+    @discardableResult
+    nonisolated static func paceIfBackgrounded(since mark: inout UInt64) async -> Double {
         let workSeconds = Double(DispatchTime.now().uptimeNanoseconds &- mark) / 1_000_000_000
         let background = await MainActor.run { isBackgrounded }
         let rest = RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: workSeconds, isBackground: background)
         if rest > 0 { try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000)) }
         if rest > 0 || !background { mark = DispatchTime.now().uptimeNanoseconds }
+        return rest
     }
 
     /// Hold an execution assertion for the duration of `work` so a SHORT pass is not suspended halfway.
