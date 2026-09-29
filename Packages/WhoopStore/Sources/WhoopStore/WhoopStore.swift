@@ -178,8 +178,10 @@ public actor WhoopStore {
     func syncRead<T>(_ block: (Database) throws -> T) throws -> T {
         let t0 = DispatchTime.now()
         defer {
-            perfSqlReadSeconds += Self.activeSeconds(since: t0)
+            let took = Self.activeSeconds(since: t0)
+            perfSqlReadSeconds += took
             perfSqlReadCount += 1
+            if took > perfMaxReadSeconds { perfMaxReadSeconds = took }
         }
         return try dbWriter.read(block)
     }
@@ -204,17 +206,41 @@ public actor WhoopStore {
     private var perfSqlReadSeconds = 0.0
     private var perfSqlReadCount = 0
     private var perfSqlWriteSeconds = 0.0
+    /// The single slowest read call since the last reset (260928): 500 s of read time reads very
+    /// differently as 100 × 5 s than as 3 × 160 s, and the aggregate cannot tell them apart.
+    private var perfMaxReadSeconds = 0.0
 
     /// SQL time and read-call count accrued since the last `perfReset()`. Snapshot + reset are
     /// separate so overlapping consumers can at worst double-report, never lose time.
-    public func perfSnapshot() -> (sqlReadSeconds: Double, sqlReadCount: Int, sqlWriteSeconds: Double) {
-        (perfSqlReadSeconds, perfSqlReadCount, perfSqlWriteSeconds)
+    public func perfSnapshot() -> (sqlReadSeconds: Double, sqlReadCount: Int,
+                                   sqlWriteSeconds: Double, maxReadSeconds: Double) {
+        (perfSqlReadSeconds, perfSqlReadCount, perfSqlWriteSeconds, perfMaxReadSeconds)
     }
 
     public func perfReset() {
         perfSqlReadSeconds = 0
         perfSqlReadCount = 0
         perfSqlWriteSeconds = 0
+        perfMaxReadSeconds = 0
+    }
+
+    /// Approximate per-table row counts, largest first: `max(rowid)` per table — O(1) via the rowid
+    /// btree, an over-count only where rows were deleted, and never a scan. For the strap log's
+    /// "where is the 1.7 GB" line (260928); a dbstat page walk would be exact but reads every page,
+    /// which under the pathology being diagnosed could stall the export for minutes.
+    public func tableRowEstimates(top: Int = 10) -> [(name: String, rows: Int)] {
+        (try? syncRead { db in
+            let names = try String.fetchAll(db, sql: """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'grdb_%'
+                """)
+            var out: [(String, Int)] = []
+            for name in names {
+                let rows = (try? Int.fetchOne(db, sql: "SELECT max(rowid) FROM \"\(name)\"")) ?? nil
+                out.append((name, rows ?? 0))
+            }
+            return out.sorted { $0.1 > $1.1 }.prefix(top).map { $0 }
+        }) ?? []
     }
 
     // MARK: - Maintenance
