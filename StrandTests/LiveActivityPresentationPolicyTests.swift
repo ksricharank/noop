@@ -62,13 +62,15 @@ final class LiveActivityPresentationPolicyTests: XCTestCase {
                       "the explicit opt-out should be reported ahead of the window; got: \(reason)")
     }
 
-    /// A dropped live link ends the activity — `bonded` stays true across disconnects, and keying off it
-    /// is what once left a frozen, fabricated HR on the Lock Screen after the strap went out of range.
-    func testDisconnectSuppresses() {
+    /// A dropped live link HOLDS the activity rather than ending it (260829). The end was one-way —
+    /// iOS forbids background starts — so charging the strap or a locked pocket-drop killed the island
+    /// until the next app open. Honesty about the frozen number (#911, the reason this used to
+    /// suppress) is carried by the drop-edge repaint instead: not-live, not-connected cue.
+    func testDisconnectHoldsRatherThanSuppresses() {
         let decision = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: false, connected: false, hasBPM: true)
-        guard case .suppress(let reason) = decision else {
-            return XCTFail("expected suppression when disconnected, got \(decision)")
+        guard case .holdIfShowing(let reason) = decision else {
+            return XCTFail("expected a hold when disconnected, got \(decision)")
         }
         XCTAssertTrue(reason.contains("not connected"), "got: \(reason)")
     }
@@ -84,16 +86,207 @@ final class LiveActivityPresentationPolicyTests: XCTestCase {
         }
     }
 
-    /// But a missing sample never overrides a real teardown reason: inside the window, or disconnected,
-    /// the activity still comes down rather than lingering on the last value.
-    func testWindowAndDisconnectOutrankAMissingSample() {
+    /// A missing sample never overrides a real teardown reason: inside the window the activity still
+    /// comes down. A dropped link is no longer a teardown reason — it holds, sample or not, and the
+    /// reason names the link so the two hold flavours stay distinguishable in the log.
+    func testTheWindowOutranksAMissingSampleAndADropStillHolds() {
         guard case .suppress = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: true, connected: true, hasBPM: false) else {
             return XCTFail("sleep window must suppress even with no sample")
         }
-        guard case .suppress = LiveActivityPresentationPolicy.decide(
+        guard case .holdIfShowing(let reason) = LiveActivityPresentationPolicy.decide(
             enabledByUser: true, inSleepWindow: false, connected: false, hasBPM: false) else {
-            return XCTFail("a dropped link must suppress even with no sample")
+            return XCTFail("a dropped link must hold even with no sample")
         }
+        XCTAssertTrue(reason.contains("not connected"), "got: \(reason)")
+    }
+
+    /// The toggle and the window still outrank a drop — an opted-out or sleeping card comes down even
+    /// while the link is down, or the hold would pin a card the user asked to remove.
+    func testTeardownReasonsOutrankTheDropHold() {
+        guard case .suppress = LiveActivityPresentationPolicy.decide(
+            enabledByUser: false, inSleepWindow: false, connected: false, hasBPM: true) else {
+            return XCTFail("the opt-out must suppress even while disconnected")
+        }
+        guard case .suppress = LiveActivityPresentationPolicy.decide(
+            enabledByUser: true, inSleepWindow: true, connected: false, hasBPM: true) else {
+            return XCTFail("the sleep window must suppress even while disconnected")
+        }
+    }
+}
+
+/// The lock-screen card's columns (260905).
+///
+/// Structural, because the widget extension's view code is not linked into the test target and its
+/// helpers are file-private: what can be checked is WHICH columns the card is built from, and that
+/// is exactly the thing this change is about.
+///
+/// Maintainer instruction: "for the lock screen live notification, I realized I want HR, plus steps
+/// n/t cal n/t, effort n/t" — and, separately and explicitly, "for the dynamic island, we have the
+/// right behavior". So the card changes and the island must NOT, which is the pairing worth pinning:
+/// an edit to this file that improves the card while quietly restyling the island would satisfy the
+/// first half of the instruction and break the second.
+final class LiveActivityBannerColumnsTests: XCTestCase {
+
+    private var source: String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("StrandiOSWidgets/NOOPLiveActivity.swift")
+        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    /// Isolate the Lock-Screen banner: everything before the `dynamicIsland:` closure.
+    private var bannerBlock: String {
+        let src = source
+        guard let end = src.range(of: "} dynamicIsland: { context in") else { return "" }
+        return String(src[src.startIndex..<end.lowerBound])
+    }
+
+    /// Isolate the island: everything from that closure on.
+    private var islandBlock: String {
+        let src = source
+        guard let start = src.range(of: "} dynamicIsland: { context in") else { return "" }
+        return String(src[start.lowerBound...])
+    }
+
+    /// The EXPANDED presentation alone — the `DynamicIslandExpandedRegion`s, up to the first
+    /// collapsed slot. Split out on 260905, when HR left the expanded view but stayed the whole of
+    /// the collapsed one: "HR is in the island" stopped being a single answer, and a test that
+    /// cannot tell the two apart cannot pin either.
+    private var expandedBlock: String {
+        let island = islandBlock
+        guard let end = island.range(of: "} compactLeading: {") else { return "" }
+        return String(island[island.startIndex..<end.lowerBound])
+    }
+
+    /// The COLLAPSED presentation alone — compact leading/trailing and minimal.
+    private var collapsedBlock: String {
+        let island = islandBlock
+        guard let start = island.range(of: "} compactLeading: {") else { return "" }
+        return String(island[start.lowerBound...])
+    }
+
+    func testTheBannerCarriesHRStepsCalAndEffort() {
+        let banner = bannerBlock
+        XCTAssertFalse(banner.isEmpty, "could not isolate the Lock-Screen banner")
+        for column in ["HR", "Steps", "Cal", "Effort"] {
+            XCTAssertTrue(banner.contains("bannerStat(label: \"\(column)\""),
+                          "the Lock-Screen card must carry a \(column) column")
+        }
+        XCTAssertTrue(banner.contains("hrText(context.state)"),
+                      "HR must render through hrText, which carries the live `~` marker")
+    }
+
+    /// Sleep left the CARD (four columns is what fits at this type size) but must still read in the
+    /// expanded island — the instruction moved it, it did not delete it.
+    func testSleepLeftTheCardButNotTheIsland() {
+        XCTAssertFalse(bannerBlock.contains("bannerStat(label: \"Sleep\""),
+                       "Sleep gave up its column to HR; a fifth column does not fit")
+        XCTAssertTrue(islandBlock.contains("statColumn(label: \"Sleep\""),
+                      "the expanded island must still show Sleep — the maintainer asked for the "
+                      + "island to be left exactly as it was")
+    }
+
+    /// THE ISLAND SHOWS HR WHEN COLLAPSED (260905).
+    ///
+    /// CORRECTION, recorded because I got this wrong and shipped it: the original instruction was
+    /// "I want the island to show the live hr only". When the maintainer then said "for the dynamic
+    /// island, we have the right behavior", I read it as "leave the island alone" and reverted the
+    /// island change wholesale — but they were confirming the CADENCE (window average locked, live
+    /// unlocked, the -1 window), not the island's contents. Build 321 therefore shipped the island
+    /// still showing Effort, and the report was "the dynamic HR is messed up - you didn't implement
+    /// any of the changes I asked for". This test is what makes that reading unambiguous in code.
+    func testTheCollapsedIslandShowsHeartRate() {
+        let collapsed = collapsedBlock
+        XCTAssertFalse(collapsed.isEmpty, "could not isolate the collapsed slots")
+        XCTAssertTrue(collapsed.contains("Text(hrText(context.state))"),
+                      "the compact trailing slot must show the heart rate")
+        XCTAssertTrue(collapsed.contains("Text(\"\\(bpm)\")"),
+                      "the minimal slot must show the heart rate")
+        XCTAssertFalse(collapsed.contains("effortNowText"),
+                       "effort no longer owns a collapsed slot — it moved to the expanded region")
+    }
+
+    /// HR is the COLLAPSED presentation only (260905: "in the expanded view remove the hr and just
+    /// keep the other five in their exact locations").
+    ///
+    /// The pairing is the point: HR must be absent from the expanded regions AND still present in
+    /// the collapsed ones. Asserting only the removal would be satisfied by deleting HR from the
+    /// island entirely, which is the opposite of what was asked.
+    func testTheExpandedViewHasNoHeartRate() {
+        let expanded = expandedBlock
+        XCTAssertFalse(expanded.isEmpty, "could not isolate the expanded regions")
+        XCTAssertFalse(expanded.contains("hrText("),
+                       "the expanded view must not show the heart rate")
+        XCTAssertFalse(expanded.contains("heart.fill"),
+                       "the heart glyph was the not-connected cue FOR the HR value; with no HR here "
+                       + "it would indicate nothing")
+        XCTAssertTrue(collapsedBlock.contains("hrText("),
+                      "HR must remain the collapsed presentation — removing it everywhere is not "
+                      + "what was asked")
+    }
+
+    /// The EXPANDED island carries the day: "hr, sleep target, steps n/t, cal n/t, effort n/t,
+    /// water n/t". Collapsing the island to a pure HR readout is only acceptable because expanding
+    /// it still answers everything else.
+    func testTheExpandedIslandCarriesTheDaysPairs() {
+        let expanded = expandedBlock
+        for column in ["Effort", "Steps", "Cal", "Water", "Sleep"] {
+            XCTAssertTrue(expanded.contains("statColumn(label: \"\(column)\""),
+                          "the expanded island must carry a \(column) column")
+        }
+    }
+
+    /// Steps shows its FULL count in the island, never the widget faces' abbreviated form (260905:
+    /// "with steps expanded and not abbreviated"). `stepsText` is the full "4412/8000";
+    /// `stepsAbbrev` ("4.4k/8k") belongs to the home-screen widget, where a cell genuinely has no
+    /// room. Pinned so a later tidy-up cannot "unify" the two.
+    func testStepsAreNotAbbreviatedInTheLiveActivity() {
+        XCTAssertTrue(islandBlock.contains("statColumn(label: \"Steps\", value: stepsText("),
+                      "the island must use the full step count")
+        XCTAssertFalse(source.contains("stepsAbbrev"),
+                       "the Live Activity must never use the widget's abbreviated steps form")
+    }
+
+    /// The three-and-three split, and that Sleep does NOT sit in the `.center` region.
+    ///
+    /// `.center` sits directly under the sensor cutout and is the narrowest of the three top slots —
+    /// putting a value there would risk reproducing the clipping this layout exists to fix. The top
+    /// row is therefore built from leading + trailing, each holding an evenly-divided share.
+    func testTheTopRowAvoidsTheCutoutRegion() {
+        XCTAssertFalse(islandBlock.contains("DynamicIslandExpandedRegion(.center)"),
+                       "the centre region sits under the sensor cutout — the narrowest slot, and "
+                       + "the one most likely to clip")
+    }
+
+    /// Charge was REMOVED from the island (260905, maintainer: "get rid of charge"). It is a score
+    /// rather than a pair, and the top row reads better balanced two-up.
+    ///
+    /// The FIELD is deliberately still pushed — see `ContentState.recovery` — so an activity adopted
+    /// across a build change still decodes. This asserts only that nothing renders it.
+    func testChargeIsNoLongerRendered() {
+        XCTAssertFalse(islandBlock.contains("statColumn(label: \"Charge\""),
+                       "Charge was removed from the island")
+        XCTAssertFalse(bannerBlock.contains("Charge"),
+                       "Charge left the Lock-Screen banner earlier and must not return")
+    }
+
+    /// The corner-clipping fix (260905): "hr and charge are getting cutoff at the corners, same with
+    /// effort on the bottom left".
+    ///
+    /// The expanded presentation wraps the sensor cutout and its regions run into the rounded
+    /// corners, so content pinned to an outer edge is clipped by the curve. Both halves of the fix
+    /// are pinned here because either alone leaves the report unaddressed: the regions must CENTRE
+    /// their content, and the outer edges must be inset off the curve.
+    func testTheExpandedRegionsAreInsetAndCentred() {
+        let island = islandBlock
+        XCTAssertTrue(island.contains(".padding(.leading, 6)"),
+                      "the leading region must be inset off the corner curve")
+        XCTAssertTrue(island.contains(".padding(.trailing, 6)"),
+                      "the trailing region must be inset off the corner curve")
+        XCTAssertTrue(island.contains(".padding(.horizontal, 4)"),
+                      "the bottom row must be inset, or its first and last columns clip")
+        XCTAssertTrue(island.contains(".frame(maxWidth: .infinity)"),
+                      "regions must centre their content rather than pinning it to an edge")
     }
 }
