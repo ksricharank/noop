@@ -18,12 +18,37 @@ struct NOOPProvider: TimelineProvider {
         completion(NOOPEntry(date: Date(), snapshot: WidgetSnapshot.load() ?? fallback))
     }
 
+    /// The app's day key format, duplicated here rather than imported: the widget extension does
+    /// not link the app module, and the two only need to AGREE on a string, not share a function.
+    static func localDayKey(_ date: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
+    }
+
     func getTimeline(in context: Context, completion: @escaping (Timeline<NOOPEntry>) -> Void) {
         // Gallery previews use `placeholder(in:)` / getSnapshot's preview branch. A real timeline
         // with no shared snapshot must show missing data honestly, never plausible sample numbers.
         let snap = WidgetSnapshot.load() ?? .unavailable
-        // Refresh roughly every 15 minutes; the app also forces a reload when it publishes fresh data.
-        let next = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date().addingTimeInterval(900)
+        // 260906: the self-refresh interval now ADAPTS to how much of the app's background-reload
+        // budget is left.
+        //
+        // These `.after` builds are not charged against that budget, but each is a process wake, and
+        // the 260906 log served 224 timelines against 108 requested — roughly 116 self-scheduled
+        // builds a day at the old flat 15 min. While the app still has budget, a SHORTER interval
+        // (10 min) fills the gaps between coalesced reloads, which is what makes the face feel live.
+        // Once the budget is spent these builds are the only thing keeping it current, and stretching
+        // them saves wakes on a day where nothing more will be requested anyway.
+        let dayKey = Self.localDayKey()
+        let spent = WidgetSnapshot.ExtensionStats.budgetSpent(dayKey: dayKey)
+        let interval = WidgetReloadBudget.nextTimelineInterval(usedToday: spent)
+        let next = Date().addingTimeInterval(interval)
+        // 260905: record that WidgetKit actually ASKED for a timeline. The app already counts the
+        // reloads it requests; this is the other half — without it, "the widget lags behind the
+        // app" cannot distinguish iOS dropping our requests from our snapshot being stale when
+        // read. Two integers into the shared App Group, on a path that was already running.
+        WidgetSnapshot.ExtensionStats.recordTimelineServed(dayKey: dayKey)
         completion(Timeline(entries: [NOOPEntry(date: Date(), snapshot: snap)], policy: .after(next)))
     }
 }
@@ -108,8 +133,10 @@ struct NOOPWidgetView: View {
         VStack(spacing: 2) {
             if let bpm = snap.bpm {
                 Text("\(bpm) bpm")
-                    .font(.caption2)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             HStack(alignment: .top, spacing: 0) {
@@ -140,14 +167,15 @@ struct NOOPWidgetView: View {
             // Glyph over value, the shape the request asked for. A 9pt word under each number was
             // spending scarce height on text nobody needs twice — the icons carry the metric identity.
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(renderingMode == .fullColor
                                  ? AnyShapeStyle(StrandPalette.textTertiary)
                                  : AnyShapeStyle(HierarchicalShapeStyle.secondary))
             Text(text ?? "–")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 19, weight: .bold, design: .rounded))
                 .foregroundStyle(scoreStyle(hasValue: text != nil, tint: tint))
-                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
         }
         .frame(maxWidth: .infinity)
         // An icon says nothing to VoiceOver, and the word it replaced was the only thing naming this
@@ -303,7 +331,8 @@ struct NOOPWidgetView: View {
                       name: "Heart rate variability", spoken: "\(hrv) milliseconds")
                 Spacer()
             }
-            vital(symbol: "battery.50", text: snap.batteryPct.map { "\($0)%" },
+            vital(symbol: BatteryGlyph.symbol(forPercent: snap.batteryPct),
+                  text: snap.batteryPct.map { "\($0)%" },
                   name: "Strap battery", spoken: snap.batteryPct.map { "\($0) percent" })
         }
         .font(.caption2)

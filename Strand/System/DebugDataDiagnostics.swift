@@ -392,6 +392,15 @@ enum DebugDataDiagnostics {
             lines.append("(on-device store not open yet)")
             return lines
         }
+        // 260928, the 1.7 GB question: WHICH tables hold it. Approximate rows via max(rowid) —
+        // never a scan, so the export cannot stall on the very slowness being diagnosed.
+        let footprint = await store.tableRowEstimates()
+        if !footprint.isEmpty {
+            lines.append("Tables (≈rows): " + footprint.map { name, rows in
+                rows >= 1_000_000 ? "\(name)=\(String(format: "%.1f", Double(rows) / 1_000_000))M"
+                    : (rows >= 1_000 ? "\(name)=\(rows / 1_000)k" : "\(name)=\(rows)")
+            }.joined(separator: "  "))
+        }
         var seen = Set<String>()
         let ids = [did, "my-whoop", "\(did)-noop", "my-whoop-noop",
                    "apple-health", "health-connect"].filter { seen.insert($0).inserted }
