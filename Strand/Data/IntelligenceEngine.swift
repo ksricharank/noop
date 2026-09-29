@@ -740,6 +740,35 @@ final class IntelligenceEngine: ObservableObject {
             diagnosticSink?("re-score: trigger=\(skipped) newData=no — skipped (nothing changed since last run)", nil)
             return
         }
+
+        // 260929, THE iOS-27 POSTURE GATE — the single chokepoint every entry passes (the
+        // post-offload run(), the completion re-arm, the light pass, direct callers), placed AFTER
+        // the fingerprint gates so an unchanged skip stays free. Before any pass starts inline in
+        // the background, a 50 ms CPU canary measures the starvation iOS 27 imposes on sustained
+        // background work (the 260929 log: 585 s of wall for ~5 s of compute). Starved ⇒ the pass
+        // is not attempted here: a FULL pass records its debt and arms the granted-window task —
+        // where iOS provides real CPU, verified by that path's own canary line — and a LIGHT pass
+        // simply waits (it never owes; its numerators update at the next granted window or
+        // foreground). See RescoreBackgroundPolicy.backgroundStarvationFactor for the root-cause
+        // record and docs/releases/fork/v11.8.0.18.31.md for the evidence.
+        if RescoreBackgroundScheduler.isBackgroundedSnapshot, !RescoreBackgroundScheduler.inGrantedWindow {
+            let canary = await BackgroundCPUCanary.measure()
+            if !RescoreBackgroundPolicy.inlineBackgroundAllowed(canaryFactor: canary.factor) {
+                RescoreStats.recordDeferred(cause: .cpuStarved)
+                if !lightPass { _ = RescoreBackgroundScheduler.markRescoreOwed() }
+                RescoreBackgroundScheduler.schedule()
+                diagnosticSink?(String(format: "re-score: skipped before starting — background CPU "
+                    + "starved (canary: 50 ms of CPU took %.0f ms, ×%.0f); "
+                    + (lightPass ? "light numerators wait for" : "deferred to")
+                    + " a granted task window or foreground (iOS 27 posture, 260929)",
+                    canary.wallMs, canary.factor), nil)
+                return
+            }
+            if canary.factor >= 1.5 {
+                diagnosticSink?(String(format: "re-score: background canary ×%.1f — proceeding inline",
+                                       canary.factor), nil)
+            }
+        }
         // Attribute the re-score that is ABOUT TO RUN. `trigger=post-offload` was previously logged only on
         // the SKIP path above, so a post-offload pass that actually RAN was labelled `forced` — in the strap
         // log it was indistinguishable from a settings edit or a recalibrate. #1538 lost three nights to

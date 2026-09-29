@@ -221,6 +221,11 @@ enum RescoreBackgroundScheduler {
     /// Lock-guarded rather than a plain `static var`: a detached task reads it while the main actor
     /// writes it, which is a data race by definition however benign the values look. `NSLock` is the
     /// primitive the rest of this file already uses for exactly this.
+    /// True while the BGProcessingTask handler's operation is executing (260929). The engine's
+    /// starvation gate stands down inside a granted window: iOS provides real CPU there, which the
+    /// canary line the handler logs also verifies on every settle. Always false on macOS.
+    @MainActor static var inGrantedWindow = false
+
     nonisolated static var isBackgroundedSnapshot: Bool {
         #if os(iOS)
         mirrorLock.lock()
@@ -540,6 +545,12 @@ enum RescoreBackgroundScheduler {
                         return
                     }
                 }
+                // 260929: verify, on every granted window, that iOS really does provide CPU here —
+                // the number that proves the posture change works (or catches iOS tightening again).
+                let canary = await BackgroundCPUCanary.measure()
+                log(String(format: "re-score: granted-window canary ×%.1f", canary.factor))
+                inGrantedWindow = true
+                defer { inGrantedWindow = false }
                 await operation()
                 guard !Task.isCancelled else { return }
                 // Only a pass that RAN TO COMPLETION here paces the next locked settle; a killed one
