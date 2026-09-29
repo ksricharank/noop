@@ -153,6 +153,9 @@ enum RescoreStats {
         case sleepWindow = "sleep-window"
         /// A backstop tick that simply did not run (nothing queued, nothing owed).
         case backstopSkipped = "backstop-skip"
+        /// 260929: the canary measured genuine background CPU starvation (iOS 27), so the pass was
+        /// handed to a granted task window instead of grinding inline for hundreds of seconds.
+        case cpuStarved = "cpu-starved"
     }
 
     /// #1681: a pass finished into a debt that had already been re-marked, guaranteeing another pass.
