@@ -1866,6 +1866,7 @@ final class IntelligenceEngine: ObservableObject {
                                    // and the WAL's size right now (a checkpoint-starved log makes
                                    // every read slower as the day wears on; see StorePaths).
                                    + " paced=\(Int(pacedRestSeconds * 1000))ms"
+                                   + " maxRead=\(Int(perf.maxReadSeconds * 1000))ms"
                                    + (StorePaths.storeSizesMB().map { " wal=\($0.walMB)MB" } ?? ""))
             return (out, skippedDayLines, dayScanCacheLocal)
         }.value
