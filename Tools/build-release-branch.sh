@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+#
+# Rebuild the local integration branch: latest upstream main + every feature branch.
+#
+# The release branch is DISPOSABLE — it is deleted and rebuilt from scratch on every run, so it
+# never accumulates its own history and never needs its own conflict resolution carried forward.
+# The feature branches are the durable artifacts; this just stacks them.
+#
+#   ./Tools/build-release-branch.sh              # rebuild from the FEATURES list below
+#   ./Tools/build-release-branch.sh --no-fetch   # skip the network fetch (offline / just re-stack)
+#
+# Adding a feature: create `feature/<name>` off origin/main, commit to it, add it to FEATURES.
+#
+# On a merge conflict the script stops with the conflict in place, so you can resolve it and
+# `git merge --continue`. That is a signal worth reading: it means upstream changed something your
+# feature also touches, and the fix belongs on the FEATURE branch (rebase it onto the new main),
+# not in the throwaway release branch where it would be lost on the next rebuild.
+
+set -euo pipefail
+
+# Overridable so a second integration branch can be built while `release` is checked out in
+# another worktree (git refuses to update a branch that is), and to test a stack without
+# clobbering the one currently installed on the phone.
+RELEASE_BRANCH="${RELEASE_BRANCH:-release}"
+# Match sync-upstream.sh: build on the UPSTREAM remote's main, falling back to origin only when no
+# separate upstream is configured. Hardcoding origin/main built the release on the FORK's mirror of
+# main, which is only as current as the last push to it — after an upstream sync that mirror is
+# behind, so the release silently omitted upstream commits that sync-upstream.sh had already
+# rebased every feature branch onto.
+UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
+git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin"
+# The BASE the stack is built on. Defaults to the pinned tag below rather than to the remote's
+# moving main.
+#
+# WHY A PIN (260905): the v16 line is deliberately built on the v11.1.0 TAG — "a released point is
+# a tested one", per the FEATURES notes. That was only ever true by accident: the script hardcoded
+# $UPSTREAM_REMOTE/main, and it happened to equal the tag on the day v16 was created. Nothing kept
+# it there. By the 16.4 cut local upstream/main was 38 commits past the tag, and the first assembly
+# came out carrying ~40 upstream commits that were never in the installed build — caught only by
+# diffing the assembly against the previous release branch and noticing the file count.
+#
+# The 16.5 cut then hit the SAME trap by a different route: pointing UPSTREAM_REMOTE at a bare ref
+# made `git remote get-url` fail, and the fallback silently selected origin/main — the fork's
+# mirror, which has DIVERGED from the tag. A silent fallback to the wrong base is the failure mode
+# worth engineering out, so the base is now stated here and verified below.
+#
+# To track upstream's main again (a future uplift), pass UPSTREAM_REF=upstream/main explicitly, or
+# move the pin. Either way it is a decision someone made, not an accident of fetch timing.
+# MOVED 260919, v11.6.0 -> v11.8.0 (the v18 uplift). Upstream shipped 11.7.0 and 11.8.0: 160
+# commits, 454 files. A released point is still a tested one, so this is a tag, not main.
+UPSTREAM_PINNED_REF="v11.8.0"
+UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_PINNED_REF}"
+if ! UPSTREAM_SHA="$(git rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}")"; then
+  echo "FATAL: UPSTREAM_REF '$UPSTREAM_REF' does not resolve to a commit." >&2
+  echo "       Nothing was built. Fetch it, or pass a ref that exists — this used to fall back to" >&2
+  echo "       a remote's main silently and build the release on the wrong base." >&2
+  exit 1
+fi
+UPSTREAM="$UPSTREAM_REF"
+
+# The feature branches to stack, in order. Order matters only if two features touch the same lines.
+FEATURES=(
+  "feature/release-branch-tooling"
+  # ── v18: uplifted to upstream v11.8.0 (260919) ─────────────────────────────────────────────
+  # 160 upstream commits / 454 files. Unlike v17 this is NOT a pure uplift: 18.0 carries the
+  # uplift plus the 260919 feature batch (two Targets widget styles, the salience-led synthesis,
+  # the Recap download, synthesis regeneration on new data).
+  #
+  # Upstream built in our territory again, and two fork features were RETIRED as redundant
+  # rather than merged — check the same way on the next uplift before resolving conflicts:
+  #   - "Coach: move all configuration into Settings" (9138f1e10) is GONE: upstream's #2243 built
+  #     CoachSettingsView, a strict superset of the fork's ConfigureCoachSection. Keeping both
+  #     would have shipped two coach settings screens. The fork's four unique surfaces (the
+  #     Today-synthesis instruction, the notification-title instruction, derivedTrendsBar and the
+  #     morning brief) are grafted onto upstream's screen instead.
+  #   - The isDeviceLocked re-score rule (df60f18d5) is GONE: superseded by the fork's own
+  #     sleep-window rule, and built on the measured-duration rule upstream deleted in #2296.
+  #
+  # Still needed, re-verified at v11.8.0:
+  #   - per-provider API-key slots: upstream STILL keeps one shared `account = "api-key"`.
+  #   - the sleep-window re-score deferral: upstream's #2296 replaced duration-based deferral
+  #     with rest-pacing, which is complementary — both now run, pacing first.
+  #
+  # ── v17: uplifted to upstream v11.6.0 (260911) ─────────────────────────────────────────────
+  # PURE UPLIFT. The FEATURE SET is unchanged from 16.24 — same seven branches, rebased onto the
+  # v11.6.0 tag. No new functionality; new features resume at 17.1.
+  #
+  # 271 upstream commits / 715 files, and upstream built in our territory this time: a coach with
+  # streaming + persisted history + voice (#1862), HR and stress widgets (#1957/#2044), sleep-aware
+  # physiological day cycles (#1572), per-stream read caps, and the WHOOP 5 R-R unit fix (#2046).
+  # Nothing of ours turned out to be redundant — every conflict was COMPLEMENTARY, and the
+  # resolutions keep both sides. Two checks worth repeating on the next uplift:
+  #   - our per-provider API-key slots are STILL needed: upstream v11.6.0 keeps one shared
+  #     `account = "api-key"` with an owner marker; its #2058 only repairs a REJECTED key.
+  #   - our bond-loop re-park is STILL needed: `bondLoopParkCycles` is absent at v11.6.0.
+  #
+  # ── v16: uplifted to upstream v11.1.0 (260903) ─────────────────────────────────────────────
+  # The FEATURE SET is unchanged — same five features, rebased onto the v11.1.0 tag rather than
+  # the old 10.6.x base. Version scheme is <last upstream tag>.<fork counter>, so builds are now
+  # 11.1.0.16.x; the counter reset its minor to 0 to mark the 10.x -> 11.x major move.
+  #
+  # Rebased onto the TAG, not upstream/main, which was 38 commits past it: a released point is a
+  # tested one. The `pre-v16-upgrade` tag pins the last 10.6.x assembly (build 311) if a bisect
+  # is ever needed.
+  #
+  # Three conflicts, all resolved permanently on the feature branches: two mechanical (both sides
+  # adding at the same site in IntelligenceEngine and BLEManager) and one real — upstream and the
+  # fork had independently built the same coach sleep-detail feature with opposite nil rules. See
+  # the "Coach context: reconcile" commit on feature/v15-widgets.
+  #
+  # ── v15 consolidation (260901) ──────────────────────────────────────────────────────────────
+  # The 16-branch v14 stack (five-deep re-homing chain, two stacked pairs, three assembly-based
+  # branches) was folded into the five features below; the v15 stack was verified TREE-IDENTICAL
+  # to release-10614-14 (the last v14 build installed on the phone) before the upstream rebase.
+  # The old branches survive on origin under their v14 names; the pre-v15-refactor tag pins the
+  # exact installed state.
+  #
+  # Apple Health integration: read-only sync (writes off without losing reads; resume a read-only
+  # grant). Touches HealthKitBridge/AppleHealthView/HealthSyncPolicy — no other branch does.
+  "feature/health-read-only-sync"
+  # BLE connection reliability, kept SEPARATE deliberately: it fixes upstream's own #1539 escape
+  # (bond-loop pause + parked connect), so it must stay unentangled from fork-only branches to
+  # remain upstreamable. Touches BLEManager's pause/re-park sites only.
+  "feature/bond-loop-repark"
+  # ── The v15 chain: battery → synthesis → widgets. STACKED, in this order. ──────────────────
+  # Each is based on the branch above it (battery on upstream/main). After an upstream sync,
+  # rebase in order:
+  #   git rebase upstream/main feature/v15-battery
+  #   git rebase --onto feature/v15-battery  <old battery tip>   feature/v15-synthesis
+  #   git rebase --onto feature/v15-synthesis <old synthesis tip> feature/v15-widgets
+  # (capture each old tip BEFORE rebasing its base; see docs/FORK-RELEASE.md §stacked features)
+  #
+  # BATTERY: everything that reduces (or measures) the phone-side battery bill of live HR /
+  # background work. Locked-stream duty cycle + the user-configurable Lock-Screen refresh cadence
+  # (-1 sentinel), the sleep-window ("night window") pause for Lock Screen / Dynamic Island,
+  # locked re-score deferral (#1538 policy + debt), settle pacing, the background light re-score
+  # (numerators advance every sync; full pass waits for the morning open), and the two
+  # instrumentation sets (re-score prep spread; BLE wake/CPU/MetricKit attribution).
+  "feature/v15-battery"
+  # SYNTHESIS / LLM: the coach-written Today synthesis and every LLM-plumbing concern — 1h/3h/6h
+  # horizons, per-provider API-key slots, model fallback + retry (observable, named on every
+  # reply), timeout budget, unified Refresh, editable Today-synthesis instruction, and the extra
+  # sleep detail/trends fed to the model.
+  "feature/v15-synthesis"
+  # WIDGETS & LOCK-SCREEN SURFACES: the targets widgets (steps n/t, cal n/t, effort n/t, sleep
+  # target), the Today strip, three-pillar Live Activity card + the synthesis vocabulary for its
+  # numbers, Dynamic Island presentation (minimal HR, disconnect hold, stale-end fix), breathe
+  # automation (burst-retrospective stress scan + notification), calendar-day rollover, frozen
+  # effort target, display-granularity reload dedup, and the widget-publish/retro-scan stats.
+  "feature/v15-widgets"
+  "feature/release-by-default"
+)
+
+cd "$(git rev-parse --show-toplevel)"
+
+if [[ "${1:-}" != "--no-fetch" ]]; then
+  echo "==> Fetching $UPSTREAM_REMOTE"
+  git fetch "$UPSTREAM_REMOTE" --prune
+fi
+
+# A dirty tree would be silently carried into the rebuild (or block the checkout). Xcode regenerates
+# the .xcstrings catalogs on almost every build, so this trips often; it is not a sign of real work.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "ERROR: working tree is dirty. Commit, stash, or discard first:" >&2
+  git status --short >&2
+  echo >&2
+  echo "  Tip: regenerated Localizable.xcstrings churn is safe to discard with" >&2
+  echo "       git checkout -- '**/Localizable.xcstrings'" >&2
+  exit 1
+fi
+
+# 260903: refuse to rebuild while work sits ONLY on a release branch.
+#
+# The release branch is disposable, so a commit made on it is destroyed by the very next rebuild —
+# silently, with the tests still green on the assembly that is about to be deleted. That happened:
+# the cups-based water target was committed onto release-10615-9, survived one build, and vanished
+# from -10, so a fix the maintainer had already verified reappeared as a bug on the phone.
+#
+# The check is cheap and exact: any commit reachable from the release branch being rebuilt, that is
+# NOT reachable from upstream or from any FEATURES branch, is work about to be lost.
+if git show-ref --verify --quiet "refs/heads/$RELEASE_BRANCH"; then
+  reachable_from_features=""
+  for branch in "${FEATURES[@]}"; do
+    git show-ref --verify --quiet "refs/heads/$branch" && reachable_from_features+=" ^$branch"
+  done
+  # shellcheck disable=SC2086
+  orphans="$(git rev-list --no-merges "$RELEASE_BRANCH" "^$UPSTREAM" $reachable_from_features 2>/dev/null)"
+  if [[ -n "$orphans" ]]; then
+    echo "ERROR: '$RELEASE_BRANCH' carries commits that live on NO feature branch." >&2
+    echo "       Rebuilding would destroy them (the release branch is disposable):" >&2
+    echo >&2
+    git log --no-merges --oneline "$RELEASE_BRANCH" "^$UPSTREAM" $reachable_from_features >&2
+    echo >&2
+    echo "  Move each onto the feature branch that owns it, then rebuild:" >&2
+    echo "       git checkout feature/<owner> && git cherry-pick <sha>" >&2
+    exit 1
+  fi
+fi
+
+echo "==> Rebuilding '$RELEASE_BRANCH' from $UPSTREAM ($(git rev-parse --short $UPSTREAM))"
+git checkout -q -B "$RELEASE_BRANCH" "$UPSTREAM"
+
+for branch in "${FEATURES[@]}"; do
+  if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+    echo "ERROR: no such branch: $branch" >&2
+    exit 1
+  fi
+  # How far is this feature's base from current upstream? A large number is not fatal — the merge
+  # may still be clean — but it is worth knowing before a conflict surprises you.
+  base=$(git merge-base "$branch" "$UPSTREAM")
+  behind=$(git rev-list --count "$base".."$UPSTREAM")
+  ahead=$(git rev-list --count "$UPSTREAM".."$branch")
+  printf '==> Merging %-40s (%s commit(s); base is %s behind upstream)\n' "$branch" "$ahead" "$behind"
+
+  if ! git merge --no-edit --no-ff "$branch" >/dev/null 2>&1; then
+    echo >&2
+    echo "CONFLICT merging $branch. The tree is left mid-merge for you to resolve." >&2
+    git --no-pager diff --name-only --diff-filter=U >&2
+    echo >&2
+    echo "  Resolve, then:  git merge --continue" >&2
+    echo "  Or abandon:     git merge --abort" >&2
+    echo >&2
+    echo "  Then fix it PERMANENTLY on the feature branch, or the same conflict returns next run:" >&2
+    echo "      git checkout $branch && git rebase $UPSTREAM" >&2
+    exit 1
+  fi
+done
+
+# The Xcode project is generated, not tracked, and stale project files silently reference the wrong
+# set of source files (a new test file on one branch and not another is the usual way this bites).
+echo "==> Regenerating Strand.xcodeproj"
+xcodegen generate >/dev/null
+
+echo
+echo "'$RELEASE_BRANCH' is ready: $UPSTREAM + ${#FEATURES[@]} feature branch(es)."
+git --no-pager log --oneline "$UPSTREAM..$RELEASE_BRANCH" | sed 's/^/    /'
+echo
+cat <<'NEXT'
+Next:
+  1. Clear the stale provisioning profiles, or a rebuild silently reuses one with days already
+     spent on it and the app dies mid-week (free personal teams issue 7-day profiles):
+       rm -f ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/*.mobileprovision
+  2. Open Strand.xcodeproj, scheme NOOPiOS, and build to your iPhone.
+  3. Write the build's notes in docs/releases/fork/, restating step 1 there.
+
+See docs/FORK-RELEASE.md for the full procedure.
+NEXT
