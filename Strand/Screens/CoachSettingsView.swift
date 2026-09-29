@@ -28,6 +28,12 @@ struct CoachSettingsView: View {
     /// The coach-instructions editor, collapsed until asked for.
     @State private var promptExpanded: Bool = false
     @State private var promptDraft: String = ""
+    /// Whether the editable Today-synthesis prompt section is expanded. Collapsed by default, and a
+    /// separate section from the coach prompt because the two frame different surfaces.
+    @State private var synthesisPromptExpanded: Bool = false
+    /// Working copy of the synthesis instruction while editing, committed to the engine on change so
+    /// an edit takes effect on the next Today refresh. Seeded when the editor opens.
+    @State private var synthesisPromptDraft: String = ""
 
     var body: some View {
         // Literals, not String(localized:): `title`/`subtitle` are LocalizedStringKey, which converts
@@ -54,8 +60,13 @@ struct CoachSettingsView: View {
             // new on-device signals (your strongest patterns + Lab Book) into the coach context.
             if coach.dataConsent { onDeviceSignalsBar }
             if coach.dataConsent && coach.provider == .gemini { multimodalChartBar }
+            // A THIRD opt-in, likewise only meaningful once data access is on: widen the per-day
+            // detail and append deterministic on-device trends. Same rows, more resolution. Feeds the
+            // Today synthesis as well as the chat, since both share `buildFullContext()`.
+            if coach.dataConsent { derivedTrendsBar }
             systemPromptBar
             morningBriefBar
+            synthesisPromptBar
         }
         // Opening this screen is the moment a stale catalogue is worth refreshing: a key exists here by
         // definition, and the picker above is about to be read. Rate-limited and silent on failure.
@@ -184,6 +195,38 @@ struct CoachSettingsView: View {
         }
     }
 
+    /// A THIRD opt-in: widen the per-day rows with the sleep-architecture / autonomic fields the coach
+    /// already holds (deep/REM, efficiency, disturbances, SDNN, absolute skin temp) and append a block of
+    /// deterministic on-device trends (training load, sleep debt, personal-baseline deviations).
+    ///
+    /// This adds RESOLUTION, not reach: every figure is computed from the same days already summarised
+    /// above, so no new data category leaves the device and the summary-only posture is unchanged.
+    ///
+    /// It applies to the Today synthesis too — both surfaces build on `buildFullContext()` — so the copy
+    /// names both rather than implying this is chat-only.
+    private var derivedTrendsBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            HStack(spacing: 10) {
+                Image(systemName: coach.includeDerivedTrends ? "chart.line.uptrend.xyaxis.circle.fill" : "chart.line.uptrend.xyaxis.circle")
+                    .foregroundStyle(coach.includeDerivedTrends ? StrandPalette.accent : StrandPalette.textTertiary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Also share additional data & trends")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                    Text(coach.includeDerivedTrends
+                         ? "On: adds sleep stages, efficiency, SDNN and skin temperature to each day, plus training load, sleep debt and how today compares with your own baseline. Used by the Today synthesis as well as this chat. All computed on \(Platform.deviceNounPhrase) from the days already shared."
+                         : "Off: only the core daily figures are shared, without sleep detail or computed trends.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $coach.includeDerivedTrends)
+                    .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
+                    .accessibilityLabel("Also share additional data and trends with the coach")
+            }
+        }
+    }
+
     /// Editable system prompt, the instructions that frame the coach. Collapsed by default; expanding
     /// reveals a TextEditor bound to the engine (edits persist to UserDefaults and take effect on the
     /// next message) plus a Reset-to-default control.
@@ -303,6 +346,73 @@ struct CoachSettingsView: View {
                     .disabled(briefGenerating)
                     if let briefStatus {
                         Text(briefStatus).font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var synthesisPromptBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: synthesisPromptExpanded ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        synthesisPromptExpanded.toggle()
+                        if synthesisPromptExpanded { synthesisPromptDraft = coach.customSynthesisPrompt }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "text.alignleft")
+                            .foregroundStyle(coach.hasCustomSynthesisPrompt ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Today synthesis instructions")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(coach.hasCustomSynthesisPrompt
+                                 ? "Customised. Your edited instructions shape the Today paragraph."
+                                 : "Edit the paragraph the coach writes on Today. Takes effect on the next refresh.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: synthesisPromptExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(synthesisPromptExpanded ? "Collapse Today synthesis instructions" : "Edit Today synthesis instructions")
+
+                if synthesisPromptExpanded {
+                    TextEditor(text: $synthesisPromptDraft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: synthesisPromptDraft) { newValue in
+                            coach.customSynthesisPrompt = newValue
+                        }
+                        .accessibilityLabel("Today synthesis instructions editor")
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            coach.resetSynthesisPrompt()
+                            synthesisPromptDraft = coach.customSynthesisPrompt
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!coach.hasCustomSynthesisPrompt)
+                        .accessibilityLabel("Reset Today synthesis instructions to default")
                     }
                 }
             }
