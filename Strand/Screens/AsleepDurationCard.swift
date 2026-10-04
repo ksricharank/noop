@@ -66,6 +66,12 @@ struct AsleepDurationCard: View {
                                    valueRange: Self.trendRange(pts),
                                    showsBars: true,
                                    height: NoopMetrics.chartHeight,
+                                   // 260922, maintainer: "making the asleep duration over the month widget
+                                   // non interactive". Same cause and cure as the Recap trend (260920):
+                                   // TrendChart's zero-distance DragGesture claims a touch on contact, so
+                                   // a swipe that starts over the bars scrubs them instead of scrolling
+                                   // the page. The footer already prints avg / min / max.
+                                   showsHover: false,
                                    valueFormat: { String(format: "%.1f h", $0) },
                                    accessibilityLabel: String(localized: "Hours asleep trend"))
                     } else {
