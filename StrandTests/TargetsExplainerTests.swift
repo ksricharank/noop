@@ -59,8 +59,10 @@ final class TargetsExplainerTests: XCTestCase {
         // EFFORT: charge rung with the workout it picked, body-check numbers, Rest rung, the pace
         // spelled from resting HR toward max, the 0–100 scale defined before it's used.
         XCTAssertTrue(blocks[0].hasPrefix("EFFORT TARGET → \(effortTarget)"), blocks[0])
+        // 261004: the planned minutes ride the continuous charge dial, not a band constant.
+        let base80 = Int(DailyTargets.sessionBaseMinutesForCharge(80).rounded())
         XCTAssertTrue(blocks[0].contains("Charge 80 is high (≥\(DailyTargets.pushChargeFloor))"
-                                         + " → plan a \(DailyTargets.pushSessionMinutes) min workout"),
+                                         + " → plan a \(base80) min workout"),
                       blocks[0])
         XCTAssertTrue(blocks[0].contains("body check: HRV 62ms ≈ your usual 60ms,"
                                          + " resting HR 55bpm ≈ your usual 56bpm → all normal"
@@ -181,16 +183,17 @@ final class TargetsExplainerTests: XCTestCase {
         XCTAssertTrue(blocks[1].contains("target = \(kcalTarget)"), blocks[1])
         // STEPS: the charge-derived base and the several-signals reduction.
         //
-        // The recover base minus the rundown notch lands EXACTLY on the floor (6000 − 2000 = 4000),
-        // so the clamp does not bite and the block closes with the plain "target =" line. That is
-        // the point of the 260906 change: the bounds are cited only when they actually moved the
-        // number, and here they did not — they merely coincide with it.
+        // 261004: with the curve's ends extended, charge 20 sits on the floor→recover leg (5,212),
+        // and the rundown notch drags the sum (3,212) BELOW the floor — so the clamp genuinely
+        // bites and the block must SAY so, which is exactly the 260906 rule (cite the bounds only
+        // when they moved the number; here they did).
         let restDayTarget = DailyTargets.stepsTarget(charge: 20, readiness: .rundown)
         XCTAssertEqual(restDayTarget, DailyTargets.stepsFloorPerDay)
         XCTAssertTrue(blocks[2].contains("Charge 20 → \(DailyTargets.stepsBaseForCharge(20)) steps"),
                       blocks[2])
         XCTAssertTrue(blocks[2].contains("→ \(DailyTargets.stepsRundownAdj) steps"), blocks[2])
-        XCTAssertTrue(blocks[2].contains("target = \(restDayTarget)"), blocks[2])
+        XCTAssertTrue(blocks[2].contains("kept inside \(DailyTargets.stepsFloorPerDay)–\(DailyTargets.stepsCapPerDay)"
+                                         + " → \(restDayTarget)"), blocks[2])
         // SLEEP: no longer explained here at all.
         XCTAssertFalse(blocks.contains { $0.hasPrefix("SLEEP TARGET") }, blocks.joined())
     }

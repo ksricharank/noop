@@ -90,14 +90,39 @@ public enum DailyTargets {
     /// The four-notch ladder: 0 = rest day (nil), 1 = half the band's minutes at zone-2,
     /// 2 = the band's minutes at zone-2, 3 = a third more at zone-3. Readiness picks the notch
     /// (rundown 0, strained 1, balanced/insufficient 2, primed 3); Rest shifts it one either way.
+    /// The session's bounds (261004): the floor is the notch-1 half of the recover ask, the cap the
+    /// notch-3 lift of the push ask — both figures the ladder could already produce, now stated as
+    /// the ends of the continuous curve rather than reachable only at exact band values.
+    public static let sessionMinutesFloor = 8
+    public static let sessionMinutesCap = 60
+
+    /// The continuous charge→session-minutes base (261004, maintainer: "more granular and
+    /// continuous targets"). Same shape and the same three anchors as `stepsBaseForCharge`
+    /// (recover ceiling → 15, midpoint → 30, push floor → 45), with the held ends now extended
+    /// linearly to the curve's own bounds: charge 0 → the floor's pre-round 7.5 (half the recover
+    /// ask, the notch-1 figure) and charge 100 → 60 (4/3 of the push ask, the notch-3 figure). A
+    /// charge of 75 and a charge of 95 used to ask the identical 45 minutes; the ask now moves
+    /// with every point of charge, which is the whole point. Anchors are preserved EXACTLY, so any
+    /// charge that previously sat on a band edge still gets that band's number.
+    public static func sessionBaseMinutesForCharge(_ charge: Int?) -> Double {
+        guard let c = charge.map(Double.init) else { return Double(maintainSessionMinutes) }
+        let lo = Double(recoverChargeCeiling), hi = Double(pushChargeFloor)
+        let mid = (lo + hi) / 2.0
+        func lerp(_ x: Double, _ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) -> Double {
+            y0 + (min(max(x, x0), x1) - x0) / (x1 - x0) * (y1 - y0)
+        }
+        switch c {
+        case ..<lo:  return lerp(c, 0, Double(recoverSessionMinutes) * 0.5, lo, Double(recoverSessionMinutes))
+        case ..<mid: return lerp(c, lo, Double(recoverSessionMinutes), mid, Double(maintainSessionMinutes))
+        case ..<hi:  return lerp(c, mid, Double(maintainSessionMinutes), hi, Double(pushSessionMinutes))
+        default:     return lerp(c, hi, Double(pushSessionMinutes), 100, Double(pushSessionMinutes) * 4.0 / 3.0)
+        }
+    }
+
     public static func sessionPrescription(charge: Int?,
                                            readiness: ReadinessEngine.Level,
                                            restScore: Int?) -> SessionPrescription? {
-        let base: Int
-        if let charge {
-            base = charge >= pushChargeFloor ? pushSessionMinutes
-                 : (charge <= recoverChargeCeiling ? recoverSessionMinutes : maintainSessionMinutes)
-        } else { base = maintainSessionMinutes }
+        let base = sessionBaseMinutesForCharge(charge)
         var notch: Int
         switch readiness {
         case .rundown: notch = 0
@@ -109,17 +134,22 @@ public enum DailyTargets {
             if rest < poorRestScore { notch = max(notch - 1, 0) }
             else if rest >= greatRestScore { notch = min(notch + 1, 3) }
         }
-        // Rounded to 5 min — a 23-minute prescription claims precision the ladder does not have.
-        func rounded5(_ m: Double) -> Int { Int((m / 5).rounded() * 5) }
+        // Rounded to the MINUTE (261004; was 5): with the base continuous in charge, a 5-minute
+        // grain re-quantized the very movement the curve exists to show. Clamped to the stated
+        // floor/cap so the notch multipliers cannot ask less than the gentlest half-session or
+        // more than the ladder's previous maximum.
+        func minutes(_ m: Double) -> Int {
+            min(max(Int(m.rounded()), sessionMinutesFloor), sessionMinutesCap)
+        }
         switch notch {
         case 0: return nil
-        case 1: return SessionPrescription(minutes: rounded5(Double(base) * 0.5),
+        case 1: return SessionPrescription(minutes: minutes(base * 0.5),
                                            hrrFraction: moderateHrrFraction,
                                            edwardsZoneWeight: moderateZoneWeight)
-        case 2: return SessionPrescription(minutes: base,
+        case 2: return SessionPrescription(minutes: minutes(base),
                                            hrrFraction: moderateHrrFraction,
                                            edwardsZoneWeight: moderateZoneWeight)
-        default: return SessionPrescription(minutes: rounded5(Double(base) * 4.0 / 3.0),
+        default: return SessionPrescription(minutes: minutes(base * 4.0 / 3.0),
                                             hrrFraction: brisksHrrFraction,
                                             edwardsZoneWeight: briskZoneWeight)
         }
@@ -149,7 +179,9 @@ public enum DailyTargets {
     /// use, at the session's Karvonen HR, fitness-adjusted when a resting HR is known (Uth VO2max)
     /// — profile physiology and today's RHR, no history anywhere. Rounded to 25 kcal, floored at a
     /// token 50 so a five-minute prescription never prints as 0.
-    public static let calorieRoundKcal = 25.0
+    /// 261004: 25 → 10 kcal on the "more granular and continuous" ask — fine enough that the
+    /// continuous session minutes show through, coarse enough not to imply single-kcal precision.
+    public static let calorieRoundKcal = 10.0
     public static func sessionKcal(session: SessionPrescription, profile: UserProfile,
                                    restingHr: Int?) -> Int {
         let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
@@ -208,12 +240,10 @@ public enum DailyTargets {
     public static let stepsFloorPerDay = 4_000
     public static let stepsCapPerDay = 12_000
 
-    /// Rounding granularity for the step target (260906, maintainer's ask: "almost continuous").
-    ///
-    /// 50 steps rather than 1: the target is an ask, not a measurement, and a number like 7,438 reads
-    /// as false precision for something derived from a 0–100 charge score. 50 is fine enough that a
-    /// single point of charge moves the number, which is the whole point of the change.
-    public static let stepsRoundPerDay = 50
+    /// Rounding granularity for the step target (260906 "almost continuous"; 261004 tightened 50 → 10
+    /// on the maintainer's "more granular and continuous" ask — still whole numbers, and 10 keeps the
+    /// last digit from implying the curve resolves single steps).
+    public static let stepsRoundPerDay = 10
 
     /// Today's step target: CONTINUOUS in charge (260906), the readiness read notches it down when the
     /// body says ease off, clamped 4k–12k. Primed adds nothing — a green day already asks the push
@@ -254,22 +284,25 @@ public enum DailyTargets {
     /// extrapolated — charge 5 and charge 33 are both "recover", and there is no evidence for asking
     /// less than the recover figure as charge approaches zero (the readiness notch is what handles a
     /// body that is genuinely rundown).
+    /// 261004: the held ends are gone. Charge 67 and charge 95 used to ask the identical 10,000;
+    /// the ends now extend linearly to the curve's own stated bounds — charge 100 → the 12k cap,
+    /// charge 0 → the 4k floor — so every point of charge moves the ask. The three published
+    /// anchors are still hit EXACTLY (33 → 6k, midpoint → 8k, 67 → 10k); the floor and cap are
+    /// the same constants that always clamped the target, now reached as curve endpoints instead
+    /// of being unreachable beyond held flats.
     public static func stepsBaseForCharge(_ charge: Int?) -> Int {
-        guard let c = charge else { return stepsBaseMaintainPerDay }
-        let mid = Double(recoverChargeCeiling + pushChargeFloor) / 2.0
+        guard let c = charge.map(Double.init) else { return stepsBaseMaintainPerDay }
+        let lo = Double(recoverChargeCeiling), hi = Double(pushChargeFloor)
+        let mid = (lo + hi) / 2.0
+        func lerp(_ x: Double, _ x0: Double, _ y0: Double, _ x1: Double, _ y1: Double) -> Double {
+            y0 + (min(max(x, x0), x1) - x0) / (x1 - x0) * (y1 - y0)
+        }
         let v: Double
-        if Double(c) <= Double(recoverChargeCeiling) {
-            v = Double(stepsBaseRecoverPerDay)
-        } else if Double(c) >= Double(pushChargeFloor) {
-            v = Double(stepsBasePushPerDay)
-        } else if Double(c) <= mid {
-            let t = (Double(c) - Double(recoverChargeCeiling)) / (mid - Double(recoverChargeCeiling))
-            v = Double(stepsBaseRecoverPerDay)
-                + t * Double(stepsBaseMaintainPerDay - stepsBaseRecoverPerDay)
-        } else {
-            let t = (Double(c) - mid) / (Double(pushChargeFloor) - mid)
-            v = Double(stepsBaseMaintainPerDay)
-                + t * Double(stepsBasePushPerDay - stepsBaseMaintainPerDay)
+        switch c {
+        case ..<lo:  v = lerp(c, 0, Double(stepsFloorPerDay), lo, Double(stepsBaseRecoverPerDay))
+        case ..<mid: v = lerp(c, lo, Double(stepsBaseRecoverPerDay), mid, Double(stepsBaseMaintainPerDay))
+        case ..<hi:  v = lerp(c, mid, Double(stepsBaseMaintainPerDay), hi, Double(stepsBasePushPerDay))
+        default:     v = lerp(c, hi, Double(stepsBasePushPerDay), 100, Double(stepsCapPerDay))
         }
         return Int(v.rounded())
     }

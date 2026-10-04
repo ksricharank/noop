@@ -62,14 +62,17 @@ enum TargetsExplainer {
     }
 
     /// Minutes for a rung of the session ladder — the SAME arithmetic `sessionPrescription` uses
-    /// (half the band's minutes / the band's / a third more, rounded to 5), or nil for "no workout".
-    private static func ladderMinutes(base: Int, notch: Int) -> Int? {
-        func rounded5(_ m: Double) -> Int { Int((m / 5).rounded() * 5) }
+    /// (261004: half the continuous base / the base / a third more, rounded to the minute and
+    /// clamped to the stated floor/cap), or nil for "no workout".
+    private static func ladderMinutes(base: Double, notch: Int) -> Int? {
+        func minutes(_ m: Double) -> Int {
+            min(max(Int(m.rounded()), DailyTargets.sessionMinutesFloor), DailyTargets.sessionMinutesCap)
+        }
         switch notch {
         case 0: return nil
-        case 1: return rounded5(Double(base) * 0.5)
-        case 2: return base
-        default: return rounded5(Double(base) * 4.0 / 3.0)
+        case 1: return minutes(base * 0.5)
+        case 2: return minutes(base)
+        default: return minutes(base * 4.0 / 3.0)
         }
     }
 
@@ -104,12 +107,11 @@ enum TargetsExplainer {
         // ── EFFORT: the session ladder, then the workout priced as the day's effort score ─────
         // The ladder is re-walked with the same arithmetic `sessionPrescription` used, so each
         // rung can state the workout length as it stood at that point.
-        let base: Int
-        if let charge {
-            base = charge >= DailyTargets.pushChargeFloor ? DailyTargets.pushSessionMinutes
-                 : (charge <= DailyTargets.recoverChargeCeiling ? DailyTargets.recoverSessionMinutes
-                                                                : DailyTargets.maintainSessionMinutes)
-        } else { base = DailyTargets.maintainSessionMinutes }
+        // 261004: the base is the CONTINUOUS charge dial, re-read with the same arithmetic
+        // `sessionPrescription` uses — the banded re-walk this replaces printed a 45 the code no
+        // longer produced for a charge of 80.
+        let base = DailyTargets.sessionBaseMinutesForCharge(charge)
+        let baseMinutes = Int(base.rounded())
         let notchAfterReadiness: Int
         switch readiness.level {
         case .rundown: notchAfterReadiness = 0
@@ -125,16 +127,17 @@ enum TargetsExplainer {
         if let effortTarget {
             var e: [String] = ["EFFORT TARGET → \(effortTarget)"]
             e.append(chargeRung(charge,
-                                low: "plan a \(DailyTargets.recoverSessionMinutes) min workout",
-                                mid: "plan a \(DailyTargets.maintainSessionMinutes) min workout",
-                                high: "plan a \(DailyTargets.pushSessionMinutes) min workout"))
-            e.append("   (Charge ≤\(DailyTargets.recoverChargeCeiling) → \(DailyTargets.recoverSessionMinutes) min"
-                     + " · \(DailyTargets.recoverChargeCeiling + 1)–\(DailyTargets.pushChargeFloor - 1)"
-                     + " → \(DailyTargets.maintainSessionMinutes) min"
-                     + " · ≥\(DailyTargets.pushChargeFloor) → \(DailyTargets.pushSessionMinutes) min)")
+                                low: "plan a \(baseMinutes) min workout",
+                                mid: "plan a \(baseMinutes) min workout",
+                                high: "plan a \(baseMinutes) min workout"))
+            e.append("   (the dial runs Charge 0 → \(DailyTargets.sessionMinutesFloor) min up to"
+                     + " Charge 100 → \(DailyTargets.sessionMinutesCap) min, sliding with every point;"
+                     + " \(DailyTargets.recoverChargeCeiling)/\(DailyTargets.pushChargeFloor) are the"
+                     + " published \(DailyTargets.recoverSessionMinutes)/\(DailyTargets.pushSessionMinutes)"
+                     + " min anchors)")
             let afterReadiness = ladderMinutes(base: base, notch: notchAfterReadiness)
             e.append(bodyCheck(readiness, compact: false) + " → "
-                     + workoutText(afterReadiness, changedFrom: base))
+                     + workoutText(afterReadiness, changedFrom: baseMinutes))
             let afterRest = ladderMinutes(base: base, notch: finalNotch)
             if let rest = restScore {
                 let restRung: String
@@ -214,9 +217,11 @@ enum TargetsExplainer {
             }
             // The scale, as two endpoints and the slope between them — the honest description of a
             // continuous curve. Listing three bands would re-describe the formula this replaced.
-            st.append("   (the scale runs Charge \(DailyTargets.recoverChargeCeiling) →"
-                      + " \(DailyTargets.stepsBaseRecoverPerDay) up to Charge \(DailyTargets.pushChargeFloor) →"
-                      + " \(DailyTargets.stepsBasePushPerDay), sliding with every point in between)")
+            st.append("   (the scale runs Charge 0 → \(DailyTargets.stepsFloorPerDay) up to"
+                      + " Charge 100 → \(DailyTargets.stepsCapPerDay), sliding with every point;"
+                      + " \(DailyTargets.recoverChargeCeiling)/\(DailyTargets.pushChargeFloor) are the"
+                      + " published \(DailyTargets.stepsBaseRecoverPerDay)/\(DailyTargets.stepsBasePushPerDay)"
+                      + " anchors)")
             let reduction: Int
             switch readiness.level {
             case .rundown: reduction = DailyTargets.stepsRundownAdj

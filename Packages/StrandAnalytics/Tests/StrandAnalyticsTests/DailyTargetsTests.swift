@@ -9,11 +9,13 @@ final class DailyTargetsTests: XCTestCase {
 
     // MARK: - The prescribed session
 
-    /// Charge picks the base minutes, readiness the notch: a balanced green day is the full 45 min
-    /// at zone-2; primed lifts to 60 min at zone-3; strained halves; rundown prescribes REST (nil).
+    /// Charge sets the base minutes CONTINUOUSLY (261004; anchors 33→15, mid→30, 67→45, extended to
+    /// 7.5 at charge 0 and 60 at charge 100), readiness the notch: a green day at charge 81 is 51 min
+    /// at zone-2 (45 + 14/33 of the 15-min push→cap leg); primed lifts by 4/3, clamped at the 60-min
+    /// cap; strained halves; rundown prescribes REST (nil).
     func testSessionLadder() {
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .balanced, restScore: nil),
-                       .init(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2))
+                       .init(minutes: 51, hrrFraction: 0.65, edwardsZoneWeight: 2))
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: nil),
                        .init(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3))
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .strained, restScore: nil),
@@ -22,6 +24,15 @@ final class DailyTargetsTests: XCTestCase {
         // Unknown charge reads as maintain; insufficient readiness as balanced — neutral, never bold.
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: nil, readiness: .insufficient, restScore: nil),
                        .init(minutes: 30, hrrFraction: 0.65, edwardsZoneWeight: 2))
+        // The point of the change: two green days with different charge no longer share one ask.
+        XCTAssertNotEqual(DailyTargets.sessionPrescription(charge: 70, readiness: .balanced, restScore: nil),
+                          DailyTargets.sessionPrescription(charge: 95, readiness: .balanced, restScore: nil))
+        // Anchors are hit exactly — a band-edge day keeps its old number.
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 67, readiness: .balanced, restScore: nil)?.minutes, 45)
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 33, readiness: .balanced, restScore: nil)?.minutes, 15)
+        // The curve's own bounds: charge 100 balanced asks the 60-min cap's base; charge 0 the 8-min floor.
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 100, readiness: .balanced, restScore: nil)?.minutes, 60)
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 0, readiness: .balanced, restScore: nil)?.minutes, 8)
     }
 
     /// Last night's Rest shifts the ladder one notch either way — a poor night can turn a strained
@@ -32,6 +43,7 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertNil(DailyTargets.sessionPrescription(charge: 50, readiness: .strained, restScore: 40))
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .balanced, restScore: 90),
                        .init(minutes: 40, hrrFraction: 0.75, edwardsZoneWeight: 3))
+        // Already at the top notch: a great night cannot push past it, and the cap clamps the lift.
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: 90),
                        .init(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3))
     }
@@ -68,13 +80,14 @@ final class DailyTargetsTests: XCTestCase {
     // MARK: - Calories (the session through the app's own Keytel model)
 
     /// The session kcal is sane for a standard profile (a 45-min zone-2 bout lands in the hundreds,
-    /// not the thousands the abandoned regression produced), rounds to 25, and scales with duration.
+    /// not the thousands the abandoned regression produced), rounds to the 10-kcal grain (261004;
+    /// was 25), and scales with duration.
     func testSessionKcalIsSaneRoundedAndMonotonic() {
         let z2 = DailyTargets.SessionPrescription(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2)
         let kcal = DailyTargets.sessionKcal(session: z2, profile: UserProfile(), restingHr: 60)
         XCTAssertGreaterThan(kcal, 100, "a 45-min moderate bout burns real calories")
         XCTAssertLessThan(kcal, 900, "…but never a four-digit ask")
-        XCTAssertEqual(kcal % 25, 0)
+        XCTAssertEqual(kcal % 10, 0)
         let z2short = DailyTargets.SessionPrescription(minutes: 15, hrrFraction: 0.65, edwardsZoneWeight: 2)
         XCTAssertLessThan(DailyTargets.sessionKcal(session: z2short, profile: UserProfile(), restingHr: 60),
                           kcal)
@@ -91,14 +104,14 @@ final class DailyTargetsTests: XCTestCase {
                                             heightCm: profile.heightCm, age: profile.age)
         let restingDay = rate * 86_400.0
         let restTarget = DailyTargets.dayKcalTarget(session: nil, profile: profile, restingHr: 60)
-        XCTAssertEqual(restTarget % 25, 0)
-        XCTAssertEqual(Double(restTarget), restingDay, accuracy: 12.5,
+        XCTAssertEqual(restTarget % 10, 0)
+        XCTAssertEqual(Double(restTarget), restingDay, accuracy: 5,
                        "a REST day's total target is the resting day, to rounding")
         let z2 = DailyTargets.SessionPrescription(minutes: 45, hrrFraction: 0.65, edwardsZoneWeight: 2)
         let sessionTarget = DailyTargets.dayKcalTarget(session: z2, profile: profile, restingHr: 60)
-        XCTAssertEqual(sessionTarget % 25, 0)
+        XCTAssertEqual(sessionTarget % 10, 0)
         let sessionKcal = DailyTargets.sessionKcal(session: z2, profile: profile, restingHr: 60)
-        XCTAssertEqual(Double(sessionTarget), restingDay + Double(sessionKcal), accuracy: 25,
+        XCTAssertEqual(Double(sessionTarget), restingDay + Double(sessionKcal), accuracy: 10,
                        "a session day adds exactly the priced session")
         // Sanity: a real human's total-day target is four digits, not the session's hundreds.
         XCTAssertGreaterThan(restTarget, 1_000)
@@ -110,14 +123,17 @@ final class DailyTargetsTests: XCTestCase {
     /// midpoint → 8k, push floor → 10k — so this ladder still pins the same numbers it always did.
     /// Rundown −2k / strained −1k, clamped 4k–12k.
     func testStepsTargetLadder() {
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .balanced), 10_000)
+        // 261004: the ends extend to the curve's own bounds, so charge 80 now sits on the push→cap
+        // leg: 10,000 + 13/33 × 2,000 = 10,787.9 → 10,790 at the 10-step grain.
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .balanced), 10_790)
         XCTAssertEqual(DailyTargets.stepsTarget(charge: 50, readiness: .balanced), 8_000)
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 20, readiness: .balanced), 6_000)
+        // Charge 20 on the floor→recover leg: 4,000 + 20/33 × 2,000 = 5,212.1 → 5,210.
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 20, readiness: .balanced), 5_210)
         XCTAssertEqual(DailyTargets.stepsTarget(charge: nil, readiness: .insufficient), 8_000)
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .strained), 9_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .strained), 9_790)
         XCTAssertEqual(DailyTargets.stepsTarget(charge: 20, readiness: .rundown), 4_000,
-                       "recover base minus the rundown notch pins to the floor")
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .primed), 10_000,
+                       "the rundown notch still pins to the floor")
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 80, readiness: .primed), 10_790,
                        "primed adds nothing — the session is where primed headroom goes")
     }
 
@@ -160,13 +176,20 @@ final class DailyTargetsTests: XCTestCase {
         }
     }
 
-    /// Outside the anchors the value is HELD, not extrapolated — charge 5 and charge 33 are both
-    /// "recover", and the readiness notch is what handles a genuinely rundown body. Extrapolating
-    /// would drive the ask below the recover figure purely because a score approached zero.
-    func testTheCurveIsHeldOutsideTheAnchors() {
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 0, readiness: .balanced), 6_000)
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 5, readiness: .balanced), 6_000)
-        XCTAssertEqual(DailyTargets.stepsTarget(charge: 100, readiness: .balanced), 10_000)
+    /// 261004: the held flats outside the anchors are gone — they were why every green day printed
+    /// an identical 10,000. The ends now run linearly to the curve's own stated bounds: charge 0 →
+    /// the 4k floor, charge 100 → the 12k cap. Both endpoints are the constants that always clamped
+    /// the target, so no new scale was invented; and the clamp still backstops the notches.
+    func testTheEndsExtendToTheCurvesOwnBounds() {
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 0, readiness: .balanced), 4_000)
+        XCTAssertEqual(DailyTargets.stepsTarget(charge: 100, readiness: .balanced), 12_000)
+        // Strictly between the anchor and the bound — no flat anywhere.
+        let c90 = DailyTargets.stepsTarget(charge: 90, readiness: .balanced)
+        XCTAssertGreaterThan(c90, 10_000)
+        XCTAssertLessThan(c90, 12_000)
+        let c10 = DailyTargets.stepsTarget(charge: 10, readiness: .balanced)
+        XCTAssertGreaterThan(c10, 4_000)
+        XCTAssertLessThan(c10, 6_000)
     }
 
     // MARK: - Tonight's sleep need (population base + the body's day)
