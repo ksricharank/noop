@@ -702,9 +702,11 @@ struct TrendsView: View {
             NoopCard {
                 TabInsightCard(
                     title: "What the trend says",
-                    // Re-asks when the window changes: an answer about 90 days must not sit under
-                    // a chart showing one week.
-                    subject: "trend-\(range.days.map(String.init) ?? "all")",
+                    // Re-asks when the window changes (an answer about 90 days must not sit under a
+                    // chart showing one week) AND once per local day (261004): the prompt now leads
+                    // with "today's find", and a find keyed only to the window would sit unchanged
+                    // for weeks — the daily novelty is the whole reason to open this tab.
+                    subject: "trend-\(range.days.map(String.init) ?? "all")-\(Repository.localDayKey(Date()))",
                     generate: { coach in
                         await coach.trendsNarrative(windowDays: range.days ?? repo.days.count)
                     },

@@ -631,16 +631,21 @@ final class AICoachEngine: ObservableObject {
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging.
     - Then 5 to 8 bullets, ONE point each, at most ~16 words after the bolded lead. Group them \
     with these bolded lead-ins, in this order, skipping any group with nothing real to say:
-    - **Now** — what my heart rate, movement and stress trace say happened over the last hours \
-    and the state that leaves me in. Compare only to MY resting heart rate and MY OWN baseline. \
-    My data has z-scores: |z| above 1 is real, above 2 strong; in-range is NOT news. You may \
-    connect two signals into one causal read — flag it as a read, not a fact.
-    - **Next** — one or two concrete moves for the coming hours: what to do, when, how hard, and \
-    what to avoid. If training is on the table, what kind and why today's state supports it.
-    - **Tonight** — the bridge to the night: wind-down guidance keyed to tonight's sleep target \
-    and my usual midsleep from the data. You may state ONE derived clock time ("lights out about \
-    HH:MM") computed from those two numbers — the single exception to the no-derived-numbers \
-    rule, always prefixed "about". Caffeine or heavy-meal cutoffs may anchor on it in words.
+    - **Now** — my STATE OF BEING, read from now and the immediate past: recovery spent or \
+    banked, stress carried or shed, momentum or stillness — the interpretation, never the \
+    readout. "HR 72, 1.1k steps" is a line I can read off the screen; what those hours DID to me \
+    is the insight I cannot. Compare only to MY resting heart rate and MY OWN baseline. My data \
+    has z-scores: |z| above 1 is real, above 2 strong; in-range is NOT news. You may connect two \
+    signals into one causal read — flag it as a read, not a fact. Whatever you conclude here is \
+    the premise Next must act on.
+    - **Next** — the moves that follow from Now, SPREAD ACROSS THE WHOLE REMAINING DAY, each \
+    anchored to a part of it in words (late morning, after lunch, this evening, before bed) so I \
+    can shuffle them, not march to them. Cover training or movement (what kind, how hard, and \
+    why today's state supports it), what to avoid, and the wind-down: bedtime guidance keyed to \
+    tonight's sleep target and my usual midsleep from the data. You may state ONE derived clock \
+    time ("lights out about HH:MM") computed from those two numbers — the single exception to \
+    the no-derived-numbers rule, always prefixed "about". Caffeine or heavy-meal cutoffs may \
+    anchor on it in words.
     - **Watch** — at most one watchout forming NOW: climbing resting HR, sagging HRV or elevated \
     respiratory rate together can precede illness or strain. Say what would confirm it.
 
@@ -657,9 +662,9 @@ final class AICoachEngine: ObservableObject {
     now make sense.
     - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of \
     the last strap sync" stillness is as of that sync, never this instant.
-    - Every number you write must appear VERBATIM in my data, in **bold** (the Tonight clock \
-    time is the one exception above). Never invent, convert or estimate any other figure, and \
-    never state a target that differs from TODAY'S TARGETS.
+    - Every number you write must appear VERBATIM in my data, in **bold** (the Next group's \
+    clock time is the one exception above). Never invent, convert or estimate any other figure, \
+    and never state a target that differs from TODAY'S TARGETS.
     - No headings, no greeting, no sign-off, no prose paragraphs — the verdict line and the \
     bullets are the whole structure. Within a group FEWER IS BETTER; depth beats breadth.
     - If my last hours are genuinely unremarkable, say so in the verdict plus two bullets and \
@@ -2082,13 +2087,23 @@ final class AICoachEngine: ObservableObject {
     The numbers above are my metrics over an extended window — weeks, not one day — followed by an \
     INSIGHTS block computed on-device: week-over-week means, load balance, the relationships in the \
     window that clear a statistical gate, consistency and streaks. Those findings are already found. \
-    Your job is the SO WHAT. Write 2-4 short bullets for the person whose body it is, in the second person.
+    Your job is the SO WHAT, for the person whose body it is, in the second person.
 
-    Your lens is DIRECTION AND DURATION: what has been moving, for how long, and where it stopped. \
-    Take the INSIGHTS in the order given (they are ranked) and, for each one worth a bullet, say:
+    Lead with TODAY'S FIND — one line, no bullet: the single most interesting thing in this window \
+    TODAY, as **a bolded claim of at most ten words**, then an em dash and one clause of why it \
+    matters. Pick the finding a curious owner of this body would not already know: a relationship \
+    that cleared the gate, a streak at a meaningful length, a reversal after a long run, a personal \
+    extreme. Novelty beats importance when they conflict — yesterday's find should not be today's. \
+    If the ranked INSIGHTS offer nothing new, promote the freshest real change in the daily rows; \
+    only a window with genuinely nothing moving may say so instead, in one plain line.
+
+    Then 1-3 short bullets, DIRECTION AND DURATION only — what has been moving, for how long, and \
+    where it stopped. Take the INSIGHTS in the order given (they are ranked) and, for each one worth \
+    a bullet, say:
     - what it means for me — not a restatement of the numbers, which I can read;
     - what to do about it this week, concretely — or what to watch for if nothing needs doing;
     - how sure to be: a moderate link over 12 pairs is a lead, not a law.
+    Skip any bullet that would restate the find.
 
     Rules:
     - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
