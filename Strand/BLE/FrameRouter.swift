@@ -531,14 +531,10 @@ public final class FrameRouter {
                 } else if ev.hasPrefix("BATTERY_PACK_REMOVED") {
                     state.charging = false
                 }
-                // The other physical inputs the strap exposes — live only, as above.
-                //
-                // #1712: the double-tap is gated on the event's own timestamp, not on arrival —
-                // mid-offload this SAME gesture is also delivered by `dispatchLiveGestureIfFresh`,
-                // and the strap re-sends it within its freshness window. See `dispatchDoubleTapOnce`.
-                if ev.hasPrefix("DOUBLE_TAP") {
-                    dispatchDoubleTapOnce(eventTimestamp: parsed.parsed["event_timestamp"]?.intValue)
-                } else if ev.hasPrefix("WRIST_ON") {
+                // The other physical inputs the strap exposes — live only, as above. The double-tap
+                // was handled before the sync kick (#1712: through `dispatchDoubleTapOnce`, gated on
+                // the event's own timestamp — a second dispatch here double-logged one physical tap).
+                if ev.hasPrefix("WRIST_ON") {
                     handleWrist(on: true, duringSync: false)
                 } else if ev.hasPrefix("WRIST_OFF") {
                     handleWrist(on: false, duringSync: false)
