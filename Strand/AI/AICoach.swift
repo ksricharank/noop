@@ -1824,6 +1824,10 @@ final class AICoachEngine: ObservableObject {
         let insights = Self.trendsInsightsBlock(days: window, restByDay: restByDay, dayQualityByDay: dqByDay,
                                                 today: Repository.localDayKey(Date()))
         if !insights.isEmpty { facts += "\n\n" + insights }
+        // 261004: the per-metric arithmetic (means, half-over-half, slopes, extremes, anomalies) the
+        // seven-line format reads its numbers from — computed here, never left to model arithmetic.
+        facts += "\n\n" + Self.perMetricTrendBlock(days: window, restByDay: restByDay,
+                                                   dayQualityByDay: dqByDay)
         return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
             self.lastTrendsOutcome = outcome
             ScreenLedger.log("coach: trends summary — \(outcome ?? "written")")
@@ -2083,36 +2087,38 @@ final class AICoachEngine: ObservableObject {
     /// the others cannot. Today reads the current moment, Recap grades a finished day, Sleep reads
     /// last night — so this one is banned from all three and must talk about DIRECTION over weeks.
     static let defaultTrendsPrompt = """
-    The numbers above are my metrics over an extended window — weeks, not one day — followed by an \
-    INSIGHTS block computed on-device: week-over-week means, load balance, the relationships in the \
-    window that clear a statistical gate, consistency and streaks. Those findings are already found. \
-    Your job is TODAY'S INSIGHT: exactly ONE interesting thing, for the person whose body it is, in \
-    the second person.
+    The numbers above are my metrics over the window I selected — followed by an INSIGHTS block and a \
+    PER-METRIC TREND CALCS block, both computed on-device: means, newest-half vs older-half, slopes \
+    per week, extremes and anomaly days. The arithmetic is done; your job is the reading of it, for \
+    the person whose body it is, in the second person.
 
-    Output: one bullet-less line — **a bolded claim of at most ten words**, then an em dash, then \
-    one or two short sentences of the SO WHAT: what it means for me and what to do (or watch for) \
-    this week. Nothing else. Not a list, not one insight per metric, not a tour of charge, sleep \
-    and effort — ONE insight, chosen, and the choosing is the work.
+    Output EXACTLY seven lines, one per metric, in this order and nothing else:
+    **Charge** — …
+    **HRV** — …
+    **Resting HR** — …
+    **Sleep** — …
+    **Effort** — …
+    **Steps** — …
+    **Day quality** — …
 
-    What makes the cut: an INTERPRETATION, never a restated stat. "Deep sleep up 12%" is a number \
-    I can read off the chart; "your deep sleep recovers first when you stop late workouts" is an \
-    insight. Prefer, in rough order: a relationship that cleared the gate, a reversal after a long \
-    run, a streak at a meaningful length, a personal extreme with a plausible cause. Novelty beats \
-    importance when they conflict — yesterday's insight must not be today's; rotate through the \
-    window rather than re-serving its loudest fact. If the ranked INSIGHTS offer nothing new, \
-    interpret the freshest real change in the daily rows; only a window with genuinely nothing \
-    moving may say so instead, in one plain line.
+    Each line: the bolded metric name, an em dash, then ONE short insight about that metric over THIS \
+    window — at most ~20 words. Your lens is DIRECTION AND DURATION: what has been moving, for how \
+    long, and where it stopped. An insight is an INTERPRETATION, not a restated stat: "HRV up 4ms" is \
+    in the calcs already; what the rise coincides with, what broke a streak, what an anomaly day did, \
+    whether a slope is drift or a step change — that is the line. Use the trend calcs (slope, halves, \
+    extremes, anomalies) and the daily rows to find it; connect two metrics when the data supports it, \
+    flagged as a read. A metric that genuinely did not move gets an honest "held steady at …" line — \
+    that is a real finding, never pad it. A metric whose calc says "too few readings" gets exactly \
+    that: not enough data yet.
 
     Rules:
-    - EVERY number you write must appear VERBATIM in the numbers above, in **bold**. Do not \
-    convert, rescale or compute a new figure; if a figure you want is absent, make the point in \
-    words with no number at all.
-    - Direction and duration are your lens: anchor the claim in the window — "over the last three \
-    weeks", not "recently".
+    - EVERY number you write must appear VERBATIM in the numbers above, in **bold**. Do not convert, \
+    rescale or compute a new figure; if a figure you want is absent, make the point in words.
+    - Anchor claims in the window: "over the last three weeks", not "recently".
     - Do NOT report today's values, grade a single day, or discuss last night. Other screens own those.
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
     - State confidence honestly in passing: a moderate link over 12 pairs is a lead, not a law.
-    - No headings, no preamble, no sign-off — the one line is the whole output.
+    - No headings, no preamble, no sign-off — the seven lines are the whole output.
     """
 
     static let sleepPromptKey = "ai.sleepPrompt"
@@ -2768,6 +2774,68 @@ final class AICoachEngine: ObservableObject {
     }
 
     // MARK: - Derived trends (third opt-in)
+
+    /// 261004: the PER-METRIC TREND CALCS block for the Trends narrative — one line of deterministic
+    /// arithmetic per surfaced metric (charge, HRV, resting HR, sleep, effort, steps, day quality),
+    /// over exactly the window the range selector chose. The prompt asks the model for one INSIGHT
+    /// line per metric; this block is where its numbers come from, so every figure it may cite —
+    /// mean, half-over-half delta, least-squares slope per week, extremes with their days, |z| >= 2
+    /// anomalies — is computed here rather than trusted to model arithmetic. A metric with fewer
+    /// than 3 values prints "too few readings", which the prompt passes through honestly.
+    nonisolated static func perMetricTrendBlock(days: [DailyMetric],
+                                                restByDay: [String: Double],
+                                                dayQualityByDay: [String: Double]) -> String {
+        let ordered = days.sorted { $0.day < $1.day }
+        func line(_ label: String, unit: String, decimals: Int,
+                  _ value: (DailyMetric) -> Double?) -> String {
+            let pts: [(day: String, v: Double)] = ordered.compactMap { d in value(d).map { (d.day, $0) } }
+            guard pts.count >= 3 else { return "\(label): too few readings (\(pts.count))" }
+            func fmt(_ x: Double) -> String { String(format: "%.\(decimals)f", x) }
+            let vs = pts.map(\.v)
+            let mean = vs.reduce(0, +) / Double(vs.count)
+            let sd = (vs.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(vs.count)).squareRoot()
+            // Half-over-half: the newest half of the window against the older half.
+            let half = pts.count / 2
+            let older = Array(vs.prefix(pts.count - half)), newer = Array(vs.suffix(half))
+            let olderMean = older.reduce(0, +) / Double(older.count)
+            let newerMean = newer.reduce(0, +) / Double(newer.count)
+            // Least-squares slope over day index, scaled to per-week.
+            let n = Double(pts.count)
+            let xMean = (n - 1) / 2
+            var num = 0.0, den = 0.0
+            for (i, v) in vs.enumerated() {
+                let dx = Double(i) - xMean
+                num += dx * (v - mean); den += dx * dx
+            }
+            let slopeWk = den > 0 ? num / den * 7 : 0
+            let minP = pts.min { $0.v < $1.v }!, maxP = pts.max { $0.v < $1.v }!
+            var out = "\(label): n=\(pts.count) mean=\(fmt(mean))\(unit)"
+                + " newerHalf=\(fmt(newerMean)) olderHalf=\(fmt(olderMean))"
+                + " slope=\(slopeWk >= 0 ? "+" : "")\(fmt(slopeWk))\(unit)/wk"
+                + " min=\(fmt(minP.v))@\(String(minP.day.suffix(5)))"
+                + " max=\(fmt(maxP.v))@\(String(maxP.day.suffix(5)))"
+            if sd > 0 {
+                let anomalies = pts.filter { abs($0.v - mean) / sd >= 2 }.suffix(3)
+                if !anomalies.isEmpty {
+                    out += " anomalies=" + anomalies.map {
+                        "\(String($0.day.suffix(5)))(\(fmt($0.v)))"
+                    }.joined(separator: ",")
+                }
+            }
+            return out
+        }
+        let lines = [
+            line("Charge", unit: "", decimals: 0) { $0.recovery },
+            line("HRV", unit: "ms", decimals: 0) { $0.avgHrv },
+            line("Resting HR", unit: "bpm", decimals: 0) { $0.restingHr.map(Double.init) },
+            line("Sleep", unit: "h", decimals: 1) { $0.totalSleepMin.map { $0 / 60 } },
+            line("Effort", unit: "", decimals: 1) { $0.strain },
+            line("Steps", unit: "", decimals: 0) { $0.steps.map(Double.init) },
+            line("Day quality", unit: "", decimals: 0) { dayQualityByDay[$0.day] },
+        ]
+        return "PER-METRIC TREND CALCS (newest-half vs older-half, slope per week):\n"
+            + lines.map { "  " + $0 }.joined(separator: "\n")
+    }
 
     /// A block of DETERMINISTIC roll-ups over the same `repo.days` rows the core summary is built from:
     /// training load (CTL/ATL/TSB), the sleep-debt ledger, personal baseline deviations, and a data-density

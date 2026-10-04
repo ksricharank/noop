@@ -22,7 +22,9 @@ final class TabInsightPromptTests: XCTestCase {
         XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("Today screen"))
         XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("MY BODY IN THE PRESENT"))
         XCTAssertTrue(AICoachEngine.defaultDayQualityPrompt.contains("ONE FINISHED DAY"))
-        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("weeks, not one day"))
+        // 261004: the Trends scope is the selector's window (which can be a single week), stated
+        // as such rather than as "weeks".
+        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("over the window I selected"))
         XCTAssertTrue(AICoachEngine.defaultSleepPrompt.contains("ONE NIGHT"))
     }
 
@@ -69,7 +71,9 @@ final class TabInsightPromptTests: XCTestCase {
         // The three that can pad (Today, Trends, Sleep — Recap is bounded to 2-3 sentences) must
         // each be given explicit permission to be brief.
         XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("FEWER IS BETTER"))
-        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("no trend worth reporting"))
+        // 261004: the seven-line format's permission to be brief is per metric — a flat series is
+        // reported as held steady, never padded into a finding.
+        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("held steady"))
     }
 
     /// No two prompts are the same text. A copy-paste that forgot to change the body would pass
