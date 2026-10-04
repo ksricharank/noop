@@ -257,6 +257,8 @@ struct TodayView: View {
     // Today drops the SceneScreenBackground and falls back to the plain dark surfaceBase canvas. The
     // cards already sit on an opaque canvas, so readability is unchanged either way.
     @AppStorage(SceneBackgroundPrefs.enabledKey) private var showDayCycleBackground = true
+    /// The idle "Start workout" offer on Today (261004) — see `UnitPrefs.workoutStartOnToday`.
+    @AppStorage(UnitPrefs.workoutStartOnTodayKey) private var workoutStartOnToday = true
     // Effort display scale (#268), drives the Effort tile's value + caption. Display-only.
     @AppStorage(UnitPrefs.effortScaleKey) private var effortScaleRaw = EffortScale.hundred.rawValue
     private var effortScale: EffortScale { UnitPrefs.resolveEffortScale(effortScaleRaw) }
@@ -1502,7 +1504,7 @@ struct TodayView: View {
                 // A "workout in progress" indicator whenever a manual workout is active. A tap routes to Live
                 // and opens the in-exercise screen. Its own leaf owns the AppModel observation + per-second
                 // clock, so the live tick never re-renders TodayView.body.
-                ActiveWorkoutIndicatorSection(showStart: selectedDayOffset == 0)
+                ActiveWorkoutIndicatorSection(showStart: selectedDayOffset == 0 && workoutStartOnToday)
                 // The "still building" and "new here?" prompts are about getting today's scores going,
                 // so they stay anchored to today rather than reappearing on every navigated past day.
                 if selectedDayOffset == 0 && repo.today?.recovery == nil {

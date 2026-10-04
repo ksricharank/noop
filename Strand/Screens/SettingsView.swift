@@ -167,6 +167,7 @@ struct SettingsView: View {
     /// sustained-elevated window and offers — via a single dismissible card — to save it as a workout.
     /// Nothing is ever created automatically. Mirrors the Android `NoopPrefs.KEY_AUTO_DETECT_WORKOUTS`.
     @AppStorage(PuffinExperiment.autoDetectWorkoutsKey) private var autoDetectWorkoutsEnabled = false
+    @AppStorage(UnitPrefs.workoutStartOnTodayKey) private var workoutStartOnToday = true
 
     /// "Journal reminder" (#627, default ON). When ON, Today shows the persistent journal widget
     /// (last-7-days strip + tap-through). Mirrors the Android `NoopPrefs.KEY_JOURNAL_REMINDER_ENABLED`.
@@ -1814,6 +1815,24 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text("Skips sessions that overlap a saved or imported workout, including workouts from Apple Health.")
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                rowDivider
+
+                // 261004: the idle "Start workout" offer upstream v12 pinned above Today's arrangeable
+                // sections — the one Today surface with no toggle. Off hides only the idle offer; an
+                // in-progress workout's indicator always shows, and the Workouts tab keeps its Start.
+                Toggle(isOn: $workoutStartOnToday) {
+                    Text("Start workout button on Today")
+                        .font(StrandFont.subhead)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                }
+                .toggleStyle(.switch)
+                .tint(StrandPalette.accent)
+
+                Text("Shows a Start workout button at the top of the Today screen when nothing is running. A workout in progress is always shown there regardless, and you can still start one from the Workouts tab.")
                     .font(StrandFont.caption)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
