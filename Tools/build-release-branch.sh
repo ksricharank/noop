@@ -48,7 +48,10 @@ git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 || UPSTREAM_REMOTE="origin
 # move the pin. Either way it is a decision someone made, not an accident of fetch timing.
 # MOVED 260919, v11.6.0 -> v11.8.0 (the v18 uplift). Upstream shipped 11.7.0 and 11.8.0: 160
 # commits, 454 files. A released point is still a tested one, so this is a tag, not main.
-UPSTREAM_PINNED_REF="v11.8.0"
+# MOVED 261004, v11.8.0 -> v12.0.0 (the v19 uplift). 359 commits; upstream built in the fork's
+# territory again — see the v12.0.0.19.0 release note's merge archaeology before touching the
+# Live Activity or rescore-policy resolutions.
+UPSTREAM_PINNED_REF="v12.0.0"
 UPSTREAM_REF="${UPSTREAM_REF:-$UPSTREAM_PINNED_REF}"
 if ! UPSTREAM_SHA="$(git rev-parse --verify --quiet "${UPSTREAM_REF}^{commit}")"; then
   echo "FATAL: UPSTREAM_REF '$UPSTREAM_REF' does not resolve to a commit." >&2
@@ -61,6 +64,24 @@ UPSTREAM="$UPSTREAM_REF"
 # The feature branches to stack, in order. Order matters only if two features touch the same lines.
 FEATURES=(
   "feature/release-branch-tooling"
+  # ── v19: uplifted to upstream v12.0.0 (261004) ─────────────────────────────────────────────
+  # 359 commits. Carries the uplift plus the 261004 batch (Now/Next/Watch synthesis, the daily
+  # Trends find, the morning-settle spacing exemption). Upstream built in our territory AGAIN —
+  # re-run these checks on the NEXT uplift before resolving conflicts:
+  #   - effortHRmax: upstream now carries its own #2460 override resolver — the fork's 18.25 port
+  #     was RETIRED as redundant (kept upstream's verbatim).
+  #   - Health write-back window narrowing (the deferred 14d→2d item) is RETIRED: upstream's
+  #     549549ead bounds HealthKit observer deltas to the recent sync window.
+  #   - The Live Activity controller: upstream rewrote it (follow()/LiveHRBannerLifecycle/renew);
+  #     the FORK's controller lineage was kept (three-pillar card, duty cycle, lock latch,
+  #     generation gates) and the app feeds it from publishers — upstream's banner machinery files
+  #     are in-tree but uncalled. Expect this conflict to repeat.
+  #   - Upstream's rescore work (#2293 unchanged-night witnesses, #2334 cooldown, 30-min offload
+  #     spacing, #2607 admission) COMPOSES with the fork's sleep-window deferral + canary gate;
+  #     the merged decide() carries both rule sets, with the morning settle exempt from spacing.
+  #   - per-provider API-key slots: STILL needed — v12.0.0 keeps one shared `account = "api-key"`.
+  #   - bond-loop re-park: STILL needed — `bondLoopParkCycles` absent at v12.0.0.
+  #
   # ── v18: uplifted to upstream v11.8.0 (260919) ─────────────────────────────────────────────
   # 160 upstream commits / 454 files. Unlike v17 this is NOT a pure uplift: 18.0 carries the
   # uplift plus the 260919 feature batch (two Targets widget styles, the salience-led synthesis,
