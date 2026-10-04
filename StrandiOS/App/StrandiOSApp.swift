@@ -132,11 +132,10 @@ struct StrandiOSApp: App {
             model?.live.append(log: AppModel.stamped(line))
         })
         _liftActivity = State(initialValue: liftActivity)
-        // The live heart rate banner makes room only for the Lift Log banner actually on screen, which carries the
-        // heart rate itself — not for a sync (`LiveHRBannerLifecycle`).
-        let liveActivity = LiveActivityController()
-        liveActivity.follow(model, standsAside: { [weak liftActivity] in liftActivity?.isShowing == true })
-        _liveActivity = State(initialValue: liveActivity)
+        // The fork's controller is fed from the app-level publishers below (heartRate / connected /
+        // scenePhase), not a follow() subscription: the duty-cycle, lock-latch and targets feeds all
+        // originate here, where the repo and lift session are in scope.
+        _liveActivity = State(initialValue: LiveActivityController())
         // A gym session keeps ONE banner on the Lock Screen, its own — as the live-HR banner already
         // stands aside for it. A sync started in the foreground mid-session starts no sync banner.
         // Held back only for a gym banner that will actually show: with its switch off, a session leaves the
@@ -562,8 +561,6 @@ struct StrandiOSApp: App {
                 // iOS starts a Lift Log banner only for an app on screen, so a banner lost while NOOP was in
                 // the background comes back now, whether or not the strap is sending anything.
                 pushLiftActivity()
-                // Only the foreground may start the live heart rate banner: offer it now.
-                liveActivity.appBecameActive()
                 // End a "Connecting…" sync island whose sync never came, rather than leave it greyed.
                 SyncLiveActivityController.shared.reconcile(live: model.live)
                 // Re-arm the strap's smart alarm on foreground: the firmware alarm is a single instant

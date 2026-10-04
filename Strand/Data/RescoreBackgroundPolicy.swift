@@ -231,7 +231,8 @@ enum RescoreBackgroundPolicy {
         if !passInProgress, let since = secondsSinceLastAttempt, since >= 0, since < backgroundSpacingSeconds {
             return .deferToBackgroundTask(
                 reason: "the last pass started \(Int(since / 60)) min ago; a backgrounded offload re-scores"
-                    + " at most every \(Int(backgroundSpacingSeconds / 60)) min")
+                    + " at most every \(Int(backgroundSpacingSeconds / 60)) min",
+                cause: .spacing)
         }
 
         return .run

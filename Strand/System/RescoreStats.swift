@@ -153,6 +153,9 @@ enum RescoreStats {
         case sleepWindow = "sleep-window"
         /// A backstop tick that simply did not run (nothing queued, nothing owed).
         case backstopSkipped = "backstop-skip"
+        /// Upstream v12's offload spacing: the last pass started under 30 min ago, so this
+        /// backgrounded offload waits its turn (f7aaf78bc).
+        case spacing
         /// 260929: the canary measured genuine background CPU starvation (iOS 27), so the pass was
         /// handed to a granted task window instead of grinding inline for hundreds of seconds.
         case cpuStarved = "cpu-starved"
