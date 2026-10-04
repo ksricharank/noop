@@ -228,7 +228,12 @@ enum RescoreBackgroundPolicy {
                 cause: .alreadyOutstanding)
         }
 
-        if !passInProgress, let since = secondsSinceLastAttempt, since >= 0, since < backgroundSpacingSeconds {
+        // The morning settle outranks the spacing: a debt owed ONLY by window deferrals was never
+        // attempted, and the attempt stamp it would be spaced against is yesterday evening's pass.
+        // Spacing it would push the first post-window settle — the one update the whole window waits
+        // for — onto a background task that may not arrive for hours.
+        if !passInProgress, !(rescoreAlreadyOwed && owedByWindowDeferralOnly),
+           let since = secondsSinceLastAttempt, since >= 0, since < backgroundSpacingSeconds {
             return .deferToBackgroundTask(
                 reason: "the last pass started \(Int(since / 60)) min ago; a backgrounded offload re-scores"
                     + " at most every \(Int(backgroundSpacingSeconds / 60)) min",
