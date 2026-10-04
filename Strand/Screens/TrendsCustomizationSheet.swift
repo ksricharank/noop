@@ -95,6 +95,7 @@ struct TrendsCustomizationSheet: View {
 extension TrendsSection {
     var customizationIcon: String {
         switch self {
+        case .dailyInsight:   return "lightbulb.max"
         case .insight:        return "sparkles"
         case .weekInReview:   return "square.grid.2x2"
         case .recoveryHero:   return "chart.line.uptrend.xyaxis"
@@ -116,6 +117,7 @@ extension TrendsSection {
 
     var customizationSubtitle: String {
         switch self {
+        case .dailyInsight:   return String(localized: "One interesting thing per day — past or future")
         case .insight:        return String(localized: "What the coach makes of the window")
         case .weekInReview:   return String(localized: "Charge, Effort and Rest for the week")
         case .recoveryHero:   return String(localized: "Charge over the selected range")
@@ -138,6 +140,7 @@ extension TrendsSection {
 
     var customizationTint: Color {
         switch self {
+        case .dailyInsight:   return StrandPalette.accent
         case .insight:        return StrandPalette.accent
         case .weekInReview:   return StrandPalette.chargeColor
         case .recoveryHero:   return StrandPalette.chargeColor

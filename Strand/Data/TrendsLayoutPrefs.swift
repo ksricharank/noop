@@ -11,6 +11,11 @@ import Foundation
 
 /// One reorderable Trends card. The rawValue is the stable persisted identifier.
 enum TrendsSection: String, CaseIterable, Identifiable {
+    /// The daily insight (261004): ONE interesting thing per day — retrospective (longitudinal or
+    /// cross-metric, from the wearer's own history) or prospective (an "if you do X, Y likely
+    /// follows" grounded in the data plus general physiology). Pure text, LLM-written, re-asked
+    /// once per local day. Named for the TAB (which renamed to Insights with it).
+    case dailyInsight
     /// The tab's LLM read of the selected window.
     case insight
     /// The Charge / Effort / Rest trio in pip language.
@@ -56,6 +61,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// The card's display label in the Arrange sheet.
     var title: String {
         switch self {
+        case .dailyInsight:   return String(localized: "Insights")
         case .insight:        return String(localized: "What the trend says")
         case .weekInReview:   return String(localized: "Week in review")
         case .recoveryHero:   return String(localized: "Charge over time")
@@ -77,7 +83,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// The original hard-coded order — the default when the layout is not customised, so an install
     /// that never opens Arrange sees exactly what it saw before this became arrangeable.
     static let defaultOrder: [TrendsSection] = [
-        .insight, .weekInReview, .recoveryHero, .smallMultiples,
+        .dailyInsight, .insight, .weekInReview, .recoveryHero, .smallMultiples,
         .trainingLoad, .yearStrip, .exportReport,
     ]
 

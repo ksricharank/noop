@@ -633,7 +633,7 @@ struct TrendsView: View {
                     .foregroundStyle(StrandPalette.textTertiary)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Customize the Trends tab layout")
+            .accessibilityLabel("Customize the Insights tab layout")
         }
     }
 
@@ -695,6 +695,31 @@ struct TrendsView: View {
                                    rhr: ResolvedMetric, strain: ResolvedMetric,
                                    rest: ResolvedMetric, dayQuality: ResolvedMetric) -> some View {
         switch section {
+        case .dailyInsight:
+            // The daily insight (261004): one interesting thing per day, deliberately NOT windowed —
+            // it reads a fixed slice of history whatever the range bar says, because its job is
+            // novelty ("make me keep coming back"), not a view of the selected span. Keyed on the
+            // local day alone, so it re-asks each morning and otherwise re-shows the cached text.
+            NoopCard {
+                TabInsightCard(
+                    title: "Insights",
+                    subject: "daily-insight-\(Repository.localDayKey(Date()))",
+                    generate: { coach in await coach.dailyInsight() },
+                    lastOutcome: { $0.lastDailyInsightOutcome },
+                    startsExpanded: true,
+                    showsAskCoach: true,
+                    coachFollowUp: { summary in
+                        """
+                        I am looking at today's insight on the Insights tab. It says:
+
+                        \(summary)
+
+                        Treat this as the start of the conversation and answer follow-ups about it. \
+                        Do not repeat the insight back to me.
+                        """
+                    }
+                )
+            }
         case .insight:
             // The Trends tab's own LLM read. Its lens is DIRECTION over the selected window —
             // deliberately not today's state (Today owns that), not a finished day's grade (Recap),
@@ -716,7 +741,7 @@ struct TrendsView: View {
                     coachFollowUp: { summary in
                         let span = range.days.map { "the last \($0) days" } ?? "my whole history"
                         return """
-                        I am looking at the Trends tab for \(span). It shows me this summary:
+                        I am looking at the Insights tab\u{2019}s trend summary for \(span). It shows me this summary:
 
                         \(summary)
 

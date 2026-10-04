@@ -797,6 +797,31 @@ final class AICoachEngine: ObservableObject {
         objectWillChange.send()
     }
 
+    // The daily insight's instruction (261004). Same three accessors as its siblings.
+    var customInsightPrompt: String {
+        get { insightPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultInsightPrompt {
+                UserDefaults.standard.removeObject(forKey: Self.insightPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.insightPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomInsightPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.insightPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultInsightPrompt
+    }
+
+    func resetInsightPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.insightPromptKey)
+        objectWillChange.send()
+    }
+
     // The sleep narrative's instruction (260919). Same three accessors as its siblings.
     var customSleepPrompt: String {
         get { sleepPrompt }
@@ -1836,6 +1861,47 @@ final class AICoachEngine: ObservableObject {
 
     @Published private(set) var lastTrendsOutcome: String?
 
+    /// The Insights tab's DAILY INSIGHT (261004): one interesting thing per day — retrospective
+    /// (longitudinal or cross-metric, from the wearer's own history) or prospective (an "if you do
+    /// X, Y likely follows" grounded in that history plus general physiology, flagged as such).
+    /// Deliberately NOT windowed by the range bar: it always reads the same fixed slice of recent
+    /// history, because its job is daily novelty, not a view of the selected span.
+    func dailyInsight() async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastDailyInsightOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        let window = Array(repo.days.suffix(Self.dailyInsightWindowDays))
+        guard window.count >= 7 else {
+            lastDailyInsightOutcome = "not enough history yet (\(window.count) day(s))"
+            return nil
+        }
+        var facts = "METRICS OVER THE LAST \(window.count) DAYS (oldest first):\n"
+        facts += window.map { "  " + Self.dayLine($0, wide: true) }.joined(separator: "\n")
+        let dqSeries = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
+        let dqByDay = Dictionary(dqSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l })
+        let restSeries = await repo.exploreSeries(key: "sleep_performance", source: "my-whoop")
+        let restByDay = Dictionary(restSeries.map { ($0.day, $0.value) }, uniquingKeysWith: { _, l in l })
+        let insights = Self.trendsInsightsBlock(days: window, restByDay: restByDay, dayQualityByDay: dqByDay,
+                                                today: Repository.localDayKey(Date()))
+        if !insights.isEmpty { facts += "\n\n" + insights }
+        facts += "\n\n" + Self.perMetricTrendBlock(days: window, restByDay: restByDay,
+                                                   dayQualityByDay: dqByDay)
+        facts += "\n\nTODAY'S DATE: \(Repository.localDayKey(Date()))"
+        return await runNarrative(key: key, facts: facts, instruction: insightPrompt) { outcome in
+            self.lastDailyInsightOutcome = outcome
+            ScreenLedger.log("coach: daily insight — \(outcome ?? "written")")
+        }
+    }
+
+    /// The fixed history slice the daily insight reads — two months: long enough for longitudinal
+    /// and cross-metric patterns, bounded so the request stays inside provider context budgets.
+    static let dailyInsightWindowDays = 60
+
+    @Published private(set) var lastDailyInsightOutcome: String?
+
     /// The Sleep tab's summary for ONE night. The caller passes the night it is displaying, so
     /// stepping back through nights re-asks about the night on screen rather than about today.
     func sleepNarrative(night: DailyMetric) async -> String? {
@@ -2081,6 +2147,57 @@ final class AICoachEngine: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (stored?.isEmpty == false ? stored! : Self.defaultTrendsPrompt)
     }
+
+    static let insightPromptKey = "ai.insightPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var insightPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.insightPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored! : Self.defaultInsightPrompt)
+    }
+
+    /// The INSIGHTS lens (261004). The one summary allowed to roam: every other tab prompt is
+    /// fenced to its own scope (the moment, a finished day, last night, the selected window); this
+    /// one's scope is "whatever is genuinely interesting today" — backward into the wearer's own
+    /// history, or forward as a grounded if-then — and the only hard rules are novelty, honesty
+    /// about what is data versus general knowledge, and brevity.
+    static let defaultInsightPrompt = """
+    The numbers above are two months of my metrics, followed by an INSIGHTS block and a PER-METRIC \
+    TREND CALCS block computed on-device (gated correlations, streaks, means, halves, slopes, \
+    extremes, anomalies). Write TODAY'S INSIGHT: the ONE most interesting thing you can tell me \
+    today, in the second person — something that would make opening this section every day worth it.
+
+    Choose ONE of two kinds, whichever yields the more interesting insight today:
+    - LOOKING BACK: something real in MY data — one metric's longitudinal story (a drift, a \
+    reversal, a step change, a personal extreme in context) or a pattern CUTTING ACROSS metrics \
+    (what my sleep does to next-day charge, what high-effort days do to HRV two nights on). Prefer \
+    findings the INSIGHTS block gated as real; you may connect calc-block signals yourself, flagged \
+    as a read, not a fact.
+    - LOOKING FORWARD: a concrete "if you do X, Y will likely follow" — X an action actually \
+    available to me, Y anchored in MY numbers (the direction it would move, from where), and the \
+    mechanism in one clause from established exercise/sleep physiology. Name the evidence base in \
+    passing ("consistent with what zone-2 volume does to resting HR") and keep the claim modest: \
+    likely, not guaranteed. General knowledge is welcome HERE and flagged as such — never dressed \
+    up as my data.
+
+    Shape: a **bolded claim of at most twelve words**, an em dash, then 2 to 4 short sentences \
+    developing it — the so-what, the evidence (mine or general, labelled by phrasing), and for a \
+    forward insight what to watch to confirm it. Nothing else: no bullets, no headings, no greeting.
+
+    Rules:
+    - NOVELTY IS THE JOB: yesterday's insight must not be today's. Rotate across metrics, across \
+    the two kinds, and across the window rather than re-serving the loudest fact.
+    - Every number from my data must appear VERBATIM in the numbers above, in **bold**. Do not \
+    convert, rescale or compute new figures; a general-knowledge claim carries NO invented numbers.
+    - A field marked NOT RECORDED means no data — never describe it as a bad result, and never \
+    invent a finding to fill the space: if the window genuinely holds nothing interesting, say so \
+    in one plain line and stop.
+    - This section roams where the others are fenced, so do not duplicate them: not today's state \
+    (Today owns it), not yesterday's grade (Recap), not last night's architecture (Sleep), not a \
+    per-metric tour of the window (the trend summary below this card).
+    - No medical diagnosis, ever: patterns and training/sleep/recovery mechanics, not conditions.
+    """
 
     /// The TRENDS lens (260919). Deliberately the long horizon and nothing else: the four tab
     /// summaries are one UI with four prompts, and the whole point is that each one says something

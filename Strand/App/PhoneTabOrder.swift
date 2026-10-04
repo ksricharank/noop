@@ -42,7 +42,7 @@ enum PhoneTab: Int, CaseIterable {
         case .today: return "Today"
         case .day: return "Recap"
         case .sleep: return "Sleep"
-        case .trends: return "Trends"
+        case .trends: return "Insights"
         case .more: return "More"
         }
     }

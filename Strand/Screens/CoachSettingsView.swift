@@ -41,6 +41,8 @@ struct CoachSettingsView: View {
     @State private var dayQualityPromptDraft: String = ""
     @State private var trendsPromptExpanded: Bool = false
     @State private var trendsPromptDraft: String = ""
+    @State private var insightPromptExpanded: Bool = false
+    @State private var insightPromptDraft: String = ""
     @State private var sleepPromptExpanded: Bool = false
     @State private var sleepPromptDraft: String = ""
     @State private var notifTitlePromptDraft: String = ""
@@ -80,6 +82,7 @@ struct CoachSettingsView: View {
             // bar above; these are its siblings for Recap, Trends and Sleep.
             synthesisPromptBar
             dayQualityPromptBar
+            insightPromptBar
             trendsPromptBar
             sleepPromptBar
             notifTitlePromptBar
@@ -471,12 +474,26 @@ struct CoachSettingsView: View {
             reset: { coach.resetDayQualityPrompt() })
     }
 
+    private var insightPromptBar: some View {
+        promptEditorBar(
+            title: "Daily insight instructions",
+            icon: "lightbulb.max",
+            customisedNote: "Customised. Your instructions shape the daily insight on the Insights tab.",
+            defaultNote: "Edit the one interesting thing the coach surfaces each day on the Insights tab.",
+            expanded: $insightPromptExpanded,
+            draft: $insightPromptDraft,
+            isCustomised: coach.hasCustomInsightPrompt,
+            current: { coach.customInsightPrompt },
+            commit: { coach.customInsightPrompt = $0 },
+            reset: { coach.resetInsightPrompt() })
+    }
+
     private var trendsPromptBar: some View {
         promptEditorBar(
-            title: "Trends summary instructions",
+            title: "Trend summary instructions",
             icon: "chart.line.uptrend.xyaxis",
-            customisedNote: "Customised. Your instructions shape the Trends tab's summary.",
-            defaultNote: "Edit what the coach says about the long-horizon trend on the Trends tab.",
+            customisedNote: "Customised. Your instructions shape the Insights tab's trend summary.",
+            defaultNote: "Edit the per-metric trend lines on the Insights tab.",
             expanded: $trendsPromptExpanded,
             draft: $trendsPromptDraft,
             isCustomised: coach.hasCustomTrendsPrompt,

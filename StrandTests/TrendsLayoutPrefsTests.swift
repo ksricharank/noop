@@ -88,16 +88,18 @@ final class TrendsLayoutPrefsTests: XCTestCase {
         XCTAssertEqual(Set(decoded), Set(TrendsSection.allCases))
     }
 
-    /// The default order is exactly the pre-arrangeable hard-coded order, so an install that never
-    /// opens Arrange sees precisely what it saw before this shipped.
+    /// The default order is the pre-arrangeable hard-coded order with ONE deliberate addition
+    /// (261004): the daily insight leads the renamed Insights tab — the maintainer's ask was "right
+    /// at the top" — and everything that was already here keeps its relative order below it.
     func testTheDefaultOrderMatchesTheOriginalHardCodedOrder() {
         XCTAssertEqual(TrendsSection.defaultOrder,
-                       [.insight, .weekInReview, .recoveryHero, .smallMultiples,
+                       [.dailyInsight, .insight, .weekInReview, .recoveryHero, .smallMultiples,
                         .trainingLoad, .yearStrip, .exportReport])
     }
 
-    /// The LLM summary leads the page on every tab that has one.
+    /// The daily insight leads the page; the window summary sits directly beneath it.
     func testTheInsightCardLeadsTheDefaultOrder() {
-        XCTAssertEqual(TrendsSection.defaultOrder.first, .insight)
+        XCTAssertEqual(TrendsSection.defaultOrder.first, .dailyInsight)
+        XCTAssertEqual(TrendsSection.defaultOrder.dropFirst().first, .insight)
     }
 }

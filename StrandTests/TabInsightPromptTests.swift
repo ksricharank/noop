@@ -13,7 +13,8 @@ final class TabInsightPromptTests: XCTestCase {
         [("Today", AICoachEngine.defaultSynthesisPrompt),
          ("Recap", AICoachEngine.defaultDayQualityPrompt),
          ("Trends", AICoachEngine.defaultTrendsPrompt),
-         ("Sleep", AICoachEngine.defaultSleepPrompt)]
+         ("Sleep", AICoachEngine.defaultSleepPrompt),
+         ("Insight", AICoachEngine.defaultInsightPrompt)]
     }
 
     /// Each prompt names its own subject. A prompt that does not state its scope will drift toward
@@ -26,6 +27,22 @@ final class TabInsightPromptTests: XCTestCase {
         // as such rather than as "weeks".
         XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("over the window I selected"))
         XCTAssertTrue(AICoachEngine.defaultSleepPrompt.contains("ONE NIGHT"))
+        XCTAssertTrue(AICoachEngine.defaultInsightPrompt.contains("TODAY'S INSIGHT"))
+    }
+
+    /// 261004: the daily insight is the one summary allowed to roam — but roaming must not mean
+    /// duplicating. It is pinned off the other four lenses, onto its two kinds (backward into the
+    /// wearer's history, forward as a grounded if-then), and onto honesty about general knowledge:
+    /// welcome in a forward insight, flagged as such, never carrying invented numbers.
+    func testTheDailyInsightRoamsWithoutDuplicatingOrDiagnosing() {
+        let p = AICoachEngine.defaultInsightPrompt
+        XCTAssertTrue(p.contains("LOOKING BACK"), p)
+        XCTAssertTrue(p.contains("LOOKING FORWARD"), p)
+        XCTAssertTrue(p.contains("NOVELTY IS THE JOB"))
+        XCTAssertTrue(p.contains("never dressed \\\nup as my data") || p.contains("never dressed up as my data")
+                      || p.contains("never dressed"))
+        XCTAssertTrue(p.contains("Today owns it"))
+        XCTAssertTrue(p.contains("No medical diagnosis"))
     }
 
     /// Trends is explicitly fenced OFF the other three lenses. Without this it reverts to
