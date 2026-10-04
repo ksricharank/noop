@@ -622,32 +622,31 @@ final class AICoachEngine: ObservableObject {
     /// gone; the number of points is driven by the data, not by a template.
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write my read for the Today \
-    screen. Tell me WHAT STATE I AM IN right now and what to do about it — as SCANNABLE BULLETS, \
-    never a wall of prose. Your lens is MY BODY IN THE PRESENT: lead with MY LAST 6 HOURS and \
-    today's readings; the targets are the LEAST interesting thing you have, because I can read \
+    screen. Tell me WHAT STATE I AM IN right now and what to do about it — as two short, scannable \
+    sections, never a wall of prose. Your lens is MY BODY IN THE PRESENT: lead with MY LAST 6 HOURS \
+    and today's readings; the targets are the LEAST interesting thing you have, because I can read \
     those numbers myself.
 
     Shape — this exact skeleton, nothing else:
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging.
-    - Then 5 to 8 bullets, ONE point each, at most ~16 words after the bolded lead. Group them \
-    with these bolded lead-ins, in this order, skipping any group with nothing real to say:
-    - **Now** — my STATE OF BEING, read from now and the immediate past: recovery spent or \
-    banked, stress carried or shed, momentum or stillness — the interpretation, never the \
-    readout. "HR 72, 1.1k steps" is a line I can read off the screen; what those hours DID to me \
-    is the insight I cannot. Compare only to MY resting heart rate and MY OWN baseline. My data \
-    has z-scores: |z| above 1 is real, above 2 strong; in-range is NOT news. You may connect two \
-    signals into one causal read — flag it as a read, not a fact. Whatever you conclude here is \
-    the premise Next must act on.
-    - **Next** — the moves that follow from Now, SPREAD ACROSS THE WHOLE REMAINING DAY, each \
-    anchored to a part of it in words (late morning, after lunch, this evening, before bed) so I \
-    can shuffle them, not march to them. Cover training or movement (what kind, how hard, and \
-    why today's state supports it), what to avoid, and the wind-down: bedtime guidance keyed to \
-    tonight's sleep target and my usual midsleep from the data. You may state ONE derived clock \
-    time ("lights out about HH:MM") computed from those two numbers — the single exception to \
-    the no-derived-numbers rule, always prefixed "about". Caffeine or heavy-meal cutoffs may \
-    anchor on it in words.
-    - **Watch** — at most one watchout forming NOW: climbing resting HR, sagging HRV or elevated \
-    respiratory rate together can precede illness or strain. Say what would confirm it.
+    - **Now** on its own line, then 2 to 4 bullets: my STATE OF BEING, read from now and the \
+    immediate past — recovery spent or banked, stress carried or shed, momentum or stillness, \
+    what the morning did to me — the interpretation, never the readout. "HR 72, 1.1k steps" is a \
+    line I can read off the screen; what those hours DID to me is the insight I cannot. Compare \
+    only to MY resting heart rate and MY OWN baseline. My data has z-scores: |z| above 1 is real, \
+    above 2 strong; in-range is NOT news. You may connect two signals into one causal read — flag \
+    it as a read, not a fact. A watchout forming NOW (climbing resting HR, sagging HRV, elevated \
+    respiratory rate together) belongs here as its own bullet, with what would confirm it. \
+    Whatever Now concludes is the premise Next must act on.
+    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now, SPREAD \
+    ACROSS THE WHOLE REMAINING DAY, each anchored to a part of it in words (late morning, after \
+    lunch, this evening, before bed) so I can shuffle them, not march to them. Cover training or \
+    movement (what kind, how hard, and why today's state supports it), what to avoid, and the \
+    wind-down: bedtime guidance keyed to tonight's sleep target and my usual midsleep from the \
+    data. You may state ONE derived clock time ("lights out about HH:MM") computed from those two \
+    numbers — the single exception to the no-derived-numbers rule, always prefixed "about". \
+    Caffeine or heavy-meal cutoffs may anchor on it in words.
+    - Each bullet is ONE point, at most ~16 words after an optional short bolded lead.
 
     About the targets, specifically:
     - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
@@ -662,14 +661,14 @@ final class AICoachEngine: ObservableObject {
     now make sense.
     - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of \
     the last strap sync" stillness is as of that sync, never this instant.
-    - Every number you write must appear VERBATIM in my data, in **bold** (the Next group's \
+    - Every number you write must appear VERBATIM in my data, in **bold** (the Next section's \
     clock time is the one exception above). Never invent, convert or estimate any other figure, \
     and never state a target that differs from TODAY'S TARGETS.
-    - No headings, no greeting, no sign-off, no prose paragraphs — the verdict line and the \
-    bullets are the whole structure. Within a group FEWER IS BETTER; depth beats breadth.
-    - If my last hours are genuinely unremarkable, say so in the verdict plus two bullets and \
-    stop. Never invent a finding to fill a group; a quiet morning reported quietly is the \
-    correct output, not a failure. "unremarkable" is an allowed verdict.
+    - **Now** and **Next** are the only section lines — no other headings, no greeting, no \
+    sign-off, no prose paragraphs. Within a section FEWER IS BETTER; depth beats breadth.
+    - If my last hours are genuinely unremarkable, say so in the verdict and keep Now to two \
+    quiet bullets. Never invent a finding to fill a section; a quiet morning reported quietly is \
+    the correct output, not a failure. "unremarkable" is an allowed verdict.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
@@ -2087,36 +2086,33 @@ final class AICoachEngine: ObservableObject {
     The numbers above are my metrics over an extended window — weeks, not one day — followed by an \
     INSIGHTS block computed on-device: week-over-week means, load balance, the relationships in the \
     window that clear a statistical gate, consistency and streaks. Those findings are already found. \
-    Your job is the SO WHAT, for the person whose body it is, in the second person.
+    Your job is TODAY'S INSIGHT: exactly ONE interesting thing, for the person whose body it is, in \
+    the second person.
 
-    Lead with TODAY'S FIND — one line, no bullet: the single most interesting thing in this window \
-    TODAY, as **a bolded claim of at most ten words**, then an em dash and one clause of why it \
-    matters. Pick the finding a curious owner of this body would not already know: a relationship \
-    that cleared the gate, a streak at a meaningful length, a reversal after a long run, a personal \
-    extreme. Novelty beats importance when they conflict — yesterday's find should not be today's. \
-    If the ranked INSIGHTS offer nothing new, promote the freshest real change in the daily rows; \
-    only a window with genuinely nothing moving may say so instead, in one plain line.
+    Output: one bullet-less line — **a bolded claim of at most ten words**, then an em dash, then \
+    one or two short sentences of the SO WHAT: what it means for me and what to do (or watch for) \
+    this week. Nothing else. Not a list, not one insight per metric, not a tour of charge, sleep \
+    and effort — ONE insight, chosen, and the choosing is the work.
 
-    Then 1-3 short bullets, DIRECTION AND DURATION only — what has been moving, for how long, and \
-    where it stopped. Take the INSIGHTS in the order given (they are ranked) and, for each one worth \
-    a bullet, say:
-    - what it means for me — not a restatement of the numbers, which I can read;
-    - what to do about it this week, concretely — or what to watch for if nothing needs doing;
-    - how sure to be: a moderate link over 12 pairs is a lead, not a law.
-    Skip any bullet that would restate the find.
+    What makes the cut: an INTERPRETATION, never a restated stat. "Deep sleep up 12%" is a number \
+    I can read off the chart; "your deep sleep recovers first when you stop late workouts" is an \
+    insight. Prefer, in rough order: a relationship that cleared the gate, a reversal after a long \
+    run, a streak at a meaningful length, a personal extreme with a plausible cause. Novelty beats \
+    importance when they conflict — yesterday's insight must not be today's; rotate through the \
+    window rather than re-serving its loudest fact. If the ranked INSIGHTS offer nothing new, \
+    interpret the freshest real change in the daily rows; only a window with genuinely nothing \
+    moving may say so instead, in one plain line.
 
     Rules:
-    - EVERY number you write must appear VERBATIM in the numbers above. Do not convert units, do \
-    not rescale, do not compute a new figure, and never supply a number that is not there. If a \
-    figure you want is absent, describe the finding in words with no number at all.
-    - Prefer the INSIGHTS block over the daily rows; use the rows only to illustrate an insight.
+    - EVERY number you write must appear VERBATIM in the numbers above, in **bold**. Do not \
+    convert, rescale or compute a new figure; if a figure you want is absent, make the point in \
+    words with no number at all.
+    - Direction and duration are your lens: anchor the claim in the window — "over the last three \
+    weeks", not "recently".
     - Do NOT report today's values, grade a single day, or discuss last night. Other screens own those.
-    - Anchor claims in the window: say "over the last three weeks", not "recently".
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
-    - If the INSIGHTS block is empty, or the window genuinely holds no trend worth reporting, say so \
-    in one line. A flat period is a real finding and padding it is worse than brevity.
-    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
-    short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    - State confidence honestly in passing: a moderate link over 12 pairs is a lead, not a law.
+    - No headings, no preamble, no sign-off — the one line is the whole output.
     """
 
     static let sleepPromptKey = "ai.sleepPrompt"

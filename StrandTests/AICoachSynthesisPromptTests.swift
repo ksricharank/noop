@@ -112,7 +112,15 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         // The agreement contract with the Lock-Screen card survives the rewrite untouched.
         XCTAssertTrue(d.contains("TODAY'S TARGETS"))
         XCTAssertTrue(d.contains("total calories"))
-        XCTAssertTrue(d.contains("No headings"))
+        // 261004: Now and Next became real section lines with bullets beneath (maintainer ask), so
+        // the blanket "No headings" pin is replaced by the exact two-section contract: those two and
+        // nothing else, Watch retired (a forming watchout now rides inside Now), Tonight stays folded.
+        XCTAssertTrue(d.contains("**Now**"))
+        XCTAssertTrue(d.contains("**Next**"))
+        XCTAssertTrue(d.contains("no other headings"))
+        XCTAssertTrue(d.contains("2 to 4 bullets"), "Now must be richer than one line")
+        XCTAssertFalse(d.contains("**Watch**"), "the Watch section is retired; watchouts live in Now")
+        XCTAssertFalse(d.contains("**Tonight**"), "Tonight stays folded into Next")
         // A quiet day must be ALLOWED to be quiet. Without this the model pads to reach a count,
         // which is the failure the rewrite exists to fix.
         XCTAssertTrue(d.contains("FEWER IS BETTER"))
