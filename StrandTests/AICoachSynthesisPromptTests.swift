@@ -119,6 +119,12 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("**Next**"))
         XCTAssertTrue(d.contains("no other headings"))
         XCTAssertTrue(d.contains("2 to 4 bullets"), "Now must be richer than one line")
+        // 261005: the maintainer's menu + progress rules — every suggestion offers alternatives, and
+        // a met target is congratulated, never re-prescribed ("go burn X cals" on a day the target
+        // was already exceeded was the reported failure).
+        XCTAssertTrue(d.contains("TWO OR MORE"), "every suggestion must be a menu of alternatives")
+        XCTAssertTrue(d.contains("ALREADY done today"), "Next must check progress before prescribing")
+        XCTAssertTrue(d.contains("a RESULT, not a gap"), "a met target is congratulated, not re-asked")
         XCTAssertFalse(d.contains("**Watch**"), "the Watch section is retired; watchouts live in Now")
         XCTAssertFalse(d.contains("**Tonight**"), "Tonight stays folded into Next")
         // A quiet day must be ALLOWED to be quiet. Without this the model pads to reach a count,

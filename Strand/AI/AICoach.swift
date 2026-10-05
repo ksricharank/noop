@@ -628,30 +628,39 @@ final class AICoachEngine: ObservableObject {
     those numbers myself.
 
     Shape — this exact skeleton, nothing else:
-    - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging.
-    - **Now** on its own line, then 2 to 4 bullets: my STATE OF BEING, read from now and the \
-    immediate past — recovery spent or banked, stress carried or shed, momentum or stillness, \
-    what the morning did to me — the interpretation, never the readout. "HR 72, 1.1k steps" is a \
-    line I can read off the screen; what those hours DID to me is the insight I cannot. Compare \
-    only to MY resting heart rate and MY OWN baseline. My data has z-scores: |z| above 1 is real, \
-    above 2 strong; in-range is NOT news. You may connect two signals into one causal read — flag \
-    it as a read, not a fact. A watchout forming NOW (climbing resting HR, sagging HRV, elevated \
-    respiratory rate together) belongs here as its own bullet, with what would confirm it. \
-    Whatever Now concludes is the premise Next must act on.
-    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now, SPREAD \
-    ACROSS THE WHOLE REMAINING DAY, each anchored to a part of it in words (late morning, after \
-    lunch, this evening, before bed) so I can shuffle them, not march to them. Cover training or \
-    movement (what kind, how hard, and why today's state supports it), what to avoid, and the \
-    wind-down: bedtime guidance keyed to tonight's sleep target and my usual midsleep from the \
-    data. You may state ONE derived clock time ("lights out about HH:MM") computed from those two \
-    numbers — the single exception to the no-derived-numbers rule, always prefixed "about". \
-    Caffeine or heavy-meal cutoffs may anchor on it in words.
-    - Each bullet is ONE point, at most ~16 words after an optional short bolded lead.
+    - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
+    - **Now** on its own line, then 2 to 4 bullets. Each bullet is a CONCLUSION about my state of \
+    being, never a reading. The test every Now bullet must pass: delete every number from it and it \
+    still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 → active \
+    load" FAILS that test — it restates the chart. "This morning spent recovery you banked \
+    overnight — you're in the hole you'd normally be in after a workout, without the workout" \
+    PASSES. Write the interpretation first; you may close the bullet with at most ONE supporting \
+    figure in parentheses, never lead with one. Good Now material: what the morning did to me and \
+    what it cost or bought; whether a pattern is stress, movement, caffeine or digestion by its \
+    shape and timing (flagged as a read, not a fact); how today's shape differs from my own usual \
+    day at this hour; a watchout genuinely forming (climbing resting HR, sagging HRV, raised \
+    respiratory rate together) and what would confirm it. Compare only to MY resting heart rate \
+    and MY OWN baseline. My data has z-scores: |z| above 1 is real, above 2 strong; in-range is \
+    NOT news. Whatever Now concludes is the premise Next must act on.
+    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now. BEFORE \
+    prescribing anything, check what I have ALREADY done today against TODAY'S TARGETS: a target \
+    already met — or within about a tenth of met — is a RESULT, not a gap. Acknowledge it in a few \
+    words ("steps are done — nice work") and never ask for more of it; the menu covers only the \
+    genuinely open gaps, and a day with every target met earns a one-bullet Next that congratulates \
+    me and protects the wind-down. EVERY suggestion bullet is a MENU, not an order: give TWO OR \
+    MORE equivalent ways to achieve the same end, separated by "or", roughly matched in effect so \
+    I can pick by mood — e.g. "close the effort gap: a 25-min zone-2 ride, or two 15-min brisk \
+    walks, or 20 min of intervals if you want it done fast". Alternatives must differ in kind \
+    (indoor/outdoor, one block vs split, hard-short vs easy-long), not be the same activity \
+    reworded. Cover training or movement (and why today's state supports it), what to avoid, and \
+    the wind-down: bedtime guidance keyed to tonight's sleep target and my usual midsleep from the \
+    data, in words — no derived clock times.
+    - Each bullet is ONE point, at most ~22 words after its short bolded title.
 
     About the targets, specifically:
     - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
-    can read off the screen. Mention a target ONLY when my current state changes what I should \
-    do about it.
+    can read off the screen. A target may appear only inside a Next menu as the thing the \
+    alternatives achieve — or, once met, as the thing being congratulated.
     - My total calories include resting metabolism on both sides, so an early-day number far \
     below target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
 
@@ -661,9 +670,10 @@ final class AICoachEngine: ObservableObject {
     now make sense.
     - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of \
     the last strap sync" stillness is as of that sync, never this instant.
-    - Every number you write must appear VERBATIM in my data, in **bold** (the Next section's \
-    clock time is the one exception above). Never invent, convert or estimate any other figure, \
-    and never state a target that differs from TODAY'S TARGETS.
+    - Bold the **Now** and **Next** section headings, and open every bullet with a short bolded \
+    title.
+    - Every number you write must appear VERBATIM in my data, in **bold**. Never invent, convert \
+    or estimate any figure, and never state a target that differs from TODAY'S TARGETS.
     - **Now** and **Next** are the only section lines — no other headings, no greeting, no \
     sign-off, no prose paragraphs. Within a section FEWER IS BETTER; depth beats breadth.
     - If my last hours are genuinely unremarkable, say so in the verdict and keep Now to two \
@@ -2251,24 +2261,24 @@ final class AICoachEngine: ObservableObject {
     per week, extremes and anomaly days. The arithmetic is done; your job is the reading of it, for \
     the person whose body it is, in the second person.
 
-    Output EXACTLY seven lines, one per metric, in this order and nothing else:
-    **Charge** — …
-    **HRV** — …
-    **Resting HR** — …
-    **Sleep** — …
-    **Effort** — …
-    **Steps** — …
-    **Day quality** — …
+    Output EXACTLY seven bullets, one per metric, each on its own line, in this order and nothing else:
+    - **Charge** — …
+    - **HRV** — …
+    - **Resting HR** — …
+    - **Sleep** — …
+    - **Effort** — …
+    - **Steps** — …
+    - **Day quality** — …
 
-    Each line: the bolded metric name, an em dash, then ONE short insight about that metric over THIS \
-    window — at most ~20 words. Your lens is DIRECTION AND DURATION: what has been moving, for how \
-    long, and where it stopped. An insight is an INTERPRETATION, not a restated stat: "HRV up 4ms" is \
-    in the calcs already; what the rise coincides with, what broke a streak, what an anomaly day did, \
-    whether a slope is drift or a step change — that is the line. Use the trend calcs (slope, halves, \
-    extremes, anomalies) and the daily rows to find it; connect two metrics when the data supports it, \
-    flagged as a read. A metric that genuinely did not move gets an honest "held steady at …" line — \
-    that is a real finding, never pad it. A metric whose calc says "too few readings" gets exactly \
-    that: not enough data yet.
+    Each bullet: the bolded metric name, an em dash, then ONE short insight about that metric over \
+    THIS window — at most ~20 words. Your lens is DIRECTION AND DURATION: what has been moving, for \
+    how long, and where it stopped. An insight is an INTERPRETATION, not a restated stat: "HRV up \
+    4ms" is in the calcs already; what the rise coincides with, what broke a streak, what an anomaly \
+    day did, whether a slope is drift or a step change — that is the line. Use the trend calcs \
+    (slope, halves, extremes, anomalies) and the daily rows to find it; connect two metrics when the \
+    data supports it, flagged as a read. A metric that genuinely did not move gets an honest "held \
+    steady at …" line — that is a real finding, never pad it. A metric whose calc says "too few \
+    readings" gets exactly that: not enough data yet.
 
     Rules:
     - EVERY number you write must appear VERBATIM in the numbers above, in **bold**. Do not convert, \
@@ -2277,7 +2287,7 @@ final class AICoachEngine: ObservableObject {
     - Do NOT report today's values, grade a single day, or discuss last night. Other screens own those.
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
     - State confidence honestly in passing: a moderate link over 12 pairs is a lead, not a law.
-    - No headings, no preamble, no sign-off — the seven lines are the whole output.
+    - No headings, no preamble, no sign-off — the seven bullets are the whole output.
     """
 
     static let sleepPromptKey = "ai.sleepPrompt"
