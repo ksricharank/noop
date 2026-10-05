@@ -60,4 +60,28 @@ public enum StepsCounter {
         }
         return total > 0 ? total : nil
     }
+
+    /// The timestamp of the most recent RETAINED locomotion increment in `samples`, or nil when the
+    /// window holds none. The same wrap/plausibility/activity-class gates as `stepsInWindow`, scanned
+    /// newest-first, with `minTicks` filtering out one-tick wrist noise: a pair must carry at least
+    /// that many locomotion ticks to count as the wearer actually moving.
+    ///
+    /// 260924, for the coach's sedentary read: "no heart-rate rise" is not "no movement" — a calm
+    /// walk can leave HR near its floor, and the HR-only rule called a whole afternoon sedentary.
+    /// Steps are direct evidence of movement, so they anchor the claim where they exist. Fork-only
+    /// consumer (the iOS Today synthesis); no Android twin by the parity rule's fork exemption.
+    public static func lastMovementTs(_ samples: [StepSample], minTicks: Int = 10) -> Int? {
+        let sorted = samples.sorted { $0.ts < $1.ts }
+        guard sorted.count >= 2 else { return nil }
+        let hasClasses = hasActivityClasses(sorted)
+        for i in stride(from: sorted.count - 1, through: 1, by: -1) {
+            let delta = (sorted[i].counter - sorted[i - 1].counter) & 0xFFFF
+            if delta >= minTicks,
+               shouldCountDelta(activityClass: sorted[i].activityClass, hasActivityClasses: hasClasses),
+               isPlausibleDelta(previousTs: sorted[i - 1].ts, currentTs: sorted[i].ts, delta: delta) {
+                return sorted[i].ts
+            }
+        }
+        return nil
+    }
 }

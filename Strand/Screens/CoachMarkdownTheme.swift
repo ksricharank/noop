@@ -26,8 +26,20 @@ extension Theme {
             ForegroundColor(StrandPalette.textPrimary)
             FontSize(15)
         }
+        // BOLD, not semibold (260904, maintainer: "the coach response format doesn't show bold
+        // text correctly").
+        //
+        // `.semibold` against a 15pt regular body is a ~100-weight step, and on the frosted
+        // Charge-tinted bubble that difference is nearly invisible — so a reply that was correctly
+        // emphasised looked like one where the bold had been dropped. LLM replies lean on bold as
+        // their primary structure (it is by far the most common markup they emit), so this is the
+        // one weight in the theme that has to be unmistakable.
+        //
+        // Deliberately not applied to headings, which stay semibold: they are already separated by
+        // size and margin, and a full bold heading inside a 560pt bubble is the shouting the theme
+        // doc warns about.
         .strong {
-            FontWeight(.semibold)
+            FontWeight(.bold)
         }
         .emphasis {
             FontStyle(.italic)
