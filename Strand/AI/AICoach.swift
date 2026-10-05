@@ -1890,10 +1890,46 @@ final class AICoachEngine: ObservableObject {
         facts += "\n\n" + Self.perMetricTrendBlock(days: window, restByDay: restByDay,
                                                    dayQualityByDay: dqByDay)
         facts += "\n\nTODAY'S DATE: \(Repository.localDayKey(Date()))"
-        return await runNarrative(key: key, facts: facts, instruction: insightPrompt) { outcome in
+        facts += "\nYESTERDAY: \(Repository.localDayKey(Date(timeIntervalSinceNow: -86_400)))"
+        // The no-repeat mechanism (261005), deliberately simple: the model cannot remember what it
+        // wrote yesterday, so "novelty" was only ever a request. The last few HEADLINES it produced
+        // ride in the context as an exclusion list — one small defaults array, no stored history,
+        // and enough: an insight that must avoid its own last week of claims has to move on.
+        let recent = Self.recentInsightHeadlines()
+        if !recent.isEmpty {
+            facts += "\n\nMY LAST INSIGHTS (most recent first) — today's must not repeat any of these claims:\n"
+                + recent.map { "  - " + $0 }.joined(separator: "\n")
+        }
+        let text = await runNarrative(key: key, facts: facts, instruction: insightPrompt) { outcome in
             self.lastDailyInsightOutcome = outcome
             ScreenLedger.log("coach: daily insight — \(outcome ?? "written")")
         }
+        if let text { Self.rememberInsightHeadline(Self.insightHeadline(from: text)) }
+        return text
+    }
+
+    /// The last few daily-insight headlines, newest first — the exclusion list `dailyInsight` feeds
+    /// back to the model. Capped small: it exists to block repeats, not to be a history.
+    static let recentInsightsKey = "ai.recentInsightHeadlines"
+    static let recentInsightsCap = 7
+
+    static func recentInsightHeadlines() -> [String] {
+        (UserDefaults.standard.stringArray(forKey: recentInsightsKey) ?? [])
+    }
+
+    static func rememberInsightHeadline(_ headline: String) {
+        guard !headline.isEmpty else { return }
+        var list = recentInsightHeadlines()
+        list.removeAll { $0 == headline }
+        list.insert(headline, at: 0)
+        UserDefaults.standard.set(Array(list.prefix(recentInsightsCap)), forKey: recentInsightsKey)
+    }
+
+    /// The claim line of an insight: its first non-empty line, markdown bolding stripped. Pure, so
+    /// the exclusion list's contents are pinned by a test rather than guessed at.
+    nonisolated static func insightHeadline(from text: String) -> String {
+        let first = text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        return first.replacingOccurrences(of: "**", with: "").trimmingCharacters(in: .whitespaces)
     }
 
     /// The fixed history slice the daily insight reads — two months: long enough for longitudinal
@@ -2163,39 +2199,45 @@ final class AICoachEngine: ObservableObject {
     /// history, or forward as a grounded if-then — and the only hard rules are novelty, honesty
     /// about what is data versus general knowledge, and brevity.
     static let defaultInsightPrompt = """
-    The numbers above are two months of my metrics, followed by an INSIGHTS block and a PER-METRIC \
-    TREND CALCS block computed on-device (gated correlations, streaks, means, halves, slopes, \
-    extremes, anomalies). Write TODAY'S INSIGHT: the ONE most interesting thing you can tell me \
-    today, in the second person — something that would make opening this section every day worth it.
+    The numbers above are two months of my metrics ending YESTERDAY (the date is marked), followed \
+    by an INSIGHTS block and a PER-METRIC TREND CALCS block computed on-device (gated correlations, \
+    streaks, means, halves, slopes, extremes, anomalies). Write TODAY'S INSIGHT: one thing worth \
+    knowing, in the second person — something that would make opening this section every day worth it.
 
-    Choose ONE of two kinds, whichever yields the more interesting insight today:
-    - LOOKING BACK: something real in MY data — one metric's longitudinal story (a drift, a \
-    reversal, a step change, a personal extreme in context) or a pattern CUTTING ACROSS metrics \
-    (what my sleep does to next-day charge, what high-effort days do to HRV two nights on). Prefer \
-    findings the INSIGHTS block gated as real; you may connect calc-block signals yourself, flagged \
-    as a read, not a fact.
-    - LOOKING FORWARD: a concrete "if you do X, Y will likely follow" — X an action actually \
-    available to me, Y anchored in MY numbers (the direction it would move, from where), and the \
-    mechanism in one clause from established exercise/sleep physiology. Name the evidence base in \
-    passing ("consistent with what zone-2 volume does to resting HR") and keep the claim modest: \
-    likely, not guaranteed. General knowledge is welcome HERE and flagged as such — never dressed \
-    up as my data.
+    ANCHOR IT ON YESTERDAY. Start from something that actually happened yesterday, named \
+    concretely from my data — a reading that moved, an anomaly, a streak that extended or broke, a \
+    session or its absence, an unusually good or bad value. Yesterday is the hook; the insight is \
+    what you develop it into, in ONE of two directions:
+    - LOOKING BACK: what my own history says about yesterday — the longitudinal story it continues \
+    or breaks (a drift, a reversal, a step change, a personal extreme in context), or a pattern \
+    CUTTING ACROSS metrics that explains it (what my sleep does to next-day charge, what \
+    high-effort days do to HRV two nights on). Prefer findings the INSIGHTS block gated as real; \
+    you may connect calc-block signals yourself, flagged as a read, not a fact.
+    - LOOKING FORWARD: what yesterday sets up — a concrete "if you do X, Y will likely follow", \
+    X an action actually available to me today, Y anchored in MY numbers (the direction it would \
+    move, from where), the mechanism in one clause from established exercise/sleep physiology. \
+    Name the evidence base in passing ("consistent with what zone-2 volume does to resting HR") \
+    and keep the claim modest: likely, not guaranteed. General knowledge is welcome HERE and \
+    flagged as such — never dressed up as my data.
 
     Shape: a **bolded claim of at most twelve words**, an em dash, then 2 to 4 short sentences \
     developing it — the so-what, the evidence (mine or general, labelled by phrasing), and for a \
     forward insight what to watch to confirm it. Nothing else: no bullets, no headings, no greeting.
 
     Rules:
-    - NOVELTY IS THE JOB: yesterday's insight must not be today's. Rotate across metrics, across \
-    the two kinds, and across the window rather than re-serving the loudest fact.
+    - NOVELTY IS THE JOB: the list of MY LAST INSIGHTS, when present, is a hard exclusion — today's \
+    claim must not restate any of them. Yesterday changes daily; let the anchor do the rotating, \
+    and vary the direction (back/forward) and the metric rather than re-serving the loudest fact.
     - Every number from my data must appear VERBATIM in the numbers above, in **bold**. Do not \
     convert, rescale or compute new figures; a general-knowledge claim carries NO invented numbers.
     - A field marked NOT RECORDED means no data — never describe it as a bad result, and never \
-    invent a finding to fill the space: if the window genuinely holds nothing interesting, say so \
-    in one plain line and stop.
+    invent a finding to fill the space: if yesterday was genuinely unremarkable, say so in one \
+    plain line and develop the most interesting thing in the window instead, saying that is what \
+    you are doing.
     - This section roams where the others are fenced, so do not duplicate them: not today's state \
-    (Today owns it), not yesterday's grade (Recap), not last night's architecture (Sleep), not a \
-    per-metric tour of the window (the trend summary below this card).
+    (Today owns it), not yesterday's GRADE (Recap owns that — yesterday here is an anchor, not a \
+    report card), not last night's architecture (Sleep), not a per-metric tour of the window (the \
+    trend summary below this card).
     - No medical diagnosis, ever: patterns and training/sleep/recovery mechanics, not conditions.
     """
 

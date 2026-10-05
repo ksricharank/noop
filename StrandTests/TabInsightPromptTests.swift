@@ -36,13 +36,27 @@ final class TabInsightPromptTests: XCTestCase {
     /// welcome in a forward insight, flagged as such, never carrying invented numbers.
     func testTheDailyInsightRoamsWithoutDuplicatingOrDiagnosing() {
         let p = AICoachEngine.defaultInsightPrompt
+        XCTAssertTrue(p.contains("ANCHOR IT ON YESTERDAY"), p)
         XCTAssertTrue(p.contains("LOOKING BACK"), p)
         XCTAssertTrue(p.contains("LOOKING FORWARD"), p)
         XCTAssertTrue(p.contains("NOVELTY IS THE JOB"))
+        XCTAssertTrue(p.contains("MY LAST INSIGHTS"), "the exclusion list must be named, or it is ignored")
+        XCTAssertTrue(p.contains("not a \\\nreport card") || p.contains("not a report card"),
+                      "yesterday anchors, Recap grades — the fence must say so")
         XCTAssertTrue(p.contains("never dressed \\\nup as my data") || p.contains("never dressed up as my data")
                       || p.contains("never dressed"))
         XCTAssertTrue(p.contains("Today owns it"))
         XCTAssertTrue(p.contains("No medical diagnosis"))
+    }
+
+    /// 261005: the no-repeat mechanism is a small headline ledger fed back as an exclusion list.
+    /// The extractor is pure; pin it so the list holds claims, not markdown or whole paragraphs.
+    func testTheInsightHeadlineExtractorTakesTheClaimLine() {
+        XCTAssertEqual(AICoachEngine.insightHeadline(
+            from: "**Your deep sleep recovers first** — more text.\nSecond line."),
+            "Your deep sleep recovers first — more text.")
+        XCTAssertEqual(AICoachEngine.insightHeadline(from: "\n\n  plain claim  \nrest"), "plain claim")
+        XCTAssertEqual(AICoachEngine.insightHeadline(from: ""), "")
     }
 
     /// Trends is explicitly fenced OFF the other three lenses. Without this it reverts to
