@@ -1611,6 +1611,13 @@ final class AICoachEngine: ObservableObject {
     /// True while a generation is running — drives the refresh button's spinner on the Today cards.
     @Published var synthesisRefreshing = false
     private var synthesisInFlight = false
+    /// A forced refresh that arrived WHILE a generation was already running (261006). The old `!synthesisInFlight`
+    /// guard silently dropped it — which is how a morning refresh tap could "do nothing": the open-
+    /// triggered generation was still queued behind the Health sync's store reads, the tap landed inside
+    /// it and vanished, and the stale paragraph it eventually produced then stood. A dropped tap and a
+    /// dropped `refreshSynthesisIfDataChanged` are both requests for a NEWER paragraph than the one in
+    /// flight, so the intent is queued and the running generation re-runs once more when it finishes.
+    private var synthesisRerunWanted = false
 
     /// Whether a generation stamped `generatedAt` may still be shown at `now`: same LOCAL calendar day.
     /// Pure and static so the day-rollover fallback is pinnable without a provider or a store;
@@ -1630,7 +1637,14 @@ final class AICoachEngine: ObservableObject {
     /// - Parameter force: skip the one-minute freshness keep. The Today cards' refresh button passes
     ///   true — a deliberate tap is a request for a NEW paragraph, not a flap to be absorbed.
     func refreshSynthesis(force: Bool = false) async {
-        guard isConfigured, dataConsent, !synthesisInFlight else { return }
+        guard isConfigured, dataConsent else { return }
+        if synthesisInFlight {
+            // Queue a forced request rather than dropping it (see `synthesisRerunWanted`). A non-forced
+            // call during a generation really is a flap — a generation is literally running — so only
+            // the deliberate asks re-run.
+            if force { synthesisRerunWanted = true }
+            return
+        }
         guard let key = resolvedKey else { return }
         // Drop a previous day's text BEFORE generating, so a failed call falls back to the rule-based
         // read rather than yesterday's narrative.
@@ -1658,33 +1672,51 @@ final class AICoachEngine: ObservableObject {
         }
         guard !repo.days.isEmpty else { return }
 
-        let context = await buildFullContext()
-        // Read fresh (see `synthesisPrompt`), so an edit in the settings applies to this refresh.
-        let instruction = synthesisPrompt
-        let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
-        do {
-            let reply = try await callProvider(key: key, messages: wire)
-            let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !clean.isEmpty {
-                synthesisText = clean
-                synthesisGeneratedAt = Date()
-                // Which data this paragraph describes — see `synthesisDataSeq`.
-                synthesisDataSeq = repo.refreshSeq
-                // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
-                // for the retry made its absence carry the hidden meaning "your chosen model", which
-                // is legible only to someone who already knows the rule.
-                synthesisModel = lastAnsweringModel
-                synthesisCameFromFallback = lastTimeoutFallbackModel != nil
-                lastSynthesisError = nil   // a good generation clears the previous failure
+        // Up to three passes, almost always one. A second pass runs only when the data moved UNDER the
+        // generation — the repository published new rows while the provider was answering, so the text
+        // just produced already describes superseded numbers — or when a forced request arrived mid-
+        // flight (see `synthesisRerunWanted`). This is the morning race made self-healing: open → the
+        // generation starts from the pre-sync rows → the Health sync lands its rows during the call →
+        // the paragraph re-runs once against what the screen now shows, with no tap needed.
+        for _ in 0..<3 {
+            synthesisRerunWanted = false
+            // The sequence the context is about to be built FROM — captured BEFORE the build and stamped
+            // verbatim on success. Stamping `repo.refreshSeq` AFTER the provider call (as this used to)
+            // meant a sync landing mid-generation donated its NEW sequence to a paragraph written from
+            // the OLD rows, and `refreshSynthesisIfDataChanged` then judged the stale text current.
+            let seqAtBuild = repo.refreshSeq
+            let context = await buildFullContext()
+            // Read fresh (see `synthesisPrompt`), so an edit in the settings applies to this refresh.
+            let instruction = synthesisPrompt
+            let wire: [(role: ChatMessage.Role, content: String)] = [(.user, context + "\n\n---\n\n" + instruction)]
+            do {
+                let reply = try await callProvider(key: key, messages: wire)
+                let clean = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty {
+                    synthesisText = clean
+                    synthesisGeneratedAt = Date()
+                    // Which data this paragraph describes — see `synthesisDataSeq` and `seqAtBuild`.
+                    synthesisDataSeq = seqAtBuild
+                    // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
+                    // for the retry made its absence carry the hidden meaning "your chosen model", which
+                    // is legible only to someone who already knows the rule.
+                    synthesisModel = lastAnsweringModel
+                    synthesisCameFromFallback = lastTimeoutFallbackModel != nil
+                    lastSynthesisError = nil   // a good generation clears the previous failure
+                }
+            } catch {
+                // Today's card stays clean — the stale-day drop above already ran, so a failure here shows
+                // the rule-based read, never a previous day's paragraph. But it is no longer silent
+                // EVERYWHERE: swallowing the reason is why "the heavy model produces no synthesis" could
+                // not be diagnosed from inside the app at all, by the user or by anyone reading the code.
+                // The reason is recorded for the Coach screen to surface, where an error banner already
+                // exists and belongs.
+                lastSynthesisError = (error as? AICoachError)?.errorDescription ?? error.localizedDescription
+                // No re-run after a failure: a queued intent wants a newer paragraph, not a retry loop —
+                // retries are `callProvider`'s business.
+                break
             }
-        } catch {
-            // Today's card stays clean — the stale-day drop above already ran, so a failure here shows
-            // the rule-based read, never a previous day's paragraph. But it is no longer silent
-            // EVERYWHERE: swallowing the reason is why "the heavy model produces no synthesis" could
-            // not be diagnosed from inside the app at all, by the user or by anyone reading the code.
-            // The reason is recorded for the Coach screen to surface, where an error banner already
-            // exists and belongs.
-            lastSynthesisError = (error as? AICoachError)?.errorDescription ?? error.localizedDescription
+            guard synthesisRerunWanted || repo.refreshSeq != seqAtBuild else { break }
         }
     }
 

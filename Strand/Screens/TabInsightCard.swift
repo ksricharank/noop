@@ -63,10 +63,18 @@ struct TabInsightCard: View {
     /// Owned here for the same reason as `coach`: the Ask-the-Coach button is the only consumer,
     /// and a tab root holding it would subscribe the whole body to every navigation publish.
     @EnvironmentObject private var router: NavRouter
+    /// For `refreshSeq` (261006): the subject key identifies WHAT is summarised (a day, a night, a
+    /// window) but not WHICH data described it — so a Health sync landing fuller rows under the same
+    /// subject left the old text sitting beneath numbers it no longer matched, and even the manual ↻
+    /// could race the still-publishing refresh. Leaf-scoped like `coach`, so only this card re-renders.
+    @EnvironmentObject private var repo: Repository
 
     @State private var expanded = false
     @State private var text: String?
     @State private var textSubject: String?
+    /// The repository sequence the shown text was generated FROM — the Today synthesis's
+    /// `synthesisDataSeq`, card-local (261006).
+    @State private var textSeq: Int?
     @State private var inFlight = false
 
     var body: some View {
@@ -172,6 +180,17 @@ struct TabInsightCard: View {
             guard expanded else { return }
             Task { await load() }
         }
+        // The SAME subject with NEW data must also re-ask (261006): a morning Health sync turning a
+        // partial night into the full one changes every number on the tab but not the subject key, and
+        // the card used to keep narrating the partial. Mirrors `refreshSynthesisIfDataChanged` on the
+        // Today synthesis: fires only for a summary that is actually showing (expanded, text on screen)
+        // and only when the data it was written from has genuinely been superseded, so an idle tab or a
+        // collapsed card spends nothing. A change landing while a generation is IN FLIGHT is covered by
+        // the re-run loop in `load`, not here — the `inFlight` guard would otherwise drop it.
+        .onChangeCompat(of: repo.refreshSeq) { seq in
+            guard expanded, text != nil, let written = textSeq, written != seq else { return }
+            Task { await load(force: true) }
+        }
     }
 
     /// `force` bypasses the cache — the Regenerate button's path. Everything else (first expand,
@@ -193,8 +212,17 @@ struct TabInsightCard: View {
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false }
-        let produced = await generate(coach)
-        text = produced
-        textSubject = produced == nil ? nil : subject
+        // Up to two passes, almost always one. The second runs only when the repository published new
+        // rows WHILE the provider was answering — the text just produced already describes superseded
+        // numbers, and the `onChangeCompat(of: repo.refreshSeq)` above could not catch it because this
+        // very load holds the `inFlight` guard. Same self-healing shape as `refreshSynthesis`.
+        for _ in 0..<2 {
+            let seqAtBuild = repo.refreshSeq
+            let produced = await generate(coach)
+            text = produced
+            textSubject = produced == nil ? nil : subject
+            textSeq = produced == nil ? nil : seqAtBuild
+            guard produced != nil, repo.refreshSeq != seqAtBuild else { break }
+        }
     }
 }
