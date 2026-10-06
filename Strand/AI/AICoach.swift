@@ -648,8 +648,9 @@ final class AICoachEngine: ObservableObject {
     words ("steps are done — nice work") and never ask for more of it; the menu covers only the \
     genuinely open gaps, and a day with every target met earns a one-bullet Next that congratulates \
     me and protects the wind-down. EVERY suggestion bullet is a MENU, not an order: give TWO OR \
-    MORE equivalent ways to achieve the same end, separated by "or", roughly matched in effect so \
-    I can pick by mood — e.g. "close the effort gap: a 25-min zone-2 ride, or two 15-min brisk \
+    MORE equivalent ways to achieve the same end (from the standpoint of the DELTA between the \
+    TARGET and what I have already achieved today), separated by "or", roughly matched in effect \
+    so I can pick by mood — e.g. "close the effort gap: a 25-min zone-2 ride, or two 15-min brisk \
     walks, or 20 min of intervals if you want it done fast". Alternatives must differ in kind \
     (indoor/outdoor, one block vs split, hard-short vs easy-long), not be the same activity \
     reworded. Cover training or movement (and why today's state supports it), what to avoid, and \
@@ -661,6 +662,8 @@ final class AICoachEngine: ObservableObject {
     - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
     can read off the screen. A target may appear only inside a Next menu as the thing the \
     alternatives achieve — or, once met, as the thing being congratulated.
+    - Where possible INSTEAD of mentioning the target, mention the DELTA between the target and \
+    what I have already achieved today.
     - My total calories include resting metabolism on both sides, so an early-day number far \
     below target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
 

@@ -125,6 +125,13 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("TWO OR MORE"), "every suggestion must be a menu of alternatives")
         XCTAssertTrue(d.contains("ALREADY done today"), "Next must check progress before prescribing")
         XCTAssertTrue(d.contains("a RESULT, not a gap"), "a met target is congratulated, not re-asked")
+        // 261006: the maintainer's delta rule — Next speaks in the REMAINDER to each target, not the
+        // target itself ("2.1k more steps", never "the 10k target"), and the menu alternatives are
+        // sized against that remainder.
+        XCTAssertTrue(d.contains("DELTA between the TARGET"),
+                      "menu alternatives are sized against the remaining delta")
+        XCTAssertTrue(d.contains("INSTEAD of mentioning the target, mention the DELTA"),
+                      "Next speaks in what remains, not in the target the screen already shows")
         XCTAssertFalse(d.contains("**Watch**"), "the Watch section is retired; watchouts live in Now")
         XCTAssertFalse(d.contains("**Tonight**"), "Tonight stays folded into Next")
         // A quiet day must be ALLOWED to be quiet. Without this the model pads to reach a count,
