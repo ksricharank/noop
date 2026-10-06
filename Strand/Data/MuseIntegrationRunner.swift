@@ -38,8 +38,8 @@ enum MuseIntegrationRunner {
         return url
     }
 
-    /// Run only if the current cadence slot has not been written yet (260922: N slots a day from the
-    /// sleep window's end — see `MuseIntegration.isDue`). Called from every completed strap offload
+    /// Run only if the current cadence slot has not been written yet (261006: the wearer's own clock
+    /// times, up to six a day — see `MuseIntegration.isDue`). Called from every completed strap offload
     /// (background), from launch and from scene-phase `.active`; idempotent per slot, so all three may
     /// fire freely. Never surfaces an error over whatever the wearer opened the app to do: failures go
     /// to `MuseIntegration.lastError` (the settings screen) and to `log`.
@@ -55,10 +55,9 @@ enum MuseIntegrationRunner {
         // written, so "not due for a new digest" must not starve it.
         MuseShortcutRunner.runIfDue(now: now, log: log)
         guard MuseIntegration.isEnabled else { return }
-        let n = MuseIntegration.updatesPerDay
-        let anchor = MuseIntegration.anchorMinuteOfDay
+        let slots = MuseIntegration.slotMinutesRaw
         guard MuseIntegration.isDue(now: now, lastWrittenMs: MuseIntegration.lastWrittenMs,
-                                    updatesPerDay: n, anchorMinuteOfDay: anchor) else { return }
+                                    slotMinutes: slots) else { return }
         guard MuseIntegration.hasFolder else {
             log?("integration: due but no usable folder (bookmark missing or stale) — not written")
             return
@@ -71,15 +70,15 @@ enum MuseIntegrationRunner {
         // silence the day).
         let input = await gather(repo: repo, coach: coach, now: now)
         if !input.isReady,
-           let slot = MuseIntegration.currentSlotStart(now: now, updatesPerDay: n, anchorMinuteOfDay: anchor),
+           let slot = MuseIntegration.currentSlotStart(now: now, slotMinutes: slots),
            now.timeIntervalSince(slot) < MuseIntegration.readinessGraceSeconds {
             log?("integration: due but last night is not scored yet — waiting for the next sync")
             return
         }
         do {
             _ = try MuseIntegration.write(MuseIntegration.digest(input, generatedAt: now), now: now)
-            log?(String(format: "integration: written (%d/day, slots from %02d:%02d%@)", n, anchor / 60, anchor % 60,
-                        input.isReady ? "" : ", THIN — no night on hand after the grace window"))
+            log?("integration: written (slots \(MuseIntegration.slotsLabel(slots)))"
+                 + (input.isReady ? "" : " THIN — no night on hand after the grace window"))
             MuseShortcutRunner.scheduleAfterWrite(now: now, log: log)
         } catch {
             log?("integration: write FAILED — \(error.localizedDescription)")

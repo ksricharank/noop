@@ -21,44 +21,55 @@ final class MuseIntegrationTests: XCTestCase {
         XCTAssertFalse(MuseIntegration.sanitizeBasename("/tmp/x").contains("/"))
     }
 
-    // MARK: Cadence
+    // MARK: Cadence (261006: explicit clock times — the wearer's own slots)
 
-    func testIsDueOncePerSlotFromTheSleepWindowEnd() {
+    func testIsDueOncePerFilledSlot() {
         let cal = Calendar.current
-        let anchor = 7 * 60   // the sleep window ends 07:00
         func at(_ day: Int, _ hour: Int, _ minute: Int = 0) -> Date {
             cal.date(from: DateComponents(year: 2026, month: 9, day: day, hour: hour, minute: minute))!
         }
         func ms(_ d: Date) -> Int { Int(d.timeIntervalSince1970 * 1000) }
-        let now = at(20, 9), beforeAnchor = at(20, 5)
+        let nine = 9 * 60
+        let now = at(20, 10), beforeSlot = at(20, 5)
 
-        // Never written: due, before or after the anchor (before it, the slot walks back to yesterday's).
-        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: 0, updatesPerDay: 1, anchorMinuteOfDay: anchor))
-        XCTAssertTrue(MuseIntegration.isDue(now: beforeAnchor, lastWrittenMs: 0, updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        // Never written: due, before or after the slot (before it, the slot walks back to yesterday's).
+        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: 0, slotMinutes: [nine]))
+        XCTAssertTrue(MuseIntegration.isDue(now: beforeSlot, lastWrittenMs: 0, slotMinutes: [nine]))
 
         // Written yesterday evening: yesterday's slot is served, so 05:00 today is NOT due …
-        XCTAssertFalse(MuseIntegration.isDue(now: beforeAnchor, lastWrittenMs: ms(at(19, 20)),
-                                             updatesPerDay: 1, anchorMinuteOfDay: anchor))
-        // … and 09:00 today IS: a new slot began at 07:00.
+        XCTAssertFalse(MuseIntegration.isDue(now: beforeSlot, lastWrittenMs: ms(at(19, 20)),
+                                             slotMinutes: [nine]))
+        // … and 10:00 today IS: a new slot began at 09:00.
         XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(19, 20)),
-                                            updatesPerDay: 1, anchorMinuteOfDay: anchor))
-        // Written at 08:00 today: same slot, not again.
-        XCTAssertFalse(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(20, 8)),
-                                             updatesPerDay: 1, anchorMinuteOfDay: anchor))
+                                            slotMinutes: [nine]))
+        // Written at 09:30 today: same slot, not again.
+        XCTAssertFalse(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(20, 9, 30)),
+                                             slotMinutes: [nine]))
         // A missed day catches up rather than being skipped.
-        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(19, 8)),
-                                            updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        XCTAssertTrue(MuseIntegration.isDue(now: now, lastWrittenMs: ms(at(19, 9, 30)),
+                                            slotMinutes: [nine]))
 
-        // Twice a day: slots at 07:00 and 19:00. Written at 08:00 → not due at 15:00, due at 19:30.
-        XCTAssertFalse(MuseIntegration.isDue(now: at(20, 15), lastWrittenMs: ms(at(20, 8)),
-                                             updatesPerDay: 2, anchorMinuteOfDay: anchor))
-        XCTAssertTrue(MuseIntegration.isDue(now: at(20, 19, 30), lastWrittenMs: ms(at(20, 8)),
-                                            updatesPerDay: 2, anchorMinuteOfDay: anchor))
-        // Four a day from 07:00: 07, 13, 19, 01. Written at 19:10 → not due at 23:00, due at 01:30.
+        // Two times, 09:00 and 19:00, EMPTY slots interleaved (the settings rows keep positions) and
+        // unsorted on purpose: written at 09:30 → not due at 15:00, due at 19:30.
+        let twoSlots = [19 * 60, MuseIntegration.emptySlot, nine,
+                        MuseIntegration.emptySlot, MuseIntegration.emptySlot, MuseIntegration.emptySlot]
+        XCTAssertFalse(MuseIntegration.isDue(now: at(20, 15), lastWrittenMs: ms(at(20, 9, 30)),
+                                             slotMinutes: twoSlots))
+        XCTAssertTrue(MuseIntegration.isDue(now: at(20, 19, 30), lastWrittenMs: ms(at(20, 9, 30)),
+                                            slotMinutes: twoSlots))
+
+        // An early-morning slot (01:00) written at 19:10 the evening before: not due at 23:00, due at
+        // 01:30 — the walk-back crosses midnight.
+        let withNightSlot = [nine, 19 * 60, 60]
         XCTAssertFalse(MuseIntegration.isDue(now: at(20, 23), lastWrittenMs: ms(at(20, 19, 10)),
-                                             updatesPerDay: 4, anchorMinuteOfDay: anchor))
+                                             slotMinutes: withNightSlot))
         XCTAssertTrue(MuseIntegration.isDue(now: at(21, 1, 30), lastWrittenMs: ms(at(20, 19, 10)),
-                                            updatesPerDay: 4, anchorMinuteOfDay: anchor))
+                                            slotMinutes: withNightSlot))
+
+        // NO filled slots: never due — an empty schedule means "manual only", not "constantly owed".
+        XCTAssertFalse(MuseIntegration.isDue(now: now, lastWrittenMs: 0,
+                                             slotMinutes: Array(repeating: MuseIntegration.emptySlot,
+                                                                count: MuseIntegration.slotCount)))
     }
 
     /// 260922: a digest with no night in it is not ready. The 260921-0737 file was exactly that.
@@ -74,21 +85,23 @@ final class MuseIntegrationTests: XCTestCase {
         XCTAssertTrue(input.isReady)
     }
 
-    /// The slot start the readiness grace is measured from: the most recent boundary at or before now.
-    func testCurrentSlotStartWalksBackBeforeTheAnchor() {
+    /// The slot start the readiness grace is measured from: the most recent FILLED time at or before
+    /// now, walking back across midnight before the day's first.
+    func testCurrentSlotStartWalksBackBeforeTheFirstTime() {
         let cal = Calendar.current
-        let anchor = 7 * 60
+        let seven = 7 * 60
         let at9 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 9))!
         let at5 = cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 5))!
-        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at9, updatesPerDay: 1, anchorMinuteOfDay: anchor),
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at9, slotMinutes: [seven]),
                        cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 7)))
-        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, updatesPerDay: 1, anchorMinuteOfDay: anchor),
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, slotMinutes: [seven]),
                        cal.date(from: DateComponents(year: 2026, month: 9, day: 19, hour: 7)))
-        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, updatesPerDay: 4, anchorMinuteOfDay: anchor),
+        XCTAssertEqual(MuseIntegration.currentSlotStart(now: at5, slotMinutes: [seven, 60]),
                        cal.date(from: DateComponents(year: 2026, month: 9, day: 20, hour: 1)))
+        XCTAssertNil(MuseIntegration.currentSlotStart(now: at9, slotMinutes: []))
     }
 
-    /// The retired hour + interval pair maps onto the new setting once: 24 h → 1, 6 h → 4.
+    /// The retired hour + interval pair maps onto the retired per-day count once: 24 h → 1, 6 h → 4.
     func testUpdatesPerDayMigratesFromTheRetiredInterval() {
         let d = UserDefaults.standard
         d.removeObject(forKey: MuseIntegration.updatesPerDayKey)
@@ -100,6 +113,33 @@ final class MuseIntegrationTests: XCTestCase {
         XCTAssertEqual(MuseIntegration.updatesPerDay, 3, "an explicit setting wins over the migration")
         d.removeObject(forKey: MuseIntegration.updatesPerDayKey)
         d.removeObject(forKey: MuseIntegration.intervalKey)
+    }
+
+    /// 261006: the retired "N a day from the window's end" cadence becomes explicit times once —
+    /// same instants the old rule produced, now editable — and the slot store is total.
+    func testSlotsMigrateFromTheRetiredCadence() {
+        let empty = MuseIntegration.emptySlot
+        // Once a day anchored 07:00 → one 07:00 slot.
+        XCTAssertEqual(MuseIntegration.migratedSlots(updatesPerDay: 1, anchorMinuteOfDay: 7 * 60),
+                       [7 * 60, empty, empty, empty, empty, empty])
+        // Four a day from 07:00 → 07:00, 13:00, 19:00, 01:00 (wrapped), two rows free.
+        XCTAssertEqual(MuseIntegration.migratedSlots(updatesPerDay: 4, anchorMinuteOfDay: 7 * 60),
+                       [7 * 60, 13 * 60, 19 * 60, 60, empty, empty])
+        // Twelve a day caps at the six rows rather than overflowing them.
+        XCTAssertEqual(MuseIntegration.migratedSlots(updatesPerDay: 12, anchorMinuteOfDay: 0).count,
+                       MuseIntegration.slotCount)
+        XCTAssertFalse(MuseIntegration.migratedSlots(updatesPerDay: 12, anchorMinuteOfDay: 0)
+                       .contains(empty))
+
+        // The store is total: junk minutes read back as empty, short arrays pad, long ones truncate.
+        XCTAssertEqual(MuseIntegration.normalizeSlots([25 * 60, -7, 90]),
+                       [empty, empty, 90, empty, empty, empty])
+        XCTAssertEqual(MuseIntegration.normalizeSlots(Array(0..<10)).count, MuseIntegration.slotCount)
+        // The cadence runs on the filled slots, sorted and deduplicated.
+        XCTAssertEqual(MuseIntegration.enabledSlots([19 * 60, empty, 9 * 60, 9 * 60]),
+                       [9 * 60, 19 * 60])
+        XCTAssertEqual(MuseIntegration.slotsLabel([19 * 60, empty, 9 * 60]), "09:00,19:00")
+        XCTAssertEqual(MuseIntegration.slotsLabel([empty]), "none")
     }
 
     // MARK: Day arithmetic

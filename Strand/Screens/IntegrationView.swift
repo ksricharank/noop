@@ -14,7 +14,7 @@ struct IntegrationView: View {
 
     @State private var enabled = MuseIntegration.isEnabled
     @State private var basename = MuseIntegration.filename
-    @State private var updatesPerDay = MuseIntegration.updatesPerDay
+    @State private var slots = MuseIntegration.slotMinutesRaw
     @State private var shortcutName = MuseShortcutRunner.shortcutName
     @State private var shortcutDelay = MuseShortcutRunner.delayMinutes
     @State private var includeCoach = MuseIntegration.includesCoachNarratives
@@ -120,35 +120,38 @@ struct IntegrationView: View {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 16) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Write it daily").font(StrandFont.body)
+                        Text("Write it on a schedule").font(StrandFont.body)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Written in the background on a strap sync — opening NOOP is not required. How often is set below.")
+                        Text("Written in the background on a strap sync — opening NOOP is not required. The times are set below.")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
-                    Toggle("Write it daily", isOn: $enabled)
+                    Toggle("Write it on a schedule", isOn: $enabled)
                         .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
                         .disabled(folderLabel == nil)
                         .onChangeCompat(of: enabled) { on in MuseIntegration.isEnabled = on }
                 }
-                HStack(alignment: .center, spacing: 16) {
+                // 261006: explicit clock times, replacing the "N× a day from the sleep window's end"
+                // cadence — whose first slot fired MID-SLEEP on any longer-than-window night and
+                // shipped a partial-night digest to the reader. Pick the times; an empty slot is
+                // skipped.
+                VStack(alignment: .leading, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Updates per day").font(StrandFont.body)
+                        Text("When it's written").font(StrandFont.body)
                             .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Once means the first time NOOP is running after your sleep window ends (\(anchorLabel)). Twice adds one twelve hours later, and so on — evenly spaced, no clock time to pick. A missed slot catches up at the next sync.")
+                        Text("Up to \(MuseIntegration.slotCount) times a day. Each write happens at the next opportunity after its time — a strap sync in the background, or opening NOOP — so a missed time catches up rather than being skipped. With no times set, nothing is written automatically.")
                             .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 0)
-                    Picker("Updates per day", selection: $updatesPerDay) {
-                        ForEach(Array(MuseIntegration.updatesPerDayRange), id: \.self) { n in
-                            Text(n == 1 ? String(localized: "once") : String(localized: "\(n)× a day")).tag(n)
-                        }
+                    ForEach(0..<MuseIntegration.slotCount, id: \.self) { i in
+                        slotRow(i)
                     }
-                    .labelsHidden().pickerStyle(.menu).tint(StrandPalette.accent)
-                    .onChangeCompat(of: updatesPerDay) { n in MuseIntegration.updatesPerDay = n }
                 }
+                NoopButton("Sync now", systemImage: "arrow.clockwise", kind: .secondary) {
+                    generateNow()
+                }
+                .disabled(busy || folderLabel == nil)
                 Divider().overlay(StrandPalette.hairline)
 
                 // Chain a Shortcut onto every write (260924): the digest's reader IS a Shortcut, so
@@ -238,17 +241,75 @@ struct IntegrationView: View {
 
     private var actionsCard: some View {
         StrandCard(padding: 20) {
-            VStack(alignment: .leading, spacing: 12) {
-                NoopButton("Generate now", systemImage: "arrow.clockwise", kind: .primary) {
-                    generateNow()
+            NoopButton("Preview without writing", systemImage: "eye", kind: .tertiary) {
+                previewOnly()
+            }
+            .disabled(busy)
+        }
+    }
+
+    // MARK: Slot rows (261006)
+
+    /// One of the six write times: a picker when filled, an "Add" affordance when empty. The row
+    /// keeps its position either way, so a wearer's "morning / lunch / evening" layout survives
+    /// clearing the middle one.
+    private func slotRow(_ i: Int) -> some View {
+        HStack(spacing: 10) {
+            Text("Time \(i + 1)")
+                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+            Spacer(minLength: 0)
+            if slots.indices.contains(i), slots[i] != MuseIntegration.emptySlot {
+                DatePicker("Time \(i + 1)", selection: slotBinding(i),
+                           displayedComponents: [.hourAndMinute])
+                    .labelsHidden()
+                    .tint(StrandPalette.accent)
+                Button {
+                    slots[i] = MuseIntegration.emptySlot
+                    MuseIntegration.slotMinutesRaw = slots
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(StrandFont.body).foregroundStyle(StrandPalette.textTertiary)
+                        .contentShape(Rectangle())
                 }
-                .disabled(busy || folderLabel == nil)
-                NoopButton("Preview without writing", systemImage: "eye", kind: .tertiary) {
-                    previewOnly()
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear time \(i + 1)")
+            } else {
+                Button {
+                    slots[i] = nextSlotSeedMinute()
+                    MuseIntegration.slotMinutesRaw = slots
+                } label: {
+                    Label("Add", systemImage: "plus.circle")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.accent)
+                        .contentShape(Rectangle())
                 }
-                .disabled(busy)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Add time \(i + 1)")
             }
         }
+    }
+
+    /// Minute-of-day ↔ Date for the system picker, on an arbitrary reference day — only the clock
+    /// components are kept.
+    private func slotBinding(_ i: Int) -> Binding<Date> {
+        Binding(
+            get: {
+                let m = max(slots.indices.contains(i) ? slots[i] : 0, 0)
+                return Calendar.current.date(bySettingHour: m / 60, minute: m % 60,
+                                             second: 0, of: Date()) ?? Date()
+            },
+            set: { d in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+                slots[i] = (c.hour ?? 0) * 60 + (c.minute ?? 0)
+                MuseIntegration.slotMinutesRaw = slots
+            })
+    }
+
+    /// A seed for a freshly added slot: an hour after the latest filled time, or 09:00 on an empty
+    /// schedule — a plausible next write rather than midnight.
+    private func nextSlotSeedMinute() -> Int {
+        let filled = MuseIntegration.enabledSlots(slots)
+        guard let latest = filled.last else { return 9 * 60 }
+        return (latest + 60) % (24 * 60)
     }
 
     private var previewSheet: some View {
@@ -340,33 +401,6 @@ struct IntegrationView: View {
     }
 
     // MARK: Formatting
-
-    /// "24 h — once a day", "6 h — 4× a day". Names both the interval the wearer picked and what it
-    /// means in practice, because "6" alone does not say whether it is six writes or six hours.
-    /// The sleep window's end, as the slot anchor shown in the cadence footnote.
-    private var anchorLabel: String {
-        let m = MuseIntegration.anchorMinuteOfDay
-        return String(format: "%d:%02d", m / 60, m % 60)
-    }
-
-    private func intervalLabel(_ h: Int) -> String {
-        let times = max(1, 24 / h)
-        if times == 1 { return String(localized: "24 h — once a day") }
-        if times == 2 { return String(localized: "12 h — twice a day") }
-        return String(localized: "\(h) h — \(times)× a day")
-    }
-
-    private func hourLabel(_ h: Int) -> String {
-        var c = DateComponents(); c.hour = h; c.minute = 0
-        let cal = Calendar.current
-        guard let d = cal.date(from: DateComponents(year: 2000, month: 1, day: 1,
-                                                    hour: h, minute: 0)) else { return "\(h):00" }
-        _ = c
-        let f = DateFormatter()
-        f.locale = Locale.current
-        f.setLocalizedDateFormatFromTemplate("j")
-        return f.string(from: d)
-    }
 
     private func relativeTime(_ ms: Int) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)

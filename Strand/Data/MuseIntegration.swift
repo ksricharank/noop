@@ -83,12 +83,70 @@ enum MuseIntegration {
     }
 
     /// Minute of the local day the slots are anchored on: the sleep window's end.
+    /// 261006: retired as the live anchor (read only by `migratedSlots`) — see `slotMinutesKey`.
     static var anchorMinuteOfDay: Int {
         UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
             ?? ContinuousHrvSchedule.defaultEndMinutes
     }
 
-    static var writesPerDay: Int { updatesPerDay }
+    // MARK: Write times (261006)
+
+    /// 261006: explicit CLOCK TIMES replace the evenly-spaced cadence. The 260922 "N a day from the
+    /// sleep window's end" design put the first write AT the window boundary — which on a long night
+    /// is mid-sleep, so the digest shipped a partial night to its reader (the 261006-1037 log: a
+    /// 4-hour "night" written at the 06:00 slot while the wearer slept on to a 9-hour one). The
+    /// wearer now names up to six times of day; an empty slot is skipped, and with no times set
+    /// nothing is written automatically ("Sync now" on the settings screen still writes on demand).
+    ///
+    /// Stored as exactly `slotCount` Ints (minute of local day, `emptySlot` = unused) so the six
+    /// settings rows keep their positions; order is the wearer's, not chronological — `enabledSlots`
+    /// is what the cadence actually runs on.
+    static let slotMinutesKey = "integration.slotMinutes"
+    static let slotCount = 6
+    static let emptySlot = -1
+
+    static var slotMinutesRaw: [Int] {
+        get {
+            if let stored = UserDefaults.standard.array(forKey: slotMinutesKey) as? [Int] {
+                return normalizeSlots(stored)
+            }
+            // Migration: reproduce the retired cadence as explicit times. Re-derived on every read
+            // until the wearer first touches the setting, at which point the set persists it.
+            return migratedSlots(updatesPerDay: updatesPerDay, anchorMinuteOfDay: anchorMinuteOfDay)
+        }
+        set { UserDefaults.standard.set(normalizeSlots(newValue), forKey: slotMinutesKey) }
+    }
+
+    /// The retired "N a day from the window's end" cadence, as explicit times: N evenly-spaced slots
+    /// from the anchor, capped at the six rows. Pure, for the migration pin.
+    static func migratedSlots(updatesPerDay n: Int, anchorMinuteOfDay anchor: Int) -> [Int] {
+        let n = min(clampUpdates(n), slotCount)
+        let a = min(max(anchor, 0), 24 * 60 - 1)
+        let step = (24 * 60) / n
+        return normalizeSlots((0..<n).map { (a + $0 * step) % (24 * 60) })
+    }
+
+    /// Exactly `slotCount` entries, each `emptySlot` or a valid minute of day — total, so no stored
+    /// or migrated shape can index out of the settings rows.
+    static func normalizeSlots(_ raw: [Int]) -> [Int] {
+        var s = raw.map { (0..<(24 * 60)).contains($0) ? $0 : emptySlot }
+        if s.count > slotCount { s = Array(s.prefix(slotCount)) }
+        while s.count < slotCount { s.append(emptySlot) }
+        return s
+    }
+
+    /// The filled slots, sorted and deduplicated — what the cadence runs on. Empty means "never
+    /// automatically".
+    static func enabledSlots(_ raw: [Int]) -> [Int] {
+        Array(Set(raw.filter { (0..<(24 * 60)).contains($0) })).sorted()
+    }
+
+    /// Short "06:30, 19:00" rendering of the filled slots, for the strap log.
+    static func slotsLabel(_ raw: [Int]) -> String {
+        let s = enabledSlots(raw)
+        guard !s.isEmpty else { return "none" }
+        return s.map { String(format: "%02d:%02d", $0 / 60, $0 % 60) }.joined(separator: ",")
+    }
 
     /// Whether to include the coach's own narrative text in the digest. Off by default: it costs a
     /// provider call per write, and the numbers are the part another tool cannot recompute.
@@ -141,48 +199,43 @@ enum MuseIntegration {
 
     // MARK: Cadence
 
-    /// Whether a digest is due, given the last write and the configured hour.
-    ///
-    /// Pure so the rule is testable without a clock or a folder. "Due" means: enabled, and the
-    /// scheduled hour has passed today, and we have not already written since that hour — which
-    /// makes a missed day (phone off, app not launched) catch up on the next launch rather than
-    /// being silently skipped, while a second launch the same afternoon does not rewrite.
-    /// The start of the cadence slot `now` falls in. Slots run from the anchor in 24/N-hour steps; the
-    /// current one is the most recent boundary at or before `now`. Before today's anchor that is one of
-    /// yesterday's, which is why this walks BACK rather than clamping — otherwise a cadence would go
-    /// silent from midnight to the anchor.
-    static func currentSlotStart(now: Date, updatesPerDay: Int, anchorMinuteOfDay: Int,
+    /// The start of the cadence slot `now` falls in: the most recent FILLED time at or before `now` —
+    /// today's latest passed time, or, before the day's first, one of yesterday's. Walking back
+    /// rather than clamping is what keeps a cadence from going silent from midnight to the first
+    /// slot. Pure so the rule is testable without a clock or a folder. nil with no filled slots:
+    /// no times means no automatic writes, by design.
+    static func currentSlotStart(now: Date, slotMinutes: [Int],
                                  calendar: Calendar = .current) -> Date? {
-        let n = clampUpdates(updatesPerDay)
-        let anchor = min(max(anchorMinuteOfDay, 0), 24 * 60 - 1)
-        guard let todaysAnchor = calendar.date(bySettingHour: anchor / 60, minute: anchor % 60,
-                                               second: 0, of: now) else { return nil }
-        let step = 86_400.0 / Double(n)
-        var slot = todaysAnchor
-        if now < todaysAnchor {
-            while slot > now { slot = slot.addingTimeInterval(-step) }
-        } else {
-            while slot.addingTimeInterval(step) <= now { slot = slot.addingTimeInterval(step) }
+        let slots = enabledSlots(slotMinutes)
+        guard !slots.isEmpty else { return nil }
+        for dayOffset in 0...1 {
+            guard let day = calendar.date(byAdding: .day, value: -dayOffset, to: now) else { continue }
+            for m in slots.reversed() {
+                guard let t = calendar.date(bySettingHour: m / 60, minute: m % 60,
+                                            second: 0, of: day) else { continue }
+                if t <= now { return t }
+            }
         }
-        return slot
+        return nil
     }
 
     /// How long past a slot's start the runner waits for last night to be scored before writing an
     /// honest-but-thin digest anyway (a night the strap was not worn must not silence the day).
     static let readinessGraceSeconds: TimeInterval = 6 * 3_600
 
+    /// Whether a digest is due, given the last write and the filled slots.
+    ///
+    /// "Due" means: a filled time has passed and we have not written since it — which makes a missed
+    /// slot (phone off, app not launched) catch up at the next opportunity rather than being silently
+    /// skipped, while a second opportunity inside the same slot does not rewrite.
     static func isDue(now: Date,
                       lastWrittenMs: Int,
-                      updatesPerDay: Int,
-                      anchorMinuteOfDay: Int,
+                      slotMinutes: [Int],
                       calendar: Calendar = .current) -> Bool {
-        guard let slot = currentSlotStart(now: now, updatesPerDay: updatesPerDay,
-                                          anchorMinuteOfDay: anchorMinuteOfDay, calendar: calendar)
+        guard let slot = currentSlotStart(now: now, slotMinutes: slotMinutes, calendar: calendar)
         else { return false }
         guard lastWrittenMs > 0 else { return true }
         let last = Date(timeIntervalSince1970: TimeInterval(lastWrittenMs) / 1000)
-        // Due when the last write predates the slot we are in: a missed slot catches up at the next
-        // opportunity, and a second opportunity inside the same slot does not rewrite.
         return last < slot
     }
 }

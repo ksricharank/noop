@@ -57,44 +57,35 @@ final class TapGestureAndCadenceTests: XCTestCase {
         XCTAssertEqual(WaterTapPrefs.clampGestureWindow(999), WaterTapPrefs.maxGestureWindow)
     }
 
-    // MARK: - Digest cadence (260922: N updates a day from the sleep window's end)
+    // MARK: - Digest cadence (261006: the wearer's own clock times)
 
     private func at(_ h: Int, _ m: Int = 0, day: Int = 20) -> Date {
         Calendar.current.date(from: DateComponents(year: 2026, month: 9, day: day, hour: h, minute: m))!
     }
     private func ms(_ d: Date) -> Int { Int(d.timeIntervalSince1970 * 1000) }
-    private let anchor = 7 * 60
 
-    /// Once a day keeps the original behaviour: first opportunity after the anchor, once per day.
-    func testOnceADayCadence() {
-        XCTAssertTrue(MuseIntegration.isDue(now: at(9), lastWrittenMs: 0, updatesPerDay: 1, anchorMinuteOfDay: anchor))
-        XCTAssertFalse(MuseIntegration.isDue(now: at(9), lastWrittenMs: ms(at(8)), updatesPerDay: 1, anchorMinuteOfDay: anchor))
+    /// One time a day keeps the original behaviour: first opportunity after it, once per day.
+    func testOneTimeADayCadence() {
+        let seven = [7 * 60]
+        XCTAssertTrue(MuseIntegration.isDue(now: at(9), lastWrittenMs: 0, slotMinutes: seven))
+        XCTAssertFalse(MuseIntegration.isDue(now: at(9), lastWrittenMs: ms(at(8)), slotMinutes: seven))
         // Yesterday's write does not satisfy today.
-        XCTAssertTrue(MuseIntegration.isDue(now: at(9), lastWrittenMs: ms(at(8, day: 19)), updatesPerDay: 1, anchorMinuteOfDay: anchor))
+        XCTAssertTrue(MuseIntegration.isDue(now: at(9), lastWrittenMs: ms(at(8, day: 19)), slotMinutes: seven))
     }
 
-    /// Four a day from 07:00 → 07, 13, 19, 01.
-    func testFourADayWritesFourTimes() {
-        // Written at 08:00; at 12:00 we are still inside the 07:00 slot.
-        XCTAssertFalse(MuseIntegration.isDue(now: at(12), lastWrittenMs: ms(at(8)), updatesPerDay: 4, anchorMinuteOfDay: anchor))
-        // At 13:00 a new slot opens.
-        XCTAssertTrue(MuseIntegration.isDue(now: at(13), lastWrittenMs: ms(at(8)), updatesPerDay: 4, anchorMinuteOfDay: anchor))
-    }
-
-    /// The regression this rule is easy to get wrong on: BEFORE the anchor, the relevant slot is the
-    /// previous day's last one. A naive "clamp to today's anchor" goes silent from midnight to the anchor.
-    func testBeforeTheAnchorTheCadenceStillRuns() {
-        // 02:00, four a day from 07:00 → the 01:00 slot has opened.
-        XCTAssertTrue(MuseIntegration.isDue(now: at(2), lastWrittenMs: ms(at(20, day: 19)), updatesPerDay: 4, anchorMinuteOfDay: anchor))
+    /// The regression this rule is easy to get wrong on: BEFORE the day's first time, the relevant
+    /// slot is the previous day's last one. A naive "clamp to today's first" goes silent from
+    /// midnight to that time.
+    func testBeforeTheFirstTimeTheCadenceStillRuns() {
+        let slots = [7 * 60, 13 * 60, 19 * 60, 60]
+        // 02:00 → the 01:00 slot has opened.
+        XCTAssertTrue(MuseIntegration.isDue(now: at(2), lastWrittenMs: ms(at(20, day: 19)), slotMinutes: slots))
         // ...and a write already made inside that slot is not repeated.
-        XCTAssertFalse(MuseIntegration.isDue(now: at(2), lastWrittenMs: ms(at(1)), updatesPerDay: 4, anchorMinuteOfDay: anchor))
+        XCTAssertFalse(MuseIntegration.isDue(now: at(2), lastWrittenMs: ms(at(1)), slotMinutes: slots))
     }
 
-    /// A non-divisor count still lands on evenly spaced slots that repeat daily: 5 a day = every
-    /// 4.8 h from the anchor, so the day's slots are 07:00, 11:48, 16:36, 21:24, 02:12.
-    func testAnyCountIsEvenlySpacedAndClamped() {
-        XCTAssertFalse(MuseIntegration.isDue(now: at(11, 30), lastWrittenMs: ms(at(7, 5)), updatesPerDay: 5, anchorMinuteOfDay: anchor))
-        XCTAssertTrue(MuseIntegration.isDue(now: at(11, 50), lastWrittenMs: ms(at(7, 5)), updatesPerDay: 5, anchorMinuteOfDay: anchor))
+    /// The retired per-day count still clamps (the migration reads it).
+    func testRetiredUpdatesPerDayStillClamps() {
         XCTAssertEqual(MuseIntegration.clampUpdates(0), 1)
         XCTAssertEqual(MuseIntegration.clampUpdates(99), MuseIntegration.updatesPerDayRange.upperBound)
     }
