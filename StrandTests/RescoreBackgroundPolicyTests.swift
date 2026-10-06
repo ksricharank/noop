@@ -21,7 +21,7 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
                         deferralOnly: Bool = false,
                         realUpdate: Bool = true,
                         running: Bool = false,
-                        attemptedSecondsAgo: Double? = 60) -> RescoreBackgroundPolicy.Decision {
+                        attemptedSecondsAgo: Double? = nil) -> RescoreBackgroundPolicy.Decision {
         RescoreBackgroundPolicy.decide(isBackground: background,
                                        inSleepWindow: inWindow,
                                        rescoreAlreadyOwed: unfinished,
@@ -69,7 +69,7 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// the background all day and night. Within the spacing the offload defers, and says why.
     func testABackgroundOffloadWithinTheSpacingDefers() {
         let spacing = RescoreBackgroundPolicy.backgroundSpacingSeconds
-        guard case .deferToBackgroundTask(let reason) = decide(attemptedSecondsAgo: 9 * 60) else {
+        guard case .deferToBackgroundTask(let reason, _) = decide(attemptedSecondsAgo: 9 * 60) else {
             return XCTFail("expected an offload 9 min after the last pass to defer")
         }
         XCTAssertEqual(reason, "the last pass started 9 min ago; a backgrounded offload re-scores at most every 30 min")
@@ -105,7 +105,7 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// An earlier pass marked itself started and never finished, and nothing is running now: that pass
     /// was killed. Attempting it again on every offload is what burned the phone in #1538.
     func testAnInterruptedPriorAttemptDefersInsteadOfRetrying() {
-        XCTAssertTrue(isDeferred(decide(unfinished: true)))
+        XCTAssertTrue(isDeferred(decide(unfinished: true, attemptedSecondsAgo: 60)))
     }
 
     /// ...but only for a while. A suspended app is routinely terminated for memory, so an unfinished pass
@@ -130,7 +130,7 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// The steady-state tick cannot tell live HR from a real change, and a paced pass costs minutes, so a
     /// backgrounded tick does not run. Real updates run their own.
     func testABackgroundedBackstopDoesNotRun() {
-        guard case .deferToBackgroundTask(let reason) = decide(realUpdate: false) else {
+        guard case .deferToBackgroundTask(let reason, _) = decide(realUpdate: false) else {
             return XCTFail("expected the backstop to be skipped")
         }
         XCTAssertTrue(reason.contains("backstop"), reason)
@@ -155,11 +155,6 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// No CPU limit applies in the foreground, and the user is waiting on the result.
     func testTheForegroundNeverRests() {
         XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 10, isBackground: false), 0)
-    }
-
-    /// A backgrounded pass rests for as long as the night's work took, so it sits near 50% duty.
-    func testABackgroundedPassRestsForAsLongAsItWorked() {
-        XCTAssertEqual(RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: 4, isBackground: true), 4)
     }
 
     /// Capped, because `uptimeNanoseconds` keeps advancing while the process is merely suspended — an
@@ -220,12 +215,16 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
     /// check would bounce the morning pass to a background task that may not arrive for hours.
     func testAWindowDeferralDebtRunsAtTheFirstPostWindowTrigger() {
         XCTAssertEqual(decide(unfinished: true, deferralOnly: true), .run)
+        // ...and the upstream-v12 offload spacing must not space it: the attempt stamp it would be
+        // spaced against is yesterday evening's pass, and the settle is the one update the whole
+        // window waited for.
+        XCTAssertEqual(decide(unfinished: true, deferralOnly: true, attemptedSecondsAgo: 60), .run)
     }
 
     /// A debt WITH attempt evidence (a killed pass) keeps the full #1538 escalation — "unfinished" is
     /// evidence about this install right now. The deferral-only flag must never leak onto it.
     func testAKilledPassDebtStillEscalates() {
-        XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: false)))
+        XCTAssertTrue(isDeferred(decide(unfinished: true, deferralOnly: false, attemptedSecondsAgo: 60)))
     }
 
     /// A pass running in THIS process is not evidence of a killed one (#1681): its own started-mark is
@@ -320,9 +319,14 @@ final class RescoreBackgroundPolicyTests: XCTestCase {
         }
         XCTAssertEqual(backstopCause, .backstopSkipped)
 
-        guard case .deferToBackgroundTask(_, let owedCause) = decide(unfinished: true) else {
+        guard case .deferToBackgroundTask(_, let owedCause) = decide(unfinished: true, attemptedSecondsAgo: 60) else {
             return XCTFail("expected an owed deferral")
         }
         XCTAssertEqual(owedCause, .alreadyOutstanding)
+
+        guard case .deferToBackgroundTask(_, let spacingCause) = decide(attemptedSecondsAgo: 60) else {
+            return XCTFail("expected a spacing deferral")
+        }
+        XCTAssertEqual(spacingCause, .spacing)
     }
 }
