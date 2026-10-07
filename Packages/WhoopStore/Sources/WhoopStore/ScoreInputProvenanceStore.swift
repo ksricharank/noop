@@ -106,7 +106,7 @@ extension WhoopStore {
     /// Input source for one computed score. Missing means the score predates provenance storage or its
     /// attribution could not be persisted; callers must omit the badge instead of guessing.
     public func scoreInputSource(deviceId: String, day: String, key: String) async throws -> String? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try String.fetchOne(db, sql: """
                 SELECT sourceId FROM scoreInputProvenance
                 WHERE deviceId = ? AND day = ? AND key = ?
