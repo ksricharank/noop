@@ -125,14 +125,16 @@ extension WhoopStore {
     }
 
     /// Decompress and return the exact frame bytes for a batch (empty if unknown).
+    /// The BLOB (a Sendable `Data`) crosses the reader-queue hop, not the GRDB `Row` — a fetched
+    /// `Row` is explicitly non-Sendable and must stay inside the read closure.
     public func rawFrames(batchId: String) async throws -> [[UInt8]] {
-        let row: Row? = try syncRead { db in
+        let blob: Data? = try await concurrentRead { db in
             try Row.fetchOne(db,
                 sql: "SELECT framesBlob FROM rawBatch WHERE batchId = ?",
                 arguments: [batchId])
+                .map { $0["framesBlob"] as Data }
         }
-        guard let row = row else { return [] }
-        let blob: Data = row["framesBlob"]
+        guard let blob else { return [] }
         let raw = try WhoopStore.zlibDecompressWithLength(blob)
         return WhoopStore.unpackFrames(raw)
     }
@@ -147,7 +149,7 @@ extension WhoopStore {
 
     /// Un-synced batches (syncedAt IS NULL), oldest first, capped at `limit`.
     public func pendingRawBatches(limit: Int) async throws -> [RawBatchMeta] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT batchId, deviceId, capturedAt, deviceClockRef, wallClockRef,
                        startTs, endTs, frameCount, byteSize
@@ -242,7 +244,7 @@ extension WhoopStore {
 
     // MARK: - Test helper
     public func allBatchIdsForTest() async throws -> [String] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try String.fetchAll(db, sql: "SELECT batchId FROM rawBatch ORDER BY capturedAt ASC")
         }
     }

@@ -30,7 +30,7 @@ extension WhoopStore {
 
     /// Hourly step counts for a device over `[fromTs, toTs]` inclusive, oldest hour first.
     public func appleStepHours(deviceId: String, fromTs: Int, toTs: Int) async throws -> [(ts: Int, steps: Int)] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, steps FROM appleStepHour
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
