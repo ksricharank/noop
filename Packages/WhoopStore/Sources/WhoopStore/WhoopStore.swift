@@ -174,6 +174,11 @@ public actor WhoopStore {
         Double(DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1_000_000_000
     }
 
+    /// LEGACY blocking read — kept only for the few SYNCHRONOUS actor methods that cannot await
+    /// (`tableRowEstimates`, called from the non-async export path). Every async read goes through
+    /// `concurrentRead` below (feature/store-concurrent-reads, 261007); a new async read method
+    /// should never use this, because a blocking read is exactly the actor-holding the feature
+    /// removes.
     @inline(__always)
     func syncRead<T>(_ block: (Database) throws -> T) throws -> T {
         let t0 = DispatchTime.now()
@@ -184,6 +189,45 @@ public actor WhoopStore {
             if took > perfMaxReadSeconds { perfMaxReadSeconds = took }
         }
         return try dbWriter.read(block)
+    }
+
+    /// CONCURRENT read (feature/store-concurrent-reads, 261007): run the query on the pool's own
+    /// reader connections and SUSPEND this actor while it runs, instead of blocking the actor's
+    /// serial executor for the query's whole duration.
+    ///
+    /// WHY. The #755 `DatabasePool` already serves reads in parallel at the SQLite layer — but every
+    /// read used to arrive through the BLOCKING `syncRead` above, which holds the actor's executor
+    /// until the rows are back. One 21-night pass read (~2M rows, 104 s observed on 261005; 18 s
+    /// single statements on 261007) therefore queued EVERY other consumer — Today screen loads
+    /// (30.3 s on 261007, content already on disk), Health syncs (avgSyncMs 139,634 on 261006),
+    /// retro stress scans (814 s queued for 125 ms of replay) — behind work the pool could have run
+    /// beside. GRDB's async `read` dispatches the closure to a reader connection's own queue and
+    /// resumes the caller when done, so the await below is a real suspension: the actor is FREE for
+    /// other calls while SQLite works. Writes are deliberately untouched (`syncWrite` still blocks
+    /// the actor), so write ordering and every read-modify-write transaction are byte-identical.
+    ///
+    /// WHAT CHANGES SEMANTICALLY: methods that await this are now reentrant at this point — another
+    /// store call can interleave while the rows are fetched. That interleaving already existed
+    /// BETWEEN store calls (each call is its own await); this extends it to within a read method.
+    /// The 261007 audit of every converted call site found each one to be a single, self-contained
+    /// statement whose closure captures only value parameters — no actor state is read or written
+    /// across the suspension anywhere. Each read is its own WAL snapshot (committed data only),
+    /// exactly as before. The perf counters accrue AFTER the resume, on the actor, so their
+    /// accumulation stays ordered; `reads=`/`maxRead=` now measure wall-to-caller (queue wait on
+    /// the reader pool included), which is the number the strap-log lines exist to explain.
+    ///
+    /// NO ANDROID TWIN: this is Swift actor-executor mechanics; Room on Android already runs reads
+    /// on its own I/O dispatchers and never had the single-funnel wait. No stored value, query
+    /// result, or analytics figure changes on either platform.
+    func concurrentRead<T: Sendable>(_ block: @Sendable @escaping (Database) throws -> T) async throws -> T {
+        let t0 = DispatchTime.now()
+        defer {
+            let took = Self.activeSeconds(since: t0)
+            perfSqlReadSeconds += took
+            perfSqlReadCount += 1
+            if took > perfMaxReadSeconds { perfMaxReadSeconds = took }
+        }
+        return try await dbWriter.read(block)
     }
 
     @inline(__always)
@@ -315,21 +359,36 @@ public actor WhoopStore {
     // MARK: - Introspection (used by tests)
 
     public func tableNames() async throws -> Set<String> {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Set(String.fetchAll(db,
                 sql: "SELECT name FROM sqlite_master WHERE type = 'table'"))
         }
     }
 
     public func primaryKeyColumns(_ table: String) async throws -> [String] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try db.primaryKey(table).columns
         }
     }
 
     public func columnNamesForTest(table: String) async throws -> [String] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try db.columns(in: table).map(\.name)
+        }
+    }
+
+    /// TEST-ONLY deliberately slow read through the production `concurrentRead` funnel: a recursive
+    /// CTE burning ~`iterations` steps on a pooled reader connection, standing in for the 21-night
+    /// pass's multi-second window reads. Returns the exact iteration count, so the caller also
+    /// proves the async read path returns correct results. Exists for `ConcurrentReadTests` — the
+    /// feature's whole claim is "the actor answers while a read like this is running", and nothing
+    /// in the public API can be made reliably slow on an empty test database.
+    public func slowReadForTest(iterations: Int) async throws -> Int {
+        try await concurrentRead { db in
+            try Int.fetchOne(db, sql: """
+                WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?)
+                SELECT COUNT(*) FROM c
+                """, arguments: [iterations]) ?? 0
         }
     }
 
@@ -338,14 +397,14 @@ public actor WhoopStore {
     /// would turn "the strap never reported this" into a fabricated value that reads identically to a
     /// real one.
     public func columnIsNullableWithoutDefaultForTest(table: String, column: String) async throws -> Bool? {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard let c = try db.columns(in: table).first(where: { $0.name == column }) else { return nil }
             return !c.isNotNull && c.defaultValueSQL == nil
         }
     }
 
     public func indexNamesForTest(table: String) async throws -> Set<String> {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Set(db.indexes(on: table).map(\.name))
         }
     }

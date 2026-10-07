@@ -504,7 +504,7 @@ extension WhoopStore {
     /// are included. Writes to a temp file and returns its URL (caller hands it to the share/save flow).
     public func exportRawCSV(deviceId: String, since: TimeInterval) async throws -> URL {
         let floor = Int(since)
-        let rows: [RawCSVRow] = try syncRead { db in
+        let rows: [RawCSVRow] = try await concurrentRead { db in
             var out: [RawCSVRow] = []
 
             // hr: stream=hr → hr_bpm (col 3).
@@ -669,7 +669,7 @@ extension WhoopStore {
         // inline `try Int.fetchOne(...) ?? 0` expressions made Swift's type-checker time out on some
         // toolchains/machines (reported by a contributor building locally); splitting it is
         // behaviour-identical and trivial to type-check.
-        try syncRead { db in
+        try await concurrentRead { db in
             let hr = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM hrSample") ?? 0
             let rr = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM rrInterval") ?? 0
             let events = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM event") ?? 0
@@ -683,7 +683,7 @@ extension WhoopStore {
     }
 
     public func stepCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stepSample") ?? 0 }
+        try await concurrentRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stepSample") ?? 0 }
     }
 
     /// The strap's OWN banked band sleep_state samples (#175) in `[from, to]` for one device, ascending by
@@ -692,7 +692,7 @@ extension WhoopStore {
     /// offloaded window). Feeds the Deep Timeline band-state track and the per-session grid the H7 guard reads.
     public func sleepStateSamples(deviceId: String, from: Int, to: Int, limit: Int = 200_000) async throws
         -> [SleepStateSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, state, rawByte FROM sleepStateSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -705,7 +705,7 @@ extension WhoopStore {
     }
 
     public func sleepStateCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sleepStateSample") ?? 0 }
+        try await concurrentRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sleepStateSample") ?? 0 }
     }
 
     /// The remaining 5/MG v18 per-second fields (v31) in `[from, to]` for one device, ascending by ts.
@@ -714,7 +714,7 @@ extension WhoopStore {
     /// exists so the banked bytes are reachable for a census, and so the write path has a round-trip test.
     public func v18AuxSamples(deviceId: String, from: Int, to: Int, limit: Int = 200_000) async throws
         -> [V18AuxSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, fields FROM v18AuxSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -725,11 +725,11 @@ extension WhoopStore {
     }
 
     public func v18AuxCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM v18AuxSample") ?? 0 }
+        try await concurrentRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM v18AuxSample") ?? 0 }
     }
 
     public func ppgHrCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgHrSample") ?? 0 }
+        try await concurrentRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgHrSample") ?? 0 }
     }
 
     /// The RAW v26 optical PPG waveform (#156 follow-up), one record per second, in `[from, to]` for one
@@ -738,7 +738,7 @@ extension WhoopStore {
     /// v26 (the WHOOP 4.0 / v18-only common case) or the window has no v26-heavy stretch.
     public func ppgWaveformSamples(deviceId: String, from: Int, to: Int, limit: Int = 200_000) async throws
         -> [PpgWaveformSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, samples, burstIndex, baseCode FROM ppgWaveformSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -756,11 +756,11 @@ extension WhoopStore {
     }
 
     public func ppgWaveformCountForTest() async throws -> Int {
-        try syncRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgWaveformSample") ?? 0 }
+        try await concurrentRead { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ppgWaveformSample") ?? 0 }
     }
 
     public func deviceRowForTest(id: String) async throws -> (mac: String?, name: String?)? {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard let row = try Row.fetchOne(db,
                 sql: "SELECT mac, name FROM device WHERE id = ?", arguments: [id]) else {
                 return nil
@@ -784,7 +784,7 @@ extension WhoopStore {
 
     /// The stored `ord` values for one second, in read order. Test-only (#823).
     public func rrOrdValuesForTest(deviceId: String, ts: Int) async throws -> [Int?] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ord FROM rrInterval WHERE deviceId = ? AND ts = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
@@ -796,7 +796,7 @@ extension WhoopStore {
     /// filter. Test-only (#1071): the fix is "filter at read, keep both channels on disk", and the only
     /// way to assert the second half is to look at the table itself rather than through `rrIntervals`.
     public func rrRowsWithChannelForTest(deviceId: String) async throws -> [(rrMs: Int, srcChannel: Int?)] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT rrMs, srcChannel FROM rrInterval WHERE deviceId = ?
                 ORDER BY ts ASC, ord ASC, rrMs ASC, seq ASC
@@ -816,7 +816,7 @@ extension WhoopStore {
     /// Every STORED R-R row for a device as `(ts, tsSuspect)`, bypassing the scoring read's filter — so a
     /// test can assert which rows were quarantined AND that none were deleted. Test-only (#1073).
     public func rrSuspectRowsForTest(deviceId: String) async throws -> [(ts: Int, tsSuspect: Int?)] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, tsSuspect FROM rrInterval WHERE deviceId = ? ORDER BY ts ASC
                 """, arguments: [deviceId]).map { (ts: $0["ts"], tsSuspect: $0["tsSuspect"]) }

@@ -11,7 +11,7 @@ extension WhoopStore {
         }
     }
     public func cursor(_ name: String) async throws -> Int? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Int.fetchOne(db, sql: "SELECT value FROM cursors WHERE name = ?", arguments: [name])
         }
     }
