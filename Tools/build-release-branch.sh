@@ -169,6 +169,19 @@ FEATURES=(
   # automation (burst-retrospective stress scan + notification), calendar-day rollover, frozen
   # effort target, display-granularity reload dedup, and the widget-publish/retro-scan stats.
   "feature/v15-widgets"
+  # STORE CONCURRENT READS (261007): WhoopStore's async reads run on the #755 pool's reader
+  # connections and SUSPEND the actor, instead of blocking its executor for the query's duration —
+  # the fix for the "data is on disk, screen shows stale for 30 s" morning symptom (reads queued
+  # behind a pass's 104 s window read). STACKED ON feature/v15-widgets (fourth link of the chain
+  # above): it rewrites the syncRead helper that v15-widgets wrapped in the perf counters, so the
+  # instrumentation contract (`reads=`/`maxRead=`) composes rather than conflicts. Rebase with:
+  #   git rebase --onto feature/v15-widgets <old widgets tip> feature/store-concurrent-reads
+  # DELIBERATELY SEPARATE and deprecable (maintainer instruction, 261007: "build this as a
+  # separate feature - so that we can deprecate it if it doesn't work"): nothing stacks on top of
+  # it, so dropping this line (and the branch) rebuilds a release without it, every other feature
+  # untouched. Touches Packages/WhoopStore ONLY; no app-layer call site changes (the public API
+  # was already async). NOT filed upstream (maintainer call — separation of concerns).
+  "feature/store-concurrent-reads"
   "feature/release-by-default"
 )
 
