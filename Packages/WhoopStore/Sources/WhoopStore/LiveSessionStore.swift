@@ -74,7 +74,7 @@ extension WhoopStore {
 
     /// The most-recent sessions first, for the look-back summary + streak. Newest by startTs.
     public func recentLiveSessions(deviceId: String, limit: Int) async throws -> [LiveSessionRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT startTs, endTs, chargeAtStart, floorBpm, ceilingBpm, inBandSec, belowSec, aboveSec,
                        pushCount, easeCount, hrSource FROM liveSession
