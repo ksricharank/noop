@@ -420,7 +420,7 @@ extension WhoopStore {
     /// The user's exercises, most recently used first and never-used ones after, alphabetical within
     /// each. This is the picker's list — built entirely from what they have typed.
     public func liftExercises(deviceId: String) async throws -> [LiftExerciseRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM liftExercise
                 WHERE deviceId = ?
@@ -469,7 +469,7 @@ extension WhoopStore {
     /// Programs for a device, most recently touched first. `includeArchived` defaults false so the
     /// picker shows only live programs.
     public func liftPrograms(deviceId: String, includeArchived: Bool = false) async throws -> [LiftProgramRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             let sql = includeArchived
                 ? """
                   SELECT * FROM liftProgram
@@ -525,7 +525,7 @@ extension WhoopStore {
 
     /// A program's exercise lines in program order.
     public func liftProgramItems(programId: String) async throws -> [LiftProgramItemRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM liftProgramItem
                 WHERE programId = ?
@@ -568,7 +568,7 @@ extension WhoopStore {
 
     /// Sessions for a device that started within `[fromTs, toTs]` inclusive, most recent first.
     public func liftSessions(deviceId: String, fromTs: Int, toTs: Int) async throws -> [LiftSessionRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM liftSession
                 WHERE deviceId = ? AND startTs >= ? AND startTs <= ?
@@ -648,7 +648,7 @@ extension WhoopStore {
 
     /// Every set in a session, in the order they were performed.
     public func liftSets(sessionId: String) async throws -> [LiftSetRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM liftSet
                 WHERE sessionId = ?
@@ -666,7 +666,7 @@ extension WhoopStore {
     /// performed (`LiftMetrics.isPerformed`) and are skipped, so a discarded set never becomes the next
     /// session's grey numbers, and a session holding only such sets is not "last time" for the exercise.
     public func lastLiftSets(deviceId: String, exercise: String, before: Int? = nil) async throws -> [LiftSetRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             // Two steps rather than a correlated subquery: find the latest qualifying session, then
             // read its sets in order. Served by idx_liftSet_device_exercise + idx_liftSession_natural.
             let cutoff = before ?? Int.max
@@ -709,7 +709,7 @@ extension WhoopStore {
         fromTs: Int,
         toTs: Int
     ) async throws -> (fractional: [LiftMuscle: Double], direct: [LiftMuscle: Int], indirect: [LiftMuscle: Int]) {
-        try syncRead { db in
+        try await concurrentRead { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT s.primaryMuscle AS primaryMuscle, s.secondaryMuscles AS secondaryMuscles
                 FROM liftSet s
