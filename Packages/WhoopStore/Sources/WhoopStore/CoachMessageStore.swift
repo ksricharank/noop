@@ -41,7 +41,7 @@ extension WhoopStore {
 
     /// The full stored conversation, oldest first (by `orderIndex`).
     public func coachMessages() async throws -> [CoachMessageRow] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: "SELECT * FROM coachMessage ORDER BY orderIndex ASC")
                 .map(CoachMessageRow.decode)
         }

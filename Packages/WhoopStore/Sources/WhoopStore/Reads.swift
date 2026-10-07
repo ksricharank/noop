@@ -59,7 +59,7 @@ extension WhoopStore {
     /// chart path, and lets a PPG-only WHOOP 5 night clear the night-stager's HR-count gate so it is
     /// scorable (#172). The PPG `bpm` is REAL, so it is ROUND-ed to the `HRSample.bpm` Int domain.
     public func hrSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [HRSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, bpm FROM (
                     SELECT ts, bpm FROM hrSample
@@ -83,7 +83,7 @@ extension WhoopStore {
     /// feature have no contact event, so this intentionally returns no invented legacy values.
     public func standardHRContacts(deviceId: String, from: Int, to: Int,
                                    limit: Int) async throws -> [StandardHRContactSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, payloadJSON FROM event
                 WHERE deviceId = ? AND kind = ? AND ts >= ? AND ts <= ?
@@ -102,7 +102,7 @@ extension WhoopStore {
     /// any insert (including a backfilled OLD night whose `maxTs` wouldn't change), and `maxTs` distinguishes
     /// fresh appends. COALESCE so an empty window is `(0, 0)`, never nil.
     public func hrFingerprint(deviceId: String, from: Int, to: Int) async throws -> (count: Int, maxTs: Int) {
-        try syncRead { db in
+        try await concurrentRead { db in
             // COUNT(*) and COALESCE(MAX(ts),0) are both NON-NULL, and the aggregate query always returns
             // exactly one row, so fetchOne is non-nil and the columns read straight into Int. The guard is
             // belt-and-suspenders.
@@ -137,7 +137,7 @@ extension WhoopStore {
         // See `StoreProbeTally` (StrandAnalytics). Instrumentation only.
         let probeStarted = DispatchTime.now().uptimeNanoseconds
         defer { StoreProbeRecorder.record(.ownerHr, nanos: DispatchTime.now().uptimeNanoseconds &- probeStarted) }
-        return try syncRead { db in
+        return try await concurrentRead { db in
             try Bool.fetchOne(db, sql: """
                 SELECT EXISTS(SELECT 1 FROM hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?)
                     OR EXISTS(SELECT 1 FROM ppgHrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?)
@@ -157,7 +157,7 @@ extension WhoopStore {
         // Counted for the same reason as `hasHrInWindow` above; see `StoreProbeTally`.
         let probeStarted = DispatchTime.now().uptimeNanoseconds
         defer { StoreProbeRecorder.record(.gravityFp, nanos: DispatchTime.now().uptimeNanoseconds &- probeStarted) }
-        return try syncRead { db in
+        return try await concurrentRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM gravitySample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -177,7 +177,7 @@ extension WhoopStore {
     /// the watermark never advanced, and the idle-tick / post-offload gates always skipped. This mirrors the
     /// Kotlin twin `WhoopRepository.hrFingerprint()`, which already has no device filter.
     public func hrFingerprint() async throws -> (count: Int, maxTs: Int) {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS c, COALESCE(MAX(ts), 0) AS m FROM hrSample
                 """) else { return (0, 0) }
@@ -199,7 +199,7 @@ extension WhoopStore {
     /// The version changes the persisted watermark once so the normal recent window is recomputed.
     /// Older persisted scores remain until explicitly rescored; raw legacy intervals stay on disk.
     public func analysisFingerprint() async throws -> String {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT
                   (SELECT COUNT(*) FROM hrSample) AS hc,
@@ -269,7 +269,7 @@ extension WhoopStore {
     /// Returned as an opaque string: it is only ever compared to itself in memory, so no cross-platform or
     /// cross-launch byte identity is required. The Kotlin twin is `WhoopDao.dayStreamFingerprint`.
     public func dayStreamFingerprint(deviceId: String, from: Int, to: Int) async throws -> String {
-        try syncRead { db in
+        try await concurrentRead { db in
             // Every sub-select is COUNT/COALESCE(MAX(...), 0), so each column is non-null and the aggregate
             // query always returns exactly one row — same idiom as `analysisFingerprint` above.
             guard let row = try Row.fetchOne(db, sql: """
@@ -342,7 +342,7 @@ extension WhoopStore {
     /// install needs no special case and every existing number is unchanged.
     public func hrWindowStats(primaryId: String, secondaryId: String,
                               from: Int, to: Int) async throws -> HRWindowStats {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS n, AVG(bpm) AS avg, MAX(bpm) AS max FROM (
                     SELECT ts, MIN(pri), bpm FROM (
@@ -380,7 +380,7 @@ extension WhoopStore {
     /// where the device genuinely had no measured HR for that second (anti-join), never doubling a beat.
     public func hrBuckets(deviceId: String, from: Int, to: Int, bucketSeconds: Int) async throws -> [HRBucket] {
         let bucket = max(1, bucketSeconds)
-        return try syncRead { db in
+        return try await concurrentRead { db in
             // MIN(conf) per bucket: measured rows contribute 1.0, PPG fallback rows their stored
             // autocorrelation conf — so a bucket touched by ANY weak-optical estimate reads as weak
             // (conservative), and a purely-measured bucket stays 1.0. Purely additive projection:
@@ -470,7 +470,7 @@ extension WhoopStore {
     /// alias has no confirmed identity; a known WHOOP 4 or another brand retains its own read policy.
     public func rrIntervals(deviceId: String, from: Int, to: Int, limit: Int,
                             unlabelledAliasOfWhoop5: Bool) async throws -> [RRInterval] {
-        try syncRead { db in
+        try await concurrentRead { db in
             let strictWhoop5 = try Self.isWhoop5RRSource(db: db, deviceId: deviceId,
                 unlabelledAliasOfWhoop5: unlabelledAliasOfWhoop5)
             // One transport for the complete requested interval. Legacy WHOOP 5 rows mix units and
@@ -603,7 +603,7 @@ extension WhoopStore {
     /// are what shows a redrain happened at all. A strap log and the app disagreeing on beat counts is the
     /// signal, not a fault.
     public func rawRrIntervals(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [RRInterval] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, rrMs, srcChannel, ord, seq FROM rrInterval
                 WHERE deviceId = :d AND ts >= :f AND ts <= :t
@@ -621,7 +621,7 @@ extension WhoopStore {
     }
 
     public func events(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [WhoopEvent] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, kind, payloadJSON FROM event
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -646,7 +646,7 @@ extension WhoopStore {
     ///
     /// Twin of Kotlin `WhoopDao.latestBattery`.
     public func latestBattery(deviceId: String) async throws -> (ts: Int, soc: Double?, charging: Bool?)? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchOne(db, sql: """
                 SELECT ts, soc, charging FROM battery
                 WHERE deviceId = ?
@@ -657,7 +657,7 @@ extension WhoopStore {
     }
 
     public func batterySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [BatterySample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, soc, mv FROM battery
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -668,7 +668,7 @@ extension WhoopStore {
     }
 
     public func spo2Samples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [SpO2Sample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, red, ir FROM spo2Sample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -679,7 +679,7 @@ extension WhoopStore {
     }
 
     public func skinTempSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [SkinTempSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, raw, aux1Raw, aux2Raw FROM skinTempSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -694,7 +694,7 @@ extension WhoopStore {
     }
 
     public func stepSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [StepSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, counter, activityClass FROM stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -709,7 +709,7 @@ extension WhoopStore {
     /// Kotlin twin: `WhoopDao.stepSamplesPage`.
     public func stepSamplesPage(deviceId: String, afterExclusive: Int, endExclusive: Int,
                                 limit: Int) async throws -> [StepSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, counter, activityClass FROM stepSample
                 WHERE deviceId = ? AND ts > ? AND ts < ?
@@ -723,7 +723,7 @@ extension WhoopStore {
     /// Last counter sample before a cycle boundary, used to attribute the first in-cycle delta correctly.
     /// Kotlin twin: `WhoopDao.stepSampleBefore`.
     public func stepSampleBefore(deviceId: String, before: Int) async throws -> StepSample? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchOne(db, sql: """
                 SELECT ts, counter, activityClass FROM stepSample
                 WHERE deviceId = ? AND ts < ? ORDER BY ts DESC LIMIT 1
@@ -735,7 +735,7 @@ extension WhoopStore {
 
     /// Kotlin twin: `WhoopDao.hasStepActivityClasses`.
     public func hasStepActivityClasses(deviceId: String, from: Int, to: Int) async throws -> Bool {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Int.fetchOne(db, sql: """
                 SELECT EXISTS(SELECT 1 FROM stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts < ? AND activityClass IS NOT NULL)
@@ -746,7 +746,7 @@ extension WhoopStore {
     /// Kotlin twin: `WhoopRepository.stepTimestampCoverage`.
     public func stepTimestampCoverage(deviceId: String, from: Int, to: Int) async throws
         -> (first: Int?, last: Int?) {
-        try syncRead { db in
+        try await concurrentRead { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT MIN(ts) AS firstTs, MAX(ts) AS lastTs FROM stepSample
                 WHERE deviceId = ? AND ts >= ? AND ts < ?
@@ -764,7 +764,7 @@ extension WhoopStore {
 
     public func stepDiagnosticMotionCounts(deviceId: String, from: Int, to: Int) async throws
         -> (gravity: Int, aux: Int) {
-        try syncRead { db in
+        try await concurrentRead { db in
             let gravity = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM gravitySample WHERE deviceId = ? AND ts >= ? AND ts < ?
                 """, arguments: [deviceId, from, to]) ?? 0
@@ -776,7 +776,7 @@ extension WhoopStore {
     }
 
     public func respSamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [RespSample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, raw FROM respSample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -821,7 +821,7 @@ extension WhoopStore {
     }
 
     public func streamPresence(deviceId: String, from: Int, to: Int) async throws -> StreamPresence {
-        try syncRead { db in
+        try await concurrentRead { db in
             let row = try Row.fetchOne(db, sql: """
                 SELECT
                   EXISTS(SELECT 1 FROM hrSample WHERE deviceId = ? AND ts >= ? AND ts <= ?) AS hr,
@@ -837,7 +837,7 @@ extension WhoopStore {
     }
 
     public func rawSampleCountsByDevice(from: Int, to: Int) async throws -> [(String, Int)] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT deviceId, SUM(n) AS total FROM (
                     SELECT deviceId, COUNT(*) AS n FROM hrSample WHERE ts >= ? AND ts <= ? GROUP BY deviceId
@@ -860,7 +860,7 @@ extension WhoopStore {
     }
 
     public func gravitySamples(deviceId: String, from: Int, to: Int, limit: Int) async throws -> [GravitySample] {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Row.fetchAll(db, sql: """
                 SELECT ts, x, y, z, dynAccel FROM gravitySample
                 WHERE deviceId = ? AND ts >= ? AND ts <= ?
@@ -886,7 +886,7 @@ extension WhoopStore {
     /// (3.1M hrSample rows) the old shape measured 4.3–5.8 s per call and this one 0.01–0.07 s — the
     /// same answer, verified equal for every device id including one with no rows (both NULL).
     public func latestHRSampleTs(deviceId: String) async throws -> Int? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Int.fetchOne(db, sql: """
                 SELECT MAX(m) FROM (
                     SELECT (SELECT MAX(ts) FROM hrSample WHERE deviceId = ?) AS m
@@ -911,7 +911,7 @@ extension WhoopStore {
     /// per table: an unreadable count is omitted rather than reported as zero, because a zero here reads
     /// as "this table is empty" and that is a different claim from "this table could not be read".
     public func storageRowCounts() async throws -> [String: Int] {
-        try syncRead { db in
+        try await concurrentRead { db in
             var out: [String: Int] = [:]
             for (key, table) in Self.rawTableKeys {
                 if let n = try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table)") { out[key] = n }
@@ -941,7 +941,7 @@ extension WhoopStore {
     /// that counts the same thirteen tables three times is slowest exactly where it is needed.
     public func storageByteEstimates(sampleRows: Int = 500,
                                      rowCounts: [String: Int]? = nil) async throws -> [String: Int] {
-        try syncRead { db in
+        try await concurrentRead { db in
             var out: [String: Int] = [:]
             for (key, table) in Self.rawTableKeys {
                 let known = rowCounts?[key]
@@ -991,7 +991,7 @@ extension WhoopStore {
     /// calling it purely for `rawBytes` and discarding the rest - thirteen full scans, on the large stores
     /// where a scan is least free, for two numbers that touch a different table entirely.
     public func rawOutboxStats() async throws -> (batches: Int, bytes: Int) {
-        try syncRead { try Self.rawOutbox($0) }
+        try await concurrentRead { try Self.rawOutbox($0) }
     }
 
     /// The outbox pair against an OPEN database, so `storageStats()` and `rawOutboxStats()` share one
@@ -1006,7 +1006,7 @@ extension WhoopStore {
 
     /// Aggregate storage footprint: total decoded rows, raw batch count, total raw byteSize.
     public func storageStats() async throws -> (decodedRows: Int, rawBatches: Int, rawBytes: Int) {
-        try syncRead { db in
+        try await concurrentRead { db in
             // The COMPLETE set of accumulating decoded raw streams, from `rawTableKeys` — no longer a
             // "keep in sync with TimestampHeal" instruction, because that copy is gone and the heal now
             // reads the same list. Android's `WhoopRepository.storageRowCounts` is the one that still has
