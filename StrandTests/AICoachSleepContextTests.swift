@@ -41,12 +41,13 @@ final class AICoachSleepContextTests: XCTestCase {
     /// Efficiency arrives as a PERCENTAGE on some import paths, which `SleepView` and `StagesCard`
     /// each guard against inline. Without the same guard a bare `* 100` sends "eff 9400%".
     func testEfficiencyStoredAsPercentageIsNotMultipliedAgain() {
-        let e = engine()
-        XCTAssertEqual(e.efficiencyPercentOrDash(0.94), "94%")
-        XCTAssertEqual(e.efficiencyPercentOrDash(94.0), "94%")
-        XCTAssertEqual(e.efficiencyPercentOrDash(nil), "—")
-        XCTAssertEqual(e.efficiencyPercentOrDash(0), "—")
+        // Static since the v11.1.0 uplift merged upstream's `dayLine(_:wide:)` into the fork's
+        // toggle-gated one: the formatter is pure, so it needs no engine.
+        XCTAssertEqual(AICoachEngine.efficiencyPercentOrDash(0.94), "94%")
+        XCTAssertEqual(AICoachEngine.efficiencyPercentOrDash(94.0), "94%")
+        XCTAssertEqual(AICoachEngine.efficiencyPercentOrDash(nil), "—")
+        XCTAssertEqual(AICoachEngine.efficiencyPercentOrDash(0), "—")
         // Above a fraction but below the percentage split: not a value this can honestly render.
-        XCTAssertEqual(e.efficiencyPercentOrDash(1.2), "—")
+        XCTAssertEqual(AICoachEngine.efficiencyPercentOrDash(1.2), "—")
     }
 }
