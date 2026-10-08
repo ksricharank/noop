@@ -483,7 +483,7 @@ struct BackfillContinuation {
 /// The window reuses the app's quiet-hours convention byte-for-byte (the NotificationSettingsStore keys,
 /// the same defaults, and the same wrap-aware membership as SedentaryDetector.windowContains and the
 /// Android NotifPrefs.inQuietHours): minutes since LOCAL midnight, inclusive start, exclusive end, and
-/// the window may cross midnight (22:00 → 07:00 by default). Local wall time keeps it DST-agnostic the
+/// the window may cross midnight (22:00 → 06:30 by default). Local wall time keeps it DST-agnostic the
 /// same way quiet hours are: a DST jump moves the wall clock, the window definition never changes.
 ///
 /// The MODE is composed from the two persisted booleans so existing users need no migration:
@@ -496,11 +496,18 @@ struct BackfillContinuation {
 /// so a reconnect outside the window can never re-arm the flood from a stale precomputed want.
 struct ContinuousHrvSchedule {
     /// The reused quiet-hours window keys (written by NotificationSettingsStore; the same reuse idiom as
-    /// InactivityPrefs.NotifK) and their defaults (22:00 / 07:00).
+    /// InactivityPrefs.NotifK) and their defaults (22:00 / 06:30).
+    ///
+    /// FORK 261008: the end default moved 07:00 → 06:30 (maintainer: "make that the default"). The
+    /// window end is when background re-scoring settles the night, so it belongs just BEFORE a usual
+    /// wake: the morning Charge then converges on its own as the rest of the night offloads (trusted
+    /// partial passes refresh today's night), rather than waiting on a boundary set after waking.
+    /// Every reader of the key must fall back to THIS constant — a second inline default is two
+    /// definitions of when the night ends.
     static let quietStartKey = "notif.quietStartMinutes"
     static let quietEndKey = "notif.quietEndMinutes"
     static let defaultStartMinutes = 22 * 60
-    static let defaultEndMinutes = 7 * 60
+    static let defaultEndMinutes = 6 * 60 + 30
 
     /// Wrap-aware membership: is `minuteOfDay` inside `[startMin, endMin)`, where the window may cross
     /// midnight? Byte-for-byte the quiet-hours semantics (SedentaryDetector.windowContains / the Android
