@@ -144,6 +144,11 @@ struct IOSDiagnostics {
             lines.append("Data Protection: \(p ? "unlocked (files readable)" : "LOCKED — unlock once after reboot so history can sync")")
         }
         if let bg = backgroundRefresh { lines.append("Background refresh: \(bg)") }
+        // 260928: the store's on-disk shape, for the slow-pass investigation. A -wal in the hundreds
+        // of MB is a checkpoint-starved log every read has to walk; see StorePaths.storeSizesMB.
+        if let sizes = StorePaths.storeSizesMB() {
+            lines.append("Store files: data=\(sizes.dataMB)MB wal=\(sizes.walMB)MB")
+        }
         if let lpm = isLowPowerMode { lines.append("Low Power Mode: \(lpm ? "ON (throttles background BLE)" : "off")") }
         if let side = isSideloaded { lines.append("Sideloaded build: \(side ? "yes" : "no (App Store / TestFlight)")") }
         // #2553: silent unless it is actually broken, so an ordinary install's export is unchanged.

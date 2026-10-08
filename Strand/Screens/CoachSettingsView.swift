@@ -16,6 +16,8 @@ import StrandDesign
 struct CoachSettingsView: View {
     @EnvironmentObject var coach: AICoachEngine
     @Environment(\.dismiss) private var dismiss
+    /// 261007: the plain-language voice rider (`AICoachEngine.plainLanguagePrompt`), default ON.
+    @AppStorage(AICoachEngine.plainLanguageKey) private var plainLanguage = true
 
     /// Morning-brief settings, read from `CoachBriefScheduler` on init exactly as `CoachView` did
     /// before the split. This screen can now be the first to render them.
@@ -33,6 +35,21 @@ struct CoachSettingsView: View {
     /// Working copy of the synthesis instruction while editing, committed to the engine on change so
     /// an edit takes effect on the next Today refresh. Seeded when the editor opens.
     @State private var synthesisPromptDraft: String = ""
+    /// 260903: the editable instruction behind every coach-written notification title.
+    @State private var notifTitlePromptExpanded: Bool = false
+    /// 260919: the per-tab LLM instructions. Each tab's summary has its own lens, so each has its
+    /// own editable prompt.
+    @State private var dayQualityPromptExpanded: Bool = false
+    @State private var dayQualityPromptDraft: String = ""
+    @State private var trendsPromptExpanded: Bool = false
+    @State private var trendsPromptDraft: String = ""
+    @State private var insightPromptExpanded: Bool = false
+    @State private var insightPromptDraft: String = ""
+    @State private var plainLanguagePromptExpanded: Bool = false
+    @State private var plainLanguagePromptDraft: String = ""
+    @State private var sleepPromptExpanded: Bool = false
+    @State private var sleepPromptDraft: String = ""
+    @State private var notifTitlePromptDraft: String = ""
 
     var body: some View {
         // Literals, not String(localized:): `title`/`subtitle` are LocalizedStringKey, which converts
@@ -63,9 +80,18 @@ struct CoachSettingsView: View {
             // detail and append deterministic on-device trends. Same rows, more resolution. Feeds the
             // Today synthesis as well as the chat, since both share `buildFullContext()`.
             if coach.dataConsent { derivedTrendsBar }
+            plainLanguageBar
+            if plainLanguage { plainLanguagePromptBar }
             systemPromptBar
             morningBriefBar
+            // The four per-tab LLM instructions, in tab order (260919). Today's is the synthesis
+            // bar above; these are its siblings for Recap, Trends and Sleep.
             synthesisPromptBar
+            dayQualityPromptBar
+            insightPromptBar
+            trendsPromptBar
+            sleepPromptBar
+            notifTitlePromptBar
         }
         // Opening this screen is the moment a stale catalogue is worth refreshing: a key exists here by
         // definition, and the picker above is about to be read. Rate-limited and silent on failure.
@@ -130,9 +156,7 @@ struct CoachSettingsView: View {
                     // leaving the reader to guess how much that is: the sport, how long, how far and how
                     // hard, per session. This toggle is the only place someone is asked to agree to it.
                     // Android says the same sentence (#2033).
-                    Text(coach.dataConsent
-                         ? "On: your charge, rest, HRV and workouts are sent to the provider, each workout with its sport, duration, distance and heart rate."
-                         : "Off: the coach answers generally and sends none of your metrics.")
+                    Text(consentLine)
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -142,6 +166,19 @@ struct CoachSettingsView: View {
                     .accessibilityLabel("Let the coach use my data")
             }
         }
+    }
+
+    /// What the consent toggle's state means for THIS provider. The on-device model reads the same
+    /// summary but nothing leaves the phone, and saying "sent to the provider" there would be false.
+    private var consentLine: String {
+        if coach.provider == .appleOnDevice {
+            return coach.dataConsent
+                ? String(localized: "On: your charge, rest, HRV and workouts are read by Apple's on-device model. Nothing leaves \(Platform.deviceNounPhrase).")
+                : String(localized: "Off: the coach answers generally and reads none of your metrics.")
+        }
+        return coach.dataConsent
+            ? String(localized: "On: your charge, rest, HRV and workouts are sent to the provider, each workout with its sport, duration, distance and heart rate.")
+            : String(localized: "Off: the coach answers generally and sends none of your metrics.")
     }
 
     /// The v5 second opt-in: include a SUMMARY of the new on-device signals (strongest n-of-1 patterns +
@@ -190,6 +227,31 @@ struct CoachSettingsView: View {
                 Toggle("", isOn: $coach.multimodalChartEnabled)
                     .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
                     .accessibilityLabel("Send chart image to Gemini")
+            }
+        }
+    }
+
+    /// The coach's VOICE (261007): plain, friendly words instead of a formal report. Applies to every
+    /// coach surface at once and over any edited prompt — see `AICoachEngine.plainLanguagePrompt`.
+    private var plainLanguageBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            HStack(spacing: 10) {
+                Image(systemName: plainLanguage ? "text.bubble.fill" : "text.bubble")
+                    .foregroundStyle(plainLanguage ? StrandPalette.accent : StrandPalette.textTertiary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Plain, friendly language")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                    Text(plainLanguage
+                         ? "On: the coach explains things simply everywhere — Today, Sleep, Recap, Insights, notifications and chat. Numbers and layout stay exactly the same. The instructions below set how simple."
+                         : "Off: the coach writes in its own default voice.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $plainLanguage)
+                    .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
+                    .accessibilityLabel("Plain, friendly language")
             }
         }
     }
@@ -351,6 +413,156 @@ struct CoachSettingsView: View {
         }
     }
 
+    /// One editable prompt row, for the per-tab LLM instructions (260919).
+    ///
+    /// Four tabs now carry an LLM summary and each has its own instruction; hand-writing four more
+    /// copies of the same disclosure + TextEditor + reset would be four places for them to drift.
+    /// The differences are the title, the copy, and which accessor trio it reads — everything else
+    /// is identical by construction.
+    private func promptEditorBar(title: String,
+                                 icon: String,
+                                 customisedNote: String,
+                                 defaultNote: String,
+                                 expanded: Binding<Bool>,
+                                 draft: Binding<String>,
+                                 isCustomised: Bool,
+                                 current: @escaping () -> String,
+                                 commit: @escaping (String) -> Void,
+                                 reset: @escaping () -> Void) -> some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            VStack(alignment: .leading, spacing: expanded.wrappedValue ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        expanded.wrappedValue.toggle()
+                        if expanded.wrappedValue { draft.wrappedValue = current() }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: icon)
+                            .foregroundStyle(isCustomised ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(isCustomised ? customisedNote : defaultNote)
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: expanded.wrappedValue ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded.wrappedValue ? "Collapse \(title)" : "Edit \(title)")
+
+                if expanded.wrappedValue {
+                    TextEditor(text: draft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: draft.wrappedValue) { newValue in commit(newValue) }
+                        .accessibilityLabel("\(title) editor")
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            reset()
+                            draft.wrappedValue = current()
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!isCustomised)
+                        .accessibilityLabel("Reset \(title) to default")
+                    }
+                }
+            }
+        }
+    }
+
+    private var dayQualityPromptBar: some View {
+        promptEditorBar(
+            title: "Recap summary instructions",
+            icon: "calendar.badge.checkmark",
+            customisedNote: "Customised. Your instructions shape the Recap tab's summary.",
+            defaultNote: "Edit what the coach says about a finished day on the Recap tab.",
+            expanded: $dayQualityPromptExpanded,
+            draft: $dayQualityPromptDraft,
+            isCustomised: coach.hasCustomDayQualityPrompt,
+            current: { coach.customDayQualityPrompt },
+            commit: { coach.customDayQualityPrompt = $0 },
+            reset: { coach.resetDayQualityPrompt() })
+    }
+
+    /// The voice rider's own editable instructions (261008). Shown only while the voice is on: editing
+    /// a rider that is not being sent would be a setting with no effect.
+    private var plainLanguagePromptBar: some View {
+        promptEditorBar(
+            title: "Plain-language instructions",
+            icon: "text.bubble",
+            customisedNote: "Customised. Your words set how simply the coach explains things everywhere.",
+            defaultNote: "Explain-like-I'm-10 by default. Change the age, or the wording, to suit you.",
+            expanded: $plainLanguagePromptExpanded,
+            draft: $plainLanguagePromptDraft,
+            isCustomised: coach.hasCustomPlainLanguagePrompt,
+            current: { coach.customPlainLanguagePrompt },
+            commit: { coach.customPlainLanguagePrompt = $0 },
+            reset: { coach.resetPlainLanguagePrompt() })
+    }
+
+    private var insightPromptBar: some View {
+        promptEditorBar(
+            title: "Daily insight instructions",
+            icon: "lightbulb.max",
+            customisedNote: "Customised. Your instructions shape the daily insight on the Insights tab.",
+            defaultNote: "Edit the one interesting thing the coach surfaces each day on the Insights tab.",
+            expanded: $insightPromptExpanded,
+            draft: $insightPromptDraft,
+            isCustomised: coach.hasCustomInsightPrompt,
+            current: { coach.customInsightPrompt },
+            commit: { coach.customInsightPrompt = $0 },
+            reset: { coach.resetInsightPrompt() })
+    }
+
+    private var trendsPromptBar: some View {
+        promptEditorBar(
+            title: "Trend summary instructions",
+            icon: "chart.line.uptrend.xyaxis",
+            customisedNote: "Customised. Your instructions shape the Insights tab's trend summary.",
+            defaultNote: "Edit the per-metric trend lines on the Insights tab.",
+            expanded: $trendsPromptExpanded,
+            draft: $trendsPromptDraft,
+            isCustomised: coach.hasCustomTrendsPrompt,
+            current: { coach.customTrendsPrompt },
+            commit: { coach.customTrendsPrompt = $0 },
+            reset: { coach.resetTrendsPrompt() })
+    }
+
+    private var sleepPromptBar: some View {
+        promptEditorBar(
+            title: "Sleep summary instructions",
+            icon: "bed.double",
+            customisedNote: "Customised. Your instructions shape the Sleep tab's summary.",
+            defaultNote: "Edit what the coach says about last night on the Sleep tab.",
+            expanded: $sleepPromptExpanded,
+            draft: $sleepPromptDraft,
+            isCustomised: coach.hasCustomSleepPrompt,
+            current: { coach.customSleepPrompt },
+            commit: { coach.customSleepPrompt = $0 },
+            reset: { coach.resetSleepPrompt() })
+    }
+
     private var synthesisPromptBar: some View {
         NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
             VStack(alignment: .leading, spacing: synthesisPromptExpanded ? 10 : 0) {
@@ -412,6 +624,88 @@ struct CoachSettingsView: View {
                         .foregroundStyle(StrandPalette.accent)
                         .disabled(!coach.hasCustomSynthesisPrompt)
                         .accessibilityLabel("Reset Today synthesis instructions to default")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Editable instruction for coach-written NOTIFICATION TITLES (260903) — the pace check, the
+    /// water reminder and the move reminder all route through it. A sibling of `synthesisPromptBar`
+    /// and deliberately the same shape. The 32-character bound lives in the prompt (with examples)
+    /// AND in code, so an edit that drops the limit still cannot post a clipped title.
+    private var notifTitlePromptBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.effortColor) {
+            VStack(alignment: .leading, spacing: notifTitlePromptExpanded ? 10 : 0) {
+                Button {
+                    withAnimation(StrandMotion.fade) {
+                        notifTitlePromptExpanded.toggle()
+                        if notifTitlePromptExpanded {
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bell.badge")
+                            .foregroundStyle(coach.hasCustomNotificationTitlePrompt
+                                             ? StrandPalette.accent : StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Notification title instructions")
+                                .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                            Text(coach.hasCustomNotificationTitlePrompt
+                                 ? "Customised. Your edited instructions title every nudge."
+                                 : "Edit the one-line titles the coach writes for pace, water and move nudges.")
+                                .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: notifTitlePromptExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(notifTitlePromptExpanded
+                                    ? "Collapse notification title instructions"
+                                    : "Edit notification title instructions")
+
+                if notifTitlePromptExpanded {
+                    TextEditor(text: $notifTitlePromptDraft)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 100, maxHeight: 200)
+                        .padding(8)
+                        .background(StrandPalette.surfaceInset,
+                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                        .onChangeCompat(of: notifTitlePromptDraft) { newValue in
+                            coach.customNotificationTitlePrompt = newValue
+                        }
+                        .accessibilityLabel("Notification title instructions editor")
+
+                    Text("Titles longer than \(AICoachEngine.notificationTitleMaxChars) characters are shortened at a word boundary, or dropped for the plain title — iOS clips a long title on the Lock Screen.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Spacer()
+                        Button {
+                            coach.resetNotificationTitlePrompt()
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        } label: {
+                            Label("Reset to default", systemImage: "arrow.uturn.backward")
+                                .font(StrandFont.footnote)
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StrandPalette.accent)
+                        .disabled(!coach.hasCustomNotificationTitlePrompt)
+                        .accessibilityLabel("Reset notification title instructions to default")
                     }
                 }
             }

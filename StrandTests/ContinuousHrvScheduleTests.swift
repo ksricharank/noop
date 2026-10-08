@@ -4,15 +4,15 @@ import XCTest
 /// Pins the #927 Continuous HRV "overnight only" window predicate (`ContinuousHrvSchedule`).
 ///
 /// The window reuses the app's quiet-hours convention byte-for-byte: minutes since LOCAL midnight,
-/// inclusive start, exclusive end, and the window may wrap across midnight (22:00 → 07:00 by default).
+/// inclusive start, exclusive end, and the window may wrap across midnight (22:00 → 06:30 by default).
 /// The predicate takes the wall-clock minute IN (no date, no epoch), exactly like quiet hours, which is
 /// what makes it DST-agnostic: a DST jump moves the wall clock, the window definition never changes, and
 /// there is no date arithmetic to disagree with the user's clock. Pure value type, no seams needed.
 final class ContinuousHrvScheduleTests: XCTestCase {
 
-    /// The quiet-hours defaults the schedule reuses (22:00 → 07:00).
+    /// The quiet-hours defaults the schedule reuses (22:00 → 06:30; the end moved from 07:00 on 261008).
     private let start = ContinuousHrvSchedule.defaultStartMinutes   // 1320
-    private let end = ContinuousHrvSchedule.defaultEndMinutes       // 420
+    private let end = ContinuousHrvSchedule.defaultEndMinutes       // 390
 
     // MARK: Mode composition (no migration)
 
@@ -58,10 +58,15 @@ final class ContinuousHrvScheduleTests: XCTestCase {
         XCTAssertFalse(ContinuousHrvSchedule.windowContains(21 * 60 + 59, startMin: start, endMin: end))
     }
 
-    /// Exclusive end: 07:00 exactly is OUTSIDE; 06:59 is inside. Matches quiet hours (`now < end`).
+    /// Exclusive end: 06:30 exactly is OUTSIDE; 06:29 is inside. Matches quiet hours (`now < end`).
     func testEndBoundaryExclusive() {
-        XCTAssertFalse(ContinuousHrvSchedule.windowContains(7 * 60, startMin: start, endMin: end))
-        XCTAssertTrue(ContinuousHrvSchedule.windowContains(6 * 60 + 59, startMin: start, endMin: end))
+        XCTAssertFalse(ContinuousHrvSchedule.windowContains(6 * 60 + 30, startMin: start, endMin: end))
+        XCTAssertTrue(ContinuousHrvSchedule.windowContains(6 * 60 + 29, startMin: start, endMin: end))
+    }
+
+    /// The fork's 06:30 default (261008), pinned by value so a merge cannot quietly restore 07:00.
+    func testDefaultWindowEndsAtSixThirty() {
+        XCTAssertEqual(ContinuousHrvSchedule.defaultEndMinutes, 6 * 60 + 30)
     }
 
     /// The default window wraps midnight: late evening, midnight itself and the small hours are all

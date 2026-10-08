@@ -50,7 +50,7 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .compare: return "Compare"
         case .insights: return "Insights"
         case .sleep: return "Sleep"
-        case .trends: return "Trends"
+        case .trends: return "Insights"
         case .workouts: return "Workouts"
         case .health: return "Health"
         case .stress: return "Stress"
@@ -94,7 +94,7 @@ enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case .compare: return String(localized: "Compare")
         case .insights: return String(localized: "Insights")
         case .sleep: return String(localized: "Sleep")
-        case .trends: return String(localized: "Trends")
+        case .trends: return String(localized: "Insights")
         case .workouts: return String(localized: "Workouts")
         case .health: return String(localized: "Health")
         case .stress: return String(localized: "Stress")

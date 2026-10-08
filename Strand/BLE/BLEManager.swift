@@ -483,7 +483,7 @@ struct BackfillContinuation {
 /// The window reuses the app's quiet-hours convention byte-for-byte (the NotificationSettingsStore keys,
 /// the same defaults, and the same wrap-aware membership as SedentaryDetector.windowContains and the
 /// Android NotifPrefs.inQuietHours): minutes since LOCAL midnight, inclusive start, exclusive end, and
-/// the window may cross midnight (22:00 → 07:00 by default). Local wall time keeps it DST-agnostic the
+/// the window may cross midnight (22:00 → 06:30 by default). Local wall time keeps it DST-agnostic the
 /// same way quiet hours are: a DST jump moves the wall clock, the window definition never changes.
 ///
 /// The MODE is composed from the two persisted booleans so existing users need no migration:
@@ -496,11 +496,18 @@ struct BackfillContinuation {
 /// so a reconnect outside the window can never re-arm the flood from a stale precomputed want.
 struct ContinuousHrvSchedule {
     /// The reused quiet-hours window keys (written by NotificationSettingsStore; the same reuse idiom as
-    /// InactivityPrefs.NotifK) and their defaults (22:00 / 07:00).
+    /// InactivityPrefs.NotifK) and their defaults (22:00 / 06:30).
+    ///
+    /// FORK 261008: the end default moved 07:00 → 06:30 (maintainer: "make that the default"). The
+    /// window end is when background re-scoring settles the night, so it belongs just BEFORE a usual
+    /// wake: the morning Charge then converges on its own as the rest of the night offloads (trusted
+    /// partial passes refresh today's night), rather than waiting on a boundary set after waking.
+    /// Every reader of the key must fall back to THIS constant — a second inline default is two
+    /// definitions of when the night ends.
     static let quietStartKey = "notif.quietStartMinutes"
     static let quietEndKey = "notif.quietEndMinutes"
     static let defaultStartMinutes = 22 * 60
-    static let defaultEndMinutes = 7 * 60
+    static let defaultEndMinutes = 6 * 60 + 30
 
     /// Wrap-aware membership: is `minuteOfDay` inside `[startMin, endMin)`, where the window may cross
     /// midnight? Byte-for-byte the quiet-hours semantics (SedentaryDetector.windowContains / the Android
@@ -5761,11 +5768,22 @@ public final class BLEManager: NSObject, ObservableObject {
         send(.runHapticsPattern, payload: [2, 3, 0, 0, 0], writeType: .withResponse)  // patternId=2, 3 loops (5/MG: send() remaps to the maverick notify buzz)
         if selectedModel.deviceFamily == .whoop5 {
             send(.runAlarm, payload: AlarmPayload.runAlarmRev2(), writeType: .withResponse)   // REVISION_2 [0x02, alarmId]
-            log("Buzz: one-shot fired (5/MG maverick buzz + runAlarm rev2, acked)")
+            // "written", NOT "acked" (260904). `.withResponse` gets an acknowledgement from the
+            // BLE STACK that the write landed on the characteristic — it says nothing about the
+            // strap accepting the command or the motor running. The 1119 log makes the gap
+            // concrete: all four nudge buzzes logged "acked" while the strap's own replies were
+            // RUN_HAPTIC_PATTERN_MAVERICK → PENDING(2) and RUN_ALARM → FAILURE(0), against a
+            // report of buzzes not always being felt. A line that claims more than it observed is
+            // what sent that diagnosis backwards (see CLAUDE.md: a diagnostic may only assert what
+            // it can attribute). The command responses arrive asynchronously on the notify
+            // characteristic and are already logged there; this line no longer pre-empts them.
+            log("Buzz: one-shot written (5/MG maverick buzz + runAlarm rev2; "
+                + "watch for the command responses)")
             return
         }
         send(.runAlarm, payload: [0x01], writeType: .withResponse)
-        log("Buzz: one-shot fired (patternId=2 loops=3 + runAlarm, acked)")
+        log("Buzz: one-shot written (patternId=2 loops=3 + runAlarm; "
+            + "watch for the command responses)")
     }
 
     /// Haptic Clock (#460): buzz the current wall-clock time out on the strap so the user can read it
@@ -7500,7 +7518,12 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
         // the whole question a drain report needs answered. One integer increment (BatteryDiag).
         // Counted alongside upstream's epitaph tallies above, not instead of them: they answer
         // "did anything arrive", this answers "which channel is waking us and how often".
-        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid))
+        //
+        // 260903: split by lock state. A wake while LOCKED is the pure battery cost (no screen to
+        // read), which is the number a duty-cycle change must actually move — a per-channel total
+        // alone could not say whether the 260903 halving landed where it mattered.
+        BatteryDiag.recordNotify(Self.notifyLabel(for: characteristic.uuid),
+                                 locked: deviceIsLocked())
 
         switch characteristic.uuid {
         case BLEManager.heartRateChar:
