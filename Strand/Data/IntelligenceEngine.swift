@@ -2060,6 +2060,10 @@ final class IntelligenceEngine: ObservableObject {
         // seed it from stored history and merge over stored rows instead of overwriting them.
         let partialBaseline = Self.isPartialBaseline(lightPass: lightPass,
                                                      wasAbandoned: wasAbandoned, maxDays: maxDays)
+        // The local day the trusted partial-pass refresh may rewrite (see `partialPassRefreshesNight`):
+        // ONE key, read by the daily-row merge AND the metric-series write, so the two can never refresh
+        // different days.
+        let refreshTodayKey = AnalyticsEngine.dayString(now, offsetSec: tzOffset)
         // #1538: the pass after the day loop was never measured. The cost line above brackets the loop and
         // is emitted the moment it returns, so a pass whose time went somewhere later reported a small
         // prep/score and no account of the rest — which is where the steps calibration was re-folding sixty
@@ -2566,7 +2570,7 @@ final class IntelligenceEngine: ObservableObject {
             if partialBaseline,
                !DailyMetric.partialPassRefreshesNight(
                    day: daily.day,
-                   todayKey: AnalyticsEngine.dayString(now, offsetSec: tzOffset),
+                   todayKey: refreshTodayKey,
                    baselineStatus: baselines2.hrv?.status) {
                 var merged = scored.lightPassMerged(over: stored)
                 if merged.recovery == nil, let fresh = recovery {
@@ -2877,8 +2881,18 @@ final class IntelligenceEngine: ObservableObject {
                     // scored-night fields the light merge deliberately discards in favour of the stored ones.
                     // Writing them would put values on screen that no longer match the row they came from.
                     // The next full pass recomputes the lot against the real window.
-                    metricPoints: partialBaseline ? [] : (preserveUnscoredHistory
-                        ? restPointsByDay[from, default: []] : restPoints),
+                    //
+                    // 261008: the same principle, now cutting the other way for TODAY under a trusted
+                    // baseline. That row is refreshed whole by `partialPassRefreshesNight`, so its series
+                    // must be written with it — otherwise today's Rest (`sleep_performance`, a target
+                    // input) would keep describing the night the row no longer holds. Upserts per
+                    // (day, key) only, so no other day's series is touched.
+                    metricPoints: (preserveUnscoredHistory
+                        ? restPointsByDay[from, default: []] : restPoints).filter { point in
+                            !partialBaseline || DailyMetric.partialPassRefreshesNight(
+                                day: point.day, todayKey: refreshTodayKey,
+                                baselineStatus: baselines2.hrv?.status)
+                        },
                     provenance: preserveUnscoredHistory
                         ? provenanceByDay[from, default: []] : Array(provenanceByCell.values),
                     deviceId: computedId, from: from, to: to,
