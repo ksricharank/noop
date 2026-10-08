@@ -523,8 +523,42 @@ final class AICoachEngine: ObservableObject {
     /// on-device model is answering. `systemPrompt` stays the wearer's editable text; the rider is
     /// appended at send time so switching provider never rewrites their prompt.
     var effectiveSystemPrompt: String {
-        provider == .appleOnDevice ? systemPrompt + "\n\n" + Self.onDeviceInstructionSuffix : systemPrompt
+        var prompt = systemPrompt
+        if Self.plainLanguageEnabled() { prompt += "\n\n" + Self.plainLanguageSuffix }
+        // The on-device rider stays LAST: it is the tightest contract and a small model weights the
+        // end of its instructions most.
+        if provider == .appleOnDevice { prompt += "\n\n" + Self.onDeviceInstructionSuffix }
+        return prompt
     }
+
+    /// The plain-language VOICE rider (261007, maintainer request: "the language something at the
+    /// level of a ELI7 or 8. right now it sounds too formal").
+    ///
+    /// A rider at send time, like the on-device one, rather than an edit to each default prompt: every
+    /// coach surface — the Today read, the three tab summaries, the daily insight, notification titles
+    /// and chat — draws its instructions from `effectiveSystemPrompt`, so one rider changes the voice
+    /// everywhere at once, and it applies OVER the wearer's saved prompt overrides instead of being
+    /// shadowed by them (a default edit would have needed five Reset-to-defaults to take effect).
+    /// It governs WORDS only; every surface prompt's shape rules (sections, bullets, bold, word caps,
+    /// verbatim numbers) still win, and it says so, because a voice rule a model reads as license to
+    /// drop structure would break the Today skeleton.
+    static let plainLanguageKey = "ai.plainLanguage"
+
+    /// Default ON (the maintainer asked for it as the new voice). `object(forKey:)` so an unset key
+    /// reads true rather than `bool(forKey:)`'s unset-reads-false.
+    static func plainLanguageEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        (defaults.object(forKey: plainLanguageKey) as? Bool) ?? true
+    }
+
+    static let plainLanguageSuffix = """
+    HOW TO TALK. Write the way you'd explain it to a curious 8-year-old: short sentences, everyday \
+    words, warm and friendly, like a coach who is on my side. No medical or sports-science jargon — \
+    say what it means instead ("your body is still recovering", not "parasympathetic tone is \
+    suppressed"; "your calm heart rate", not "resting HR is elevated relative to baseline"). If a \
+    term like HRV is needed, use it once with a few plain words of meaning. Never stiff or formal, \
+    never a report. This changes your WORDS only: keep every number exactly as given, and keep \
+    every shape rule in the instructions (sections, bullets, bold, word limits) exactly.
+    """
 
     /// The rider for Apple's on-device model (260922). A ~3B model follows the long coaching prompt
     /// loosely: it pads, restates the table, and rounds numbers it was not given. These are the

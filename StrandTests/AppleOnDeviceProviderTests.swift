@@ -141,7 +141,13 @@ final class AppleOnDeviceProviderTests: XCTestCase {
     func testOnDeviceRiderIsAppendedOnlyForThatProvider() async throws {
         let engine = AICoachEngine(repo: Repository(deviceId: "test-aicoach-on-device"))
         let before = engine.provider
-        defer { engine.provider = before }
+        let plainBefore = UserDefaults.standard.object(forKey: AICoachEngine.plainLanguageKey)
+        defer {
+            engine.provider = before
+            UserDefaults.standard.set(plainBefore, forKey: AICoachEngine.plainLanguageKey)
+        }
+        // Isolate the on-device rider from the plain-language one (pinned separately below).
+        UserDefaults.standard.set(false, forKey: AICoachEngine.plainLanguageKey)
         engine.provider = .gemini
         XCTAssertEqual(engine.effectiveSystemPrompt, engine.systemPrompt)
         engine.provider = .appleOnDevice
@@ -150,5 +156,35 @@ final class AppleOnDeviceProviderTests: XCTestCase {
         XCTAssertEqual(engine.model, AppleOnDeviceModel.modelID)
         XCTAssertEqual(engine.isConfigured, AppleOnDeviceModel.isAvailable,
                        "keyless: configured exactly when the device can run it")
+    }
+
+    /// 261007: the plain-language voice rider rides EVERY provider by default, sits between the
+    /// wearer's prompt and the on-device rider, and the switch removes it.
+    @MainActor
+    func testPlainLanguageRiderIsOnByDefaultAndSwitchable() async throws {
+        let engine = AICoachEngine(repo: Repository(deviceId: "test-aicoach-plain-language"))
+        let before = engine.provider
+        let plainBefore = UserDefaults.standard.object(forKey: AICoachEngine.plainLanguageKey)
+        defer {
+            engine.provider = before
+            UserDefaults.standard.set(plainBefore, forKey: AICoachEngine.plainLanguageKey)
+        }
+        UserDefaults.standard.removeObject(forKey: AICoachEngine.plainLanguageKey)
+        XCTAssertTrue(AICoachEngine.plainLanguageEnabled(), "an untouched install gets the plain voice")
+
+        engine.provider = .gemini
+        XCTAssertTrue(engine.effectiveSystemPrompt.hasPrefix(engine.systemPrompt),
+                      "the wearer's own prompt still leads, untouched")
+        XCTAssertTrue(engine.effectiveSystemPrompt.hasSuffix(AICoachEngine.plainLanguageSuffix))
+
+        engine.provider = .appleOnDevice
+        XCTAssertTrue(engine.effectiveSystemPrompt.contains(AICoachEngine.plainLanguageSuffix))
+        XCTAssertTrue(engine.effectiveSystemPrompt.hasSuffix(AICoachEngine.onDeviceInstructionSuffix),
+                      "the on-device contract stays last")
+
+        UserDefaults.standard.set(false, forKey: AICoachEngine.plainLanguageKey)
+        XCTAssertFalse(engine.effectiveSystemPrompt.contains(AICoachEngine.plainLanguageSuffix))
+        // The rider changes words, never shape: it must say so, or a model may drop the skeleton.
+        XCTAssertTrue(AICoachEngine.plainLanguageSuffix.contains("keep every number exactly as given"))
     }
 }

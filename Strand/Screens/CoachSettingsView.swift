@@ -16,6 +16,8 @@ import StrandDesign
 struct CoachSettingsView: View {
     @EnvironmentObject var coach: AICoachEngine
     @Environment(\.dismiss) private var dismiss
+    /// 261007: the plain-language voice rider (`AICoachEngine.plainLanguageSuffix`), default ON.
+    @AppStorage(AICoachEngine.plainLanguageKey) private var plainLanguage = true
 
     /// Morning-brief settings, read from `CoachBriefScheduler` on init exactly as `CoachView` did
     /// before the split. This screen can now be the first to render them.
@@ -76,6 +78,7 @@ struct CoachSettingsView: View {
             // detail and append deterministic on-device trends. Same rows, more resolution. Feeds the
             // Today synthesis as well as the chat, since both share `buildFullContext()`.
             if coach.dataConsent { derivedTrendsBar }
+            plainLanguageBar
             systemPromptBar
             morningBriefBar
             // The four per-tab LLM instructions, in tab order (260919). Today's is the synthesis
@@ -221,6 +224,31 @@ struct CoachSettingsView: View {
                 Toggle("", isOn: $coach.multimodalChartEnabled)
                     .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
                     .accessibilityLabel("Send chart image to Gemini")
+            }
+        }
+    }
+
+    /// The coach's VOICE (261007): plain, friendly words instead of a formal report. Applies to every
+    /// coach surface at once and over any edited prompt — see `AICoachEngine.plainLanguageSuffix`.
+    private var plainLanguageBar: some View {
+        NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
+            HStack(spacing: 10) {
+                Image(systemName: plainLanguage ? "text.bubble.fill" : "text.bubble")
+                    .foregroundStyle(plainLanguage ? StrandPalette.accent : StrandPalette.textTertiary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Plain, friendly language")
+                        .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
+                    Text(plainLanguage
+                         ? "On: the coach uses short sentences and everyday words everywhere — Today, Sleep, Recap, Insights, notifications and chat. Numbers and layout stay exactly the same."
+                         : "Off: the coach writes in its own default voice.")
+                        .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $plainLanguage)
+                    .labelsHidden().toggleStyle(.switch).tint(StrandPalette.accent)
+                    .accessibilityLabel("Plain, friendly language")
             }
         }
     }
