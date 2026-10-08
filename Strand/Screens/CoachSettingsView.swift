@@ -16,7 +16,7 @@ import StrandDesign
 struct CoachSettingsView: View {
     @EnvironmentObject var coach: AICoachEngine
     @Environment(\.dismiss) private var dismiss
-    /// 261007: the plain-language voice rider (`AICoachEngine.plainLanguageSuffix`), default ON.
+    /// 261007: the plain-language voice rider (`AICoachEngine.plainLanguagePrompt`), default ON.
     @AppStorage(AICoachEngine.plainLanguageKey) private var plainLanguage = true
 
     /// Morning-brief settings, read from `CoachBriefScheduler` on init exactly as `CoachView` did
@@ -45,6 +45,8 @@ struct CoachSettingsView: View {
     @State private var trendsPromptDraft: String = ""
     @State private var insightPromptExpanded: Bool = false
     @State private var insightPromptDraft: String = ""
+    @State private var plainLanguagePromptExpanded: Bool = false
+    @State private var plainLanguagePromptDraft: String = ""
     @State private var sleepPromptExpanded: Bool = false
     @State private var sleepPromptDraft: String = ""
     @State private var notifTitlePromptDraft: String = ""
@@ -79,6 +81,7 @@ struct CoachSettingsView: View {
             // Today synthesis as well as the chat, since both share `buildFullContext()`.
             if coach.dataConsent { derivedTrendsBar }
             plainLanguageBar
+            if plainLanguage { plainLanguagePromptBar }
             systemPromptBar
             morningBriefBar
             // The four per-tab LLM instructions, in tab order (260919). Today's is the synthesis
@@ -229,7 +232,7 @@ struct CoachSettingsView: View {
     }
 
     /// The coach's VOICE (261007): plain, friendly words instead of a formal report. Applies to every
-    /// coach surface at once and over any edited prompt — see `AICoachEngine.plainLanguageSuffix`.
+    /// coach surface at once and over any edited prompt — see `AICoachEngine.plainLanguagePrompt`.
     private var plainLanguageBar: some View {
         NoopCard(padding: 14, tint: StrandPalette.chargeColor) {
             HStack(spacing: 10) {
@@ -240,7 +243,7 @@ struct CoachSettingsView: View {
                     Text("Plain, friendly language")
                         .font(StrandFont.subhead).foregroundStyle(StrandPalette.textPrimary)
                     Text(plainLanguage
-                         ? "On: the coach uses short sentences and everyday words everywhere — Today, Sleep, Recap, Insights, notifications and chat. Numbers and layout stay exactly the same."
+                         ? "On: the coach explains things simply everywhere — Today, Sleep, Recap, Insights, notifications and chat. Numbers and layout stay exactly the same. The instructions below set how simple."
                          : "Off: the coach writes in its own default voice.")
                         .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -500,6 +503,22 @@ struct CoachSettingsView: View {
             current: { coach.customDayQualityPrompt },
             commit: { coach.customDayQualityPrompt = $0 },
             reset: { coach.resetDayQualityPrompt() })
+    }
+
+    /// The voice rider's own editable instructions (261008). Shown only while the voice is on: editing
+    /// a rider that is not being sent would be a setting with no effect.
+    private var plainLanguagePromptBar: some View {
+        promptEditorBar(
+            title: "Plain-language instructions",
+            icon: "text.bubble",
+            customisedNote: "Customised. Your words set how simply the coach explains things everywhere.",
+            defaultNote: "Explain-like-I'm-10 by default. Change the age, or the wording, to suit you.",
+            expanded: $plainLanguagePromptExpanded,
+            draft: $plainLanguagePromptDraft,
+            isCustomised: coach.hasCustomPlainLanguagePrompt,
+            current: { coach.customPlainLanguagePrompt },
+            commit: { coach.customPlainLanguagePrompt = $0 },
+            reset: { coach.resetPlainLanguagePrompt() })
     }
 
     private var insightPromptBar: some View {

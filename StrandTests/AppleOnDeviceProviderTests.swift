@@ -169,22 +169,34 @@ final class AppleOnDeviceProviderTests: XCTestCase {
             engine.provider = before
             UserDefaults.standard.set(plainBefore, forKey: AICoachEngine.plainLanguageKey)
         }
+        let promptBefore = UserDefaults.standard.object(forKey: AICoachEngine.plainLanguagePromptKey)
+        defer { UserDefaults.standard.set(promptBefore, forKey: AICoachEngine.plainLanguagePromptKey) }
         UserDefaults.standard.removeObject(forKey: AICoachEngine.plainLanguageKey)
+        UserDefaults.standard.removeObject(forKey: AICoachEngine.plainLanguagePromptKey)
         XCTAssertTrue(AICoachEngine.plainLanguageEnabled(), "an untouched install gets the plain voice")
+        XCTAssertTrue(AICoachEngine.defaultPlainLanguagePrompt.contains("10-year-old"),
+                      "the default is explain-like-I'm-10 (261008)")
 
         engine.provider = .gemini
         XCTAssertTrue(engine.effectiveSystemPrompt.hasPrefix(engine.systemPrompt),
                       "the wearer's own prompt still leads, untouched")
-        XCTAssertTrue(engine.effectiveSystemPrompt.hasSuffix(AICoachEngine.plainLanguageSuffix))
+        XCTAssertTrue(engine.effectiveSystemPrompt.hasSuffix(AICoachEngine.defaultPlainLanguagePrompt))
 
         engine.provider = .appleOnDevice
-        XCTAssertTrue(engine.effectiveSystemPrompt.contains(AICoachEngine.plainLanguageSuffix))
+        XCTAssertTrue(engine.effectiveSystemPrompt.contains(AICoachEngine.defaultPlainLanguagePrompt))
         XCTAssertTrue(engine.effectiveSystemPrompt.hasSuffix(AICoachEngine.onDeviceInstructionSuffix),
                       "the on-device contract stays last")
 
+        // An edited rider is what gets sent — the age is the wearer's to set.
+        engine.customPlainLanguagePrompt = "Explain it like I'm 12."
+        XCTAssertTrue(engine.effectiveSystemPrompt.contains("Explain it like I'm 12."))
+        XCTAssertFalse(engine.effectiveSystemPrompt.contains(AICoachEngine.defaultPlainLanguagePrompt))
+        engine.resetPlainLanguagePrompt()
+        XCTAssertTrue(engine.effectiveSystemPrompt.contains(AICoachEngine.defaultPlainLanguagePrompt))
+
         UserDefaults.standard.set(false, forKey: AICoachEngine.plainLanguageKey)
-        XCTAssertFalse(engine.effectiveSystemPrompt.contains(AICoachEngine.plainLanguageSuffix))
+        XCTAssertFalse(engine.effectiveSystemPrompt.contains(AICoachEngine.defaultPlainLanguagePrompt))
         // The rider changes words, never shape: it must say so, or a model may drop the skeleton.
-        XCTAssertTrue(AICoachEngine.plainLanguageSuffix.contains("keep every number exactly as given"))
+        XCTAssertTrue(AICoachEngine.defaultPlainLanguagePrompt.contains("keep every number exactly as given"))
     }
 }

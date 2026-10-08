@@ -524,7 +524,7 @@ final class AICoachEngine: ObservableObject {
     /// appended at send time so switching provider never rewrites their prompt.
     var effectiveSystemPrompt: String {
         var prompt = systemPrompt
-        if Self.plainLanguageEnabled() { prompt += "\n\n" + Self.plainLanguageSuffix }
+        if Self.plainLanguageEnabled() { prompt += "\n\n" + plainLanguagePrompt }
         // The on-device rider stays LAST: it is the tightest contract and a small model weights the
         // end of its instructions most.
         if provider == .appleOnDevice { prompt += "\n\n" + Self.onDeviceInstructionSuffix }
@@ -550,8 +550,11 @@ final class AICoachEngine: ObservableObject {
         (defaults.object(forKey: plainLanguageKey) as? Bool) ?? true
     }
 
-    static let plainLanguageSuffix = """
-    HOW TO TALK. Write the way you'd explain it to a curious 8-year-old: short sentences, everyday \
+    /// The voice rider's default text: explain-like-I'm-10 (261008; the maintainer moved it from 8 to 10,
+    /// then asked for the age to be theirs to set — so the whole rider is an editable prompt, Coach
+    /// settings → "Plain-language instructions", and the age is just a word in it).
+    static let defaultPlainLanguagePrompt = """
+    HOW TO TALK. Explain it the way you would to a curious 10-year-old: short sentences, everyday \
     words, warm and friendly, like a coach who is on my side. No medical or sports-science jargon — \
     say what it means instead ("your body is still recovering", not "parasympathetic tone is \
     suppressed"; "your calm heart rate", not "resting HR is elevated relative to baseline"). If a \
@@ -559,6 +562,41 @@ final class AICoachEngine: ObservableObject {
     never a report. This changes your WORDS only: keep every number exactly as given, and keep \
     every shape rule in the instructions (sections, bullets, bold, word limits) exactly.
     """
+
+    static let plainLanguagePromptKey = "ai.plainLanguagePrompt"
+
+    /// The voice rider actually sent: the wearer's edited text, or the default. Read fresh per request.
+    var plainLanguagePrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.plainLanguagePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let stored, !stored.isEmpty { return stored }
+        return Self.defaultPlainLanguagePrompt
+    }
+
+    // Same three accessors as the surface prompts.
+    var customPlainLanguagePrompt: String {
+        get { plainLanguagePrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == Self.defaultPlainLanguagePrompt {
+                UserDefaults.standard.removeObject(forKey: Self.plainLanguagePromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.plainLanguagePromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomPlainLanguagePrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.plainLanguagePromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty && stored != Self.defaultPlainLanguagePrompt
+    }
+
+    func resetPlainLanguagePrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.plainLanguagePromptKey)
+        objectWillChange.send()
+    }
 
     /// The rider for Apple's on-device model (260922). A ~3B model follows the long coaching prompt
     /// loosely: it pads, restates the table, and rounds numbers it was not given. These are the
