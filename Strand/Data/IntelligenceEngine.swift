@@ -2559,9 +2559,15 @@ final class IntelligenceEngine: ObservableObject {
             // Charge yet (a new day, before the morning open) the fresh value stands, and today's
             // Charge exists on the widget before the app is opened. A day a completed pass already
             // judged keeps that judgement until the next completed pass.
+            //
+            // 261007: EXCEPT today's night under a TRUSTED baseline — see `partialPassRefreshesNight`.
             let stored = storedRowByDay[daily.day]
             let toPersist: DailyMetric
-            if partialBaseline {
+            if partialBaseline,
+               !DailyMetric.partialPassRefreshesNight(
+                   day: daily.day,
+                   todayKey: AnalyticsEngine.dayString(now, offsetSec: tzOffset),
+                   baselineStatus: baselines2.hrv?.status) {
                 var merged = scored.lightPassMerged(over: stored)
                 if merged.recovery == nil, let fresh = recovery {
                     merged = merged.with(recovery: fresh, skinTempDevC: merged.skinTempDevC,
@@ -4113,6 +4119,30 @@ extension DailyMetric {
                     steps: steps, activeKcalEst: activeKcalEst,
                     spo2Red: spo2Red, spo2Ir: spo2Ir, avgSdnn: avgSdnn, skinTempC: sa,
                     sleepHrOnly: sleepHrOnly)
+    }
+
+    /// Whether a PARTIAL pass (light, abandoned, narrow) may write TODAY's whole scored night —
+    /// sleep, HRV, resting HR and Charge together — instead of preserving the stored row (261007).
+    ///
+    /// The preserve rule (`lightPassMerged`, and its 260922 "fill a blank Charge, never overwrite"
+    /// refinement) exists because partial passes once scored against a baseline folded only from the
+    /// nights THEY scanned: a 2-night baseline mis-scored Charge (the 22↔47, 31↔63↔30 flips,
+    /// `hrvNValid=2`). The 260922 BASELINE FIX removed that cause — a partial pass now folds the full
+    /// window from stored history — but the preserve rule stayed, judging a pass by its KIND rather
+    /// than by its BASELINE. On 261007 that threw away a correctly computed Charge for two hours: the
+    /// first score at the 06:00 window end came from a still-growing night (324 min → 43), every
+    /// later pass saw the finished night (404 min, HRV settled) under `hrvNValid=21 trusted`, and each
+    /// was told "keep 43" until a foreground full pass finally completed at 08:18.
+    ///
+    /// The protection now keys on what it was always about. A TRUSTED baseline (≥ minNightsTrust
+    /// valid nights) means this pass scores today's night exactly as a full pass would, so today's
+    /// row refreshes as a unit — one coherent night, never a fresh Charge beside a stale sleep figure
+    /// it was not computed from. Anything short of trusted keeps the original preserve rule untouched.
+    /// Scoped to TODAY's row only: earlier days are re-judged by completed passes as before, and
+    /// numerators-only stays the light pass's contract for every other day. Pure for the pin.
+    static func partialPassRefreshesNight(day: String, todayKey: String,
+                                          baselineStatus: BaselineStatus?) -> Bool {
+        day == todayKey && baselineStatus == .trusted
     }
 
     /// The LIGHT-PASS merge (260903, the maintainer's rule: "the light pass is only for the
