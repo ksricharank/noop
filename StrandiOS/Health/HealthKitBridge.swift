@@ -898,7 +898,18 @@ final class HealthKitBridge: ObservableObject {
         syncing = false
         guard writeBackPending else { return }
         writeBackPending = false
-        Task { await writeBackAfterNewData() }
+        // 261009: the coalesced re-run is a ROUTINE write-back and passes the same spacing floor as the
+        // two routine call sites (`HealthWritebackThrottle`). It used to run unconditionally, and it is
+        // armed by ANY sync or write-back request that lands while a pass holds the bridge — which, with
+        // observer wakes arriving in bursts, is most passes. The 261009-0745 log: 107 write-backs in one
+        // 9.3 h process, where `sync()` accounts for at most 14 and the floor admits about 20, so at least
+        // 73 were this path — each a 14-day delete-and-rewrite that Health then re-ingests, and that wakes
+        // NOOP's own observers again. Skipping loses nothing: the next admitted write-back writes the same
+        // days, fresher, and a stood-down run is counted in the header's `skipped=`.
+        Task {
+            guard HealthWritebackThrottle.admit() else { return }
+            await writeBackAfterNewData()
+        }
     }
 
     // MARK: - Write back (NOOP → Health)
