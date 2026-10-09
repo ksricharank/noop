@@ -536,6 +536,14 @@ struct SleepView: View {
     /// moved or hidden in Arrange rather than being pinned somewhere the wearer did not choose. Its
     /// lens is THIS NIGHT's architecture and what it means for today — deliberately not the day's
     /// grade (Recap owns that) or the week's direction (Trends).
+    /// The night figures the "What last night says" summary reads, as the card's `dataKey` (261009).
+    static func sleepSummaryKey(_ n: DailyMetric) -> String {
+        [n.totalSleepMin, n.deepMin, n.remMin, n.lightMin, n.efficiency, n.avgHrv, n.respRateBpm,
+         n.restingHr.map(Double.init), n.disturbances.map(Double.init)]
+            .map { $0.map { String(format: "%.1f", $0) } ?? "-" }
+            .joined(separator: "|")
+    }
+
     private func insightCard(_ model: SleepModel) -> some View {
         NoopCard {
             TabInsightCard(
@@ -543,6 +551,9 @@ struct SleepView: View {
                 // Keyed on the night being VIEWED, so stepping back through nights re-asks rather
                 // than leaving the previous answer sitting under new numbers.
                 subject: "sleep-\(nightDayKey(model))",
+                // 261009: re-ask only when THIS night's figures move (a morning offload completing the
+                // night), not on every strap sync — today's steps and effort are not what it describes.
+                dataKey: repo.days.first(where: { $0.day == nightDayKey(model) }).map(Self.sleepSummaryKey),
                 generate: { coach in
                     guard let row = repo.days.first(where: { $0.day == nightDayKey(model) })
                     else { return nil }

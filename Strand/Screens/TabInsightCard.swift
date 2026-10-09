@@ -18,6 +18,12 @@ struct TabInsightCard: View {
     /// Identifies WHAT is being summarised (a day key, a window, a night). A change here is what
     /// makes the card re-ask; an unchanged subject re-shows the cached text.
     let subject: String
+    /// The figures the summary is ABOUT, flattened to a string (261009). When it changes under the same
+    /// subject, the text is rewritten; nothing else triggers an automatic rewrite. nil = no data-follow:
+    /// the text is written once per subject (the daily insight and the window summary, both keyed on
+    /// the local day). Build it from only what the summary reads — a key that moves with unrelated data
+    /// is the churn this exists to remove.
+    var dataKey: String? = nil
     /// Produces the text. Returns nil on any failure — no provider, no consent, an empty reply —
     /// and the card then says so plainly rather than pretending.
     /// Produces the text from the engine the card owns. Takes it as a parameter so the tab
@@ -63,19 +69,15 @@ struct TabInsightCard: View {
     /// Owned here for the same reason as `coach`: the Ask-the-Coach button is the only consumer,
     /// and a tab root holding it would subscribe the whole body to every navigation publish.
     @EnvironmentObject private var router: NavRouter
-    /// For `refreshSeq` (261006): the subject key identifies WHAT is summarised (a day, a night, a
-    /// window) but not WHICH data described it — so a Health sync landing fuller rows under the same
-    /// subject left the old text sitting beneath numbers it no longer matched, and even the manual ↻
-    /// could race the still-publishing refresh. Leaf-scoped like `coach`, so only this card re-renders.
-    @EnvironmentObject private var repo: Repository
-
     @State private var expanded = false
     @State private var text: String?
     @State private var textSubject: String?
-    /// The repository sequence the shown text was generated FROM — the Today synthesis's
-    /// `synthesisDataSeq`, card-local (261006).
-    @State private var textSeq: Int?
+    /// The `dataKey` the shown text was generated FROM (261009).
+    @State private var textDataKey: String?
     @State private var inFlight = false
+    /// Latest-wins token: a load whose token is no longer current discards its result, so a
+    /// superseded generation can never land on top of a newer one.
+    @State private var loadToken = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -164,34 +166,33 @@ struct TabInsightCard: View {
                 }
             }
         }
-        .task {
-            // Applied here rather than as the @State initial value: @State initialisers run once per
-            // view identity, and this card is rebuilt as tabs and subjects change. Guarded on
-            // `text == nil` so returning to the tab does not re-open a section the wearer collapsed.
-            if startsExpanded, text == nil, !expanded {
-                expanded = true
-                await load()
-            }
-        }
-        // A subject change while the card is OPEN must re-ask — otherwise stepping to another night
-        // or another window leaves the previous answer sitting under the new numbers, which is the
-        // stale-synthesis bug in miniature.
-        .onChangeCompat(of: subject) { _ in
+        // ONE loader, keyed on what the text describes: the subject AND this card's own inputs.
+        //
+        // 261009 (the "summary updates twice within seconds" report): the 19.5 version re-asked on
+        // EVERY `repo.refreshSeq` bump, and that sequence moves on every strap sync — steps, effort,
+        // calories — none of which a summary of LAST NIGHT or YESTERDAY reads. So Sleep and Recap were
+        // rewritten every ~10 minutes and twice within seconds when two refreshes landed back to back,
+        // and the once-a-day insight re-asked through the day, feeding copies of today's headline into
+        // its own no-repeat ledger. Each caller now passes `dataKey` built from exactly the figures its
+        // summary is about; a change to anything else no longer reaches the provider.
+        //
+        // `.task(id:)` is what makes it stable: a key change CANCELS the in-flight request and starts
+        // again with the current view — subject, generate closure and all — so a burst of changes
+        // produces one generation and one visible update, the newest. Also runs on first appear, which
+        // is where `startsExpanded` opens the card (applied here, not as the @State initial value,
+        // because @State initialisers run once per view identity).
+        .task(id: reloadKey) {
+            if startsExpanded, text == nil, !expanded { expanded = true }
             guard expanded else { return }
-            Task { await load() }
-        }
-        // The SAME subject with NEW data must also re-ask (261006): a morning Health sync turning a
-        // partial night into the full one changes every number on the tab but not the subject key, and
-        // the card used to keep narrating the partial. Mirrors `refreshSynthesisIfDataChanged` on the
-        // Today synthesis: fires only for a summary that is actually showing (expanded, text on screen)
-        // and only when the data it was written from has genuinely been superseded, so an idle tab or a
-        // collapsed card spends nothing. A change landing while a generation is IN FLIGHT is covered by
-        // the re-run loop in `load`, not here — the `inFlight` guard would otherwise drop it.
-        .onChangeCompat(of: repo.refreshSeq) { seq in
-            guard expanded, text != nil, let written = textSeq, written != seq else { return }
-            Task { await load(force: true) }
+            // Same subject, different inputs = the data under the shown text moved: write it again.
+            // A new subject goes through the cache check (stepping back to a night already read).
+            let dataMoved = text != nil && textSubject == subject && textDataKey != dataKey
+            await load(force: dataMoved)
         }
     }
+
+    /// What the text depends on. A change to it is the only automatic reason to re-ask.
+    private var reloadKey: String { subject + "\u{1F}" + (dataKey ?? "") }
 
     /// `force` bypasses the cache — the Regenerate button's path. Everything else (first expand,
     /// a subject change) keeps the cached text so returning to a tab does not re-spend a call.
@@ -209,20 +210,16 @@ struct TabInsightCard: View {
 
     private func load(force: Bool = false) async {
         if !force { guard textSubject != subject || text == nil else { return } }
-        guard !inFlight else { return }
+        loadToken += 1
+        let mine = loadToken
         inFlight = true
-        defer { inFlight = false }
-        // Up to two passes, almost always one. The second runs only when the repository published new
-        // rows WHILE the provider was answering — the text just produced already describes superseded
-        // numbers, and the `onChangeCompat(of: repo.refreshSeq)` above could not catch it because this
-        // very load holds the `inFlight` guard. Same self-healing shape as `refreshSynthesis`.
-        for _ in 0..<2 {
-            let seqAtBuild = repo.refreshSeq
-            let produced = await generate(coach)
-            text = produced
-            textSubject = produced == nil ? nil : subject
-            textSeq = produced == nil ? nil : seqAtBuild
-            guard produced != nil, repo.refreshSeq != seqAtBuild else { break }
-        }
+        let produced = await generate(coach)
+        // Superseded (a newer key cancelled this task, or a newer load started): drop the result rather
+        // than flash it, and leave `inFlight` to the load that is current.
+        guard !Task.isCancelled, mine == loadToken else { return }
+        inFlight = false
+        text = produced
+        textSubject = produced == nil ? nil : subject
+        textDataKey = produced == nil ? nil : dataKey
     }
 }

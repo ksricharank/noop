@@ -350,6 +350,12 @@ struct DayQualityView: View {
                     // Keyed on the BROWSED day, so stepping back re-asks rather than leaving the
                     // previous day's answer under new numbers.
                     subject: "recap-\(day)",
+                    // 261009: re-ask only when the GRADE moves (its total or a component's points), not
+                    // on every strap sync — the summary describes the scored day, nothing newer.
+                    dataKey: browsedBreakdown.map { b in
+                        "\(b.total)|" + b.components.map { "\($0.label)=\(Int($0.points.rounded()))" }
+                            .joined(separator: ",")
+                    },
                     generate: { coach in
                         guard let breakdown = browsedBreakdown else { return nil }
                         return await coach.dayQualityNarrative(day: day, score: breakdown)

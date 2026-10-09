@@ -1682,6 +1682,25 @@ final class AICoachEngine: ObservableObject {
     /// were an app open (already spent) and a manual tap. Recording the sequence it was written from
     /// lets `refreshSynthesisIfDataChanged` recognise exactly that.
     @Published private(set) var synthesisDataSeq: Int?
+    /// 261009: WHAT the paragraph stands on — `synthesisMaterialKey()` at build time. The re-ask gates
+    /// compare THIS, not `synthesisDataSeq`: the sequence moves on every strap sync (steps, effort,
+    /// calories), so keying on it rewrote the paragraph seconds after every open — once from the
+    /// pre-sync rows, again when the open's own sync landed — the "updates twice within 1-5 s" report.
+    /// The sequence stays as the provenance stamp; the key decides.
+    private var synthesisDataKey: String?
+
+    /// The figures a rewrite is worth spending on: today's scored night (sleep and stages, HRV, resting
+    /// HR, Charge) and the local day. Today's targets derive from exactly these, so a new night or a
+    /// re-judged Charge moves the key; a numerator ticking over does not — the next open, or ↻, picks
+    /// that up. This is the 261006 case (a partial night becoming the full one) and nothing smaller.
+    func synthesisMaterialKey() -> String {
+        let today = Repository.localDayKey(Date())
+        guard let row = repo.days.last(where: { $0.day == today }) else { return today + "|none" }
+        return today + "|" + [row.totalSleepMin, row.deepMin, row.remMin, row.lightMin, row.efficiency,
+                              row.avgHrv, row.restingHr.map(Double.init), row.recovery]
+            .map { $0.map { String(format: "%.1f", $0) } ?? "-" }
+            .joined(separator: "|")
+    }
 
     /// True while a generation is running — drives the refresh button's spinner on the Today cards.
     @Published var synthesisRefreshing = false
@@ -1760,6 +1779,7 @@ final class AICoachEngine: ObservableObject {
             // meant a sync landing mid-generation donated its NEW sequence to a paragraph written from
             // the OLD rows, and `refreshSynthesisIfDataChanged` then judged the stale text current.
             let seqAtBuild = repo.refreshSeq
+            let keyAtBuild = synthesisMaterialKey()
             let context = await buildFullContext()
             // Read fresh (see `synthesisPrompt`), so an edit in the settings applies to this refresh.
             let instruction = synthesisPrompt
@@ -1772,6 +1792,7 @@ final class AICoachEngine: ObservableObject {
                     synthesisGeneratedAt = Date()
                     // Which data this paragraph describes — see `synthesisDataSeq` and `seqAtBuild`.
                     synthesisDataSeq = seqAtBuild
+                    synthesisDataKey = keyAtBuild
                     // Which model wrote it — ALWAYS, not only when a fallback did. Showing the name only
                     // for the retry made its absence carry the hidden meaning "your chosen model", which
                     // is legible only to someone who already knows the rule.
@@ -1791,7 +1812,7 @@ final class AICoachEngine: ObservableObject {
                 // retries are `callProvider`'s business.
                 break
             }
-            guard synthesisRerunWanted || repo.refreshSeq != seqAtBuild else { break }
+            guard synthesisRerunWanted || synthesisMaterialKey() != keyAtBuild else { break }
         }
     }
 
@@ -1812,9 +1833,14 @@ final class AICoachEngine: ObservableObject {
     func refreshSynthesisIfDataChanged() async {
         // No text yet: the ordinary open-triggered path owns the first generation. Regenerating here
         // too would race it and spend two provider calls to produce one paragraph.
-        guard synthesisText != nil, let writtenFrom = synthesisDataSeq else { return }
-        // Same data the paragraph already describes.
-        guard repo.refreshSeq != writtenFrom else { return }
+        guard synthesisText != nil, let writtenFrom = synthesisDataKey else { return }
+        // A generation already running was built from the current figures and re-checks the material
+        // key when it finishes (the loop in `refreshSynthesis`); queueing another here only bought the
+        // second, near-identical paragraph a few seconds after the first (261009).
+        guard !synthesisInFlight else { return }
+        // Nothing the paragraph stands on has moved — a numerator ticking over is not a reason to
+        // rewrite it (see `synthesisDataKey`).
+        guard synthesisMaterialKey() != writtenFrom else { return }
         await refreshSynthesis(force: true)
     }
 
