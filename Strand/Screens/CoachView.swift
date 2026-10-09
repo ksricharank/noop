@@ -18,11 +18,13 @@ struct CoachView: View {
     /// in the notes field, so it appears alongside other journal entries in Insights.
     @EnvironmentObject var repo: Repository
 
-    /// Draft text in the composer (the question being typed).
-    /// K15: the composer draft is persisted to UserDefaults so it survives an app relaunch.
-    /// Restored on first appear, saved on every change. Keyed identically to the Android twin.
-    private static let draftKey = "coach.composerDraft"
-    @State private var draft: String = UserDefaults.standard.string(forKey: "coach.composerDraft") ?? ""
+    /// The composer draft (the question being typed), held by REFERENCE and NOT observed here
+    /// (261009). As `@State String` on this view, every keystroke re-evaluated the whole screen —
+    /// including re-parsing the Markdown of every visible message and re-estimating tokens over the
+    /// history — which is the "typing is sometimes laggy" report: the cost grew with the conversation
+    /// and spiked whenever a background refresh landed mid-word. `@State` keeps the instance alive
+    /// across body evaluations without subscribing to it; only `CoachComposerBar` observes it.
+    @State private var composerDraft = CoachComposerDraft()
     /// Pending key text in the setup card (never persisted here, handed to `setKey`).
     @State private var keyDraft: String = ""
     /// The replacement key, typed into the editor a rejection or Update key opens. Separate from
@@ -55,9 +57,7 @@ struct CoachView: View {
 
     // K4: on-device voice input for the composer (iOS only). macOS gets a no-op stub via
     // `#if os(iOS)` guards — the shared file keeps compiling for both targets.
-    #if os(iOS)
-    @StateObject private var voiceInput = CoachVoiceInput()
-    #endif
+    // (K4 voice input lives in `CoachComposerBar` with the draft it writes — 261009.)
 
     /// Sentinel tag for the "Custom…" entry in the model Picker.
     private let customModelTag = "__custom__"
@@ -103,12 +103,7 @@ struct CoachView: View {
                     attemptTraceNote(trace)
                 }
                 suggestionChips
-                composer
-                // K12: show a rough token estimate when the draft is non-empty.
-                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let tokens = coach.estimatedTokens(forDraft: draft) {
-                    tokenEstimateBar(tokens)
-                }
+                CoachComposerBar(draft: composerDraft, focus: $composerFocused, onSend: send)
                 privacyFootnote
             } else {
                 setupCard
@@ -232,10 +227,6 @@ struct CoachView: View {
             coach.pendingPrompt = nil
             guard coach.isConfigured else { return }
             await coach.send(prompt)
-        }
-        // K15: persist the composer draft so it survives an app relaunch.
-        .onChangeCompat(of: draft) { newValue in
-            UserDefaults.standard.set(newValue, forKey: Self.draftKey)
         }
         // K14: haptic feedback when a reply arrives (sending goes true → false).
         .onChangeCompat(of: coach.sending) { isSending in
@@ -1029,6 +1020,132 @@ struct CoachView: View {
         }
     }
 
+    private var privacyFootnoteText: String {
+        switch coach.provider {
+        case .custom:
+            return String(localized: "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask.")
+        case .appleOnDevice:
+            return String(localized: "Coach is running on \(Platform.deviceNounPhrase) with Apple Intelligence. Nothing leaves it — not your data, not your questions.")
+        default:
+            return String(localized: "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
+        }
+    }
+
+    private var privacyFootnote: some View {
+        Label {
+            Text(privacyFootnoteText)
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "lock.shield")
+                .foregroundStyle(StrandPalette.textTertiary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Actions
+
+    private func saveKey() {
+        let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        coach.setKey(trimmed)
+        keyDraft = ""
+    }
+
+    /// Commit the Custom (local) provider: save an optional key, then connect on the entered URL.
+    private func connectCustom() {
+        let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            coach.setKey(trimmed)
+            keyDraft = ""
+        }
+        coach.connectCustom()
+    }
+
+    private func send(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !coach.sending else { return }
+        composerDraft.text = ""
+        composerFocused = false
+        Task { await coach.send(trimmed) }
+    }
+
+    /// K14: Trigger a subtle haptic when the Coach reply arrives. On iOS, a light impact feedback.
+    /// macOS doesn't have an equivalent simple API, so it's a no-op there.
+    private func triggerReplyHaptic() {
+        #if os(iOS)
+        let generator = UIImpactFeedbackGenerator(style: .light)
+        generator.impactOccurred()
+        #endif
+    }
+
+    /// K8: Save a coach reply to the journal as a note, so it appears alongside other journal
+    /// entries in Insights and can be reviewed later. Uses the existing journal API with a
+    /// fixed question ("Coach advice") and the reply text in the notes field.
+    private func saveAdvice(_ text: String) {
+        let day = Repository.localDayKey(Date())
+        Task {
+            await repo.saveJournalAnswer(
+                day: day,
+                question: "Coach advice",
+                answeredYes: true,
+                notes: text
+            )
+        }
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        withAnimation(StrandMotion.fade) {
+            if coach.sending {
+                proxy.scrollTo("typing", anchor: .bottom)
+            } else if let last = coach.messages.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+        }
+    }
+}
+
+// MARK: - Composer (261009: isolated from the transcript)
+
+/// The composer's draft, as a reference type so `CoachView` can hold it without observing it.
+/// K15: persisted to UserDefaults so it survives an app relaunch; keyed identically to the Android twin.
+final class CoachComposerDraft: ObservableObject {
+    static let draftKey = "coach.composerDraft"
+    @Published var text: String {
+        didSet { UserDefaults.standard.set(text, forKey: Self.draftKey) }
+    }
+    init() { text = UserDefaults.standard.string(forKey: Self.draftKey) ?? "" }
+}
+
+/// The input bar — field, mic, Send — plus the K12 token estimate: everything that reads the draft.
+///
+/// A leaf on purpose (261009, the "typing feels laggy sometimes" report). Owning the draft here means a
+/// keystroke re-renders only this bar, never the transcript above it, whose bubbles re-parse their
+/// Markdown on every rebuild. Same leaf-scoping the tab summary cards apply to the coach engine.
+struct CoachComposerBar: View {
+    @EnvironmentObject private var coach: AICoachEngine
+    @ObservedObject var draft: CoachComposerDraft
+    var focus: FocusState<Bool>.Binding
+    let onSend: (String) -> Void
+
+    // K4: on-device voice input (iOS only). Owned here, beside the draft its transcript writes, so a
+    // stream of partial transcriptions re-renders this bar alone.
+    #if os(iOS)
+    @StateObject private var voiceInput = CoachVoiceInput()
+    #endif
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            composer
+            // K12: show a rough token estimate when the draft is non-empty.
+            if !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let tokens = coach.estimatedTokens(forDraft: draft.text) {
+                tokenEstimateBar(tokens)
+            }
+        }
+    }
+
     /// K12: A subtle token estimate shown below the composer when the draft is non-empty.
     /// Uses the ~4 chars/token heuristic — an estimate only, not an exact tokenizer count.
     private func tokenEstimateBar(_ tokens: Int) -> some View {
@@ -1052,18 +1169,18 @@ struct CoachView: View {
     /// distinct docked surface above the canvas rather than two floating controls.
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask Coach about your data…", text: $draft, axis: .vertical)
+            TextField("Ask Coach about your data…", text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(StrandFont.body)
                 .foregroundStyle(StrandPalette.textPrimary)
                 .lineLimit(1...5)
-                .focused($composerFocused)
+                .focused(focus)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(composerFocused ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
-                .onSubmit { send(draft) }
+                    .strokeBorder(focus.wrappedValue ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
+                .onSubmit { onSend(draft.text) }
                 .accessibilityLabel("Question")
 
             // K4: on-device voice input (iOS only). macOS compiles this section out entirely.
@@ -1075,7 +1192,7 @@ struct CoachView: View {
             // composer row (not the full 48pt control height), so it routes through the same
             // token fill/label colours as the button system without overpowering the field.
             Button {
-                send(draft)
+                onSend(draft.text)
             } label: {
                 Group {
                     if coach.sending {
@@ -1091,7 +1208,7 @@ struct CoachView: View {
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(coach.sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(coach.sending || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .accessibilityLabel("Send")
         }
         .padding(8)
@@ -1153,7 +1270,7 @@ struct CoachView: View {
                 let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     // Append to the draft (not replace) so a user can speak into existing text.
-                    draft = draft.isEmpty ? trimmed : "\(draft) \(trimmed)"
+                    draft.text = draft.text.isEmpty ? trimmed : "\(draft.text) \(trimmed)"
                 }
             }
         } else {
@@ -1163,101 +1280,17 @@ struct CoachView: View {
                 voiceInput.requestAuthorization { state in
                     if state == .authorized {
                         voiceInput.startTranscribing { partial in
-                            draft = partial
+                            draft.text = partial
                         }
                     }
                 }
             } else {
                 voiceInput.startTranscribing { partial in
-                    draft = partial
+                    draft.text = partial
                 }
             }
         }
     }
     #endif
 
-    private var privacyFootnoteText: String {
-        switch coach.provider {
-        case .custom:
-            return String(localized: "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask.")
-        case .appleOnDevice:
-            return String(localized: "Coach is running on \(Platform.deviceNounPhrase) with Apple Intelligence. Nothing leaves it — not your data, not your questions.")
-        default:
-            return String(localized: "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
-        }
-    }
-
-    private var privacyFootnote: some View {
-        Label {
-            Text(privacyFootnoteText)
-                .font(StrandFont.footnote)
-                .foregroundStyle(StrandPalette.textTertiary)
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: "lock.shield")
-                .foregroundStyle(StrandPalette.textTertiary)
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - Actions
-
-    private func saveKey() {
-        let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        coach.setKey(trimmed)
-        keyDraft = ""
-    }
-
-    /// Commit the Custom (local) provider: save an optional key, then connect on the entered URL.
-    private func connectCustom() {
-        let trimmed = keyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            coach.setKey(trimmed)
-            keyDraft = ""
-        }
-        coach.connectCustom()
-    }
-
-    private func send(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !coach.sending else { return }
-        draft = ""
-        composerFocused = false
-        Task { await coach.send(trimmed) }
-    }
-
-    /// K14: Trigger a subtle haptic when the Coach reply arrives. On iOS, a light impact feedback.
-    /// macOS doesn't have an equivalent simple API, so it's a no-op there.
-    private func triggerReplyHaptic() {
-        #if os(iOS)
-        let generator = UIImpactFeedbackGenerator(style: .light)
-        generator.impactOccurred()
-        #endif
-    }
-
-    /// K8: Save a coach reply to the journal as a note, so it appears alongside other journal
-    /// entries in Insights and can be reviewed later. Uses the existing journal API with a
-    /// fixed question ("Coach advice") and the reply text in the notes field.
-    private func saveAdvice(_ text: String) {
-        let day = Repository.localDayKey(Date())
-        Task {
-            await repo.saveJournalAnswer(
-                day: day,
-                question: "Coach advice",
-                answeredYes: true,
-                notes: text
-            )
-        }
-    }
-
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        withAnimation(StrandMotion.fade) {
-            if coach.sending {
-                proxy.scrollTo("typing", anchor: .bottom)
-            } else if let last = coach.messages.last {
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
-        }
-    }
 }
