@@ -10,8 +10,8 @@ import XCTest
 final class PhoneTabOrderTests: XCTestCase {
 
     /// The order the maintainer asked for, left to right.
-    func testTabOrderIsTodayDaySleepTrendsMore() {
-        XCTAssertEqual(PhoneTab.displayOrder, [.today, .day, .sleep, .trends, .more])
+    func testTabOrderIsTodayDaySleepTrendsCoachMore() {
+        XCTAssertEqual(PhoneTab.displayOrder, [.today, .day, .sleep, .trends, .coach, .more])
     }
 
     /// Trends is fourth. Stated on its own because this is the move that motivated the change, and a
@@ -38,7 +38,7 @@ final class PhoneTabOrderTests: XCTestCase {
 
     /// The per-tab arrays are sized from `count`, so it must match the case list exactly.
     func testCountMatchesTheCaseList() {
-        XCTAssertEqual(PhoneTab.count, 5)
+        XCTAssertEqual(PhoneTab.count, 6)
         XCTAssertEqual(PhoneTabIndex.count, PhoneTab.count)
     }
 
@@ -49,6 +49,7 @@ final class PhoneTabOrderTests: XCTestCase {
         XCTAssertEqual(PhoneTabIndex.day, PhoneTab.day.rawValue)
         XCTAssertEqual(PhoneTabIndex.sleep, PhoneTab.sleep.rawValue)
         XCTAssertEqual(PhoneTabIndex.trends, PhoneTab.trends.rawValue)
+        XCTAssertEqual(PhoneTabIndex.coach, PhoneTab.coach.rawValue)
         XCTAssertEqual(PhoneTabIndex.more, PhoneTab.more.rawValue)
     }
 
@@ -65,21 +66,38 @@ final class PhoneTabOrderTests: XCTestCase {
         XCTAssertEqual(Set(titles).count, titles.count, "two tabs share a title")
     }
 
-    /// `sparkles` is the Coach's mark (the More row and the macOS sidebar). A tab reusing it would read
-    /// as a second door to the coach.
-    func testNoTabReusesTheCoachIcon() {
-        XCTAssertFalse(PhoneTab.allCases.map(\.systemImage).contains("sparkles"))
+    /// `sparkles` is the Coach's mark; only the Coach tab may carry it, or another tab reads as a
+    /// second door to the coach.
+    func testOnlyTheCoachTabUsesTheCoachIcon() {
+        XCTAssertEqual(PhoneTab.allCases.filter { $0.systemImage == "sparkles" }, [.coach])
     }
 
-    /// The tab shell must not carry a Coach tab: routing code that switches to a tab index for Coach is
-    /// reading upstream's five-tab layout, where tag 3 was More. Here tag 3 is Trends, so such a switch
-    /// silently opens the WRONG tab — which is exactly what "Ask the Coach" did (260914). Coach is a
-    /// More ROW in this fork, reached by pushing `MoreDestination.coach` onto the More tab's stack.
-    func testNoTabIsTheCoach() {
-        XCTAssertFalse(PhoneTab.allCases.map(\.title).contains("Coach"))
-        // The trap in one assertion: anything routing Coach to a bare 3 lands on Trends.
+    /// 261014: Coach is a tab again, fifth — between Insights and More — at the maintainer's request.
+    /// Tag 3 is still Trends, so a Coach route by the bare literal upstream used would still be wrong.
+    func testCoachIsTheFifthTabBetweenInsightsAndMore() {
+        XCTAssertEqual(PhoneTab.coach.rawValue, 4)
+        XCTAssertEqual(PhoneTab.coach.title, "Coach")
         XCTAssertEqual(PhoneTab(rawValue: 3), .trends,
                        "tag 3 is Trends in this fork — a Coach route to index 3 opens Trends")
+        XCTAssertEqual(PhoneTab.lastIndex, PhoneTab.more.rawValue, "More stays last")
+    }
+
+    /// With the coach master switch off the AI is off, so its tab leaves the bar — and a swipe steps
+    /// over the gap rather than landing on a tab that is not there.
+    func testCoachSwitchHidesTheTabAndSwipesStepOverIt() {
+        XCTAssertEqual(PhoneTab.visible(coachEnabled: true).count, 6)
+        XCTAssertFalse(PhoneTab.visible(coachEnabled: false).contains(.coach))
+        XCTAssertEqual(PhoneTab.swipeTarget(from: PhoneTabIndex.trends, forward: true, coachEnabled: false),
+                       PhoneTabIndex.more)
+        XCTAssertEqual(PhoneTab.swipeTarget(from: PhoneTabIndex.more, forward: false, coachEnabled: false),
+                       PhoneTabIndex.trends)
+        XCTAssertEqual(PhoneTab.swipeTarget(from: PhoneTabIndex.trends, forward: true, coachEnabled: true),
+                       PhoneTabIndex.coach)
+        // Clamped at both ends.
+        XCTAssertEqual(PhoneTab.swipeTarget(from: PhoneTabIndex.more, forward: true, coachEnabled: true),
+                       PhoneTabIndex.more)
+        XCTAssertEqual(PhoneTab.swipeTarget(from: PhoneTabIndex.today, forward: false, coachEnabled: true),
+                       PhoneTabIndex.today)
     }
 
     /// The retrospective tab is named for what it shows — a FINISHED day — not "Day", which read as a

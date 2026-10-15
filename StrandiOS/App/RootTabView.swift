@@ -125,8 +125,10 @@ struct RootTabView: View {
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
                 // 260906: the clamp is the LAST tab index, which moved with the Day-quality
                 // insertion. Left as a literal 3 it would have made the More tab unreachable by swipe
-                // while every other route still worked — a silent half-failure.
-                let next = min(Self.lastTabIndex, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                // while every other route still worked — a silent half-failure. 261014: stepping goes
+                // through `PhoneTab.swipeTarget`, which also steps over a hidden Coach tab.
+                let next = PhoneTab.swipeTarget(from: selectedTab, forward: dx < 0,
+                                                coachEnabled: coachEnabled)
                 if next != selectedTab {
                     withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                 }
@@ -163,13 +165,41 @@ struct RootTabView: View {
                 path: $tabPaths[Tab.sleep], scrollSignal: scrollTop[Tab.sleep]).tag(Tab.sleep)
             tab(TrendsView(), PhoneTab.trends.titleKey, PhoneTab.trends.systemImage,
                 path: $tabPaths[Tab.trends], scrollSignal: scrollTop[Tab.trends]).tag(Tab.trends)
+            // 261014: Coach is a tab again, between Insights and More (it was a More row). The chat
+            // lays itself out for the full screen — transcript filling it, composer pinned at the
+            // bottom above this bar.
+            tab(CoachView(), PhoneTab.coach.titleKey, PhoneTab.coach.systemImage,
+                path: $tabPaths[Tab.coach], scrollSignal: scrollTop[Tab.coach]).tag(Tab.coach)
             moreTab(path: $tabPaths[Tab.more], scrollSignal: scrollTop[Tab.more]).tag(Tab.more)
         }
         .tint(StrandPalette.accent)
-        // #1841: the same "Hide bar when scrolling" preference Android drives its own bar with. Here the
-        // system owns the behaviour — iOS 26's tab bar MINIMISES to a pill on scroll down rather than
-        // sliding away entirely, so this is the platform's read of the same intent, not a copy of ours.
-        .noopTabBarAutoHide(bottomBarAutoHide)
+        // 261014: six tabs. The native iPhone bar shows at most five (a sixth folds everything past the
+        // fourth into a system "More"), so the system bar is hidden on every tab (`tab(...)`/`moreTab`)
+        // and this one is drawn instead — the same floating glass capsule, a little shorter, so six
+        // items fit. It floats over the content exactly as the system bar did; screens keep their
+        // existing `NoopMetrics.tabBarClearance` bottom room. (`bottomBarAutoHide`, #1841, drove the
+        // SYSTEM bar's iOS 26 minimise and was default-off; it has no effect on this bar.)
+        //
+        // Shown at tab ROOTS only. Every root already leaves floating-bar room at its foot (the
+        // scaffold's clearance, Liquid Today's 90 pt, Coach's dock); pushed screens — Settings forms,
+        // lists, screens with bottom buttons — were laid out against the SYSTEM bar's safe area, which
+        // an overlay does not provide, so the bar steps aside on a push (the familiar "hides bottom
+        // bar when pushed") and the back button returns to it.
+        .overlay(alignment: .bottom) {
+            if tabPaths[selectedTab].isEmpty {
+                NoopTabBar(tabs: PhoneTab.visible(coachEnabled: coachEnabled),
+                           selected: selectedTab) { tag in
+                    nativeTabSelection.wrappedValue = tag
+                }
+                .ignoresSafeArea(.keyboard)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: tabPaths[selectedTab].isEmpty)
+        // Coach switched off while it is the open tab: the tab is gone from the bar, so leave it.
+        .onChange(of: coachEnabled) { _, on in
+            if !on && selectedTab == Tab.coach { selectedTab = Tab.today }
+        }
             // Tab crossfade — README §Motion: ~240ms opacity swap between tab roots, global calm
             // easing cubic-bezier(0.22,1,0.36,1).
             .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: selectedTab)
@@ -255,12 +285,14 @@ struct RootTabView: View {
                 // OFF: a brief notification already sitting in Notification Centre still calls
                 // `openCoach()` when tapped. Dropping the request leaves the wearer where they were,
                 // which is the honest answer for a feature that is switched off.
+                //
+                // 261014: Coach is a tab again — switch to it by its NAMED index.
                 guard coachEnabled else {
                     router.requestedDestination = nil
                     break
                 }
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.more }
-                tabPaths[Tab.more] = NavigationPath([MoreDestination.coach])
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.coach }
+                tabPaths[Tab.coach] = NavigationPath()
                 router.requestedDestination = nil
             case .trends:
                 // Trends is a primary tab on iPhone (not a pillar sheet) — switch to it.
@@ -281,13 +313,6 @@ struct RootTabView: View {
                 // The #627 Today journal widget opens the journal through the quick-action Journal sheet
                 // (InsightsView), matching the FAB's "Log journal" action. Calm sheet easing.
                 withAnimation(Self.sheetEase) { quickAction = .journal }
-                router.requestedDestination = nil
-            case .coach:
-                // Coach has no tab of its own — it is a More row. Switch to More and PUSH the coach
-                // destination onto that tab's stack, so the user lands in the chat itself rather than on
-                // the More menu, and the system back button returns them the way they came.
-                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.more }
-                tabPaths[Tab.more] = NavigationPath([MoreDestination.coach])
                 router.requestedDestination = nil
             case nil:
                 break
@@ -487,10 +512,16 @@ struct RootTabView: View {
         // TabRoute values, registered here ONCE per stack (a double registration double-pushes, #38).
         NavigationStack(path: path) {
             view
+                // The ROOT only: pushed screens hide the bar, so must not leave room for it.
+                .environment(\.noopTabBarClearance, PhoneTab.barClearance)
                 .background(StrandPalette.surfaceBase.ignoresSafeArea())
                 .toolbar(.hidden, for: .navigationBar)
+                .toolbar(.hidden, for: .tabBar)
                 .tabRouteDestinations()
         }
+        // 261014: the shell draws its own six-item bar (`NoopTabBar`); the system one stays hidden on
+        // pushed screens too.
+        .toolbar(.hidden, for: .tabBar)
         // Drive this tab's root scroll-to-top on an at-root re-tap (#198 follow-up); read by ScreenScaffold
         // / LiquidTodayView inside. Only THIS tab's token changes on its reselect, so the others don't scroll.
         .environment(\.scrollToTopSignal, scrollSignal)
@@ -510,13 +541,7 @@ struct RootTabView: View {
                 moreSection("Insights") {
                     MoreRow("What Moves You", "wand.and.sparkles", .insightsHub)
                     MoreRow("Intelligence", "brain.head.profile", .intelligence)
-                    // Upstream's K3 promoted Coach to a top-level tab and deleted this row. The fork
-                    // keeps its own five-tab order (Today/Day/Sleep/Trends/More), which has no Coach
-                    // tab — so taking upstream's tab layout OUT without putting this row back left
-                    // Coach with no entry point in the shell at all: reachable only from Today's
-                    // "Ask the Coach" button, and not at all once the synthesis card was hidden.
-                    // Restored here, in the section that is open by default (#v17 uplift).
-                    MoreRow("Coach", "sparkles", .coach)
+                    // 261014: Coach is a tab again (fifth), so its More row is gone — one door.
                     MoreRow("Insights", "lightbulb.fill", .insights)
                     MoreRow("Explore", "square.grid.2x2.fill", .explore)
                     MoreRow("Compare", "rectangle.split.2x1.fill", .compare)
@@ -582,6 +607,7 @@ struct RootTabView: View {
                     .toolbarBackground(.hidden, for: .navigationBar)
             }
         }
+        .toolbar(.hidden, for: .tabBar)
         // Scroll the More index to the top on an at-root re-tap (#198 follow-up); read by its ScreenScaffold.
         .environment(\.scrollToTopSignal, scrollSignal)
         .tabItem { Label(PhoneTab.more.titleKey, systemImage: PhoneTab.more.systemImage) }
@@ -813,6 +839,87 @@ private struct QuickActionSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+/// The iPhone tab bar, drawn by the shell (261014).
+///
+/// Six tabs since Coach became one, and the native bar cannot show six: past five it keeps four and
+/// folds the rest into a system "More" list. So this is the same idiom drawn by hand — a floating
+/// capsule over the content, Liquid Glass on iOS 26 and the standard material before it — a little
+/// shorter than the system bar (the maintainer's ask), with the six items sharing the width evenly.
+/// The selected item sits on a soft pill that slides between tabs.
+///
+/// Taps route through the shell's `nativeTabSelection` binding, so a re-tap of the open tab keeps the
+/// pop-to-root / scroll-to-top / refresh convention the system bar had.
+struct NoopTabBar: View {
+    let tabs: [PhoneTab]
+    let selected: Int
+    let onSelect: (Int) -> Void
+
+    @Namespace private var selection
+
+    /// Item height. The system bar's items run ~54 pt inside a ~62 pt capsule; these are 46 in ~54.
+    static let itemHeight: CGFloat = 46
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(tabs, id: \.self) { tab in
+                item(tab)
+            }
+        }
+        .padding(4)
+        .modifier(NoopTabBarSurface())
+        .padding(.horizontal, 12)
+        .padding(.bottom, 2)
+        .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28), value: selected)
+    }
+
+    private func item(_ tab: PhoneTab) -> some View {
+        let isSelected = tab.rawValue == selected
+        return Button {
+            onSelect(tab.rawValue)
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: tab.systemImage)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(height: 22)
+                Text(tab.titleKey)
+                    .font(StrandFont.overline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isSelected ? StrandPalette.accent : StrandPalette.textSecondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.itemHeight)
+            .background {
+                if isSelected {
+                    Capsule(style: .continuous)
+                        .fill(StrandPalette.textPrimary.opacity(0.10))
+                        .matchedGeometryEffect(id: "selected", in: selection)
+                }
+            }
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(tab.titleKey))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// The bar's capsule: interactive-free Liquid Glass on iOS 26 (the items are the controls), the
+/// standard thin material with a hairline and soft shadow before it.
+private struct NoopTabBarSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule(style: .continuous))
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                .overlay(Capsule(style: .continuous).strokeBorder(StrandPalette.hairline, lineWidth: 1))
+                .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+        }
     }
 }
 
