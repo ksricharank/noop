@@ -99,6 +99,17 @@ struct RootTabView: View {
         )
     }
 
+    /// The page the system TabView shows. It holds FIVE pages, not six: given a sixth child, UIKit's
+    /// tab controller moves every child past the fourth into its own "More" navigation list — even
+    /// with the system bar hidden — so selecting Coach landed on a system list reading "Coach / More"
+    /// with a back button (seen in the simulator, 261014). Today, Recap, Sleep and Insights keep
+    /// pages of their own; Coach and More share the last one. Written only by `selectedTab`; the
+    /// setter ignores the TabView, which has no bar of its own to tap.
+    private static let tailPage = Tab.coach
+    private var pageSelection: Binding<Int> {
+        Binding(get: { min(selectedTab, Self.tailPage) }, set: { _ in })
+    }
+
     private func reselectTab(_ tag: Int) {
         Task { await repo.refresh() }
         if !tabPaths[tag].isEmpty {
@@ -139,7 +150,7 @@ struct RootTabView: View {
         // The platform tab bar is intentionally left fully native. iOS 26 supplies Liquid Glass and
         // its dynamic interaction with scrolling content automatically; older supported releases use
         // the corresponding system material and safe-area behaviour from the same TabView.
-        TabView(selection: nativeTabSelection) {
+        TabView(selection: pageSelection) {
             // v18 uplift: upstream's #2269 promoted Coach to its own tab behind a master switch. The
             // fork's order has no Coach slot — it is reached from More — so the tab is not taken; the
             // master switch still applies and is honoured on that row.
@@ -165,12 +176,20 @@ struct RootTabView: View {
                 path: $tabPaths[Tab.sleep], scrollSignal: scrollTop[Tab.sleep]).tag(Tab.sleep)
             tab(TrendsView(), PhoneTab.trends.titleKey, PhoneTab.trends.systemImage,
                 path: $tabPaths[Tab.trends], scrollSignal: scrollTop[Tab.trends]).tag(Tab.trends)
-            // 261014: Coach is a tab again, between Insights and More (it was a More row). The chat
-            // lays itself out for the full screen — transcript filling it, composer pinned at the
-            // bottom above this bar.
-            tab(CoachView(), PhoneTab.coach.titleKey, PhoneTab.coach.systemImage,
-                path: $tabPaths[Tab.coach], scrollSignal: scrollTop[Tab.coach]).tag(Tab.coach)
-            moreTab(path: $tabPaths[Tab.more], scrollSignal: scrollTop[Tab.more]).tag(Tab.more)
+            // 261014: Coach is a tab again, between Insights and More (it was a More row). Coach and
+            // More SHARE the fifth page — see `pageSelection` for why — and the page shows whichever
+            // of the two is selected. Neither loses anything by the swap: both stacks' paths live in
+            // `tabPaths`, the conversation and the composer draft live in the engine and defaults,
+            // and the More sections' open state is in @AppStorage.
+            Group {
+                if selectedTab == Tab.coach {
+                    tab(CoachView(), PhoneTab.coach.titleKey, PhoneTab.coach.systemImage,
+                        path: $tabPaths[Tab.coach], scrollSignal: scrollTop[Tab.coach])
+                } else {
+                    moreTab(path: $tabPaths[Tab.more], scrollSignal: scrollTop[Tab.more])
+                }
+            }
+            .tag(Self.tailPage)
         }
         .tint(StrandPalette.accent)
         // 261014: six tabs. The native iPhone bar shows at most five (a sixth folds everything past the
@@ -872,7 +891,9 @@ struct NoopTabBar: View {
         .padding(4)
         .modifier(NoopTabBarSurface())
         .padding(.horizontal, 12)
-        .padding(.bottom, 2)
+        // Lowered into the home-indicator band, where the system bar sits, rather than stacked on top
+        // of it (maintainer: "a little too high"). An offset, so the shell's layout is untouched.
+        .offset(y: PhoneTab.barDrop)
         .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.28), value: selected)
     }
 

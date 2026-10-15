@@ -121,7 +121,10 @@ extension EnvironmentValues {
 }
 
 extension PhoneTab {
-    /// The bar's footprint above the bottom safe area — its 46 pt items, 4 pt inset on each side and
-    /// 2 pt lift — plus a small gap, so docked content sits clear of it.
-    static let barClearance: CGFloat = 46 + 8 + 2 + 6
+    /// How far the bar sits down into the bottom safe area (the home-indicator band).
+    static let barDrop: CGFloat = 20
+
+    /// The bar's footprint above the bottom safe area — its 46 pt items and 4 pt inset on each side,
+    /// less the drop into the safe area — plus a gap, so docked content sits clear of it.
+    static let barClearance: CGFloat = 46 + 8 - barDrop + 8
 }
