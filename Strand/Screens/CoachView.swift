@@ -47,7 +47,10 @@ struct CoachView: View {
     /// Whether the "Forget key" confirmation is showing. Deleting a credential asks first — the old
     /// gear did it on a single tap with no way to undo.
     @State private var showForgetKeyConfirm: Bool = false
-    @FocusState private var composerFocused: Bool
+    // 261015: the composer's focus lives in `CoachComposerBar`, not here. Read here (19.10 drove the
+    // dock padding and a scroll from it), a focus change re-evaluated this whole screen — re-parsing
+    // every message's Markdown — in the same frame the keyboard was asked to rise, which is the
+    // "keyboard doesn't come up instantly" report.
 
     /// K2: confirmation gate for the destructive "Clear conversation" toolbar action.
     @State private var showClearConfirm = false
@@ -709,8 +712,13 @@ struct CoachView: View {
                     if coach.messages.isEmpty {
                         emptyTranscript
                     }
+                    // Equatable rows: a re-render of this screen (any of the engine's published fields
+                    // moving) skips every row whose message did not change, so old replies' Markdown
+                    // is not re-parsed (261015).
                     ForEach(coach.messages) { message in
-                        bubble(message).id(message.id)
+                        CoachTranscriptRow(message: message, onSave: saveAdvice)
+                            .equatable()
+                            .id(message.id)
                     }
                     if coach.sending {
                         typingIndicator.id("typing")
@@ -739,10 +747,9 @@ struct CoachView: View {
             .onChangeCompat(of: coach.sending) { _ in
                 scrollToEnd(proxy)
             }
-            // The keyboard shortens the viewport; keep the latest reply in view above it.
-            .onChangeCompat(of: composerFocused) { focused in
-                if focused { scrollToEnd(proxy) }
-            }
+            // The keyboard shortens the viewport; the bottom anchor keeps the latest reply in view
+            // above it without this screen having to watch the keyboard.
+            .coachBottomScrollAnchor()
         }
     }
 
@@ -773,15 +780,16 @@ struct CoachView: View {
         VStack(alignment: .leading, spacing: 8) {
             if coach.keyRejected || showKeyEditor { keyRepairPanel }
             promptChips
-            CoachComposerBar(draft: composerDraft, focus: $composerFocused, onSend: send)
+            // The bar leaves room for the floating tab bar itself, and drops it while typing (the
+            // tab bar hides with the keyboard), so focus re-renders the bar alone.
+            CoachComposerBar(draft: composerDraft, tabBarClearance: tabBarClearance, onSend: send)
         }
         .padding(.horizontal, Self.chatHPadding)
         .padding(.top, 6)
-        .padding(.bottom, composerFocused ? 8 : 8 + tabBarClearance)
+        .padding(.bottom, 8)
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .background(StrandPalette.surfaceBase.ignoresSafeArea(edges: .bottom))
-        .animation(StrandMotion.fade, value: composerFocused)
     }
 
     private var emptyTranscript: some View {
@@ -800,97 +808,6 @@ struct CoachView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .padding(.top, 24)
-    }
-
-    @ViewBuilder
-    private func bubble(_ message: ChatMessage) -> some View {
-        switch message.role {
-        case .user:
-            HStack {
-                Spacer(minLength: 48)
-                Text(message.text)
-                    .font(StrandFont.body)
-                    .foregroundStyle(StrandPalette.surfaceBase)
-                    .textSelection(.enabled)
-                    .multilineTextAlignment(.leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(StrandPalette.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .frame(maxWidth: 520, alignment: .trailing)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("You said: \(message.text)")
-        case .assistant:
-            // LLM replies arrive as Markdown (bold, lists, headings, tables),             // rendered with the chat-bubble-sized Strand theme. User bubbles stay
-            // verbatim `Text` so typed `*`/`#` never turn into surprise formatting.
-            // The reply sits on a frosted Charge-tinted surface, a card, not a flat box.
-            // K8: context menu (long-press / right-click) with Copy, Share, and Save actions.
-            //
-            // 261014: a reply is the conversation's main content, so it runs the full column width as
-            // plain text on the canvas — no card, no side gutter — the way chat apps set an answer. The
-            // frosted card and the 48 pt trailing spacer cost a quarter of the width on a phone, which
-            // is what squeezed tables into four-line cells.
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
-                    Markdown(message.text)
-                        .markdownTheme(.strand)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // Attribution on EVERY reply, naming whichever model wrote it.
-                    //
-                    // It used to appear only for a fallback, which made the label's absence carry the
-                    // real information — "this came from the model you picked" — and that is invisible
-                    // to anyone who does not already know the rule. Naming the model every time makes
-                    // each reply self-describing; a substitution then stands out because the name
-                    // differs from the picker, not because a label materialised.
-                    //
-                    // The fallback case still says so in words, since the model name alone does not
-                    // tell you a substitution happened unless you remember what you had selected.
-                    if let model = message.generatedByModel {
-                        Text(message.cameFromFallback
-                             ? "generated by \(model) (fallback)"
-                             : "generated by \(model)")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(message.cameFromFallback
-                                             ? StrandPalette.textSecondary
-                                             : StrandPalette.textTertiary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // K8 (upstream): Copy / Share / Save to Journal on an assistant reply. Attached to
-                // the attribution VStack rather than to the Markdown, so the menu covers the whole
-                // bubble including the "generated by" line. Lost once in the v17 uplift when this
-                // VStack was introduced around upstream's Markdown — `saveAdvice` was left defined
-                // but uncalled, which compiles clean and fails silently.
-                .contextMenu {
-                    Button {
-                        #if os(macOS)
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(message.text, forType: .string)
-                        #else
-                        UIPasteboard.general.string = message.text
-                        #endif
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                    }
-                    ShareLink(item: message.text) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                    Button {
-                        saveAdvice(message.text)
-                    } label: {
-                        Label("Save to Journal", systemImage: "square.and.pencil")
-                    }
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(message.generatedByModel.map { model in
-                message.cameFromFallback
-                    ? "Coach said, generated by \(model) as a fallback: \(message.text)"
-                    : "Coach said, generated by \(model): \(message.text)"
-            } ?? "Coach said: \(message.text)")
-        }
     }
 
     private var typingIndicator: some View {
@@ -1087,7 +1004,6 @@ struct CoachView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !coach.sending else { return }
         composerDraft.text = ""
-        composerFocused = false
         Task { await coach.send(trimmed) }
     }
 
@@ -1127,6 +1043,108 @@ struct CoachView: View {
     }
 }
 
+/// One message in the Coach transcript. Equatable on the message alone, so `.equatable()` lets
+/// SwiftUI skip rows that did not change when the Coach screen re-renders — the Markdown parse of
+/// a long reply (tables especially) is the expensive part of that screen (261015).
+struct CoachTranscriptRow: View, Equatable {
+    let message: ChatMessage
+    let onSave: (String) -> Void
+
+    static func == (lhs: CoachTranscriptRow, rhs: CoachTranscriptRow) -> Bool {
+        lhs.message == rhs.message
+    }
+
+    var body: some View {
+        switch message.role {
+        case .user:
+            HStack {
+                Spacer(minLength: 48)
+                Text(message.text)
+                    .font(StrandFont.body)
+                    .foregroundStyle(StrandPalette.surfaceBase)
+                    .textSelection(.enabled)
+                    .multilineTextAlignment(.leading)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(StrandPalette.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(maxWidth: 520, alignment: .trailing)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("You said: \(message.text)")
+        case .assistant:
+            // LLM replies arrive as Markdown (bold, lists, headings, tables),             // rendered with the chat-bubble-sized Strand theme. User bubbles stay
+            // verbatim `Text` so typed `*`/`#` never turn into surprise formatting.
+            // The reply sits on a frosted Charge-tinted surface, a card, not a flat box.
+            // K8: context menu (long-press / right-click) with Copy, Share, and Save actions.
+            //
+            // 261014: a reply is the conversation's main content, so it runs the full column width as
+            // plain text on the canvas — no card, no side gutter — the way chat apps set an answer. The
+            // frosted card and the 48 pt trailing spacer cost a quarter of the width on a phone, which
+            // is what squeezed tables into four-line cells.
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Markdown(message.text)
+                        .markdownTheme(.strand)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // Attribution on EVERY reply, naming whichever model wrote it.
+                    //
+                    // It used to appear only for a fallback, which made the label's absence carry the
+                    // real information — "this came from the model you picked" — and that is invisible
+                    // to anyone who does not already know the rule. Naming the model every time makes
+                    // each reply self-describing; a substitution then stands out because the name
+                    // differs from the picker, not because a label materialised.
+                    //
+                    // The fallback case still says so in words, since the model name alone does not
+                    // tell you a substitution happened unless you remember what you had selected.
+                    if let model = message.generatedByModel {
+                        Text(message.cameFromFallback
+                             ? "generated by \(model) (fallback)"
+                             : "generated by \(model)")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(message.cameFromFallback
+                                             ? StrandPalette.textSecondary
+                                             : StrandPalette.textTertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // K8 (upstream): Copy / Share / Save to Journal on an assistant reply. Attached to
+                // the attribution VStack rather than to the Markdown, so the menu covers the whole
+                // bubble including the "generated by" line. Lost once in the v17 uplift when this
+                // VStack was introduced around upstream's Markdown — `saveAdvice` was left defined
+                // but uncalled, which compiles clean and fails silently.
+                .contextMenu {
+                    Button {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(message.text, forType: .string)
+                        #else
+                        UIPasteboard.general.string = message.text
+                        #endif
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    ShareLink(item: message.text) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        onSave(message.text)
+                    } label: {
+                        Label("Save to Journal", systemImage: "square.and.pencil")
+                    }
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(message.generatedByModel.map { model in
+                message.cameFromFallback
+                    ? "Coach said, generated by \(model) as a fallback: \(message.text)"
+                    : "Coach said, generated by \(model): \(message.text)"
+            } ?? "Coach said: \(message.text)")
+        }
+    }
+}
+
 // MARK: - Composer (261009: isolated from the transcript)
 
 /// The composer's draft, as a reference type so `CoachView` can hold it without observing it.
@@ -1147,8 +1165,13 @@ final class CoachComposerDraft: ObservableObject {
 struct CoachComposerBar: View {
     @EnvironmentObject private var coach: AICoachEngine
     @ObservedObject var draft: CoachComposerDraft
-    var focus: FocusState<Bool>.Binding
+    /// Room to leave under the bar for the shell's floating tab bar while NOT typing; 0 off the tab.
+    var tabBarClearance: CGFloat = 0
     let onSend: (String) -> Void
+
+    /// Owned here so a focus change (the keyboard rising) re-renders this bar alone (261015).
+    @FocusState private var focused: Bool
+    private var focus: FocusState<Bool>.Binding { $focused }
 
     // K4: on-device voice input (iOS only). Owned here, beside the draft its transcript writes, so a
     // stream of partial transcriptions re-renders this bar alone.
@@ -1164,6 +1187,13 @@ struct CoachComposerBar: View {
                let tokens = coach.estimatedTokens(forDraft: draft.text) {
                 tokenEstimateBar(tokens)
             }
+        }
+        // The tab bar hides while the keyboard is up, so its room goes too — otherwise the field
+        // would float a bar's height above the keyboard.
+        .padding(.bottom, focused ? 0 : tabBarClearance)
+        // A send — typed, or a prompt chip — closes the keyboard so the reply has the screen.
+        .onChangeCompat(of: coach.sending) { sending in
+            if sending { focused = false }
         }
     }
 
@@ -1308,4 +1338,17 @@ struct CoachComposerBar: View {
     }
     #endif
 
+}
+
+private extension View {
+    /// Keep a scroll view pinned to its END when its viewport shrinks (the keyboard rising), so the
+    /// latest reply stays in view. iOS 17 / macOS 14; earlier macOS keeps the top anchor.
+    @ViewBuilder
+    func coachBottomScrollAnchor() -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            self.defaultScrollAnchor(.bottom)
+        } else {
+            self
+        }
+    }
 }

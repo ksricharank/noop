@@ -46,6 +46,10 @@ struct RootTabView: View {
     /// Selected tab — bound so tab switches can crossfade (README §Motion: ~240ms opacity swap
     /// between tab roots, calm easing). Defaults to Today.
     @State private var selectedTab: Int = Tab.today
+    /// Whether the software keyboard is up. The floating tab bar steps aside while it is — on a 19.10
+    /// install it rode up on the keyboard and sat over the Coach field being typed into (261015).
+    /// Show/hide notifications only, never frame changes, so typing cannot touch this state.
+    @State private var keyboardVisible = false
 
     /// The tab order lives in `PhoneTab` (Strand/App/PhoneTabOrder.swift) so BOTH platforms compile
     /// it and a test on the macOS leg can pin it — this file is `#if os(iOS)` and invisible to
@@ -205,7 +209,7 @@ struct RootTabView: View {
         // an overlay does not provide, so the bar steps aside on a push (the familiar "hides bottom
         // bar when pushed") and the back button returns to it.
         .overlay(alignment: .bottom) {
-            if tabPaths[selectedTab].isEmpty {
+            if tabPaths[selectedTab].isEmpty && !keyboardVisible {
                 NoopTabBar(tabs: PhoneTab.visible(coachEnabled: coachEnabled),
                            selected: selectedTab) { tag in
                     nativeTabSelection.wrappedValue = tag
@@ -215,6 +219,12 @@ struct RootTabView: View {
             }
         }
         .animation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24), value: tabPaths[selectedTab].isEmpty)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            if !keyboardVisible { keyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            if keyboardVisible { keyboardVisible = false }
+        }
         // Coach switched off while it is the open tab: the tab is gone from the bar, so leave it.
         .onChange(of: coachEnabled) { _, on in
             if !on && selectedTab == Tab.coach { selectedTab = Tab.today }
@@ -883,8 +893,13 @@ struct NoopTabBar: View {
     static let itemHeight: CGFloat = 46
 
     var body: some View {
+        // Even GAPS, not even cells (261015: "too much space between Coach and More"). Equal-width
+        // cells centre each item in a sixth of the bar, so the visible space between a short label
+        // and a long one changes from pair to pair. Items take their own width and the leftover is
+        // split equally between them.
         HStack(spacing: 0) {
-            ForEach(tabs, id: \.self) { tab in
+            ForEach(Array(tabs.enumerated()), id: \.element) { index, tab in
+                if index > 0 { Spacer(minLength: 0) }
                 item(tab)
             }
         }
@@ -912,7 +927,9 @@ struct NoopTabBar: View {
                     .minimumScaleFactor(0.8)
             }
             .foregroundStyle(isSelected ? StrandPalette.accent : StrandPalette.textSecondary)
-            .frame(maxWidth: .infinity)
+            // Same side padding on every item and no minimum width, so the gap between neighbouring
+            // labels is identical everywhere; the padding is also the selection pill's breathing room.
+            .padding(.horizontal, 10)
             .frame(height: Self.itemHeight)
             .background {
                 if isSelected {
