@@ -18,11 +18,13 @@ struct CoachView: View {
     /// in the notes field, so it appears alongside other journal entries in Insights.
     @EnvironmentObject var repo: Repository
 
-    /// Draft text in the composer (the question being typed).
-    /// K15: the composer draft is persisted to UserDefaults so it survives an app relaunch.
-    /// Restored on first appear, saved on every change. Keyed identically to the Android twin.
-    private static let draftKey = "coach.composerDraft"
-    @State private var draft: String = UserDefaults.standard.string(forKey: "coach.composerDraft") ?? ""
+    /// The composer draft (the question being typed), held by REFERENCE and NOT observed here
+    /// (261009). As `@State String` on this view, every keystroke re-evaluated the whole screen —
+    /// including re-parsing the Markdown of every visible message and re-estimating tokens over the
+    /// history — which is the "typing is sometimes laggy" report: the cost grew with the conversation
+    /// and spiked whenever a background refresh landed mid-word. `@State` keeps the instance alive
+    /// across body evaluations without subscribing to it; only `CoachComposerBar` observes it.
+    @State private var composerDraft = CoachComposerDraft()
     /// Pending key text in the setup card (never persisted here, handed to `setKey`).
     @State private var keyDraft: String = ""
     /// The replacement key, typed into the editor a rejection or Update key opens. Separate from
@@ -55,9 +57,7 @@ struct CoachView: View {
 
     // K4: on-device voice input for the composer (iOS only). macOS gets a no-op stub via
     // `#if os(iOS)` guards — the shared file keeps compiling for both targets.
-    #if os(iOS)
-    @StateObject private var voiceInput = CoachVoiceInput()
-    #endif
+    // (K4 voice input lives in `CoachComposerBar` with the draft it writes — 261009.)
 
     /// Sentinel tag for the "Custom…" entry in the model Picker.
     private let customModelTag = "__custom__"
@@ -68,50 +68,17 @@ struct CoachView: View {
     private var suggestions: [String] { coach.suggestions }
 
     var body: some View {
-        ScreenScaffold(title: "Coach",
-                       subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
-                       // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other liquid
-                       // tabs carry, so Coach sits in one atmosphere. Static + non-interactive; the frosted
-                       // message/setup cards below sit on the opaque canvas and stay legible.
-                       topBackground: liquidScaffoldSky()) {
+        Group {
             if coach.isConfigured {
-                connectedHeader
-                transcript
-                if let error = coach.errorText, !error.isEmpty {
-                    errorBanner(error)
-                }
-                if coach.keyRejected || showKeyEditor { keyRepairPanel }
-                // K7: show follow-up chips after each assistant reply (when the transcript is
-                // non-empty and the last message is from the assistant and not mid-send);
-                // otherwise show the initial contextual chips.
-                if showFollowUpChips {
-                    followUpChips
-                } else {
-                    suggestionChips
-                }
-                // Why Today's synthesis is blank. It fails silently by design there — the card falls
-                // back to the rule-based read rather than showing a provider error — which left no way
-                // to tell a broken provider from a quiet one. This is where that question gets answered.
-                if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
-                    errorBanner("Today's synthesis: \(synthesisError)")
-                }
-                // What the last generation actually DID — which model ran, whether a fallback was
-                // attempted, and how it ended. Without this the retry is invisible: a blank result
-                // cannot be told apart from a retry that ran and failed, which is precisely the
-                // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
-                if let trace = coach.lastAttemptTrace, !trace.isEmpty {
-                    attemptTraceNote(trace)
-                }
-                suggestionChips
-                composer
-                // K12: show a rough token estimate when the draft is non-empty.
-                if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   let tokens = coach.estimatedTokens(forDraft: draft) {
-                    tokenEstimateBar(tokens)
-                }
-                privacyFootnote
+                chatScreen
             } else {
-                setupCard
+                ScreenScaffold(title: "Coach",
+                               subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
+                               // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other
+                               // liquid tabs carry, so Coach sits in one atmosphere.
+                               topBackground: liquidScaffoldSky()) {
+                    setupCard
+                }
             }
         }
         // macOS only. On iOS these actions live in `connectionMenu` instead, because this bar is hidden for
@@ -187,6 +154,8 @@ struct CoachView: View {
         // `startBriefIfNeeded` only ever runs over the network when BOTH of the above left the
         // transcript genuinely empty.
         .task {
+            // 260922: load the on-device model before the first question, not during it.
+            coach.prepareProviderIfNeeded()
             await coach.loadPersistedMessagesIfNeeded()
             coach.retireStaleConversationIfNeeded()
             // Gated on the transcript BEFORE consuming. `consumeStoredBrief()` clears the unconsumed
@@ -203,15 +172,33 @@ struct CoachView: View {
         // rebuild mid-flight cannot send it twice, and gated on `isConfigured` so an unconfigured handoff
         // (which the launcher does not produce, but a future caller might) degrades to showing setup
         // rather than a failed request.
-        .task(id: coach.pendingPrompt) {
+        //
+        // 260920: the clear-before-send MUST NOT happen inside a `.task(id:)` keyed on the value
+        // being cleared. `.task(id:)` cancels and restarts its body whenever the id changes, so
+        // setting `pendingPrompt = nil` here cancelled the very task that was about to await
+        // `send` — the request was torn down mid-flight and surfaced as
+        // `URLError.cancelled` -> `.network("cancelled")` -> "Network problem: cancelled",
+        // blaming the internet for a self-inflicted cancellation. It only showed up once the tab
+        // summaries started seeding `pendingPrompt` (the Today launcher sets it and pushes in one
+        // gesture, which raced past it); every other coach path worked, which is exactly why the
+        // maintainer could see the summaries generate fine and this fail.
+        //
+        // `.onChangeCompat` + a detached-from-identity Task keeps the double-send guard (the value
+        // is still cleared before the await) without the clearing being a cancellation trigger.
+        .onChangeCompat(of: coach.pendingPrompt) { pending in
+            guard let prompt = pending, !prompt.isEmpty else { return }
+            coach.pendingPrompt = nil
+            guard coach.isConfigured else { return }
+            Task { await coach.send(prompt) }
+        }
+        // The same handoff, for a prompt that was ALREADY set before this view appeared — an
+        // `.onChange` never fires for a value that did not change while it was mounted, which is
+        // the case every time a tab seeds the prompt and THEN routes here.
+        .task {
             guard let prompt = coach.pendingPrompt, !prompt.isEmpty else { return }
             coach.pendingPrompt = nil
             guard coach.isConfigured else { return }
             await coach.send(prompt)
-        }
-        // K15: persist the composer draft so it survives an app relaunch.
-        .onChangeCompat(of: draft) { newValue in
-            UserDefaults.standard.set(newValue, forKey: Self.draftKey)
         }
         // K14: haptic feedback when a reply arrives (sending goes true → false).
         .onChangeCompat(of: coach.sending) { isSending in
@@ -267,7 +254,9 @@ struct CoachView: View {
                         .foregroundStyle(StrandPalette.textPrimary)
                 }
 
-                Text("Coach uses your own API key. Pick a provider, paste a key, and choose a model. Your key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make.")
+                Text(AppleOnDeviceModel.isAvailable
+                     ? "Coach uses your own API key, or Apple's on-device model, which needs none. Pick a provider, paste a key if it takes one, and choose a model. A key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make."
+                     : "Coach uses your own API key. Pick a provider, paste a key, and choose a model. Your key is stored securely in the Keychain and never leaves \(Platform.deviceNounPhrase) except as the request you make.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -276,7 +265,7 @@ struct CoachView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Provider").strandOverline()
                     Picker("Provider", selection: $coach.provider) {
-                        ForEach(AIProvider.allCases) { p in
+                        ForEach(AIProvider.selectable) { p in
                             Text(p.displayName).tag(p)
                         }
                     }
@@ -323,6 +312,12 @@ struct CoachView: View {
                     }
                 }
 
+                if coach.provider == .appleOnDevice {
+                    // 260922: nothing to configure. The model is the system's, there is no key, and
+                    // `isConfigured` is already true when this is selectable — so this card is only
+                    // reached from the Configure-providers sheet, where it says what to expect.
+                    onDeviceNote
+                } else {
                 // Model
                 modelSelector
 
@@ -385,6 +380,7 @@ struct CoachView: View {
 
                     Spacer()
                 }
+                }
 
                 // Whatever the last attempt from THIS card ran into. The setup card had no error line
                 // at all, so every way it can fail before a key is committed failed silently: a Refresh
@@ -411,12 +407,39 @@ struct CoachView: View {
         }
     }
 
+    /// What the setup card says for Apple's on-device model: where it runs, what it costs, and how it
+    /// differs from the cloud providers (a small model with a short memory), so the first answer's
+    /// brevity reads as designed rather than broken.
+    private var onDeviceNote: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text("Runs entirely on \(Platform.deviceNounPhrase) using Apple Intelligence. No key, no account, no network — your data never leaves the device, and it works offline.")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "iphone.gen3")
+                    .foregroundStyle(StrandPalette.accent)
+            }
+            Text("It is a small model with a short memory: answers are brief, and long conversations are trimmed to fit. For deeper analysis, switch to a cloud provider from the header.")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let note = AppleOnDeviceModel.unavailabilityNote {
+                Text(note)
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.signalYellow)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     /// A provider other than the selected one that is already usable, if any — the destination for the
     /// setup card's escape hatch. Nil when nothing is configured yet (a first run, where the card is the
     /// correct place to be and there is nowhere to go back TO), so the button appears only when it can
     /// actually rescue someone.
     private var readyProviderToReturnTo: AIProvider? {
-        AIProvider.allCases.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
+        AIProvider.selectable.first { $0 != coach.provider && coach.hasStoredKey(for: $0) }
     }
 
     /// Model selector: a Picker over `coach.availableModels` with a free-text "Custom…" path and a
@@ -508,6 +531,12 @@ struct CoachView: View {
     /// model are unrelated, so the menu changes the model in place and touches no credential.
     private var connectedHeader: some View {
         HStack(spacing: 10) {
+            // 261014: the full-screen chat has no scaffold title, so the header names the screen.
+            Text("Coach")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 4)
             Menu {
                 Picker("Model", selection: connectedModelSelection) {
                     ForEach(coach.availableModels, id: \.self) { m in
@@ -529,22 +558,20 @@ struct CoachView: View {
                 // ordinary use. Offering the switch from the connected header means a provider that
                 // already HAS a key is always one tap away, without passing through the card at all.
                 Picker("Provider", selection: $coach.provider) {
-                    ForEach(AIProvider.allCases) { p in
+                    ForEach(AIProvider.selectable) { p in
                         // Mark which providers can be switched to without typing anything, so the
                         // choice that strands you is visibly distinct from the ones that don't.
                         Text(coach.hasStoredKey(for: p) ? "\(p.displayName) ✓" : p.displayName).tag(p)
                     }
                 }
             } label: {
-                StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+                // The model alone: the provider is one tap away in this menu, and the pair no longer
+                // fits beside the title on a phone.
+                StatePill("\(coach.model)", tone: .accent, showsDot: true, pulsing: coach.sending)
+                    .lineLimit(1)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Provider \(coach.provider.displayName), model \(coach.model). Change model")
-
-            Spacer()
-            if coach.sending {
-                StatePill("Thinking", tone: .accent, pulsing: true)
-            }
             // #2243: the way through to what used to be stacked under this header.
             Button {
                 showSettings = true
@@ -615,11 +642,16 @@ struct CoachView: View {
                 Label("Clear conversation", systemImage: "trash")
             }
             .disabled(coach.messages.isEmpty)
-            Button(role: .destructive) {
-                coach.disconnect()
-                keyDraft = ""
-            } label: {
-                Label("Disconnect", systemImage: "gearshape")
+            // Nothing to disconnect FROM on the keyless on-device provider: there is no key to forget
+            // and no server to leave, and the action would land the wearer back on the same chat.
+            // Switching provider is the header's job.
+            if !coach.provider.isKeyless {
+                Button(role: .destructive) {
+                    coach.disconnect()
+                    keyDraft = ""
+                } label: {
+                    Label("Disconnect", systemImage: "gearshape")
+                }
             }
         } label: {
             // Same affordance DevicesView uses for its per-device menu, headline size included. The
@@ -634,44 +666,122 @@ struct CoachView: View {
     }
     #endif
 
+    // MARK: - Chat layout (261014)
+
+    /// The connected Coach as a full-screen chat, the shape of every chat app: a slim header, the
+    /// conversation filling the screen edge to edge, and ONE dock at the bottom — a single scrollable
+    /// row of prompts over the composer.
+    ///
+    /// The maintainer's report, with another chat app's screenshot beside it: only a portion of the
+    /// screen was used. The conversation sat in a card capped at 460 pt inside a padded scaffold, each
+    /// reply in a second frosted card inside that, so three nested insets ate the width; under it were
+    /// TWO rows of prompt chips (the contextual row was drawn twice) and a standing privacy footnote,
+    /// which together pushed the composer halfway up the screen. Now the transcript takes everything
+    /// the dock does not, replies run the full width, and the privacy note is shown where it is read —
+    /// before the first question, when nothing has been sent yet.
+    private var chatScreen: some View {
+        VStack(spacing: 0) {
+            connectedHeader
+                .padding(.horizontal, Self.chatHPadding)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            transcript
+            bottomDock
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+    }
+
+    /// Side margin for the chat column — narrower than the card screens' page padding, because a
+    /// conversation reads best using the width.
+    private static let chatHPadding: CGFloat = 16
+
+    /// Room under the dock for the shell's floating tab bar, read from the environment so the pillar
+    /// sheet and macOS (no tab bar) get none. Dropped while the keyboard is up: the bar is behind it.
+    @Environment(\.noopTabBarClearance) private var tabBarClearance
+
     private var transcript: some View {
-        StrandCard(padding: 16) {
-            if coach.messages.isEmpty {
-                emptyTranscript
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
-                        // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(coach.messages) { message in
-                                bubble(message).id(message.id)
-                            }
-                            if coach.sending {
-                                typingIndicator.id("typing")
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
+                // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    if coach.messages.isEmpty {
+                        emptyTranscript
                     }
-                    // #697 parity: this screen builds its OWN ScrollView rather than going through
-                    // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
-                    // could still rubber-band left-right on a purely vertical scroll. Same modifier, same
-                    // guard. `.basedOnSize` permits horizontal bounce only when content genuinely overflows
-                    // the width, so nothing that is meant to scroll sideways is affected. (#1532 follow-up)
-                    #if os(iOS)
-                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    #endif
-                    .frame(minHeight: 220, maxHeight: 460)
-                    .onChangeCompat(of: coach.messages.count) { _ in
-                        scrollToEnd(proxy)
+                    ForEach(coach.messages) { message in
+                        bubble(message).id(message.id)
                     }
-                    .onChangeCompat(of: coach.sending) { _ in
-                        scrollToEnd(proxy)
+                    if coach.sending {
+                        typingIndicator.id("typing")
                     }
+                    inlineNotices
                 }
+                .padding(.horizontal, Self.chatHPadding)
+                .padding(.vertical, 10)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+            // #697 parity: this screen builds its OWN ScrollView rather than going through
+            // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
+            // could still rubber-band left-right on a purely vertical scroll. Same modifier, same
+            // guard. `.basedOnSize` permits horizontal bounce only when content genuinely overflows
+            // the width, so nothing that is meant to scroll sideways is affected. (#1532 follow-up)
+            #if os(iOS)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
+            #endif
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { scrollToEnd(proxy, animated: false) }
+            .onChangeCompat(of: coach.messages.count) { _ in
+                scrollToEnd(proxy)
+            }
+            .onChangeCompat(of: coach.sending) { _ in
+                scrollToEnd(proxy)
+            }
+            // The keyboard shortens the viewport; keep the latest reply in view above it.
+            .onChangeCompat(of: composerFocused) { focused in
+                if focused { scrollToEnd(proxy) }
             }
         }
+    }
+
+    /// Errors and the attempt trace, at the END of the conversation they belong to rather than pinned
+    /// over the composer.
+    @ViewBuilder
+    private var inlineNotices: some View {
+        if let error = coach.errorText, !error.isEmpty {
+            errorBanner(error)
+        }
+        // Why Today's synthesis is blank. It fails silently by design there — the card falls
+        // back to the rule-based read rather than showing a provider error — which left no way
+        // to tell a broken provider from a quiet one. This is where that question gets answered.
+        if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
+            errorBanner("Today's synthesis: \(synthesisError)")
+        }
+        // What the last generation actually DID — which model ran, whether a fallback was
+        // attempted, and how it ended. Without this the retry is invisible: a blank result
+        // cannot be told apart from a retry that ran and failed, which is precisely the
+        // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
+        if let trace = coach.lastAttemptTrace, !trace.isEmpty {
+            attemptTraceNote(trace)
+        }
+    }
+
+    /// The dock: the key editor when it is open, one row of prompts, the composer.
+    private var bottomDock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if coach.keyRejected || showKeyEditor { keyRepairPanel }
+            promptChips
+            CoachComposerBar(draft: composerDraft, focus: $composerFocused, onSend: send)
+        }
+        .padding(.horizontal, Self.chatHPadding)
+        .padding(.top, 6)
+        .padding(.bottom, composerFocused ? 8 : 8 + tabBarClearance)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(StrandPalette.surfaceBase.ignoresSafeArea(edges: .bottom))
+        .animation(StrandMotion.fade, value: composerFocused)
     }
 
     private var emptyTranscript: some View {
@@ -683,8 +793,13 @@ struct CoachView: View {
                 .font(StrandFont.subhead)
                 .foregroundStyle(StrandPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // The privacy note, where it is read: before anything has been sent (261014 — it used to
+            // stand under the composer for the whole conversation).
+            privacyFootnote
+                .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.top, 24)
     }
 
     @ViewBuilder
@@ -710,36 +825,17 @@ struct CoachView: View {
             // verbatim `Text` so typed `*`/`#` never turn into surprise formatting.
             // The reply sits on a frosted Charge-tinted surface, a card, not a flat box.
             // K8: context menu (long-press / right-click) with Copy, Share, and Save actions.
+            //
+            // 261014: a reply is the conversation's main content, so it runs the full column width as
+            // plain text on the canvas — no card, no side gutter — the way chat apps set an answer. The
+            // frosted card and the 48 pt trailing spacer cost a quarter of the width on a phone, which
+            // is what squeezed tables into four-line cells.
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Markdown(message.text)
                         .markdownTheme(.strand)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
-                        // K8: Copy / Share / Save context menu on assistant replies.
-                        .contextMenu {
-                            Button {
-                                #if os(macOS)
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(message.text, forType: .string)
-                                #else
-                                UIPasteboard.general.string = message.text
-                                #endif
-                            } label: {
-                                Label("Copy", systemImage: "doc.on.doc")
-                            }
-                            ShareLink(item: message.text) {
-                                Label("Share", systemImage: "square.and.arrow.up")
-                            }
-                            Button {
-                                saveAdvice(message.text)
-                            } label: {
-                                Label("Save to Journal", systemImage: "square.and.pencil")
-                            }
-                        }
 
                     // Attribution on EVERY reply, naming whichever model wrote it.
                     //
@@ -759,11 +855,34 @@ struct CoachView: View {
                             .foregroundStyle(message.cameFromFallback
                                              ? StrandPalette.textSecondary
                                              : StrandPalette.textTertiary)
-                            .padding(.horizontal, 4)
                     }
                 }
-                .frame(maxWidth: 560, alignment: .leading)
-                Spacer(minLength: 48)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // K8 (upstream): Copy / Share / Save to Journal on an assistant reply. Attached to
+                // the attribution VStack rather than to the Markdown, so the menu covers the whole
+                // bubble including the "generated by" line. Lost once in the v17 uplift when this
+                // VStack was introduced around upstream's Markdown — `saveAdvice` was left defined
+                // but uncalled, which compiles clean and fails silently.
+                .contextMenu {
+                    Button {
+                        #if os(macOS)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(message.text, forType: .string)
+                        #else
+                        UIPasteboard.general.string = message.text
+                        #endif
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    ShareLink(item: message.text) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                    Button {
+                        saveAdvice(message.text)
+                    } label: {
+                        Label("Save to Journal", systemImage: "square.and.pencil")
+                    }
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(message.generatedByModel.map { model in
@@ -782,10 +901,7 @@ struct CoachView: View {
                 .foregroundStyle(StrandPalette.textSecondary)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
-        .frame(maxWidth: 320, alignment: .leading)
+        .padding(.vertical, 4)
         .accessibilityLabel("Coach is thinking")
     }
 
@@ -879,10 +995,19 @@ struct CoachView: View {
         .accessibilityLabel("Model attempt: \(message)")
     }
 
-    private var suggestionChips: some View {
+    /// ONE scrollable row of prompts (261014 — there were two: the follow-ups or the contextual set,
+    /// and then the contextual set AGAIN). After a reply the follow-ups lead (K7) and the contextual
+    /// prompts follow in the same row; before one, the contextual prompts alone. Duplicates drop out.
+    private var chipPrompts: [String] {
+        let lead = showFollowUpChips ? AICoachEngine.followUpSuggestions : []
+        var seen = Set<String>()
+        return (lead + suggestions).filter { seen.insert($0).inserted }
+    }
+
+    private var promptChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(suggestions, id: \.self) { prompt in
+                ForEach(chipPrompts, id: \.self) { prompt in
                     Button {
                         send(prompt)
                     } label: {
@@ -902,195 +1027,33 @@ struct CoachView: View {
                 }
             }
             .padding(.vertical, 1)
+            .padding(.horizontal, Self.chatHPadding)
         }
+        // Bleed the row to the screen edges so chips scroll out from under the margin, not clip at it.
+        .padding(.horizontal, -Self.chatHPadding)
     }
 
-    /// K7: True when follow-up chips should show instead of the initial contextual chips —
-    /// i.e. the transcript is non-empty, the last message is from the assistant, and a reply
-    /// is not currently in flight.
+    /// K7: True when follow-up chips should lead the row — i.e. the transcript is non-empty, the last
+    /// message is from the assistant, and a reply is not currently in flight.
     private var showFollowUpChips: Bool {
         guard let last = coach.messages.last, !coach.sending else { return false }
         return last.role == .assistant
     }
 
-    /// K7: Follow-up suggestion chips shown after each assistant reply, so the user can dig
-    /// deeper without typing. Uses the static `AICoachEngine.followUpSuggestions` list.
-    private var followUpChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(AICoachEngine.followUpSuggestions, id: \.self) { prompt in
-                    Button {
-                        send(prompt)
-                    } label: {
-                        Text(prompt)
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(StrandPalette.surfaceInset, in: Capsule(style: .continuous))
-                            .overlay(Capsule(style: .continuous).strokeBorder(StrandPalette.hairline, lineWidth: 1))
-                    }
-                    .buttonStyle(LiquidPressStyle())
-                    .disabled(coach.sending)
-                    .accessibilityLabel("Follow-up prompt: \(prompt)")
-                }
-            }
-            .padding(.vertical, 1)
+    private var privacyFootnoteText: String {
+        switch coach.provider {
+        case .custom:
+            return String(localized: "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask.")
+        case .appleOnDevice:
+            return String(localized: "Coach is running on \(Platform.deviceNounPhrase) with Apple Intelligence. Nothing leaves it — not your data, not your questions.")
+        default:
+            return String(localized: "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
         }
     }
-
-    /// K12: A subtle token estimate shown below the composer when the draft is non-empty.
-    /// Uses the ~4 chars/token heuristic — an estimate only, not an exact tokenizer count.
-    private func tokenEstimateBar(_ tokens: Int) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "speedometer")
-                .font(.system(size: 10))
-                .foregroundStyle(StrandPalette.textTertiary)
-            Text("~\(tokens) tokens")
-                .font(StrandFont.captionNumber)
-                .foregroundStyle(StrandPalette.textTertiary)
-            if tokens > 8000 {
-                Text("· may exceed small context windows")
-                    .font(StrandFont.captionNumber)
-                    .foregroundStyle(StrandPalette.textTertiary)
-            }
-        }
-        .padding(.top, 2)
-    }
-
-    /// The input bar, a frosted overlay surface holding the field + Send, so the composer reads as a
-    /// distinct docked surface above the canvas rather than two floating controls.
-    private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask Coach about your data…", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(StrandFont.body)
-                .foregroundStyle(StrandPalette.textPrimary)
-                .lineLimit(1...5)
-                .focused($composerFocused)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(composerFocused ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
-                .onSubmit { send(draft) }
-                .accessibilityLabel("Question")
-
-            // K4: on-device voice input (iOS only). macOS compiles this section out entirely.
-            #if os(iOS)
-            micButton
-            #endif
-
-            // Docked icon-only send affordance: a crisp accent-filled square sized to the
-            // composer row (not the full 48pt control height), so it routes through the same
-            // token fill/label colours as the button system without overpowering the field.
-            Button {
-                send(draft)
-            } label: {
-                Group {
-                    if coach.sending {
-                        ProgressView().controlSize(.small).tint(StrandPalette.goldDeepText)
-                    } else {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
-                    }
-                }
-                .frame(width: 44, height: 38)
-                .foregroundStyle(StrandPalette.goldDeepText)
-                .background(StrandPalette.accent,
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(coach.sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .accessibilityLabel("Send")
-        }
-        .padding(8)
-        .background(NoopPanelSurface(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
-    }
-
-    // MARK: - K4: Voice input (iOS only)
-
-    #if os(iOS)
-    /// Mic button: starts/stops on-device speech recognition. Disabled when the locale lacks
-    /// on-device support or permission is denied; tapping when permission is not yet determined
-    /// triggers the system prompt.
-    private var micButton: some View {
-        Button {
-            toggleVoice()
-        } label: {
-            Group {
-                if voiceInput.isRecording {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 18, weight: .medium))
-                        .foregroundStyle(StrandPalette.statusCritical)
-                } else {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(canUseVoice ? StrandPalette.textSecondary : StrandPalette.textTertiary)
-                }
-            }
-            .frame(width: 36, height: 38)
-            .background(StrandPalette.surfaceInset,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(StrandPalette.hairline, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .disabled(!micButtonEnabled)
-        .help(voiceInput.statusMessage ?? "Ask out loud")
-        .accessibilityLabel(voiceInput.isRecording ? "Stop voice input" : "Voice input")
-        .accessibilityHint(voiceInput.statusMessage ?? "Transcribes your question on-device")
-        .task {
-            // Pre-check on appear so the button reflects the right state without a tap.
-            if voiceInput.authorization == .notDetermined {
-                voiceInput.requestAuthorization { _ in }
-            }
-        }
-    }
-
-    /// Whether the mic button is tappable: not while sending, and only if voice is either
-    /// already usable or permission hasn't been asked yet (first tap triggers the prompt).
-    private var canUseVoice: Bool { voiceInput.canUseVoice }
-    private var micButtonEnabled: Bool {
-        !coach.sending && (canUseVoice || voiceInput.authorization == .notDetermined)
-    }
-
-    private func toggleVoice() {
-        if voiceInput.isRecording {
-            voiceInput.stopTranscribing { finalText in
-                let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    // Append to the draft (not replace) so a user can speak into existing text.
-                    draft = draft.isEmpty ? trimmed : "\(draft) \(trimmed)"
-                }
-            }
-        } else {
-            // First tap with undetermined permission triggers the system prompt; if granted,
-            // start transcribing immediately on the next tap. If already authorized, start now.
-            if voiceInput.authorization == .notDetermined {
-                voiceInput.requestAuthorization { state in
-                    if state == .authorized {
-                        voiceInput.startTranscribing { partial in
-                            draft = partial
-                        }
-                    }
-                }
-            } else {
-                voiceInput.startTranscribing { partial in
-                    draft = partial
-                }
-            }
-        }
-    }
-    #endif
 
     private var privacyFootnote: some View {
         Label {
-            Text(coach.provider == .custom
-                 ? "Coach talks only to the server URL you set. Point it at a local model (Ollama, LM Studio, llama.cpp) to keep everything on your own machine. Nothing is sent until you ask."
-                 : "This is the only feature that leaves \(Platform.deviceNounPhrase). It sends a summary of your metrics to \(coach.provider.displayName) using your own key. Nothing is sent until you ask.")
+            Text(privacyFootnoteText)
                 .font(StrandFont.footnote)
                 .foregroundStyle(StrandPalette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1123,7 +1086,7 @@ struct CoachView: View {
     private func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !coach.sending else { return }
-        draft = ""
+        composerDraft.text = ""
         composerFocused = false
         Task { await coach.send(trimmed) }
     }
@@ -1152,13 +1115,197 @@ struct CoachView: View {
         }
     }
 
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        withAnimation(StrandMotion.fade) {
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
             if coach.sending {
                 proxy.scrollTo("typing", anchor: .bottom)
             } else if let last = coach.messages.last {
                 proxy.scrollTo(last.id, anchor: .bottom)
             }
         }
+        if animated { withAnimation(StrandMotion.fade, scroll) } else { scroll() }
     }
+}
+
+// MARK: - Composer (261009: isolated from the transcript)
+
+/// The composer's draft, as a reference type so `CoachView` can hold it without observing it.
+/// K15: persisted to UserDefaults so it survives an app relaunch; keyed identically to the Android twin.
+final class CoachComposerDraft: ObservableObject {
+    static let draftKey = "coach.composerDraft"
+    @Published var text: String {
+        didSet { UserDefaults.standard.set(text, forKey: Self.draftKey) }
+    }
+    init() { text = UserDefaults.standard.string(forKey: Self.draftKey) ?? "" }
+}
+
+/// The input bar — field, mic, Send — plus the K12 token estimate: everything that reads the draft.
+///
+/// A leaf on purpose (261009, the "typing feels laggy sometimes" report). Owning the draft here means a
+/// keystroke re-renders only this bar, never the transcript above it, whose bubbles re-parse their
+/// Markdown on every rebuild. Same leaf-scoping the tab summary cards apply to the coach engine.
+struct CoachComposerBar: View {
+    @EnvironmentObject private var coach: AICoachEngine
+    @ObservedObject var draft: CoachComposerDraft
+    var focus: FocusState<Bool>.Binding
+    let onSend: (String) -> Void
+
+    // K4: on-device voice input (iOS only). Owned here, beside the draft its transcript writes, so a
+    // stream of partial transcriptions re-renders this bar alone.
+    #if os(iOS)
+    @StateObject private var voiceInput = CoachVoiceInput()
+    #endif
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            composer
+            // K12: show a rough token estimate when the draft is non-empty.
+            if !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let tokens = coach.estimatedTokens(forDraft: draft.text) {
+                tokenEstimateBar(tokens)
+            }
+        }
+    }
+
+    /// K12: A subtle token estimate shown below the composer when the draft is non-empty.
+    /// Uses the ~4 chars/token heuristic — an estimate only, not an exact tokenizer count.
+    private func tokenEstimateBar(_ tokens: Int) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "speedometer")
+                .font(.system(size: 10))
+                .foregroundStyle(StrandPalette.textTertiary)
+            Text("~\(tokens) tokens")
+                .font(StrandFont.captionNumber)
+                .foregroundStyle(StrandPalette.textTertiary)
+            if tokens > 8000 {
+                Text("· may exceed small context windows")
+                    .font(StrandFont.captionNumber)
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// The input bar: ONE rounded field holding the text, the mic and Send (261014 — the field, the mic
+    /// and Send were three separately-bordered boxes inside a fourth panel). Send is a filled accent
+    /// circle that only lights up when there is something to send.
+    private var composer: some View {
+        let canSend = !coach.sending && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return HStack(alignment: .bottom, spacing: 6) {
+            TextField("Ask Coach about your data…", text: $draft.text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(StrandFont.body)
+                .foregroundStyle(StrandPalette.textPrimary)
+                .lineLimit(1...6)
+                .focused(focus)
+                .padding(.leading, 14)
+                .padding(.vertical, 10)
+                .onSubmit { onSend(draft.text) }
+                .accessibilityLabel("Question")
+
+            // K4: on-device voice input (iOS only). macOS compiles this section out entirely.
+            #if os(iOS)
+            micButton
+            #endif
+
+            Button {
+                onSend(draft.text)
+            } label: {
+                Group {
+                    if coach.sending {
+                        ProgressView().controlSize(.small).tint(StrandPalette.goldDeepText)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 15, weight: .bold))
+                    }
+                }
+                .frame(width: 34, height: 34)
+                .foregroundStyle(canSend || coach.sending ? StrandPalette.goldDeepText : StrandPalette.textTertiary)
+                .background(canSend || coach.sending ? StrandPalette.accent : StrandPalette.surfaceRaised,
+                            in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .accessibilityLabel("Send")
+        }
+        .padding(.trailing, 5)
+        .padding(.vertical, 3)
+        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(focus.wrappedValue ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
+    }
+
+    // MARK: - K4: Voice input (iOS only)
+
+    #if os(iOS)
+    /// Mic button: starts/stops on-device speech recognition. Disabled when the locale lacks
+    /// on-device support or permission is denied; tapping when permission is not yet determined
+    /// triggers the system prompt.
+    private var micButton: some View {
+        Button {
+            toggleVoice()
+        } label: {
+            Group {
+                if voiceInput.isRecording {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(StrandPalette.statusCritical)
+                } else {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(canUseVoice ? StrandPalette.textSecondary : StrandPalette.textTertiary)
+                }
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!micButtonEnabled)
+        .help(voiceInput.statusMessage ?? "Ask out loud")
+        .accessibilityLabel(voiceInput.isRecording ? "Stop voice input" : "Voice input")
+        .accessibilityHint(voiceInput.statusMessage ?? "Transcribes your question on-device")
+        .task {
+            // Pre-check on appear so the button reflects the right state without a tap.
+            if voiceInput.authorization == .notDetermined {
+                voiceInput.requestAuthorization { _ in }
+            }
+        }
+    }
+
+    /// Whether the mic button is tappable: not while sending, and only if voice is either
+    /// already usable or permission hasn't been asked yet (first tap triggers the prompt).
+    private var canUseVoice: Bool { voiceInput.canUseVoice }
+    private var micButtonEnabled: Bool {
+        !coach.sending && (canUseVoice || voiceInput.authorization == .notDetermined)
+    }
+
+    private func toggleVoice() {
+        if voiceInput.isRecording {
+            voiceInput.stopTranscribing { finalText in
+                let trimmed = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    // Append to the draft (not replace) so a user can speak into existing text.
+                    draft.text = draft.text.isEmpty ? trimmed : "\(draft.text) \(trimmed)"
+                }
+            }
+        } else {
+            // First tap with undetermined permission triggers the system prompt; if granted,
+            // start transcribing immediately on the next tap. If already authorized, start now.
+            if voiceInput.authorization == .notDetermined {
+                voiceInput.requestAuthorization { state in
+                    if state == .authorized {
+                        voiceInput.startTranscribing { partial in
+                            draft.text = partial
+                        }
+                    }
+                }
+            } else {
+                voiceInput.startTranscribing { partial in
+                    draft.text = partial
+                }
+            }
+        }
+    }
+    #endif
+
 }
