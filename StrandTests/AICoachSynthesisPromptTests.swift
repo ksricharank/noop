@@ -141,6 +141,32 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("unremarkable"))
     }
 
+    /// 261014, the maintainer's ask: Now is about the heart, how relaxed or wound-up I am, and how
+    /// much I have used my body — now and over the past hour — and Next leads with the IDEAS, the
+    /// remaining delta only sizing them.
+    func testNowIsTheLastHourAndNextLeadsWithIdeas() {
+        let d = AICoachEngine.defaultSynthesisPrompt
+        XCTAssertTrue(d.contains("MY LAST HOUR"))
+        XCTAssertTrue(d.contains("LAST HOUR OR SO"))
+        XCTAssertTrue(d.contains("my HEART"))
+        XCTAssertTrue(d.contains("RELAXED or WOUND-UP"))
+        XCTAssertTrue(d.contains("my BODY'S EXERTION"))
+        XCTAssertTrue(d.contains("Nothing else belongs in Now"))
+        XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
+        XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
+    }
+
+    /// A stored copy of the 261006 default (it went in as the maintainer's own pasted text) is an old
+    /// default, not a customisation: it must not shadow the new one, and must not offer Reset.
+    func testAStoredCopyOfTheRetiredDefaultFallsThroughToTheNewDefault() {
+        // The fingerprint is whitespace-insensitive, so a re-pasted copy matches.
+        XCTAssertEqual(AICoachEngine.promptFingerprint("a  b\n c"), AICoachEngine.promptFingerprint("a b c"))
+        XCTAssertNotEqual(AICoachEngine.promptFingerprint("a b c"), AICoachEngine.promptFingerprint("a b d"))
+        XCTAssertFalse(AICoachEngine.isRetiredSynthesisDefault(AICoachEngine.defaultSynthesisPrompt),
+                       "the CURRENT default must never be listed as retired")
+        XCTAssertFalse(AICoachEngine.isRetiredSynthesisDefault("my own prompt"))
+    }
+
     /// The retired three-section template must not creep back. Each of these strings was load-
     /// bearing in the shape the maintainer asked to be rid of.
     func testTheRetiredFixedSectionTemplateIsGone() {

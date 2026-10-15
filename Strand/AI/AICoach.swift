@@ -695,47 +695,58 @@ final class AICoachEngine: ObservableObject {
     static let defaultSynthesisPrompt = """
     Following your coaching instructions and using my data above, write my read for the Today \
     screen. Tell me WHAT STATE I AM IN right now and what to do about it — as two short, scannable \
-    sections, never a wall of prose. Your lens is MY BODY IN THE PRESENT: lead with MY LAST 6 HOURS \
-    and today's readings; the targets are the LEAST interesting thing you have, because I can read \
-    those numbers myself.
+    sections, never a wall of prose. Your lens is MY BODY IN THE PRESENT: lead with MY LAST HOUR, \
+    then MY LAST 6 HOURS for contrast; the targets are the LEAST interesting thing you have, because \
+    I can read those numbers myself.
 
     Shape — this exact skeleton, nothing else:
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
-    - **Now** on its own line, then 2 to 4 bullets. Each bullet is a CONCLUSION about my state of \
-    being, never a reading. The test every Now bullet must pass: delete every number from it and it \
-    still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 → active \
-    load" FAILS that test — it restates the chart. "This morning spent recovery you banked \
-    overnight — you're in the hole you'd normally be in after a workout, without the workout" \
-    PASSES. Write the interpretation first; you may close the bullet with at most ONE supporting \
-    figure in parentheses, never lead with one. Good Now material: what the morning did to me and \
-    what it cost or bought; whether a pattern is stress, movement, caffeine or digestion by its \
-    shape and timing (flagged as a read, not a fact); how today's shape differs from my own usual \
-    day at this hour; a watchout genuinely forming (climbing resting HR, sagging HRV, raised \
-    respiratory rate together) and what would confirm it. Compare only to MY resting heart rate \
-    and MY OWN baseline. My data has z-scores: |z| above 1 is real, above 2 strong; in-range is \
-    NOT news. Whatever Now concludes is the premise Next must act on.
-    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now. BEFORE \
-    prescribing anything, check what I have ALREADY done today against TODAY'S TARGETS: a target \
-    already met — or within about a tenth of met — is a RESULT, not a gap. Acknowledge it in a few \
-    words ("steps are done — nice work") and never ask for more of it; the menu covers only the \
-    genuinely open gaps, and a day with every target met earns a one-bullet Next that congratulates \
-    me and protects the wind-down. EVERY suggestion bullet is a MENU, not an order: give TWO OR \
-    MORE equivalent ways to achieve the same end (from the standpoint of the DELTA between the \
-    TARGET and what I have already achieved today), separated by "or", roughly matched in effect \
-    so I can pick by mood — e.g. "close the effort gap: a 25-min zone-2 ride, or two 15-min brisk \
-    walks, or 20 min of intervals if you want it done fast". Alternatives must differ in kind \
-    (indoor/outdoor, one block vs split, hard-short vs easy-long), not be the same activity \
-    reworded. Cover training or movement (and why today's state supports it), what to avoid, and \
-    the wind-down: bedtime guidance keyed to tonight's sleep target and my usual midsleep from the \
-    data, in words — no derived clock times.
-    - Each bullet is ONE point, at most ~22 words after its short bolded title.
+    - **Now** on its own line, then 2 to 4 bullets about exactly THREE things, RIGHT NOW and over \
+    the LAST HOUR OR SO (the hours before that only as contrast): (1) my HEART — where it is sitting \
+    against MY resting heart rate and which way it is heading; (2) how RELAXED or WOUND-UP I am — \
+    calm versus tense or anxious, read from the last-hour stress index against today's and from a \
+    heart rate raised with no movement to explain it (flagged as a read, not a fact: stress, \
+    caffeine and digestion look alike); (3) my BODY'S EXERTION — how much I have or have not used \
+    it in that hour (steps, time well above rest, the peak). Nothing else belongs in Now: not \
+    sleep, not Charge, not the targets, not yesterday. Each bullet is a CONCLUSION about my state, \
+    never a reading. The test every Now bullet must pass: delete every number from it and it still \
+    tells me something I could not see on the screen. "Mean HR 97, above RHR 61 → active load" \
+    FAILS that test — it restates the chart. "Your heart is still running hot from a walk that \
+    ended twenty minutes ago, but the calm underneath says it is exertion, not stress" PASSES. \
+    Write the interpretation first; you may close the bullet with at most ONE supporting figure in \
+    parentheses, never lead with one. A watchout genuinely forming (a heart rate creeping up while \
+    still, tension building through the hour) belongs here, with what would confirm it. Compare \
+    only to MY resting heart rate and MY OWN baseline. My data has z-scores: |z| above 1 is real, \
+    above 2 strong; in-range is NOT news. Whatever Now concludes is the premise Next must act on.
+    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now. The IDEAS are \
+    the point of this section, not the arithmetic: fresh, specific, practical ways to close each \
+    open gap that fit my state right now and the rest of my day — a walking call, stairs instead \
+    of the lift, a loop round the block after a meal, a mobility flow between meetings, cycling an \
+    errand, a playlist-length dance, carrying the shopping home. "Go for a walk" is the idea of \
+    last resort. BEFORE prescribing anything, check what I have ALREADY done today against TODAY'S \
+    TARGETS: a target already met — or within about a tenth of met — is a RESULT, not a gap. \
+    Acknowledge it in a few words ("steps are done — nice work") and never ask for more of it; the \
+    menu covers only the genuinely open gaps, and a day with every target met earns a one-bullet \
+    Next that congratulates me and protects the wind-down. EVERY suggestion bullet is a MENU, not \
+    an order: give TWO OR MORE equivalent ideas that achieve the same end, separated by "or", \
+    roughly matched in effect (sized from the standpoint of the DELTA between the TARGET and what \
+    I have already achieved today) so I can pick by mood — e.g. "close the effort gap: a 25-min \
+    zone-2 ride, or take your next two calls on foot, or 20 min of intervals if you want it done \
+    fast". Alternatives must differ in kind (indoor/outdoor, one block vs split, hard-short vs \
+    easy-long, folded into something I am doing anyway vs a session of its own), not be the same \
+    activity reworded. Lead every bullet with the ideas; the remaining delta may appear at most \
+    once, briefly, AFTER them — never as the opener. Cover training or movement (and why my state \
+    right now supports it), what to avoid, and the wind-down: bedtime guidance keyed to tonight's \
+    sleep target and my usual midsleep from the data, in words — no derived clock times.
+    - Each bullet is ONE point, at most ~30 words after its short bolded title.
 
     About the targets, specifically:
     - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
     can read off the screen. A target may appear only inside a Next menu as the thing the \
     alternatives achieve — or, once met, as the thing being congratulated.
     - Where possible INSTEAD of mentioning the target, mention the DELTA between the target and \
-    what I have already achieved today.
+    what I have already achieved today — and keep even the delta brief: the ideas carry the \
+    bullet, the number only sizes them.
     - My total calories include resting metabolism on both sides, so an early-day number far \
     below target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
 
@@ -798,8 +809,31 @@ final class AICoachEngine: ObservableObject {
     var synthesisPrompt: String {
         let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stored, !stored.isEmpty { return stored }
+        if let stored, !stored.isEmpty, !Self.isRetiredSynthesisDefault(stored) { return stored }
         return Self.defaultSynthesisPrompt
+    }
+
+    /// Fingerprints of earlier BUILT-IN synthesis instructions (261014). A stored override equal to
+    /// one of them is a copy of an old default — the 261006 one went in as the maintainer's pasted
+    /// text, so the copy on the phone matches it — not a customisation, and it must not shadow the
+    /// default that replaced it. Whitespace-insensitive, so a re-pasted copy still matches.
+    nonisolated static let retiredSynthesisDefaultFingerprints: Set<UInt64> = [
+        0x30764ba6eafbecd1, // 261006–261013: Now = the morning's story, Next = delta menus
+    ]
+
+    /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
+    nonisolated static func promptFingerprint(_ text: String) -> UInt64 {
+        let collapsed = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in collapsed.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return hash
+    }
+
+    nonisolated static func isRetiredSynthesisDefault(_ text: String) -> Bool {
+        retiredSynthesisDefaultFingerprints.contains(promptFingerprint(text))
     }
 
     /// The user's stored synthesis override, or the default when nothing custom is set. The UI binds
@@ -822,6 +856,7 @@ final class AICoachEngine: ObservableObject {
         let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return !(stored ?? "").isEmpty && stored != Self.defaultSynthesisPrompt
+            && !Self.isRetiredSynthesisDefault(stored ?? "")
     }
 
     /// Restore the built-in synthesis instruction by clearing the stored override.
@@ -2626,10 +2661,24 @@ final class AICoachEngine: ObservableObject {
     func recentStateBlock(hours: Int = 6, now: Date = Date()) async -> String? {
         let to = Int(now.timeIntervalSince1970)
         let from = to - hours * 3600
-        let samples = await repo.hrSamples(from: from, to: to)
+        // 261014: the limit must cover the WINDOW. The read is `ORDER BY ts ASC LIMIT`, and the default
+        // 8,000 at the strap's ~1 Hz is the OLDEST ~2.2 hours of six — so the "most recent first"
+        // lines started hours back, the newest hours never reached the model, and the sedentary read
+        // measured a stretch that had ended. One hour of headroom over the window at 1 Hz.
+        let samples = await repo.hrSamples(from: from, to: to, limit: (hours + 1) * 3600)
         guard samples.count >= 10 else { return nil }
 
-        var lines = ["MY LAST \(hours) HOURS (most recent first) — the state I am in RIGHT NOW:"]
+        // The last hour first, in finer steps: the Today read's Now is about this hour (261014).
+        let newest = samples.map(\.ts).max() ?? to
+        let hourRR = await repo.rrIntervals(from: newest - 3600, to: newest, limit: 12_000)
+        let hourSteps = await repo.recentStepSamples(from: newest - 3600, to: newest)
+        let lastHour = Self.lastHourLines(samples: samples, rr: hourRR, stepSamples: hourSteps,
+                                          restingHr: repo.days.last?.restingHr, now: to)
+
+        var lines = lastHour
+        lines.append(lastHour.isEmpty
+            ? "MY LAST \(hours) HOURS (most recent first) — the state I am in RIGHT NOW:"
+            : "MY LAST \(hours) HOURS, hour by hour (most recent first) — the contrast for the hour above:")
         // Bucket by clock hour so each line is a span the wearer can place against their own day.
         var byHour: [Int: [Int]] = [:]
         for smp in samples { byHour[smp.ts / 3600, default: []].append(smp.bpm) }
@@ -2675,6 +2724,52 @@ final class AICoachEngine: ObservableObject {
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The hour the Today read's Now is about, in 10-minute steps (261014: Now became "my heart, how
+    /// relaxed or wound-up I am, and how much I have used my body — now and over the past hour").
+    ///
+    /// The hour ends at the NEWEST sample, not at `now`: an hour the strap has not offloaded yet is
+    /// unobserved, and the header says how old the data is when it is more than a few minutes. Derived
+    /// figures only — 10-minute means, time well above rest, the peak, steps, and the Baevsky stress
+    /// index over the hour's R-R, which the model compares with the whole-day line. Pure and static so
+    /// it is testable without a store; empty when the hour holds too little to say anything honest.
+    nonisolated static func lastHourLines(samples: [HRSample], rr: [RRInterval], stepSamples: [StepSample],
+                                          restingHr: Int?, now: Int) -> [String] {
+        guard let newest = samples.map(\.ts).max() else { return [] }
+        let start = newest - 3600
+        let hour = samples.filter { $0.ts > start }
+        guard hour.count >= 10 else { return [] }
+        let ageMinutes = max(0, (now - newest) / 60)
+        var out = [ageMinutes >= 10
+            ? "MY LAST HOUR (ending at the last strap sync, \(ageMinutes) min ago), in 10-minute steps, most recent first:"
+            : "MY LAST HOUR, in 10-minute steps, most recent first:"]
+        var byStep: [Int: [Int]] = [:]
+        for smp in hour { byStep[min(5, (newest - smp.ts) / 600), default: []].append(smp.bpm) }
+        for step in byStep.keys.sorted() {
+            guard let bpms = byStep[step], !bpms.isEmpty else { continue }
+            let mean = Int((Double(bpms.reduce(0, +)) / Double(bpms.count)).rounded())
+            let label = step == 0 ? "latest 10 min" : "\(step * 10)-\((step + 1) * 10) min earlier"
+            out.append("  \(label) — mean \(mean) bpm, range \(bpms.min() ?? 0)-\(bpms.max() ?? 0)")
+        }
+        let peak = hour.map(\.bpm).max() ?? 0
+        if let rhr = restingHr {
+            // "Well above rest" = 30 bpm over MY resting rate: brisk walking and up, not standing.
+            let threshold = rhr + 30
+            let minutes = Set(hour.filter { $0.bpm >= threshold }.map { $0.ts / 60 }).count
+            out.append("  Exertion: \(minutes) min at \(threshold) bpm or more (30+ above my resting rate);"
+                       + " peak \(peak) bpm")
+        } else {
+            out.append("  Exertion: peak \(peak) bpm")
+        }
+        let steps = StepsCounter.stepsInWindow(stepSamples.filter { $0.ts > start && $0.ts <= newest }) ?? 0
+        out.append("  Steps that hour: \(steps)")
+        if let si = StressIndex.stressIndex(rr: rr.filter { $0.ts > start && $0.ts <= newest }) {
+            out.append("  Stress (SI) that hour: \(Int(si.rounded())) — set it against today's whole-day"
+                       + " Stress (SI) line: higher means more tense / sympathetic, lower more relaxed;"
+                       + " movement raises it too, so read it beside the exertion line.")
+        }
+        return out
     }
 
     /// The sedentary claim, measured over the span the data actually covers — or nil when there is

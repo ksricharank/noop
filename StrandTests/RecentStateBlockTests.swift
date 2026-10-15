@@ -88,4 +88,44 @@ final class RecentStateBlockTests: XCTestCase {
         let pts: [(ts: Int, bpm: Int)] = [(now - 600, 60), (now - 300, 61)]
         XCTAssertNil(AICoachEngine.sedentaryRead(samples: samples(pts), lastMovementTs: nil, now: now))
     }
+
+    // MARK: - The last hour (261014)
+
+    /// The hour ends at the newest sample and is reported newest-first in 10-minute steps, with the
+    /// exertion and step lines. Samples older than the hour are ignored.
+    func testTheLastHourIsTenMinuteStepsEndingAtTheNewestSample() {
+        let newest = 100_000
+        // 70 minutes of 1/min samples: 60 bpm, except the latest 10 minutes at 100.
+        let pts: [(ts: Int, bpm: Int)] = (0..<70).map { i in
+            let ts = newest - i * 60
+            return (ts, i < 10 ? 100 : 60)
+        }
+        let lines = AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+                                                restingHr: 60, now: newest + 120)
+        XCTAssertEqual(lines.first, "MY LAST HOUR, in 10-minute steps, most recent first:")
+        XCTAssertTrue(lines[1].hasPrefix("  latest 10 min — mean 100 bpm"), lines[1])
+        XCTAssertTrue(lines.contains { $0.hasPrefix("  10-20 min earlier — mean 60 bpm") })
+        // 30+ above a resting 60 is 90: the ten latest minutes qualify, nothing else.
+        XCTAssertTrue(lines.contains("  Exertion: 10 min at 90 bpm or more (30+ above my resting rate); peak 100 bpm"),
+                      lines.joined(separator: "\n"))
+        XCTAssertTrue(lines.contains("  Steps that hour: 0"))
+        XCTAssertFalse(lines.contains { $0.contains("Stress (SI)") }, "no R-R, no stress line")
+    }
+
+    /// An hour that ended a while ago says so, rather than presenting old data as the present.
+    func testAStaleHourNamesItsAge() {
+        let newest = 100_000
+        let pts: [(ts: Int, bpm: Int)] = (0..<30).map { (newest - $0 * 60, 70) }
+        let lines = AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+                                                restingHr: nil, now: newest + 25 * 60)
+        XCTAssertEqual(lines.first,
+                       "MY LAST HOUR (ending at the last strap sync, 25 min ago), in 10-minute steps, most recent first:")
+        XCTAssertTrue(lines.contains("  Exertion: peak 70 bpm"))
+    }
+
+    func testTooLittleInTheHourSaysNothing() {
+        let pts: [(ts: Int, bpm: Int)] = (0..<5).map { (1_000 + $0, 70) }
+        XCTAssertTrue(AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+                                                  restingHr: 60, now: 1_100).isEmpty)
+    }
 }
