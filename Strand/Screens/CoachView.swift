@@ -68,45 +68,17 @@ struct CoachView: View {
     private var suggestions: [String] { coach.suggestions }
 
     var body: some View {
-        ScreenScaffold(title: "Coach",
-                       subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
-                       // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other liquid
-                       // tabs carry, so Coach sits in one atmosphere. Static + non-interactive; the frosted
-                       // message/setup cards below sit on the opaque canvas and stay legible.
-                       topBackground: liquidScaffoldSky()) {
+        Group {
             if coach.isConfigured {
-                connectedHeader
-                transcript
-                if let error = coach.errorText, !error.isEmpty {
-                    errorBanner(error)
-                }
-                if coach.keyRejected || showKeyEditor { keyRepairPanel }
-                // K7: show follow-up chips after each assistant reply (when the transcript is
-                // non-empty and the last message is from the assistant and not mid-send);
-                // otherwise show the initial contextual chips.
-                if showFollowUpChips {
-                    followUpChips
-                } else {
-                    suggestionChips
-                }
-                // Why Today's synthesis is blank. It fails silently by design there — the card falls
-                // back to the rule-based read rather than showing a provider error — which left no way
-                // to tell a broken provider from a quiet one. This is where that question gets answered.
-                if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
-                    errorBanner("Today's synthesis: \(synthesisError)")
-                }
-                // What the last generation actually DID — which model ran, whether a fallback was
-                // attempted, and how it ended. Without this the retry is invisible: a blank result
-                // cannot be told apart from a retry that ran and failed, which is precisely the
-                // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
-                if let trace = coach.lastAttemptTrace, !trace.isEmpty {
-                    attemptTraceNote(trace)
-                }
-                suggestionChips
-                CoachComposerBar(draft: composerDraft, focus: $composerFocused, onSend: send)
-                privacyFootnote
+                chatScreen
             } else {
-                setupCard
+                ScreenScaffold(title: "Coach",
+                               subtitle: "Ask about your charge, effort, rest and workouts, grounded in your own numbers.",
+                               // Liquid finish: the same full-bleed day-of-sky backdrop Today + the other
+                               // liquid tabs carry, so Coach sits in one atmosphere.
+                               topBackground: liquidScaffoldSky()) {
+                    setupCard
+                }
             }
         }
         // macOS only. On iOS these actions live in `connectionMenu` instead, because this bar is hidden for
@@ -559,6 +531,12 @@ struct CoachView: View {
     /// model are unrelated, so the menu changes the model in place and touches no credential.
     private var connectedHeader: some View {
         HStack(spacing: 10) {
+            // 261014: the full-screen chat has no scaffold title, so the header names the screen.
+            Text("Coach")
+                .font(StrandFont.title2)
+                .foregroundStyle(StrandPalette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 4)
             Menu {
                 Picker("Model", selection: connectedModelSelection) {
                     ForEach(coach.availableModels, id: \.self) { m in
@@ -587,15 +565,13 @@ struct CoachView: View {
                     }
                 }
             } label: {
-                StatePill("\(coach.provider.displayName) · \(coach.model)", tone: .accent, showsDot: true)
+                // The model alone: the provider is one tap away in this menu, and the pair no longer
+                // fits beside the title on a phone.
+                StatePill("\(coach.model)", tone: .accent, showsDot: true, pulsing: coach.sending)
+                    .lineLimit(1)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Provider \(coach.provider.displayName), model \(coach.model). Change model")
-
-            Spacer()
-            if coach.sending {
-                StatePill("Thinking", tone: .accent, pulsing: true)
-            }
             // #2243: the way through to what used to be stacked under this header.
             Button {
                 showSettings = true
@@ -690,44 +666,122 @@ struct CoachView: View {
     }
     #endif
 
+    // MARK: - Chat layout (261014)
+
+    /// The connected Coach as a full-screen chat, the shape of every chat app: a slim header, the
+    /// conversation filling the screen edge to edge, and ONE dock at the bottom — a single scrollable
+    /// row of prompts over the composer.
+    ///
+    /// The maintainer's report, with another chat app's screenshot beside it: only a portion of the
+    /// screen was used. The conversation sat in a card capped at 460 pt inside a padded scaffold, each
+    /// reply in a second frosted card inside that, so three nested insets ate the width; under it were
+    /// TWO rows of prompt chips (the contextual row was drawn twice) and a standing privacy footnote,
+    /// which together pushed the composer halfway up the screen. Now the transcript takes everything
+    /// the dock does not, replies run the full width, and the privacy note is shown where it is read —
+    /// before the first question, when nothing has been sent yet.
+    private var chatScreen: some View {
+        VStack(spacing: 0) {
+            connectedHeader
+                .padding(.horizontal, Self.chatHPadding)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+            transcript
+            bottomDock
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(StrandPalette.surfaceBase.ignoresSafeArea())
+    }
+
+    /// Side margin for the chat column — narrower than the card screens' page padding, because a
+    /// conversation reads best using the width.
+    private static let chatHPadding: CGFloat = 16
+
+    /// Room under the dock for the shell's floating tab bar, read from the environment so the pillar
+    /// sheet and macOS (no tab bar) get none. Dropped while the keyboard is up: the bar is behind it.
+    @Environment(\.noopTabBarClearance) private var tabBarClearance
+
     private var transcript: some View {
-        StrandCard(padding: 16) {
-            if coach.messages.isEmpty {
-                emptyTranscript
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
-                        // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            ForEach(coach.messages) { message in
-                                bubble(message).id(message.id)
-                            }
-                            if coach.sending {
-                                typingIndicator.id("typing")
-                            }
-                        }
-                        .padding(.vertical, 2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Lazy so off-screen bubbles aren't all resident/laid-out at once; with the
+                // `maxStoredMessages` cap the transcript is already bounded, this keeps render cost flat.
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    if coach.messages.isEmpty {
+                        emptyTranscript
                     }
-                    // #697 parity: this screen builds its OWN ScrollView rather than going through
-                    // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
-                    // could still rubber-band left-right on a purely vertical scroll. Same modifier, same
-                    // guard. `.basedOnSize` permits horizontal bounce only when content genuinely overflows
-                    // the width, so nothing that is meant to scroll sideways is affected. (#1532 follow-up)
-                    #if os(iOS)
-                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
-                    #endif
-                    .frame(minHeight: 220, maxHeight: 460)
-                    .onChangeCompat(of: coach.messages.count) { _ in
-                        scrollToEnd(proxy)
+                    ForEach(coach.messages) { message in
+                        bubble(message).id(message.id)
                     }
-                    .onChangeCompat(of: coach.sending) { _ in
-                        scrollToEnd(proxy)
+                    if coach.sending {
+                        typingIndicator.id("typing")
                     }
+                    inlineNotices
                 }
+                .padding(.horizontal, Self.chatHPadding)
+                .padding(.vertical, 10)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity)
+            }
+            // #697 parity: this screen builds its OWN ScrollView rather than going through
+            // ScreenScaffold, so it never inherited the scaffold's horizontal-bounce suppression and
+            // could still rubber-band left-right on a purely vertical scroll. Same modifier, same
+            // guard. `.basedOnSize` permits horizontal bounce only when content genuinely overflows
+            // the width, so nothing that is meant to scroll sideways is affected. (#1532 follow-up)
+            #if os(iOS)
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
+            #endif
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { scrollToEnd(proxy, animated: false) }
+            .onChangeCompat(of: coach.messages.count) { _ in
+                scrollToEnd(proxy)
+            }
+            .onChangeCompat(of: coach.sending) { _ in
+                scrollToEnd(proxy)
+            }
+            // The keyboard shortens the viewport; keep the latest reply in view above it.
+            .onChangeCompat(of: composerFocused) { focused in
+                if focused { scrollToEnd(proxy) }
             }
         }
+    }
+
+    /// Errors and the attempt trace, at the END of the conversation they belong to rather than pinned
+    /// over the composer.
+    @ViewBuilder
+    private var inlineNotices: some View {
+        if let error = coach.errorText, !error.isEmpty {
+            errorBanner(error)
+        }
+        // Why Today's synthesis is blank. It fails silently by design there — the card falls
+        // back to the rule-based read rather than showing a provider error — which left no way
+        // to tell a broken provider from a quiet one. This is where that question gets answered.
+        if let synthesisError = coach.lastSynthesisError, !synthesisError.isEmpty {
+            errorBanner("Today's synthesis: \(synthesisError)")
+        }
+        // What the last generation actually DID — which model ran, whether a fallback was
+        // attempted, and how it ended. Without this the retry is invisible: a blank result
+        // cannot be told apart from a retry that ran and failed, which is precisely the
+        // ambiguity that made "the fallback doesn't work" unanswerable from inside the app.
+        if let trace = coach.lastAttemptTrace, !trace.isEmpty {
+            attemptTraceNote(trace)
+        }
+    }
+
+    /// The dock: the key editor when it is open, one row of prompts, the composer.
+    private var bottomDock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if coach.keyRejected || showKeyEditor { keyRepairPanel }
+            promptChips
+            CoachComposerBar(draft: composerDraft, focus: $composerFocused, onSend: send)
+        }
+        .padding(.horizontal, Self.chatHPadding)
+        .padding(.top, 6)
+        .padding(.bottom, composerFocused ? 8 : 8 + tabBarClearance)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(StrandPalette.surfaceBase.ignoresSafeArea(edges: .bottom))
+        .animation(StrandMotion.fade, value: composerFocused)
     }
 
     private var emptyTranscript: some View {
@@ -739,8 +793,13 @@ struct CoachView: View {
                 .font(StrandFont.subhead)
                 .foregroundStyle(StrandPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            // The privacy note, where it is read: before anything has been sent (261014 — it used to
+            // stand under the composer for the whole conversation).
+            privacyFootnote
+                .padding(.top, 8)
         }
-        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.top, 24)
     }
 
     @ViewBuilder
@@ -766,36 +825,17 @@ struct CoachView: View {
             // verbatim `Text` so typed `*`/`#` never turn into surprise formatting.
             // The reply sits on a frosted Charge-tinted surface, a card, not a flat box.
             // K8: context menu (long-press / right-click) with Copy, Share, and Save actions.
+            //
+            // 261014: a reply is the conversation's main content, so it runs the full column width as
+            // plain text on the canvas — no card, no side gutter — the way chat apps set an answer. The
+            // frosted card and the 48 pt trailing spacer cost a quarter of the width on a phone, which
+            // is what squeezed tables into four-line cells.
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Markdown(message.text)
                         .markdownTheme(.strand)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
-                        // K8: Copy / Share / Save context menu on assistant replies.
-                        .contextMenu {
-                            Button {
-                                #if os(macOS)
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(message.text, forType: .string)
-                                #else
-                                UIPasteboard.general.string = message.text
-                                #endif
-                            } label: {
-                                Label("Copy", systemImage: "doc.on.doc")
-                            }
-                            ShareLink(item: message.text) {
-                                Label("Share", systemImage: "square.and.arrow.up")
-                            }
-                            Button {
-                                saveAdvice(message.text)
-                            } label: {
-                                Label("Save to Journal", systemImage: "square.and.pencil")
-                            }
-                        }
 
                     // Attribution on EVERY reply, naming whichever model wrote it.
                     //
@@ -815,10 +855,9 @@ struct CoachView: View {
                             .foregroundStyle(message.cameFromFallback
                                              ? StrandPalette.textSecondary
                                              : StrandPalette.textTertiary)
-                            .padding(.horizontal, 4)
                     }
                 }
-                .frame(maxWidth: 560, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 // K8 (upstream): Copy / Share / Save to Journal on an assistant reply. Attached to
                 // the attribution VStack rather than to the Markdown, so the menu covers the whole
                 // bubble including the "generated by" line. Lost once in the v17 uplift when this
@@ -844,7 +883,6 @@ struct CoachView: View {
                         Label("Save to Journal", systemImage: "square.and.pencil")
                     }
                 }
-                Spacer(minLength: 48)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(message.generatedByModel.map { model in
@@ -863,10 +901,7 @@ struct CoachView: View {
                 .foregroundStyle(StrandPalette.textSecondary)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .frostedCardSurface(tint: StrandPalette.chargeColor, cornerRadius: 16)
-        .frame(maxWidth: 320, alignment: .leading)
+        .padding(.vertical, 4)
         .accessibilityLabel("Coach is thinking")
     }
 
@@ -960,10 +995,19 @@ struct CoachView: View {
         .accessibilityLabel("Model attempt: \(message)")
     }
 
-    private var suggestionChips: some View {
+    /// ONE scrollable row of prompts (261014 — there were two: the follow-ups or the contextual set,
+    /// and then the contextual set AGAIN). After a reply the follow-ups lead (K7) and the contextual
+    /// prompts follow in the same row; before one, the contextual prompts alone. Duplicates drop out.
+    private var chipPrompts: [String] {
+        let lead = showFollowUpChips ? AICoachEngine.followUpSuggestions : []
+        var seen = Set<String>()
+        return (lead + suggestions).filter { seen.insert($0).inserted }
+    }
+
+    private var promptChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(suggestions, id: \.self) { prompt in
+                ForEach(chipPrompts, id: \.self) { prompt in
                     Button {
                         send(prompt)
                     } label: {
@@ -983,41 +1027,17 @@ struct CoachView: View {
                 }
             }
             .padding(.vertical, 1)
+            .padding(.horizontal, Self.chatHPadding)
         }
+        // Bleed the row to the screen edges so chips scroll out from under the margin, not clip at it.
+        .padding(.horizontal, -Self.chatHPadding)
     }
 
-    /// K7: True when follow-up chips should show instead of the initial contextual chips —
-    /// i.e. the transcript is non-empty, the last message is from the assistant, and a reply
-    /// is not currently in flight.
+    /// K7: True when follow-up chips should lead the row — i.e. the transcript is non-empty, the last
+    /// message is from the assistant, and a reply is not currently in flight.
     private var showFollowUpChips: Bool {
         guard let last = coach.messages.last, !coach.sending else { return false }
         return last.role == .assistant
-    }
-
-    /// K7: Follow-up suggestion chips shown after each assistant reply, so the user can dig
-    /// deeper without typing. Uses the static `AICoachEngine.followUpSuggestions` list.
-    private var followUpChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(AICoachEngine.followUpSuggestions, id: \.self) { prompt in
-                    Button {
-                        send(prompt)
-                    } label: {
-                        Text(prompt)
-                            .font(StrandFont.captionNumber)
-                            .foregroundStyle(StrandPalette.textSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(StrandPalette.surfaceInset, in: Capsule(style: .continuous))
-                            .overlay(Capsule(style: .continuous).strokeBorder(StrandPalette.hairline, lineWidth: 1))
-                    }
-                    .buttonStyle(LiquidPressStyle())
-                    .disabled(coach.sending)
-                    .accessibilityLabel("Follow-up prompt: \(prompt)")
-                }
-            }
-            .padding(.vertical, 1)
-        }
     }
 
     private var privacyFootnoteText: String {
@@ -1095,14 +1115,15 @@ struct CoachView: View {
         }
     }
 
-    private func scrollToEnd(_ proxy: ScrollViewProxy) {
-        withAnimation(StrandMotion.fade) {
+    private func scrollToEnd(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let scroll = {
             if coach.sending {
                 proxy.scrollTo("typing", anchor: .bottom)
             } else if let last = coach.messages.last {
                 proxy.scrollTo(last.id, anchor: .bottom)
             }
         }
+        if animated { withAnimation(StrandMotion.fade, scroll) } else { scroll() }
     }
 }
 
@@ -1165,21 +1186,20 @@ struct CoachComposerBar: View {
         .padding(.top, 2)
     }
 
-    /// The input bar, a frosted overlay surface holding the field + Send, so the composer reads as a
-    /// distinct docked surface above the canvas rather than two floating controls.
+    /// The input bar: ONE rounded field holding the text, the mic and Send (261014 — the field, the mic
+    /// and Send were three separately-bordered boxes inside a fourth panel). Send is a filled accent
+    /// circle that only lights up when there is something to send.
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        let canSend = !coach.sending && !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return HStack(alignment: .bottom, spacing: 6) {
             TextField("Ask Coach about your data…", text: $draft.text, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(StrandFont.body)
                 .foregroundStyle(StrandPalette.textPrimary)
-                .lineLimit(1...5)
+                .lineLimit(1...6)
                 .focused(focus)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(focus.wrappedValue ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
+                .padding(.leading, 14)
+                .padding(.vertical, 10)
                 .onSubmit { onSend(draft.text) }
                 .accessibilityLabel("Question")
 
@@ -1188,9 +1208,6 @@ struct CoachComposerBar: View {
             micButton
             #endif
 
-            // Docked icon-only send affordance: a crisp accent-filled square sized to the
-            // composer row (not the full 48pt control height), so it routes through the same
-            // token fill/label colours as the button system without overpowering the field.
             Button {
                 onSend(draft.text)
             } label: {
@@ -1199,22 +1216,23 @@ struct CoachComposerBar: View {
                         ProgressView().controlSize(.small).tint(StrandPalette.goldDeepText)
                     } else {
                         Image(systemName: "arrow.up")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 15, weight: .bold))
                     }
                 }
-                .frame(width: 44, height: 38)
-                .foregroundStyle(StrandPalette.goldDeepText)
-                .background(StrandPalette.accent,
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .frame(width: 34, height: 34)
+                .foregroundStyle(canSend || coach.sending ? StrandPalette.goldDeepText : StrandPalette.textTertiary)
+                .background(canSend || coach.sending ? StrandPalette.accent : StrandPalette.surfaceRaised,
+                            in: Circle())
             }
             .buttonStyle(.plain)
-            .disabled(coach.sending || draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!canSend)
             .accessibilityLabel("Send")
         }
-        .padding(8)
-        .background(NoopPanelSurface(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+        .padding(.trailing, 5)
+        .padding(.vertical, 3)
+        .background(StrandPalette.surfaceInset, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(focus.wrappedValue ? StrandPalette.focusRing : StrandPalette.hairline, lineWidth: 1))
     }
 
     // MARK: - K4: Voice input (iOS only)
@@ -1238,11 +1256,8 @@ struct CoachComposerBar: View {
                         .foregroundStyle(canUseVoice ? StrandPalette.textSecondary : StrandPalette.textTertiary)
                 }
             }
-            .frame(width: 36, height: 38)
-            .background(StrandPalette.surfaceInset,
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(StrandPalette.hairline, lineWidth: 1))
+            .frame(width: 34, height: 34)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!micButtonEnabled)
