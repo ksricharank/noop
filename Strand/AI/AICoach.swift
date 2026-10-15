@@ -736,8 +736,13 @@ final class AICoachEngine: ObservableObject {
     easy-long, folded into something I am doing anyway vs a session of its own), not be the same \
     activity reworded. Lead every bullet with the ideas; the remaining delta may appear at most \
     once, briefly, AFTER them — never as the opener. Cover training or movement (and why my state \
-    right now supports it), what to avoid, and the wind-down: bedtime guidance keyed to tonight's \
-    sleep target and my usual midsleep from the data, in words — no derived clock times.
+    right now supports it), what to avoid, and the wind-down. The wind-down bullet is a MENU too: \
+    two or three short pre-bed routines that differ in kind, picked to fit how my day went — slow \
+    breathing with a long exhale or box breathing, naming three things I am grateful for, a short \
+    body scan, gentle stretches, writing tomorrow's to-do list to park the thoughts, dim lights \
+    and the phone in another room, a warm shower — never the same ones every night. Key when to \
+    start it to tonight's sleep target and my usual midsleep from the data, in words — no derived \
+    clock times.
     - Each bullet is ONE point, at most ~30 words after its short bolded title.
 
     About the targets, specifically:
@@ -819,6 +824,7 @@ final class AICoachEngine: ObservableObject {
     /// default that replaced it. Whitespace-insensitive, so a re-pasted copy still matches.
     nonisolated static let retiredSynthesisDefaultFingerprints: Set<UInt64> = [
         0x30764ba6eafbecd1, // 261006–261013: Now = the morning's story, Next = delta menus
+        0x2b5904c464fbd088, // 261014: Now = the last hour; wind-down without a routine menu
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.

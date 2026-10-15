@@ -154,6 +154,10 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
+        // 261015: the wind-down is a menu of quick pre-bed routines, not a bedtime instruction.
+        XCTAssertTrue(d.contains("The wind-down bullet is a MENU too"))
+        XCTAssertTrue(d.contains("grateful"))
+        XCTAssertTrue(d.contains("breathing"))
     }
 
     /// A stored copy of the 261006 default (it went in as the maintainer's own pasted text) is an old
