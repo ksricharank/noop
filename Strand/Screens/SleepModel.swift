@@ -367,26 +367,30 @@ extension SleepModel {
         mean(days.compactMap { $0[keyPath: key] }.filter { $0 > 0 })
     }
 
-    /// The personal sleep need (minutes): mean asleep, but never below a 7.5h floor so
-    /// debt/performance read sensibly even for a chronically short sleeper.
-    static func sleepNeedMin(days: [DailyMetric]) -> Double {
-        Swift.max(450, typicalTotalMin(days: days) ?? 450)   // 450 min = 7.5h
+    /// THE personal sleep need (minutes) — one figure for every surface (260922).
+    ///
+    /// Three figures used to coexist: this descriptive mean (floored at 7.5 h), the debt ledger's
+    /// upper-quartile need over all history, and the population-anchored "tonight" target with
+    /// charge / rest / readiness notches — 7.6h, 8h27 and 8h05 on one screen set. This is now the
+    /// only estimator: `personalizedNeedHours` (the upper quartile of "unrestricted" nights, floored
+    /// at the adult 8 h target) over the trailing `needWindowNights` nights with sleep — the same
+    /// estimator and window the engine's Rest score uses, so the ledger, the Day-quality "needed",
+    /// tonight's target and the coach all read the number Rest was scored against.
+    /// Age is not plumbed (`age: nil` → adult floor): it only changes the floor under 18.
+    static let needWindowNights = 21
+
+    static func personalNeedMin(days: [DailyMetric]) -> Double {
+        let nightly = days.sorted { $0.day < $1.day }
+            .compactMap { $0.totalSleepMin }.filter { $0 > 0 }
+            .suffix(needWindowNights).map { $0 / 60.0 }
+        return AnalyticsEngine.Rest.personalizedNeedHours(nightlyHours: Array(nightly), age: nil) * 60.0
     }
 
-    /// The NORMATIVE per-user sleep need (minutes) the DEBT surfaces measure against — the
-    /// population-anchored, age-floored, upper-quartile `personalizedNeedHours`, the SAME estimator
-    /// Rest/Intelligence score against. Deliberately NOT the descriptive `sleepNeedMin` (mean total
-    /// sleep): the mean drifts DOWN toward a chronic under-sleeper's own deficit and quietly erases
-    /// their debt, whereas the upper-quartile floored at the ~8 h adult target only adjusts UP for
-    /// genuine long sleepers. Age isn't plumbed to this screen (age: nil → adult target); wiring it
-    /// would only raise it for under-18s. One need across every debt surface, agreeing with the engine.
-    /// (#242; need-unification from #464 by @vishk23. The descriptive `sleepNeedMin` still drives the
-    /// non-debt "hours vs needed" performance tile.)
-    static func debtNeedMin(days: [DailyMetric]) -> Double {
-        AnalyticsEngine.Rest.personalizedNeedHours(
-            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
-            age: nil) * 60.0
-    }
+    /// The need the "hours vs needed" performance tile shows — the canonical need (see above).
+    static func sleepNeedMin(days: [DailyMetric]) -> Double { personalNeedMin(days: days) }
+
+    /// The need the debt surfaces measure against — the canonical need (see above).
+    static func debtNeedMin(days: [DailyMetric]) -> Double { personalNeedMin(days: days) }
 
     // MARK: Per-tile series (latest, typical mean, sparkline history)
 

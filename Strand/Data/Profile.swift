@@ -203,7 +203,6 @@ final class ProfileStore: ObservableObject {
         return age > 0 ? StrainScorer.tanakaHRmax(age: Double(age)) : nil
     }
 
-    /// Tanaka estimate unless overridden.
     var hrMax: Int { hrMaxOverride > 0 ? hrMaxOverride : Int((208 - 0.7 * Double(age)).rounded()) }
 
     /// Personalized zone starts after enforcing the same five-value invariant as `HRZones`.
