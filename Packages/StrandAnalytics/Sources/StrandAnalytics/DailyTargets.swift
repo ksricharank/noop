@@ -93,20 +93,29 @@ public enum DailyTargets {
     /// The four-notch ladder: 0 = rest day (nil), 1 = half the band's minutes at zone-2,
     /// 2 = the band's minutes at zone-2, 3 = a third more at zone-3. Readiness picks the notch
     /// (rundown 0, strained 1, balanced/insufficient 2, primed 3); Rest shifts it one either way.
-    /// The session's bounds (261004): the floor is the notch-1 half of the recover ask, the cap the
-    /// notch-3 lift of the push ask — both figures the ladder could already produce, now stated as
-    /// the ends of the continuous curve rather than reachable only at exact band values.
-    public static let sessionMinutesFloor = 8
-    public static let sessionMinutesCap = 60
+    /// The session's bounds. 261004: 8 and 60, the notch-1 half of the recover ask and the notch-3
+    /// lift of the push ask. 261016 (maintainer: "lower the floor and raise the ceiling"): with 8 the
+    /// smallest non-rest target was 32 and with 60 the largest 62 — the effort curve is logarithmic,
+    /// so the band was narrow at both ends. Now 3 (the lowest charge's strained half-session; the
+    /// smallest non-rest target is 22) and 90 (reached only by a primed charge-100 day, see
+    /// `session(notch:base:)`; the largest target is 66). A REST day is still exactly 0.
+    public static let sessionMinutesFloor = 3
+    public static let sessionMinutesCap = 90
+    /// The primed rung's minutes where the top leg starts (the old cap): from here up the primed ask
+    /// grows in BOTH time and pace.
+    public static let primedTopLegStartMinutes = 60
 
     /// The continuous charge→session-minutes base (261004, maintainer: "more granular and
     /// continuous targets"). Same shape and the same three anchors as `stepsBaseForCharge`
     /// (recover ceiling → 15, midpoint → 30, push floor → 45), with the held ends now extended
-    /// linearly to the curve's own bounds: charge 0 → the floor's pre-round 7.5 (half the recover
-    /// ask, the notch-1 figure) and charge 100 → 60 (4/3 of the push ask, the notch-3 figure). A
+    /// linearly to the curve's own bounds: charge 0 → 5 (261016; was 7.5, half the recover ask, which
+    /// with the 8-min floor kept every low-charge day at one number) and charge 100 → 60 (4/3 of the
+    /// push ask, the notch-3 figure). A
     /// charge of 75 and a charge of 95 used to ask the identical 45 minutes; the ask now moves
     /// with every point of charge, which is the whole point. Anchors are preserved EXACTLY, so any
     /// charge that previously sat on a band edge still gets that band's number.
+    public static let sessionBaseMinutesAtZeroCharge = 5.0
+
     public static func sessionBaseMinutesForCharge(_ charge: Int?) -> Double {
         guard let c = charge.map(Double.init) else { return Double(maintainSessionMinutes) }
         let lo = Double(recoverChargeCeiling), hi = Double(pushChargeFloor)
@@ -115,7 +124,7 @@ public enum DailyTargets {
             y0 + (min(max(x, x0), x1) - x0) / (x1 - x0) * (y1 - y0)
         }
         switch c {
-        case ..<lo:  return lerp(c, 0, Double(recoverSessionMinutes) * 0.5, lo, Double(recoverSessionMinutes))
+        case ..<lo:  return lerp(c, 0, Self.sessionBaseMinutesAtZeroCharge, lo, Double(recoverSessionMinutes))
         case ..<mid: return lerp(c, lo, Double(recoverSessionMinutes), mid, Double(maintainSessionMinutes))
         case ..<hi:  return lerp(c, mid, Double(maintainSessionMinutes), hi, Double(pushSessionMinutes))
         default:     return lerp(c, hi, Double(pushSessionMinutes), 100, Double(pushSessionMinutes) * 4.0 / 3.0)
@@ -137,15 +146,22 @@ public enum DailyTargets {
             if rest < poorRestScore { notch = max(notch - 1, 0) }
             else if rest >= greatRestScore { notch = min(notch + 1, 3) }
         }
+        return session(notch: notch, base: base)
+    }
+
+    /// The session for a rung of the ladder at a given base — the one place the rung arithmetic
+    /// lives, so the "How these were set" explainer prints exactly what the card asks.
+    /// 0 = rest (nil); 1 = half the base at zone-2; 2 = the base at zone-2; 3 = a third more at
+    /// zone-3, and past `primedTopLegStartMinutes` the primed top leg.
+    public static func session(notch: Int, base: Double) -> SessionPrescription? {
         // Rounded to the MINUTE (261004; was 5): with the base continuous in charge, a 5-minute
         // grain re-quantized the very movement the curve exists to show. Clamped to the stated
-        // floor/cap so the notch multipliers cannot ask less than the gentlest half-session or
-        // more than the ladder's previous maximum.
+        // floor/cap.
         func minutes(_ m: Double) -> Int {
             min(max(Int(m.rounded()), sessionMinutesFloor), sessionMinutesCap)
         }
         switch notch {
-        case 0: return nil
+        case ..<1: return nil
         case 1: return SessionPrescription(minutes: minutes(base * 0.5),
                                            hrrFraction: moderateHrrFraction,
                                            edwardsZoneWeight: moderateZoneWeight)
@@ -153,27 +169,25 @@ public enum DailyTargets {
                                            hrrFraction: moderateHrrFraction,
                                            edwardsZoneWeight: moderateZoneWeight)
         default:
-            // 261016, maintainer: the effort target "always seems to have discrete targets like 49,
-            // 56, 59 (and I never see 57, 58)". The primed rung asks 4/3 of the base, which passes the
-            // 60-min cap from charge ~67 up — so every high-charge primed day was the identical
-            // "60 min at zone-3", worth exactly 59, and the charge above 67 bought nothing. Past the
-            // cap the ask now keeps its full worth by coming as PACE instead of time: the same 60
-            // minutes, with the Edwards weight (and the %HRR it stands for) rising continuously from
-            // zone-3 toward zone-4, so the session's TRIMP is exactly what the uncapped minutes would
-            // have been. Charge 67 → 59, 81 → 60, 100 → 62, moving with every point.
+            // The primed top leg (261016). The primed rung asks 4/3 of the base, which reaches the
+            // old 60-min cap at charge 67 — and every primed day above that was the identical
+            // "60 min at zone-3", worth exactly 59 ("I never see 57, 58"). From 60 wanted minutes up
+            // (charge 67 → 100, wanting 60 → 80), the session lengthens 60 → 90 min AND its pace
+            // rises zone-3 → zone-4 (Edwards weight 3 → 4, %HRR 75 → 85), linearly together. Charge
+            // 67 keeps its 59; 81 → 62; 100 → 66.
             let wanted = base * 4.0 / 3.0
-            let capped = Double(sessionMinutesCap)
-            guard wanted > capped else {
+            let start = Double(primedTopLegStartMinutes)
+            guard wanted > start else {
                 return SessionPrescription(minutes: minutes(wanted),
                                            hrrFraction: brisksHrrFraction,
                                            edwardsZoneWeight: briskZoneWeight)
             }
-            let weight = min(briskZoneWeight * wanted / capped, hardZoneWeight)
-            let hrr = brisksHrrFraction
-                + (weight - briskZoneWeight) / (hardZoneWeight - briskZoneWeight)
-                * (hardHrrFraction - brisksHrrFraction)
-            return SessionPrescription(minutes: sessionMinutesCap, hrrFraction: hrr,
-                                       edwardsZoneWeight: weight)
+            let topWanted = Double(pushSessionMinutes) * 4.0 / 3.0 * 4.0 / 3.0   // charge 100: 80
+            let t = min((wanted - start) / (topWanted - start), 1)
+            return SessionPrescription(
+                minutes: minutes(start + t * (Double(sessionMinutesCap) - start)),
+                hrrFraction: brisksHrrFraction + t * (hardHrrFraction - brisksHrrFraction),
+                edwardsZoneWeight: briskZoneWeight + t * (hardZoneWeight - briskZoneWeight))
         }
     }
 

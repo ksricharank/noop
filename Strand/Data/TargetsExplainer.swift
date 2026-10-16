@@ -65,15 +65,9 @@ enum TargetsExplainer {
     /// (261004: half the continuous base / the base / a third more, rounded to the minute and
     /// clamped to the stated floor/cap), or nil for "no workout".
     private static func ladderMinutes(base: Double, notch: Int) -> Int? {
-        func minutes(_ m: Double) -> Int {
-            min(max(Int(m.rounded()), DailyTargets.sessionMinutesFloor), DailyTargets.sessionMinutesCap)
-        }
-        switch notch {
-        case 0: return nil
-        case 1: return minutes(base * 0.5)
-        case 2: return minutes(base)
-        default: return minutes(base * 4.0 / 3.0)
-        }
+        // 261016: read from the engine's own rung arithmetic rather than re-deriving it, so the
+        // primed top leg (longer AND faster) can never print a different number from the card.
+        DailyTargets.session(notch: notch, base: base)?.minutes
     }
 
     /// A rung's consequence: what the workout now is, in minutes — or that there is none.
@@ -130,8 +124,8 @@ enum TargetsExplainer {
                                 low: "plan a \(baseMinutes) min workout",
                                 mid: "plan a \(baseMinutes) min workout",
                                 high: "plan a \(baseMinutes) min workout"))
-            e.append("   (the dial runs Charge 0 → \(DailyTargets.sessionMinutesFloor) min up to"
-                     + " Charge 100 → \(DailyTargets.sessionMinutesCap) min, sliding with every point;"
+            e.append("   (the dial runs Charge 0 → \(Int(DailyTargets.sessionBaseMinutesForCharge(0).rounded())) min up to"
+                     + " Charge 100 → \(Int(DailyTargets.sessionBaseMinutesForCharge(100).rounded())) min, sliding with every point;"
                      + " \(DailyTargets.recoverChargeCeiling)/\(DailyTargets.pushChargeFloor) are the"
                      + " published \(DailyTargets.recoverSessionMinutes)/\(DailyTargets.pushSessionMinutes)"
                      + " min anchors)")
@@ -162,10 +156,10 @@ enum TargetsExplainer {
                     e.append("workout pace: ~\(hr) bpm — about \(Int(session.hrrFraction * 100))% of the"
                              + " way up from your resting HR \(rhr) toward your max ~\(hrmax)")
                 }
-                // 261016: a primed ask past the time cap keeps its worth as pace, not minutes.
+                // 261016: the primed top leg grows in pace as well as time.
                 if session.edwardsZoneWeight > DailyTargets.briskZoneWeight {
-                    e.append("   (\(DailyTargets.sessionMinutesCap) min is the most the plan asks, so the"
-                             + " rest of today's ask comes as a slightly faster pace)")
+                    e.append("   (past \(DailyTargets.primedTopLegStartMinutes) min a primed day's ask grows"
+                             + " in pace as well as time, up to \(DailyTargets.sessionMinutesCap) min at the top)")
                 }
                 e.append("effort is the app's 0–100 score for a day's exercise:"
                          + " \(session.minutes) min at that pace scores \(effortTarget)")

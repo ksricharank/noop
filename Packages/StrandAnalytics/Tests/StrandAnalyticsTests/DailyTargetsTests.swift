@@ -16,11 +16,10 @@ final class DailyTargetsTests: XCTestCase {
     func testSessionLadder() {
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 81, readiness: .balanced, restScore: nil),
                        .init(minutes: 51, hrrFraction: 0.65, edwardsZoneWeight: 2))
-        // Primed at 81 wants 4/3 × 51.36 = 68.5 min: capped at 60, the rest comes as pace.
+        // Primed at 81 is on the top leg (t = 14/33): 60 + 30t ≈ 73 min, weight 3 + t.
         let primed81 = DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: nil)
-        XCTAssertEqual(primed81?.minutes, 60)
-        XCTAssertEqual(primed81?.edwardsZoneWeight ?? 0, 3.0 * (45.0 + 14.0 / 33.0 * 15.0) * 4.0 / 3.0 / 60.0,
-                       accuracy: 1e-9)
+        XCTAssertEqual(primed81?.minutes, 73)
+        XCTAssertEqual(primed81?.edwardsZoneWeight ?? 0, 3.0 + 14.0 / 33.0, accuracy: 1e-9)
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 50, readiness: .strained, restScore: nil),
                        .init(minutes: 15, hrrFraction: 0.65, edwardsZoneWeight: 2))
         XCTAssertNil(DailyTargets.sessionPrescription(charge: 81, readiness: .rundown, restScore: nil))
@@ -33,9 +32,9 @@ final class DailyTargetsTests: XCTestCase {
         // Anchors are hit exactly — a band-edge day keeps its old number.
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 67, readiness: .balanced, restScore: nil)?.minutes, 45)
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 33, readiness: .balanced, restScore: nil)?.minutes, 15)
-        // The curve's own bounds: charge 100 balanced asks the 60-min cap's base; charge 0 the 8-min floor.
+        // The curve's own bounds: charge 100 balanced asks 60; charge 0 asks 5 (261016; was 8).
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 100, readiness: .balanced, restScore: nil)?.minutes, 60)
-        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 0, readiness: .balanced, restScore: nil)?.minutes, 8)
+        XCTAssertEqual(DailyTargets.sessionPrescription(charge: 0, readiness: .balanced, restScore: nil)?.minutes, 5)
     }
 
     /// Last night's Rest shifts the ladder one notch either way — a poor night can turn a strained
@@ -51,10 +50,10 @@ final class DailyTargetsTests: XCTestCase {
                        DailyTargets.sessionPrescription(charge: 81, readiness: .primed, restScore: nil))
     }
 
-    /// 261016: high-charge primed days no longer share one effort target. Past the 60-min cap the
-    /// ask comes as pace, so the target keeps moving with charge — and a band-edge day (charge 67,
-    /// exactly 60 min wanted) keeps the old zone-3 session and its 59.
-    func testCappedPrimedSessionKeepsMovingWithCharge() {
+    /// 261016: high-charge primed days no longer share one effort target. From charge 67 the primed
+    /// ask grows in time AND pace (60 → 90 min, zone-3 → zone-4), so the target keeps moving with
+    /// charge — and the band-edge day (charge 67) keeps its old 60 min at zone-3 and its 59.
+    func testPrimedTopLegKeepsMovingWithCharge() {
         func target(_ charge: Int) -> Int {
             DailyTargets.effortTargetStored(
                 currentEffortStored: nil,
@@ -62,17 +61,40 @@ final class DailyTargetsTests: XCTestCase {
         }
         XCTAssertEqual(DailyTargets.sessionPrescription(charge: 67, readiness: .primed, restScore: nil),
                        .init(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3))
+        XCTAssertEqual(target(60), 57)
+        XCTAssertEqual(target(64), 58)
         XCTAssertEqual(target(67), 59)
-        XCTAssertEqual(target(81), 60)
-        XCTAssertEqual(target(100), 62)
-        // Monotone, never stuck: every step up in charge holds or raises the target.
-        let ts = (67...100).map(target)
-        XCTAssertEqual(ts, ts.sorted())
-        XCTAssertGreaterThan(Set(ts).count, 2)
-        // Pace stays inside zone-4 at the very top.
+        XCTAssertEqual(target(81), 62)
+        XCTAssertEqual(target(100), 66)
+        let ts = (50...100).map(target)
+        XCTAssertEqual(ts, ts.sorted(), "never goes down as charge rises")
         let top = DailyTargets.sessionPrescription(charge: 100, readiness: .primed, restScore: nil)
+        XCTAssertEqual(top?.minutes, 90)
         XCTAssertEqual(top?.edwardsZoneWeight ?? 0, 4.0, accuracy: 1e-9)
         XCTAssertEqual(top?.hrrFraction ?? 0, 0.85, accuracy: 1e-9)
+    }
+
+    /// 261016: the band's bottom. A rest day is exactly 0; the smallest WORKOUT (the lowest charge's
+    /// strained half-session, 3 min at zone-2) is 22, down from 32 with the old 8-min floor.
+    func testTheTargetBandRunsFromRestZeroThrough22To66() {
+        XCTAssertEqual(DailyTargets.effortTargetStored(
+            currentEffortStored: nil,
+            session: DailyTargets.sessionPrescription(charge: 50, readiness: .rundown, restScore: nil)), 0)
+        let lowest = DailyTargets.sessionPrescription(charge: 0, readiness: .strained, restScore: nil)
+        XCTAssertEqual(lowest?.minutes, 3)
+        XCTAssertEqual(DailyTargets.effortTargetStored(currentEffortStored: nil, session: lowest), 22)
+        // Every whole number from 22 to 66 is a target some morning can produce.
+        var seen = Set<Int>()
+        for charge in 0...100 {
+            for level in [ReadinessEngine.Level.strained, .balanced, .primed] {
+                for rest in [nil, 40, 70, 90] as [Int?] {
+                    let sess = DailyTargets.sessionPrescription(charge: charge, readiness: level, restScore: rest)
+                    if sess != nil { seen.insert(DailyTargets.effortTargetStored(currentEffortStored: nil, session: sess)) }
+                }
+            }
+        }
+        XCTAssertEqual(seen.min(), 22)
+        XCTAssertEqual(seen.max(), 66)
     }
 
     /// The session HR is plain Karvonen at the prescription's %HRR: rhr 60, age 30, zone-2 mid →
