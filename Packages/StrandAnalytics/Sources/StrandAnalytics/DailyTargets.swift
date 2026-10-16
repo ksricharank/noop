@@ -78,6 +78,9 @@ public enum DailyTargets {
     /// Zone-3 (the primed notch's intensity): 70–80 %HRR, at its middle.
     public static let brisksHrrFraction = 0.75
     public static let briskZoneWeight = 3.0
+    /// Zone-4 (80–90 %HRR, at its middle): the ceiling a capped primed session's pace rises toward.
+    public static let hardHrrFraction = 0.85
+    public static let hardZoneWeight = 4.0
     /// A Rest score below this drags the prescription one notch down; at or above the upper bound
     /// it lifts one notch — last night is a body-state input the morning charge can understate.
     public static let poorRestScore = 50
@@ -149,9 +152,28 @@ public enum DailyTargets {
         case 2: return SessionPrescription(minutes: minutes(base),
                                            hrrFraction: moderateHrrFraction,
                                            edwardsZoneWeight: moderateZoneWeight)
-        default: return SessionPrescription(minutes: minutes(base * 4.0 / 3.0),
-                                            hrrFraction: brisksHrrFraction,
-                                            edwardsZoneWeight: briskZoneWeight)
+        default:
+            // 261016, maintainer: the effort target "always seems to have discrete targets like 49,
+            // 56, 59 (and I never see 57, 58)". The primed rung asks 4/3 of the base, which passes the
+            // 60-min cap from charge ~67 up — so every high-charge primed day was the identical
+            // "60 min at zone-3", worth exactly 59, and the charge above 67 bought nothing. Past the
+            // cap the ask now keeps its full worth by coming as PACE instead of time: the same 60
+            // minutes, with the Edwards weight (and the %HRR it stands for) rising continuously from
+            // zone-3 toward zone-4, so the session's TRIMP is exactly what the uncapped minutes would
+            // have been. Charge 67 → 59, 81 → 60, 100 → 62, moving with every point.
+            let wanted = base * 4.0 / 3.0
+            let capped = Double(sessionMinutesCap)
+            guard wanted > capped else {
+                return SessionPrescription(minutes: minutes(wanted),
+                                           hrrFraction: brisksHrrFraction,
+                                           edwardsZoneWeight: briskZoneWeight)
+            }
+            let weight = min(briskZoneWeight * wanted / capped, hardZoneWeight)
+            let hrr = brisksHrrFraction
+                + (weight - briskZoneWeight) / (hardZoneWeight - briskZoneWeight)
+                * (hardHrrFraction - brisksHrrFraction)
+            return SessionPrescription(minutes: sessionMinutesCap, hrrFraction: hrr,
+                                       edwardsZoneWeight: weight)
         }
     }
 

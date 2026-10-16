@@ -162,6 +162,11 @@ enum TargetsExplainer {
                     e.append("workout pace: ~\(hr) bpm — about \(Int(session.hrrFraction * 100))% of the"
                              + " way up from your resting HR \(rhr) toward your max ~\(hrmax)")
                 }
+                // 261016: a primed ask past the time cap keeps its worth as pace, not minutes.
+                if session.edwardsZoneWeight > DailyTargets.briskZoneWeight {
+                    e.append("   (\(DailyTargets.sessionMinutesCap) min is the most the plan asks, so the"
+                             + " rest of today's ask comes as a slightly faster pace)")
+                }
                 e.append("effort is the app's 0–100 score for a day's exercise:"
                          + " \(session.minutes) min at that pace scores \(effortTarget)")
                 e.append("target = \(effortTarget) — today's effort so far isn't added in;"
