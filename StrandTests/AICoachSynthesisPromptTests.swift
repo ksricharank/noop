@@ -158,6 +158,8 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("The wind-down bullet is a MENU too"))
         XCTAssertTrue(d.contains("grateful"))
         XCTAssertTrue(d.contains("breathing"))
+        // 261016: the ideas themselves are bolded so they stand out at a glance.
+        XCTAssertTrue(d.contains("ALSO bold every suggested idea itself"))
     }
 
     /// A stored copy of the 261006 default (it went in as the maintainer's own pasted text) is an old

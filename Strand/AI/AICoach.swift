@@ -730,9 +730,9 @@ final class AICoachEngine: ObservableObject {
     Next that congratulates me and protects the wind-down. EVERY suggestion bullet is a MENU, not \
     an order: give TWO OR MORE equivalent ideas that achieve the same end, separated by "or", \
     roughly matched in effect (sized from the standpoint of the DELTA between the TARGET and what \
-    I have already achieved today) so I can pick by mood — e.g. "close the effort gap: a 25-min \
-    zone-2 ride, or take your next two calls on foot, or 20 min of intervals if you want it done \
-    fast". Alternatives must differ in kind (indoor/outdoor, one block vs split, hard-short vs \
+    I have already achieved today) so I can pick by mood — e.g. "close the effort gap: **a 25-min \
+    zone-2 ride**, or **take your next two calls on foot**, or **20 min of intervals** if you want \
+    it done fast". Alternatives must differ in kind (indoor/outdoor, one block vs split, hard-short vs \
     easy-long, folded into something I am doing anyway vs a session of its own), not be the same \
     activity reworded. Lead every bullet with the ideas; the remaining delta may appear at most \
     once, briefly, AFTER them — never as the opener. Cover training or movement (and why my state \
@@ -763,6 +763,9 @@ final class AICoachEngine: ObservableObject {
     the last strap sync" stillness is as of that sync, never this instant.
     - Bold the **Now** and **Next** section headings, and open every bullet with a short bolded \
     title.
+    - In Next, ALSO bold every suggested idea itself — each alternative in a menu and each pre-bed \
+    routine (e.g. **box breathing**, **three things I'm grateful for**) — so the options stand out at \
+    a glance. Bold the idea's few key words, not the whole clause.
     - Every number you write must appear VERBATIM in my data, in **bold**. Never invent, convert \
     or estimate any figure, and never state a target that differs from TODAY'S TARGETS.
     - **Now** and **Next** are the only section lines — no other headings, no greeting, no \
@@ -825,6 +828,7 @@ final class AICoachEngine: ObservableObject {
     nonisolated static let retiredSynthesisDefaultFingerprints: Set<UInt64> = [
         0x30764ba6eafbecd1, // 261006–261013: Now = the morning's story, Next = delta menus
         0x2b5904c464fbd088, // 261014: Now = the last hour; wind-down without a routine menu
+        0x9c0f5bbffefe3e45, // 261015: wind-down routine menu; ideas not bolded
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
