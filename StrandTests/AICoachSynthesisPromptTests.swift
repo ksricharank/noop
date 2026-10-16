@@ -122,7 +122,10 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         // 261005: the maintainer's menu + progress rules — every suggestion offers alternatives, and
         // a met target is congratulated, never re-prescribed ("go burn X cals" on a day the target
         // was already exceeded was the reported failure).
-        XCTAssertTrue(d.contains("TWO OR MORE"), "every suggestion must be a menu of alternatives")
+        // 261016: one idea per bullet (was a menu of TWO OR MORE alternatives); variety across bullets.
+        XCTAssertTrue(d.contains("exactly ONE idea"), "each Next bullet carries a single suggestion")
+        XCTAssertFalse(d.contains("TWO OR MORE"), "the per-bullet menu of alternatives is retired")
+        XCTAssertTrue(d.contains("Variety comes ACROSS the bullets"))
         XCTAssertTrue(d.contains("ALREADY done today"), "Next must check progress before prescribing")
         XCTAssertTrue(d.contains("a RESULT, not a gap"), "a met target is congratulated, not re-asked")
         // 261006: the maintainer's delta rule — Next speaks in the REMAINDER to each target, not the
@@ -155,11 +158,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
         // 261015: the wind-down is a menu of quick pre-bed routines, not a bedtime instruction.
-        XCTAssertTrue(d.contains("The wind-down bullet is a MENU too"))
+        XCTAssertTrue(d.contains("ONE short pre-bed routine"))
         XCTAssertTrue(d.contains("grateful"))
         XCTAssertTrue(d.contains("breathing"))
         // 261016: the ideas themselves are bolded so they stand out at a glance.
-        XCTAssertTrue(d.contains("ALSO bold every suggested idea itself"))
+        XCTAssertTrue(d.contains("ALSO bold each bullet's one suggested idea itself"))
     }
 
     /// A stored copy of the 261006 default (it went in as the maintainer's own pasted text) is an old
