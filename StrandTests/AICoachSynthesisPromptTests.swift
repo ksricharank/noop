@@ -97,7 +97,7 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         // 260919: the prompt no longer says "summarise every metric" — it now fences the targets
         // explicitly instead, which is the stronger form of the same instruction and is what the
         // reported failure ("a plain recap of the targets") actually needed.
-        XCTAssertTrue(d.contains("Do NOT narrate my progress against them"))
+        XCTAssertTrue(d.contains("Do NOT narrate my progress"))
         XCTAssertTrue(d.contains("LAST 6 HOURS"))
         // Salience, in the model's own terms: the wearer's baselines, not population norms.
         XCTAssertTrue(d.contains("z-scores"))
@@ -118,7 +118,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("**Now**"))
         XCTAssertTrue(d.contains("**Next**"))
         XCTAssertTrue(d.contains("no other headings"))
-        XCTAssertTrue(d.contains("2 to 4 bullets"), "Now must be richer than one line")
+        // 261018: fixed counts and themes — Now three bullets, Next four, nothing dropped.
+        XCTAssertTrue(d.contains("EXACTLY THREE bullets"))
+        XCTAssertTrue(d.contains("EXACTLY FOUR bullets"))
+        XCTAssertTrue(d.contains("nothing added and nothing dropped"))
+        XCTAssertFalse(d.contains("2 to 4 bullets"), "the variable bullet count is retired")
         // 261005: the maintainer's menu + progress rules — every suggestion offers alternatives, and
         // a met target is congratulated, never re-prescribed ("go burn X cals" on a day the target
         // was already exceeded was the reported failure).
@@ -126,20 +130,22 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("exactly ONE idea"), "each Next bullet carries a single suggestion")
         XCTAssertFalse(d.contains("TWO OR MORE"), "the per-bullet menu of alternatives is retired")
         XCTAssertTrue(d.contains("Variety comes ACROSS the bullets"))
-        XCTAssertTrue(d.contains("ALREADY done today"), "Next must check progress before prescribing")
+        XCTAssertTrue(d.contains("BEFORE prescribing anything, check TODAY'S TARGETS"),
+                      "Next must check progress before prescribing")
         XCTAssertTrue(d.contains("a RESULT, not a gap"), "a met target is congratulated, not re-asked")
         // 261006: the maintainer's delta rule — Next speaks in the REMAINDER to each target, not the
         // target itself ("2.1k more steps", never "the 10k target"), and the menu alternatives are
         // sized against that remainder.
-        XCTAssertTrue(d.contains("DELTA between the TARGET"),
-                      "menu alternatives are sized against the remaining delta")
-        XCTAssertTrue(d.contains("INSTEAD of mentioning the target, mention the DELTA"),
-                      "Next speaks in what remains, not in the target the screen already shows")
+        // 261018: Next speaks ONLY in what is still to go, copied from the stated figure.
+        XCTAssertTrue(d.contains("speak ONLY in what is STILL TO GO"))
+        XCTAssertTrue(d.contains("The target number itself does not appear in Next at all"))
+        XCTAssertTrue(d.contains("the still-to-go figures included, which my data states"),
+                      "the model copies the remainder rather than computing it")
         XCTAssertFalse(d.contains("**Watch**"), "the Watch section is retired; watchouts live in Now")
         XCTAssertFalse(d.contains("**Tonight**"), "Tonight stays folded into Next")
         // A quiet day must be ALLOWED to be quiet. Without this the model pads to reach a count,
         // which is the failure the rewrite exists to fix.
-        XCTAssertTrue(d.contains("FEWER IS BETTER"))
+        XCTAssertTrue(d.contains("every bullet carries real numbers"), "every bullet has its figures")
         XCTAssertTrue(d.contains("Never invent a finding"))
         XCTAssertTrue(d.contains("unremarkable"))
     }
@@ -153,7 +159,10 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("LAST HOUR OR SO"))
         XCTAssertTrue(d.contains("my HEART"))
         XCTAssertTrue(d.contains("RELAXED or WOUND-UP"))
-        XCTAssertTrue(d.contains("my BODY'S EXERTION"))
+        XCTAssertTrue(d.contains("my recent MOVEMENT, ACTIVITY and HYDRATION"))
+        XCTAssertTrue(d.contains("Theme — STEPS"))
+        XCTAssertTrue(d.contains("Theme — HYDRATION"))
+        XCTAssertTrue(d.contains("Theme — SLEEP"))
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")

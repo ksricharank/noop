@@ -37,11 +37,14 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("total burned so far: 1830 kcal"), block)
         XCTAssertTrue(block.contains("Step target: 8000"), block)
         XCTAssertTrue(block.contains("steps so far: 6214"), block)
-        // 260920: the sleep plan LEFT this block for the Sleep tab's own facts, following the
-        // target off the Today strip. Today's synthesis is about the present hours, and citing a
-        // bedtime the wearer can no longer see on that screen is exactly the mismatch the move
-        // exists to prevent. Asserted ABSENT so a future re-add is a deliberate act.
-        XCTAssertFalse(block.contains("asleep"), block)
+        // 261018: what is STILL TO GO is stated, not left to the model's arithmetic.
+        XCTAssertTrue(block.contains("1786 steps still to go"), block)
+        XCTAssertTrue(block.contains("820 kcal still to go"), block)
+        XCTAssertTrue(block.contains("effort still to go: 39.0"), block)
+        // 261018: tonight's sleep NEED is back (the maintainer's prompt gives the sleep bullet a
+        // figure), as a duration only — the derived bedtime stays out (260920).
+        XCTAssertTrue(block.contains("Tonight's sleep need: 8h30 asleep"), block)
+        XCTAssertFalse(block.contains("asleep by"), block)
         XCTAssertFalse(block.contains("Sleep tonight"), block)
         // The retired Heart line must not linger: the bullet reads trends from the wider context.
         XCTAssertFalse(block.contains("Heart right now"), block)
@@ -61,6 +64,16 @@ final class AICoachDailyTargetsBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("Total-calorie target: 1975 kcal"), block)
         XCTAssertTrue(block.contains("resting day alone"), block)
         XCTAssertFalse(block.contains("prescribed session"), block)
+    }
+
+    /// A met target says so instead of a zero or negative remainder.
+    func testAMetTargetSaysMet() {
+        let block = AICoachEngine.dailyTargetsBlock(
+            targets: targets(kcalToday: 2700, stepsToday: 9_100, effortToday: 55), charge: 81,
+            midsleepSec: nil, typicalSleepHours: nil)
+        XCTAssertFalse(block.contains("still to go"), block)
+        XCTAssertTrue(block.contains("steps so far: 9100; target already met"), block)
+        XCTAssertTrue(block.contains("effort target already met"), block)
     }
 
     /// Effort figures render on the user's chosen display scale — "optimal effort is around 10"

@@ -699,78 +699,93 @@ final class AICoachEngine: ObservableObject {
     then MY LAST 6 HOURS for contrast; the targets are the LEAST interesting thing you have, because \
     I can read those numbers myself.
 
-    Shape — this exact skeleton, nothing else:
+    Shape — this exact skeleton, every time, nothing added and nothing dropped:
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
-    - **Now** on its own line, then 2 to 4 bullets about exactly THREE things, RIGHT NOW and over \
-    the LAST HOUR OR SO (the hours before that only as contrast): (1) my HEART — where it is sitting \
-    against MY resting heart rate and which way it is heading; (2) how RELAXED or WOUND-UP I am — \
-    calm versus tense or anxious, read from the last-hour stress index against today's and from a \
-    heart rate raised with no movement to explain it (flagged as a read, not a fact: stress, \
-    caffeine and digestion look alike); (3) my BODY'S EXERTION — how much I have or have not used \
-    it in that hour (steps, time well above rest, the peak). Nothing else belongs in Now: not \
-    sleep, not Charge, not the targets, not yesterday. Each bullet is a CONCLUSION about my state, \
-    never a reading. The test every Now bullet must pass: delete every number from it and it still \
-    tells me something I could not see on the screen. "Mean HR 97, above RHR 61 → active load" \
-    FAILS that test — it restates the chart. "Your heart is still running hot from a walk that \
-    ended twenty minutes ago, but the calm underneath says it is exertion, not stress" PASSES. \
-    Write the interpretation first; you may close the bullet with at most ONE supporting figure in \
-    parentheses, never lead with one. A watchout genuinely forming (a heart rate creeping up while \
-    still, tension building through the hour) belongs here, with what would confirm it. Compare \
-    only to MY resting heart rate and MY OWN baseline. My data has z-scores: |z| above 1 is real, \
-    above 2 strong; in-range is NOT news. Whatever Now concludes is the premise Next must act on.
-    - **Next** on its own line, then 2 to 4 bullets: the moves that follow from Now. The IDEAS are \
-    the point of this section, not the arithmetic: fresh, specific, practical ways to close each \
-    open gap that fit my state right now and the rest of my day — a walking call, stairs instead \
-    of the lift, a loop round the block after a meal, a mobility flow between meetings, cycling an \
-    errand, a playlist-length dance, carrying the shopping home. "Go for a walk" is the idea of \
-    last resort. BEFORE prescribing anything, check what I have ALREADY done today against TODAY'S \
-    TARGETS: a target already met — or within about a tenth of met — is a RESULT, not a gap. \
-    Acknowledge it in a few words ("steps are done — nice work") and never ask for more of it; \
-    Next covers only the genuinely open gaps, and a day with every target met earns a one-bullet \
-    Next that congratulates me and protects the wind-down. EVERY suggestion bullet carries exactly \
-    ONE idea — never a list of alternatives, never "or" between options: pick the single best fit \
-    for my state and my day, sized from the standpoint of the DELTA between the TARGET and what I \
-    have already achieved today — e.g. "close the effort gap: **take your next two calls on foot**". \
-    Variety comes ACROSS the bullets and across days: the bullets must differ in kind from each \
-    other (indoor/outdoor, one block vs split, hard-short vs easy-long, folded into something I am \
-    doing anyway vs a session of its own). Lead every bullet with its idea; the remaining delta may \
-    appear at most once, briefly, AFTER it — never as the opener. Cover training or movement (and \
-    why my state right now supports it), what to avoid, and the wind-down. The wind-down bullet is \
-    ONE short pre-bed routine too, picked to fit how my day went and different from night to night \
-    — e.g. slow breathing with a long exhale, box breathing, naming three things I am grateful for, \
-    a short body scan, gentle stretches, writing tomorrow's to-do list to park the thoughts, dim \
-    lights and the phone in another room, a warm shower. Key when to start it to tonight's sleep \
-    target and my usual midsleep from the data, in words — no derived clock times.
+    - **Now** on its own line, then EXACTLY THREE bullets, in this order, each on a fixed THEME, \
+    about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
+      1. Theme — my HEART: where my heart rate is sitting against MY resting heart rate and which \
+    way it is heading. Its figures: my latest 10-minute heart rate and my resting heart rate.
+      2. Theme — my STRESS: how RELAXED or WOUND-UP I am, calm versus tense or anxious, read from \
+    the last-hour stress index against today's and from a heart rate raised with no movement to \
+    explain it (flagged as a read, not a fact: stress, caffeine and digestion look alike). Its \
+    figures: the last-hour Stress (SI) and today's whole-day Stress (SI) — or today's alone when the \
+    last hour has none.
+      3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
+    body in that hour, and how my drinking is keeping up with today's water target if my data has \
+    it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
+      Nothing else belongs in Now: not sleep, not Charge, not yesterday. Each bullet is a CONCLUSION \
+    about my state, never a bare reading. The test every Now bullet must pass: delete every number \
+    from it and it still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 \
+    → active load" FAILS that test — it restates the chart. "Your heart is still running hot from a \
+    walk that ended twenty minutes ago, but the calm underneath says it is exertion, not stress \
+    (**97** bpm against a resting **61**)" PASSES. Write the interpretation first, then close EVERY \
+    bullet with its figures in parentheses — every bullet carries real numbers from my data, never a \
+    bullet without one. A watchout genuinely forming (a heart rate creeping up while still, tension \
+    building through the hour) belongs in its bullet, with what would confirm it. Compare only to MY \
+    resting heart rate and MY OWN baseline. My data has z-scores: |z| above 1 is real, above 2 \
+    strong; in-range is NOT news — if a bullet's theme is unremarkable, say so in one short line, \
+    still with its figures, rather than dropping it. Whatever Now concludes is the premise Next must \
+    act on.
+    - **Next** on its own line, then EXACTLY FOUR bullets, in this order, each on a fixed THEME:
+      1. Theme — STEPS: one idea for closing today's step gap. Its figure: the steps still to go.
+      2. Theme — EXERCISE and ACTIVITY: one idea for closing today's effort gap (and with it the \
+    calorie gap), and why my state right now supports it — or what to avoid if it does not. Its \
+    figures: the effort still to go, and the session's minutes and heart rate from my data where \
+    they help.
+      3. Theme — HYDRATION: one idea for keeping up with today's water target. Its figure: the cups \
+    left. If my data has no water figures, one simple drinking cue tied to my activity, with no \
+    numbers.
+      4. Theme — SLEEP: ONE short pre-bed routine, picked to fit how my day went and different from \
+    night to night — e.g. slow breathing with a long exhale, box breathing, naming three things I am \
+    grateful for, a short body scan, gentle stretches, writing tomorrow's to-do list to park the \
+    thoughts, dim lights and the phone in another room, a warm shower. Key when to start it to \
+    tonight's sleep need and my usual midsleep from the data, in words — no derived clock times. Its \
+    figure: tonight's sleep need.
+      The IDEAS are the point of this section: fresh, specific, practical ways to close each gap \
+    that fit my state right now and the rest of my day — a walking call, stairs instead of the lift, \
+    a loop round the block after a meal, a mobility flow between meetings, cycling an errand, a \
+    playlist-length dance, carrying the shopping home. "Go for a walk" is the idea of last resort. \
+    BEFORE prescribing anything, check TODAY'S TARGETS: a target my data marks "target already met" \
+    — or one with only about a tenth of it still to go — is a RESULT, not a gap. Its bullet stays, \
+    but it congratulates me in a few words with what I did ("steps are done — **11204** today, nice \
+    work") and never asks for more of it. EVERY bullet carries exactly ONE idea — never a list of \
+    alternatives, never "or" between options: pick the single best fit for my state and my day, \
+    sized to what is still to go — e.g. "close the effort gap: **take your next two calls on foot** \
+    (**12** effort still to go)". Variety comes ACROSS the bullets and across days: the ideas must \
+    differ in kind from each other (indoor/outdoor, one block vs split, hard-short vs easy-long, \
+    folded into something I am doing anyway vs a session of its own). Lead every bullet with its \
+    idea; its figures come AFTER it — never as the opener.
     - Each bullet is ONE point, at most ~30 words after its short bolded title.
 
     About the targets, specifically:
-    - Do NOT narrate my progress against them. "You are at 2.2k of 6.3k steps" is a sentence I \
-    can read off the screen. A target may appear only inside a Next bullet as the thing its idea \
-    achieves — or, once met, as the thing being congratulated.
-    - Where possible INSTEAD of mentioning the target, mention the DELTA between the target and \
-    what I have already achieved today — and keep even the delta brief: the ideas carry the \
-    bullet, the number only sizes them.
-    - My total calories include resting metabolism on both sides, so an early-day number far \
-    below target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
+    - In Next, speak ONLY in what is STILL TO GO — my data states it for each target ("… still to \
+    go", "cups left"): copy that figure, e.g. "**4159** steps to go", never "the 11063-step target", \
+    and never the target and the so-far side by side. The target number itself does not appear in \
+    Next at all.
+    - Do NOT narrate my progress. "You are at 2.2k of 6.3k steps" is a sentence I can read off the \
+    screen.
+    - My total calories include resting metabolism on both sides, so an early-day number far below \
+    target is NORMAL — and a calorie gap is a MOVEMENT gap, never a reason to eat.
 
     Rules:
     - Do NOT grade yesterday as a finished day, summarise the week, or write a report on last \
-    night's sleep — other screens own each of those. Reach back only far enough to make right \
-    now make sense.
-    - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of \
-    the last strap sync" stillness is as of that sync, never this instant.
-    - Bold the **Now** and **Next** section headings, and open every bullet with a short bolded \
-    title.
-    - In Next, ALSO bold each bullet's one suggested idea itself, the pre-bed routine included \
-    (e.g. **box breathing**) — so it stands out at a glance. Bold the idea's few key words, not the \
-    whole clause.
-    - Every number you write must appear VERBATIM in my data, in **bold**. Never invent, convert \
-    or estimate any figure, and never state a target that differs from TODAY'S TARGETS.
-    - **Now** and **Next** are the only section lines — no other headings, no greeting, no \
-    sign-off, no prose paragraphs. Within a section FEWER IS BETTER; depth beats breadth.
-    - If my last hours are genuinely unremarkable, say so in the verdict and keep Now to two \
-    quiet bullets. Never invent a finding to fill a section; a quiet morning reported quietly is \
-    the correct output, not a failure. "unremarkable" is an allowed verdict.
+    night's sleep — other screens own each of those. Reach back only far enough to make right now \
+    make sense.
+    - The sedentary line, when present, states its own timeframe. Quote it faithfully: "as of the \
+    last strap sync" stillness is as of that sync, never this instant.
+    - Bold the **Now** and **Next** section headings. Open every bullet with a short bolded title of \
+    your own that names THAT bullet's point today (e.g. **Still running warm**, **Calls on foot**) — \
+    never a fixed label like "Heart" or "Steps"; the theme is fixed, the title is not.
+    - In Next, ALSO bold each bullet's one suggested idea itself, the pre-bed routine included (e.g. \
+    **box breathing**) — so it stands out at a glance. Bold the idea's few key words, not the whole \
+    clause.
+    - Every number you write must appear VERBATIM in my data, in **bold** — the still-to-go figures \
+    included, which my data states. Never invent, convert, compute or estimate any figure, and never \
+    state a target that differs from TODAY'S TARGETS.
+    - **Now** and **Next** are the only section lines — no other headings, no greeting, no sign-off, \
+    no prose paragraphs.
+    - Never invent a finding to fill a bullet; a quiet hour reported quietly is the correct output, \
+    not a failure. "unremarkable" is an allowed verdict.
     """
 
     /// The built-in instruction behind every coach-written NOTIFICATION TITLE — the pace check, the
@@ -828,6 +843,8 @@ final class AICoachEngine: ObservableObject {
         0x2b5904c464fbd088, // 261014: Now = the last hour; wind-down without a routine menu
         0x9c0f5bbffefe3e45, // 261015: wind-down routine menu; ideas not bolded
         0x2d5a658c9495a405, // 261016: ideas bolded, but each bullet a menu of alternatives
+        0x6914554dd01883d4, // 261016b: one idea per bullet, but 2-4 bullets and the delta computed by the model
+        0xf2e98ad754f6ee15, // 261017: the maintainer's pasted fixed-theme copy (model subtracts the deltas)
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -3436,6 +3453,11 @@ final class AICoachEngine: ObservableObject {
                 + lines).joined(separator: "\n")
     }
 
+    /// "N <unit> still to go", or "target already met" once the remainder is zero or less.
+    nonisolated static func stillToGo(_ remaining: Int, unit: String) -> String {
+        remaining > 0 ? "\(remaining) \(unit) still to go" : "target already met"
+    }
+
     /// The THREE-PILLAR targets block: the same deterministic numbers the Live Activity card prints
     /// (`LiveTargets` / `DailyTargets`), stated to the coach so the synthesis cites the
     /// figures the user is already looking at instead of inventing parallel ones. Pure and
@@ -3464,15 +3486,26 @@ final class AICoachEngine: ObservableObject {
         }
         let todayEffortText = UnitFormatter.effortDisplay(Double(targets.effortTodayStored ?? 0),
                                                           scale: effortScale)
+        // 261018: every pair also states what is STILL TO GO, computed here — the maintainer wants
+        // the Today read to speak only in the remainder ("4159 steps to go"), and a model asked to
+        // subtract will occasionally get it wrong; copying a stated figure it will not.
         let kcalSidesText: String? = targets.kcalTargetKcal.map { target in
-            "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
-            + "prescription through the app's own Keytel model); total burned so far: "
-            + "\(targets.kcalToday.map(String.init) ?? "0") kcal."
+            let done = targets.kcalToday ?? 0
+            return "Total-calorie target: \(target) kcal (a full day of resting metabolism plus the "
+                + "prescription through the app's own Keytel model); total burned so far: "
+                + "\(done) kcal; " + Self.stillToGo(target - done, unit: "kcal") + "."
         }
         let stepsSidesText: String? = targets.stepsTarget.map { target in
-            "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
-            + "readiness read — a separate ask from the session); steps so far: "
-            + "\(targets.stepsToday.map(String.init) ?? "0")."
+            let done = targets.stepsToday ?? 0
+            return "Step target: \(target) (all-day gentle movement, banded by today's charge and the "
+                + "readiness read — a separate ask from the session); steps so far: "
+                + "\(done); " + Self.stillToGo(target - done, unit: "steps") + "."
+        }
+        let effortToGoText: String? = targets.effortTarget.map { target in
+            let remaining = target - (targets.effortTodayStored ?? 0)
+            return remaining > 0
+                ? "effort still to go: \(UnitFormatter.effortDisplay(Double(remaining), scale: effortScale))"
+                : "effort target already met"
         }
         if targets.restDay {
             var line = "Today's prescription: REST — the body's readiness read says recover, so "
@@ -3492,7 +3525,7 @@ final class AICoachEngine: ObservableObject {
                        + "state, never past habits)."
             if let targetText = effortTargetText {
                 line += " Completing it lands the day at effort \(targetText) of \(scaleMax) "
-                        + "(so far today: \(todayEffortText))."
+                        + "(so far today: \(todayEffortText); \(effortToGoText ?? ""))."
             }
             if let kcalSidesText { line += " " + kcalSidesText }
             if let stepsSidesText { line += " " + stepsSidesText }
@@ -3510,6 +3543,14 @@ final class AICoachEngine: ObservableObject {
                          + "effort actually done if that is higher, so the ask can only grow); "
                          + "drunk so far: \(drunkCups) cups"
                          + (left > 0 ? ", \(left) cups left." : " — target already met."))
+        }
+
+        // 261018: tonight's sleep NEED returns — the duration alone, no derived bedtime — because
+        // the maintainer's Today prompt now gives every Next bullet a real figure, the sleep one
+        // included, and without it here the model would have to invent one.
+        if let need = targets.sleepNeedTonightMin {
+            lines.append("Tonight's sleep need: \(need / 60)h\(String(format: "%02d", need % 60)) asleep "
+                         + "(the Sleep tab's figure: personal need plus any debt to repay).")
         }
 
         // 260920: tonight's sleep target and its bedtime moved OUT of this block and into the

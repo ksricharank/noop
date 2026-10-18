@@ -78,7 +78,7 @@ final class TabInsightPromptTests: XCTestCase {
         XCTAssertTrue(p.contains("last night"), p)
         // 260919: and fenced off RECITING the targets, which is what it was actually doing — the
         // reported failure was "a plain recap of the targets I need to hit".
-        XCTAssertTrue(p.contains("Do NOT narrate my progress against them"), p)
+        XCTAssertTrue(p.contains("Do NOT narrate my progress"), p)
         XCTAssertTrue(p.contains("LAST 6 HOURS"), p)
     }
 
@@ -101,7 +101,10 @@ final class TabInsightPromptTests: XCTestCase {
         }
         // The three that can pad (Today, Trends, Sleep — Recap is bounded to 2-3 sentences) must
         // each be given explicit permission to be brief.
-        XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("FEWER IS BETTER"))
+        // 261018: Today's bullet COUNT is fixed now, so its permission to be brief is per bullet —
+        // an unremarkable theme gets one short line, a quiet hour is reported quietly.
+        XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("say so in one short line"))
+        XCTAssertTrue(AICoachEngine.defaultSynthesisPrompt.contains("a quiet hour reported quietly"))
         // 261004: the seven-line format's permission to be brief is per metric — a flat series is
         // reported as held steady, never padded into a finding.
         XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("held steady"))
