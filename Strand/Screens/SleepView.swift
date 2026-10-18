@@ -292,6 +292,13 @@ struct SleepView: View {
                 loadedSleepRefresh = refresh
                 observeResultChange()
                 ScreenLedger.recordLoad(screen: "sleep", restored: restored, since: t0)
+                if let line = Self.nightLagLine(allSessions: allSessions, sleeps: repo.sleeps,
+                                                days: repo.days, shownEndTs: model?.night.session.endTs,
+                                                restored: restored),
+                   line != Self.lastNightLagLine {
+                    Self.lastNightLagLine = line
+                    ScreenLedger.log(line)
+                }
             }
             .sheet(item: $wakeEdit) { edit in
                 // The night's RECORDED coverage for the #940 guards: from the immutable detected
@@ -2039,6 +2046,30 @@ struct SleepView: View {
     /// A thin wrapper: it snapshots the view's current state into `SleepModelInputs` and hands off to
     /// the pure `SleepModel.build(_:)` (SleepModel.swift), which the Today host also calls. Returns
     /// nil when there is no usable latest night (renders empty state).
+    /// The last night-lag line logged, so a state that persists across loads is logged once.
+    private static var lastNightLagLine: String?
+
+    /// 261018, rare-event evidence: a line only when the tab's lists disagree with the day rows —
+    /// the fuller block list behind the one-per-night list (the newer night was filled from it), or
+    /// the night on screen older than the newest scored day. Silent when they agree, which is always
+    /// on a healthy install. Local day keys and counts only.
+    static func nightLagLine(allSessions: [CachedSleepSession], sleeps: [CachedSleepSession],
+                             days: [DailyMetric], shownEndTs: Int?, restored: Bool) -> String? {
+        func day(_ ts: Int?) -> String {
+            ts.map { Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval($0))) } ?? "none"
+        }
+        let loadedNewest = day(allSessions.map(\.endTs).max())
+        let sleepsNewest = day(sleeps.map(\.endTs).max())
+        let scoredNewest = days.last(where: { ($0.totalSleepMin ?? 0) > 0 })?.day ?? "none"
+        let shown = day(shownEndTs)
+        let listBehind = !allSessions.isEmpty && sleepsNewest > loadedNewest
+        let shownBehind = shown < scoredNewest
+        guard listBehind || shownBehind else { return nil }
+        return "sleepTab: night lag — shown=\(shown) scoredDay=\(scoredNewest) "
+            + "blocks=\(allSessions.count) blocksNewest=\(loadedNewest) sleepsNewest=\(sleepsNewest) "
+            + "restored=\(restored)" + (listBehind ? " (newer night filled from the per-night list)" : "")
+    }
+
     private func buildModel() -> SleepModel? {
         SleepModel.build(SleepModelInputs(
             days: repo.days,
@@ -2055,7 +2086,7 @@ struct SleepView: View {
     /// sleep). Falls back to `repo.sleeps` (one-per-night) until the fuller list loads, so the hero
     /// is never empty during the first frame. (#170)
     private var navSessions: [CachedSleepSession] {
-        allSessions.isEmpty ? repo.sleeps : allSessions
+        SleepModel.navSessions(allSessions: allSessions, sleeps: repo.sleeps)
     }
 
     /// The browsable DAY list — a thin wrapper over the shared `SleepModel.navDays`, which is the
