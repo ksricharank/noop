@@ -542,11 +542,14 @@ final class AppModel: ObservableObject {
                 // `live = self.live` spelled out: this is nested inside the cadence `Task`, which
                 // requires explicit `self`, so the bare-name capture shorthand used elsewhere in this
                 // type would not resolve here.
-                await RescoreBackgroundScheduler.run(owesOnDefer: false,
-                                                     log: { [live = self.live] line in
-                                                         live.append(log: line)
-                                                     }) {
-                    await self.intelligence.analyzeRecent(force: false)
+                // 261018: the backstop is a routine trigger too — spaced like the post-offload pass.
+                if RescoreBackgroundScheduler.routineFullPassAllowedNow {
+                    await RescoreBackgroundScheduler.run(owesOnDefer: false,
+                                                         log: { [live = self.live] line in
+                                                             live.append(log: line)
+                                                         }) {
+                        await self.intelligence.analyzeRecent(force: false)
+                    }
                 }
                 // v5: recompute the skin-temp suite snapshots (cycle phase + body clock) from the
                 // freshly-scored history so the Health hub cards read a ready result.
@@ -1073,9 +1076,17 @@ final class AppModel: ObservableObject {
         // the #1538 report while never producing a score. Decide first whether this pass can finish here,
         // and hand it to a background-processing task when it cannot. A no-op on macOS, and on iOS a
         // foreground pass is never deferred.
-        await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
-                                             log: { [live] line in live.append(log: line) }) {
-            await intelligence.analyzeRecent(skipIfUnchanged: true)
+        // 261018: past the morning settle, a routine sync starts a full 21-night pass at most every
+        // 3 h (`routineFullPassAllowed`); in between, the light pass below moves the numerators.
+        let fullPassAllowed = RescoreBackgroundScheduler.routineFullPassAllowedNow
+        if fullPassAllowed {
+            await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
+                                                 log: { [live] line in live.append(log: line) }) {
+                await intelligence.analyzeRecent(skipIfUnchanged: true)
+            }
+        } else {
+            live.append(log: "re-score: full pass spaced — the last completed one is under 3 h old;"
+                        + " this sync moves today's numerators only (261018)")
         }
         // The background LIGHT pass (260831): when the full pass above was deferred (the debt is
         // still owed), score just today + yesterday inline so the day's accumulators — steps /
@@ -1097,7 +1108,7 @@ final class AppModel: ObservableObject {
         // window end — the rule and its leg arithmetic live on `lightPassWanted`.
         let nowComps = Calendar.current.dateComponents([.hour, .minute], from: Date())
         if RescoreBackgroundScheduler.lightPassWanted(
-            owed: RescoreBackgroundScheduler.isRescoreOwed,
+            owed: RescoreBackgroundScheduler.isRescoreOwed || !fullPassAllowed,
             inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
             minuteOfDay: (nowComps.hour ?? 0) * 60 + (nowComps.minute ?? 0),
             windowEndMinute: UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int

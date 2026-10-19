@@ -2340,6 +2340,9 @@ final class IntelligenceEngine: ObservableObject {
         // usable (≥ minNightsSeed valid nights) , honest cold-start, via RecoveryScorer's usable gate.
         var out: [Computed] = []
         var dailies: [DailyMetric] = []
+        /// The days whose scored night a PARTIAL pass rewrote (261018) — the one record the metric-series
+        /// write reads, so a night row and its series can never be refreshed by different rules.
+        var refreshedNightDays = Set<String>()
         var cachedSleep: [CachedSleepSession] = []
         // #510: backfilled fields for a REAL (non-detected) row a dropped bout collided with, grouped by
         // the deviceId it must be upserted under (see the collision branch below). The detector remains an
@@ -2581,21 +2584,38 @@ final class IntelligenceEngine: ObservableObject {
             // judged keeps that judgement until the next completed pass.
             //
             // 261007: EXCEPT today's night under a TRUSTED baseline — see `partialPassRefreshesNight`.
+            //
+            // 261018 (maintainer: "the today-only quick pass should only apply to the numerators —
+            // charge and sleep should not go through the light pass"): two narrowings.
+            //  1. A LIGHT pass writes numerators ONLY — no trusted refresh, no blank fill; a day with no
+            //     stored row gets the numerators and nothing of the night. Charge and sleep come from
+            //     full passes (completed or interrupted).
+            //  2. An interrupted full pass refreshes today's night only while the night itself is still
+            //     MOVING (`nightInputsMoved`) — the morning offloads. Once it settles, the stored Charge
+            //     stands: a partial pass folds its baseline from stored history, a completed one from
+            //     the nights it just scored, and the two land a point apart on identical inputs, so
+            //     rewriting a settled night flipped Charge 91 ↔ 92 all afternoon (261018-1740: completed
+            //     passes 91 ×18, quick/interrupted 92 ×58).
             let stored = storedRowByDay[daily.day]
             let toPersist: DailyMetric
-            if partialBaseline,
-               !DailyMetric.partialPassRefreshesNight(
-                   day: daily.day,
-                   todayKey: refreshTodayKey,
-                   baselineStatus: baselines2.hrv?.status) {
-                var merged = scored.lightPassMerged(over: stored)
-                if merged.recovery == nil, let fresh = recovery {
-                    merged = merged.with(recovery: fresh, skinTempDevC: merged.skinTempDevC,
-                                         skinTempC: merged.skinTempC)
+            let refreshesNight = !lightPass
+                && DailyMetric.partialPassRefreshesNight(day: daily.day, todayKey: refreshTodayKey,
+                                                         baselineStatus: baselines2.hrv?.status)
+                && DailyMetric.nightInputsMoved(scored, from: stored)
+            if partialBaseline, !refreshesNight {
+                if lightPass {
+                    toPersist = scored.lightPassMerged(over: stored ?? DailyMetric.blankNight(day: daily.day))
+                } else {
+                    var merged = scored.lightPassMerged(over: stored)
+                    if merged.recovery == nil, let fresh = recovery {
+                        merged = merged.with(recovery: fresh, skinTempDevC: merged.skinTempDevC,
+                                             skinTempC: merged.skinTempC)
+                    }
+                    toPersist = merged
                 }
-                toPersist = merged
             } else {
                 toPersist = scored
+                if partialBaseline { refreshedNightDays.insert(daily.day) }
             }
             let chargeKind = lightPass ? "light"
                 : (wasAbandoned ? "abandoned"
@@ -2905,9 +2925,8 @@ final class IntelligenceEngine: ObservableObject {
                     // (day, key) only, so no other day's series is touched.
                     metricPoints: (preserveUnscoredHistory
                         ? restPointsByDay[from, default: []] : restPoints).filter { point in
-                            !partialBaseline || DailyMetric.partialPassRefreshesNight(
-                                day: point.day, todayKey: refreshTodayKey,
-                                baselineStatus: baselines2.hrv?.status)
+                            // 261018: exactly the days whose night row this pass rewrote.
+                            !partialBaseline || refreshedNightDays.contains(point.day)
                         },
                     provenance: preserveUnscoredHistory
                         ? provenanceByDay[from, default: []] : Array(provenanceByCell.values),
@@ -3396,6 +3415,8 @@ final class IntelligenceEngine: ObservableObject {
         // by more than an order of magnitude with history size.
         let elapsed = Self.activeSeconds(since: reScoreStart)
         let settled = RescoreBackgroundScheduler.markRescoreCompleted(seconds: elapsed, owedToken: owedToken)
+        // 261018: the daytime spacing clock — only a pass over at least the standard window counts.
+        if maxDays >= Self.standardWindowDays { RescoreBackgroundScheduler.noteFullPassCompleted() }
         diagnosticSink?("re-score: done — scored \(scoredNights.count) night(s) in \(Int(elapsed * 1000)) ms (#1005)", nil)
         diagnosticSink?(RescoreBackgroundScheduler.passCostLogLine(
             cpuSeconds: RescoreBackgroundScheduler.processCPUSeconds().flatMap { end in reScoreCPUStart.map { end - $0 } },
@@ -4187,6 +4208,32 @@ extension DailyMetric {
     static func partialPassRefreshesNight(day: String, todayKey: String,
                                           baselineStatus: BaselineStatus?) -> Bool {
         day == todayKey && baselineStatus == .trusted
+    }
+
+    /// Did the scored NIGHT itself change against what is stored (261018)? The night's own figures —
+    /// sleep and stages, efficiency, HRV, resting HR, respiration, skin temperature — at the precision
+    /// they are shown. A pass that only re-judged an unchanged night against a differently folded
+    /// baseline has nothing new to say about it. No stored row: moved (there is nothing to keep).
+    static func nightInputsMoved(_ scored: DailyMetric, from stored: DailyMetric?) -> Bool {
+        guard let stored else { return true }
+        func r(_ v: Double?, _ places: Double) -> Double? { v.map { ($0 * places).rounded() / places } }
+        return r(scored.totalSleepMin, 1) != r(stored.totalSleepMin, 1)
+            || r(scored.deepMin, 1) != r(stored.deepMin, 1)
+            || r(scored.remMin, 1) != r(stored.remMin, 1)
+            || r(scored.lightMin, 1) != r(stored.lightMin, 1)
+            || r(scored.efficiency, 100) != r(stored.efficiency, 100)
+            || r(scored.avgHrv, 10) != r(stored.avgHrv, 10)
+            || scored.restingHr != stored.restingHr
+            || r(scored.respRateBpm, 10) != r(stored.respRateBpm, 10)
+            || r(scored.skinTempC, 100) != r(stored.skinTempC, 100)
+    }
+
+    /// A day with no scored night at all — what a light pass merges its numerators over when there is
+    /// no stored row yet, so it cannot create today's night (261018).
+    static func blankNight(day: String) -> DailyMetric {
+        DailyMetric(day: day, totalSleepMin: nil, efficiency: nil, deepMin: nil, remMin: nil,
+                    lightMin: nil, disturbances: nil, restingHr: nil, avgHrv: nil, recovery: nil,
+                    strain: nil, exerciseCount: nil)
     }
 
     /// The LIGHT-PASS merge (260903, the maintainer's rule: "the light pass is only for the

@@ -339,6 +339,50 @@ enum RescoreBackgroundScheduler {
                 ?? ContinuousHrvSchedule.defaultEndMinutes)
     }
 
+    // MARK: - Daytime full-pass spacing (261018)
+
+    /// After the morning settle, routine syncs re-score the full 21-night window at most this often.
+    public static let daytimeFullPassSpacingSeconds: Double = 3 * 3600
+    /// How long after the sleep window ends full passes still run on every sync — the morning, while
+    /// the night's offloads are still landing and the night is still being scored.
+    public static let morningSettleMinutes = 180
+    static let lastFullPassCompletedAtKey = "rescore.lastFullPassCompletedAt"
+
+    /// Stamp a COMPLETED full pass (not light, not abandoned) — the spacing clock.
+    static func noteFullPassCompleted(at date: Date = Date()) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: lastFullPassCompletedAtKey)
+    }
+
+    /// May a ROUTINE trigger (a post-offload re-score, the 30-min backstop) start a full 21-night
+    /// pass now? Pure. 261018, the maintainer: "why do both the full pass (18 times) and quick pass
+    /// (10 times) happen during the day … should the number of times the full pass happens be lower".
+    /// It should: every sync with new heart-rate data started one, and during the day new data is
+    /// every sync — a 21-night re-score to move today's steps, calories and effort, which the light
+    /// pass already moves. So: inside the sleep window and for `morningSettleMinutes` after it, every
+    /// sync (the night is still landing); after that, at most one per `daytimeFullPassSpacingSeconds`
+    /// — which still catches a nap or anything else that changes a night — with the light pass
+    /// moving the numerators in between. Deliberate re-scores (an edit, an import, a recalibrate, the
+    /// Sleep tab's refresh, a heal) do not come through here and are never spaced.
+    static func routineFullPassAllowed(minuteOfDay: Int, windowEndMinute: Int, inSleepWindow: Bool,
+                                       now: Double, lastFullPassAt: Double?) -> Bool {
+        if inSleepWindow { return true }
+        let sinceWindowEnd = ((minuteOfDay - windowEndMinute) % 1440 + 1440) % 1440
+        if sinceWindowEnd < morningSettleMinutes { return true }
+        guard let last = lastFullPassAt else { return true }
+        return now - last >= daytimeFullPassSpacingSeconds
+    }
+
+    /// `routineFullPassAllowed` against the live clock, the stored window and the stored stamp.
+    static var routineFullPassAllowedNow: Bool {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let end = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        let last = UserDefaults.standard.object(forKey: lastFullPassCompletedAtKey) as? Double
+        return routineFullPassAllowed(minuteOfDay: (comps.hour ?? 0) * 60 + (comps.minute ?? 0),
+                                      windowEndMinute: end, inSleepWindow: isInSleepWindow,
+                                      now: Date().timeIntervalSince1970, lastFullPassAt: last)
+    }
+
     /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.
     /// Owed is the precondition (no deferred full pass means the full pass itself ran and already
     /// wrote today's rows). The blackout is the 260901 battery fix, bounded by the maintainer's
