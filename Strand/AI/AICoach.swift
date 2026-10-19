@@ -707,9 +707,10 @@ final class AICoachEngine: ObservableObject {
     way it is heading. Its figures: my latest 10-minute heart rate and my resting heart rate.
       2. Theme — my STRESS: how RELAXED or WOUND-UP I am, calm versus tense or anxious, read from \
     the last-hour stress index against today's and from a heart rate raised with no movement to \
-    explain it (flagged as a read, not a fact: stress, caffeine and digestion look alike). Its \
-    figures: the last-hour Stress (SI) and today's whole-day Stress (SI) — or today's alone when the \
-    last hour has none.
+    explain it (flagged as a read, not a fact: stress, caffeine and digestion look alike). ALWAYS \
+    call out BOTH levels — my RECENT stress (the last hour) and my OVERALL stress for the day — and \
+    how the recent one compares with the day. Its figures: the last-hour Stress (SI) and today's \
+    whole-day Stress (SI); when the last hour has no reading, say so and give the day's.
       3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
@@ -845,6 +846,7 @@ final class AICoachEngine: ObservableObject {
         0x2d5a658c9495a405, // 261016: ideas bolded, but each bullet a menu of alternatives
         0x6914554dd01883d4, // 261016b: one idea per bullet, but 2-4 bullets and the delta computed by the model
         0xf2e98ad754f6ee15, // 261017: the maintainer's pasted fixed-theme copy (model subtracts the deltas)
+        0xcd57051382654cce, // 261018: fixed themes; the stress bullet did not require both levels
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
