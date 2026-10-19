@@ -2343,6 +2343,10 @@ final class IntelligenceEngine: ObservableObject {
         /// The days whose scored night a PARTIAL pass rewrote (261018) — the one record the metric-series
         /// write reads, so a night row and its series can never be refreshed by different rules.
         var refreshedNightDays = Set<String>()
+        /// The days whose scored night a LIGHT pass found different from the stored row (261018). The
+        /// light pass writes none of it; it reports the move so the next routine trigger runs the full
+        /// pass that will (see `RescoreBackgroundScheduler`'s RE-SCORE POLICY).
+        var lightPassMovedNightDays = Set<String>()
         var cachedSleep: [CachedSleepSession] = []
         // #510: backfilled fields for a REAL (non-detected) row a dropped bout collided with, grouped by
         // the deviceId it must be upserted under (see the collision branch below). The detector remains an
@@ -2602,6 +2606,11 @@ final class IntelligenceEngine: ObservableObject {
                 && DailyMetric.partialPassRefreshesNight(day: daily.day, todayKey: refreshTodayKey,
                                                          baselineStatus: baselines2.hrv?.status)
                 && DailyMetric.nightInputsMoved(scored, from: stored)
+            // TODAY's night only: yesterday's row is a finished day, changed only by an edit, an
+            // import or a heal — each of which already runs its own full pass.
+            if lightPass, daily.day == refreshTodayKey, DailyMetric.nightInputsMoved(scored, from: stored) {
+                lightPassMovedNightDays.insert(daily.day)
+            }
             if partialBaseline, !refreshesNight {
                 if lightPass {
                     toPersist = scored.lightPassMerged(over: stored ?? DailyMetric.blankNight(day: daily.day))
@@ -3232,7 +3241,10 @@ final class IntelligenceEngine: ObservableObject {
                             + " same-start block(s) — a night detected in two days' windows", nil)
         }
         do {
-            if !cachedSleepKept.isEmpty {
+            // 261018: a LIGHT pass writes no sleep blocks — sleep comes from full passes only. The
+            // 22:43 quick pass on 10-17 banked the opening stretch of a night still in progress, which
+            // is how the clipped copy behind the Sleep-tab "wasn't detected" morning first got in.
+            if !lightPass, !cachedSleepKept.isEmpty {
                 _ = try await store.upsertSleepSessions(cachedSleepKept, deviceId: computedId)
             }
         } catch {
@@ -3244,7 +3256,10 @@ final class IntelligenceEngine: ObservableObject {
         // for the sessions actually kept (not edited/dismissed), keyed by the detected start `analyzeDay`
         // returned. A session whose gravity wouldn't grid was omitted from the map and is left as NULL , an
         // absent motion series stays absent, never a fabricated zero array.
-        let keptStarts = Set(cachedSleepKept.map { $0.startTs })
+        // 261018: none of it on a LIGHT pass, which wrote no sessions above — these are targeted updates
+        // keyed by start, and a quick pass's clipped copy of a night in progress shares the whole
+        // night's start, so its motion would overwrite the night's.
+        let keptStarts = lightPass ? Set<Int>() : Set(cachedSleepKept.map { $0.startTs })
         var motionByStart: [Int: [Double]] = [:]
         for night in scoredNights {
             for (start, motion) in night.sessionMotion where keptStarts.contains(start) {
@@ -3295,7 +3310,9 @@ final class IntelligenceEngine: ObservableObject {
         // landed and kept the 337-min row read at 04:14, so the day ended at 04:48 instead of 08:21.
         // `SleepSessionDedup.healWitness` is the one shared rule (twin of Kotlin's). Sorted for a
         // deterministic order.
-        let healDeviceIds = Self.healDeviceIds(computedId: computedId, registeredIds: regDevices.map { $0.id })
+        // 261018: sleep is a full-pass job, deletions included — a LIGHT pass sweeps nothing.
+        let healDeviceIds = lightPass ? []
+            : Self.healDeviceIds(computedId: computedId, registeredIds: regDevices.map { $0.id })
         // Compact shape of a row for the #1284 heal log — the two measures that adjudicate WHICH copy is
         // fuller (stage-segment count + decoded JSON length), in the SAME format as the dup-gen diagnostic
         // (`dupGenShape`) so the two lines parse identically. Window + shape counts only, never stage content
@@ -3390,6 +3407,14 @@ final class IntelligenceEngine: ObservableObject {
             let elapsed = Self.activeSeconds(since: reScoreStart)
             diagnosticSink?("re-score (light): done — scored \(scoredNights.count) night(s) in "
                             + "\(Int(elapsed * 1000)) ms", nil)
+            // 261018: the quick pass's one job beyond the numerators — say when a night moved, so the
+            // next routine trigger runs the full pass that writes it.
+            if !lightPassMovedNightDays.isEmpty {
+                RescoreBackgroundScheduler.markNightMoved()
+                diagnosticSink?("re-score (light): the night moved for "
+                                + lightPassMovedNightDays.sorted().joined(separator: ",")
+                                + " — a full pass is owed (261018)", nil)
+            }
             RescoreStats.recordFinished(trigger: trigger, ms: Int(elapsed * 1000),
                                         inBackground: RescoreBackgroundScheduler.isBackgrounded)
             return
@@ -3415,7 +3440,8 @@ final class IntelligenceEngine: ObservableObject {
         // by more than an order of magnitude with history size.
         let elapsed = Self.activeSeconds(since: reScoreStart)
         let settled = RescoreBackgroundScheduler.markRescoreCompleted(seconds: elapsed, owedToken: owedToken)
-        // 261018: the daytime spacing clock — only a pass over at least the standard window counts.
+        // 261018: a completed pass over at least the standard window has written every moved night,
+        // so the quick pass's "night moved" request is satisfied.
         if maxDays >= Self.standardWindowDays { RescoreBackgroundScheduler.noteFullPassCompleted() }
         diagnosticSink?("re-score: done — scored \(scoredNights.count) night(s) in \(Int(elapsed * 1000)) ms (#1005)", nil)
         diagnosticSink?(RescoreBackgroundScheduler.passCostLogLine(
@@ -4212,10 +4238,16 @@ extension DailyMetric {
 
     /// Did the scored NIGHT itself change against what is stored (261018)? The night's own figures —
     /// sleep and stages, efficiency, HRV, resting HR, respiration, skin temperature — at the precision
-    /// they are shown. A pass that only re-judged an unchanged night against a differently folded
-    /// baseline has nothing new to say about it. No stored row: moved (there is nothing to keep).
+    /// they are shown. Charge is deliberately NOT one of them: it is a judgement of these figures
+    /// against a baseline, and a partial pass folds that baseline differently from a completed one, so
+    /// comparing it would report a move on every quick pass (the 91 ↔ 92 afternoon).
+    ///
+    /// This one question drives two rules — see `RescoreBackgroundScheduler`'s RE-SCORE POLICY:
+    /// whether an interrupted full pass may rewrite today's night, and whether the quick pass asks for
+    /// a full pass. No stored row compares against a blank night: a night that exists only in the
+    /// fresh score has moved; two blank nights have not.
     static func nightInputsMoved(_ scored: DailyMetric, from stored: DailyMetric?) -> Bool {
-        guard let stored else { return true }
+        let stored = stored ?? blankNight(day: scored.day)
         func r(_ v: Double?, _ places: Double) -> Double? { v.map { ($0 * places).rounded() / places } }
         return r(scored.totalSleepMin, 1) != r(stored.totalSleepMin, 1)
             || r(scored.deepMin, 1) != r(stored.deepMin, 1)

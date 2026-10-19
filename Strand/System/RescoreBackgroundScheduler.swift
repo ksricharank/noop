@@ -339,48 +339,72 @@ enum RescoreBackgroundScheduler {
                 ?? ContinuousHrvSchedule.defaultEndMinutes)
     }
 
-    // MARK: - Daytime full-pass spacing (261018)
+    // MARK: - RE-SCORE POLICY (261018) — which pass runs, and what each may write
+    //
+    // Read this before changing any re-score trigger or what a pass persists. It was settled with the
+    // maintainer after three reports in one day: Charge flicking 91 ↔ 92 on an unchanged night, a
+    // night pulled back onto the previous day by a quick pass's clipped copy, and a full 21-night
+    // re-score running on nearly every strap sync just to move today's step count.
+    //
+    // THE PASSES
+    //   • QUICK (light) pass — `analyzeRecent(maxDays: 2, lightPass: true)`: today and yesterday.
+    //     Writes the NUMERATORS only — steps, calories, effort. Never Charge, never sleep (no daily
+    //     night fields, no sleep blocks, no motion series, no duplicate sweep). It also COMPARES the
+    //     night it just computed against the stored one (`DailyMetric.nightInputsMoved` — sleep and
+    //     stages, efficiency, HRV, resting HR, respiration, skin temperature; NOT Charge) and, when they
+    //     differ, raises `nightMovedPending` instead of writing anything.
+    //   • FULL pass — the 21-night window. Writes everything: Charge, sleep, sleep blocks, baselines.
+    //     Completing one clears `nightMovedPending` (`noteFullPassCompleted`).
+    //   • INTERRUPTED full pass — suspended partway (`kind=abandoned`). Rewrites today's night only
+    //     while that night is still moving (the morning offloads); a settled night keeps the completed
+    //     pass's Charge, because a partial pass folds its baseline from stored history and lands a
+    //     point away from a completed one on identical inputs. Leaves the re-score debt owed.
+    //
+    // WHAT A ROUTINE TRIGGER (a strap sync, the 30-min backstop) RUNS — `routineFullPassWanted`
+    //   1. The quick pass, first (outside the after-midnight blackout, see `lightPassWanted`).
+    //   2. A full pass only if something says the stored nights are stale:
+    //        – the quick pass found a night that moved (`nightMovedPending`) — a new night landing in
+    //          the morning, a late sync after sleeping in, a nap, the phone away from the strap overnight;
+    //        – a re-score debt is owed (an earlier full pass was interrupted);
+    //        – we are inside the sleep window, where the full pass's own deferral policy decides (it
+    //          defers to the window's end, which is what schedules the morning's full pass).
+    //      Otherwise nothing more: the stored nights already match the data.
+    //   There is no clock in this. A failed or interrupted morning pass leaves the debt owed and the
+    //   flag raised, so the next sync tries again; nothing waits out a timer on a stale night.
+    //
+    // NOT ROUTINE — never gated by this: edits, imports, recalibrations, heals, the Sleep tab and
+    // Today refreshes, and the owed-debt resume on foreground / background-processing time
+    // (`AppModel.runDeferredRescoreIfOwed`).
 
-    /// After the morning settle, routine syncs re-score the full 21-night window at most this often.
-    public static let daytimeFullPassSpacingSeconds: Double = 3 * 3600
-    /// How long after the sleep window ends full passes still run on every sync — the morning, while
-    /// the night's offloads are still landing and the night is still being scored.
-    public static let morningSettleMinutes = 180
+    static let nightMovedPendingKey = "rescore.nightMovedPending"
     static let lastFullPassCompletedAtKey = "rescore.lastFullPassCompletedAt"
 
-    /// Stamp a COMPLETED full pass (not light, not abandoned) — the spacing clock.
+    /// The quick pass found a scored night that differs from the stored one — a full pass is owed.
+    static func markNightMoved() {
+        UserDefaults.standard.set(true, forKey: nightMovedPendingKey)
+    }
+
+    /// Whether a quick pass has asked for a full pass that no completed full pass has served yet.
+    static var nightMovedPending: Bool {
+        UserDefaults.standard.bool(forKey: nightMovedPendingKey)
+    }
+
+    /// A COMPLETED full pass (not light, not abandoned, at least the standard window): every moved
+    /// night is written, so the request is served. The timestamp is kept for the log only.
     static func noteFullPassCompleted(at date: Date = Date()) {
+        UserDefaults.standard.set(false, forKey: nightMovedPendingKey)
         UserDefaults.standard.set(date.timeIntervalSince1970, forKey: lastFullPassCompletedAtKey)
     }
 
-    /// May a ROUTINE trigger (a post-offload re-score, the 30-min backstop) start a full 21-night
-    /// pass now? Pure. 261018, the maintainer: "why do both the full pass (18 times) and quick pass
-    /// (10 times) happen during the day … should the number of times the full pass happens be lower".
-    /// It should: every sync with new heart-rate data started one, and during the day new data is
-    /// every sync — a 21-night re-score to move today's steps, calories and effort, which the light
-    /// pass already moves. So: inside the sleep window and for `morningSettleMinutes` after it, every
-    /// sync (the night is still landing); after that, at most one per `daytimeFullPassSpacingSeconds`
-    /// — which still catches a nap or anything else that changes a night — with the light pass
-    /// moving the numerators in between. Deliberate re-scores (an edit, an import, a recalibrate, the
-    /// Sleep tab's refresh, a heal) do not come through here and are never spaced.
-    static func routineFullPassAllowed(minuteOfDay: Int, windowEndMinute: Int, inSleepWindow: Bool,
-                                       now: Double, lastFullPassAt: Double?) -> Bool {
-        if inSleepWindow { return true }
-        let sinceWindowEnd = ((minuteOfDay - windowEndMinute) % 1440 + 1440) % 1440
-        if sinceWindowEnd < morningSettleMinutes { return true }
-        guard let last = lastFullPassAt else { return true }
-        return now - last >= daytimeFullPassSpacingSeconds
+    /// Should a ROUTINE trigger run a full pass after its quick pass? Pure — see RE-SCORE POLICY above.
+    static func routineFullPassWanted(inSleepWindow: Bool, owed: Bool, nightMovedPending: Bool) -> Bool {
+        inSleepWindow || owed || nightMovedPending
     }
 
-    /// `routineFullPassAllowed` against the live clock, the stored window and the stored stamp.
-    static var routineFullPassAllowedNow: Bool {
-        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
-        let end = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
-            ?? ContinuousHrvSchedule.defaultEndMinutes
-        let last = UserDefaults.standard.object(forKey: lastFullPassCompletedAtKey) as? Double
-        return routineFullPassAllowed(minuteOfDay: (comps.hour ?? 0) * 60 + (comps.minute ?? 0),
-                                      windowEndMinute: end, inSleepWindow: isInSleepWindow,
-                                      now: Date().timeIntervalSince1970, lastFullPassAt: last)
+    /// `routineFullPassWanted` against the live state.
+    static var routineFullPassWantedNow: Bool {
+        routineFullPassWanted(inSleepWindow: isInSleepWindow, owed: isRescoreOwed,
+                              nightMovedPending: nightMovedPending)
     }
 
     /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.

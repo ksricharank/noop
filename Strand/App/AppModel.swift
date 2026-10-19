@@ -542,8 +542,10 @@ final class AppModel: ObservableObject {
                 // `live = self.live` spelled out: this is nested inside the cadence `Task`, which
                 // requires explicit `self`, so the bare-name capture shorthand used elsewhere in this
                 // type would not resolve here.
-                // 261018: the backstop is a routine trigger too — spaced like the post-offload pass.
-                if RescoreBackgroundScheduler.routineFullPassAllowedNow {
+                // 261018: the backstop is a routine trigger too — a full pass only when the stored
+                // nights are stale (RE-SCORE POLICY on `RescoreBackgroundScheduler`). Syncs drive the
+                // quick pass; with no sync there is nothing new for it to see.
+                if RescoreBackgroundScheduler.routineFullPassWantedNow {
                     await RescoreBackgroundScheduler.run(owesOnDefer: false,
                                                          log: { [live = self.live] line in
                                                              live.append(log: line)
@@ -1076,39 +1078,22 @@ final class AppModel: ObservableObject {
         // the #1538 report while never producing a score. Decide first whether this pass can finish here,
         // and hand it to a background-processing task when it cannot. A no-op on macOS, and on iOS a
         // foreground pass is never deferred.
-        // 261018: past the morning settle, a routine sync starts a full 21-night pass at most every
-        // 3 h (`routineFullPassAllowed`); in between, the light pass below moves the numerators.
-        let fullPassAllowed = RescoreBackgroundScheduler.routineFullPassAllowedNow
-        if fullPassAllowed {
-            await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
-                                                 log: { [live] line in live.append(log: line) }) {
-                await intelligence.analyzeRecent(skipIfUnchanged: true)
-            }
-        } else {
-            live.append(log: "re-score: full pass spaced — the last completed one is under 3 h old;"
-                        + " this sync moves today's numerators only (261018)")
-        }
-        // The background LIGHT pass (260831): when the full pass above was deferred (the debt is
-        // still owed), score just today + yesterday inline so the day's accumulators — steps /
-        // kcal / strain, the widget numerators — advance on THIS sync instead of freezing until
-        // the next app open. The 260831 log showed the failure exactly: offloads landing every
-        // ~10 min, 93/94 widget publishes completing, and 77 of them deduped as unchanged because
-        // the full pass (the only thing that writes the day row) was "deferred to a background
-        // task" 21 times while the completions clustered around app opens. A 2-day pass reads
-        // ~1/10th of the 21-day window, so it finishes inside a locked background window where
-        // the full pass measurably cannot (33 s → 83 min I/O-throttled in that log). It never
-        // touches the re-score debt, the pass-duration estimate, or the watermark (see the
-        // `lightPass` doc), so the deferred FULL pass still runs at the next foreground or
-        // granted background task — the maintainer's contract: numerators move all day, the
-        // full reconciliation happens at the morning open. Held under a background assertion so
-        // a suspension can't strand it halfway; a killed light pass simply retries next sync.
-        // After-midnight exclusion (260901): overnight syncs still land every ~10 min, but a light
-        // pass then re-scores numerators that cannot move for a screen nobody is watching. Per the
-        // maintainer's spec the evening leg (22:00–24:00) still updates; the blackout is midnight →
-        // window end — the rule and its leg arithmetic live on `lightPassWanted`.
+        // RE-SCORE POLICY (261018) — the whole rule is documented on `RescoreBackgroundScheduler`.
+        // 1. The QUICK pass first. It moves today's numerators (steps / calories / effort) and
+        //    compares the night it computes against the stored one, raising `nightMovedPending` when
+        //    they differ; it never writes Charge or sleep. Held under a background assertion so a
+        //    suspension can't strand it halfway; a killed quick pass simply retries next sync.
+        //    After-midnight blackout (260901): from midnight to the window's end the numerators cannot
+        //    move and nobody is looking, so it does not run (`lightPassWanted`); the evening leg
+        //    (window start → midnight) still updates.
+        // 2. A FULL pass only when the stored nights are stale (`routineFullPassWanted`): the quick
+        //    pass saw a night move, a re-score debt is owed, or we are inside the sleep window (where
+        //    the full pass's own policy defers it to the window's end — the morning's full pass).
+        //    Before 261018 every sync with new heart-rate data started one, which during the day is
+        //    every sync: a 21-night re-score to move a step count.
         let nowComps = Calendar.current.dateComponents([.hour, .minute], from: Date())
         if RescoreBackgroundScheduler.lightPassWanted(
-            owed: RescoreBackgroundScheduler.isRescoreOwed || !fullPassAllowed,
+            owed: true,   // the quick pass now runs on every routine sync, not only a deferred one
             inSleepWindow: RescoreBackgroundScheduler.isInSleepWindow,
             minuteOfDay: (nowComps.hour ?? 0) * 60 + (nowComps.minute ?? 0),
             windowEndMinute: UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
@@ -1119,6 +1104,14 @@ final class AppModel: ObservableObject {
             ) {
                 await intelligence.analyzeRecent(maxDays: 2, lightPass: true)
             }
+        }
+        if RescoreBackgroundScheduler.routineFullPassWantedNow {
+            await RescoreBackgroundScheduler.run(passInProgress: intelligence.computing,
+                                                 log: { [live] line in live.append(log: line) }) {
+                await intelligence.analyzeRecent(skipIfUnchanged: true)
+            }
+        } else {
+            live.append(log: "re-score: no full pass — the quick pass found the stored nights current (261018)")
         }
         await refreshV5Signals()
         // 260919: the freshly-landed rows may have moved the very numbers the Today synthesis is
