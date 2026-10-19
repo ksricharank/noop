@@ -236,6 +236,11 @@ extension WhoopStore {
 
     // MARK: - Upserts (idempotent by natural key; latest server value wins on conflict)
 
+    /// How much EARLIER than the stored row a same-start, non-edited candidate must end to be treated
+    /// as a truncated re-detection and skipped (261018). Two hours: a window-clipped opening stretch
+    /// ends many hours before the real wake; a re-stage of the same night moves it by minutes.
+    public static let truncatedRedetectionMinShortfallSec = 2 * 3600
+
     /// Upsert cached sleep sessions. Natural key (deviceId, startTs). Returns rows changed.
     ///
     /// A non-user-edited candidate whose stage timeline is LESS complete than what's already stored for
@@ -258,6 +263,14 @@ extension WhoopStore {
                                                        restingHr: nil, avgHrv: nil, stagesJSON: s.stagesJSON)
                     if SleepMerge.richness(candidate) < SleepMerge.richness(existing) {
                         continue   // a less-complete re-serve of this night must never clobber the stored one
+                    }
+                    // 261018: nor may a TRUNCATED re-detection shorten it. A night that began before an
+                    // earlier day's analysis window closed is re-detected in that window as its opening
+                    // stretch only — same start, ending hours early at the window's edge. Written over
+                    // the whole night, it pulled the night back onto the previous day (the Sleep tab
+                    // showed yesterday). A genuine re-stage moves a wake by minutes, not hours.
+                    if existing.endTs - s.endTs >= Self.truncatedRedetectionMinShortfallSec {
+                        continue
                     }
                 }
                 try db.execute(sql: """

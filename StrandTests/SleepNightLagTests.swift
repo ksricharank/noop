@@ -53,4 +53,18 @@ final class SleepNightLagTests: XCTestCase {
         XCTAssertNotNil(line)
         XCTAssertTrue(line?.contains("filled from the per-night list") ?? false, line ?? "")
     }
+
+    /// 261018, the cause: one pass detected the night twice — its opening stretch in the earlier
+    /// day's window and the whole night in the next — with the same start, and wrote the clipped copy
+    /// last. The write keeps one block per start, the one that ends latest, whatever the order.
+    func testOneBlockPerStartKeepsTheLongest() {
+        let full = CachedSleepSession(startTs: 1_000, endTs: 33_400, efficiency: 0.9, restingHr: 55,
+                                      avgHrv: 45, stagesJSON: nil)
+        let clipped = CachedSleepSession(startTs: 1_000, endTs: 7_300, efficiency: 0.9, restingHr: 55,
+                                         avgHrv: 45, stagesJSON: nil)
+        let nap = CachedSleepSession(startTs: 50_000, endTs: 52_000, efficiency: 0.9, restingHr: 60,
+                                     avgHrv: 40, stagesJSON: nil)
+        XCTAssertEqual(IntelligenceEngine.longestPerStart([full, nap, clipped]).map(\.endTs), [33_400, 52_000])
+        XCTAssertEqual(IntelligenceEngine.longestPerStart([clipped, full, nap]).map(\.endTs), [33_400, 52_000])
+    }
 }

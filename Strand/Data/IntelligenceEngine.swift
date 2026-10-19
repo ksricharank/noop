@@ -759,6 +759,22 @@ final class IntelligenceEngine: ObservableObject {
     /// judged against. A pass narrower than this cannot fold a trustworthy baseline from its own scan.
     nonisolated static let standardWindowDays = 21
 
+    /// One sleep block per `startTs`, keeping the one that ends LATEST (261018) — see the sleep write.
+    /// Order is otherwise preserved (first occurrence's position), so the write is deterministic.
+    nonisolated static func longestPerStart(_ blocks: [CachedSleepSession]) -> [CachedSleepSession] {
+        var best: [Int: CachedSleepSession] = [:]
+        var order: [Int] = []
+        for b in blocks {
+            if let kept = best[b.startTs] {
+                if b.endTs > kept.endTs { best[b.startTs] = b }
+            } else {
+                best[b.startTs] = b
+                order.append(b.startTs)
+            }
+        }
+        return order.compactMap { best[$0] }
+    }
+
     /// Whether a pass's own scan is too narrow to be its baseline (260926). A light pass and an
     /// abandoned pass always were; the third case is the one the 260926-0837 log paid for — a
     /// completed, non-light pass invoked with a NARROW window (the re-arm carried a light pass's
@@ -3179,8 +3195,22 @@ final class IntelligenceEngine: ObservableObject {
         // because a re-detected onset drifts as more raw data arrives. (Android twin: dismissedWindows.)
         let dismissedWindows = repo.dismissedSleepWindows()
         let skipWindows = editedWindows + dismissedWindows
-        let cachedSleepKept = cachedSleep.filter { s in
+        let cachedSleepFiltered = cachedSleep.filter { s in
             !skipWindows.contains { s.startTs < $0.end && $0.start < s.endTs }   // time-overlap test
+        }
+        // 261018: one row per start, the LONGEST. A night that began before a day's analysis window
+        // closed is detected TWICE in one pass — its opening stretch, clipped at the end of the
+        // earlier day's window (22:43 on 10-17, the 10-17 window still open), and the whole night in
+        // the next day's — with the SAME startTs, so both upsert into one row and the later write
+        // wins. The pass writes days newest-first, so the clipped 10-17 copy landed last and pulled the
+        // stored night back to ending on 10-17: the Sleep tab showed yesterday under "wasn't
+        // detected" after every pass that scored both days, and today's night only after a pass that
+        // scored today alone. Keeping the longest copy per start ends the flip-flop; the store's own
+        // guard (`upsertSleepSessions`) stops a pass that scores only the earlier day from doing it.
+        let cachedSleepKept = Self.longestPerStart(cachedSleepFiltered)
+        if cachedSleepKept.count < cachedSleepFiltered.count {
+            diagnosticSink?("sleepWrite: kept the longest of \(cachedSleepFiltered.count - cachedSleepKept.count + 1)"
+                            + " same-start block(s) — a night detected in two days' windows", nil)
         }
         do {
             if !cachedSleepKept.isEmpty {
