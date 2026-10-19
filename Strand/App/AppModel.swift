@@ -247,6 +247,9 @@ final class AppModel: ObservableObject {
     /// session. Mirrors how `SourceCoordinator` drives the WRITE side off the same publisher. Retained for
     /// the app's lifetime (the registry outlives the session); `removeDuplicates` collapses redundant emits.
     private var readSpineCancellable: AnyCancellable?
+    /// 261019: false until the first `adoptActiveDevice` of this process (the launch-time adopt), which
+    /// refreshes without re-scoring — see that function.
+    private var readSpineAdoptedOnce = false
     /// Daily re-arm timer for the single-instant firmware smart alarm (see scheduleDailySmartAlarmRearm).
     private var smartAlarmRearmTimer: Timer?
 
@@ -710,12 +713,28 @@ final class AppModel: ObservableObject {
     /// already resolves the active strap per day via the registry's own active id (`resolveDayOwner`), so it
     /// reads + scores the re-added strap's raw and writes the computed result to the STABLE canonical
     /// `-noop` sibling, no engine re-point needed.
+    ///
+    /// 261019, LAUNCH ADOPTION: the subscription's first emission in a process is not a registry change.
+    /// The Repository is constructed on the canonical id, so the launch-time adopt always "moves" it, and
+    /// this used to start a forced 21-night pass on every launch, including each silent background
+    /// relaunch iOS makes to restore the strap connection (7 in the 261019-0743 log; the 20:08 one began
+    /// a 2 h 20 min chain of abandoned background passes). Nothing new has landed at that moment, so the
+    /// first adoption refreshes the screen only; the next sync's quick pass decides whether a full pass
+    /// is owed (RE-SCORE POLICY on `RescoreBackgroundScheduler`). A later move — a real switch, remove
+    /// or re-add — still re-scores. Scoring reads are unaffected either way: the engine resolves each
+    /// day's owner from the registry itself (`resolveDayOwner`), not from this read id.
     private func adoptActiveDevice(_ activeId: String) async {
+        let atLaunch = !readSpineAdoptedOnce
+        readSpineAdoptedOnce = true
         let trimmed = activeId.trimmingCharacters(in: .whitespaces)
         let repoMoved = repo.adoptActiveDeviceId(trimmed)
         guard repoMoved else { return }
-        live.append(log: "Read spine re-pointed to active device after registry change (#814).")
         await repo.refresh()
+        if atLaunch {
+            live.append(log: "Read spine set to the active device at launch — screen refreshed, no re-score (261019).")
+            return
+        }
+        live.append(log: "Read spine re-pointed to active device after registry change (#814).")
         await intelligence.analyzeRecent()
     }
 

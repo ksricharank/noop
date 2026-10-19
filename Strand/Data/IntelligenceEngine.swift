@@ -837,9 +837,22 @@ final class IntelligenceEngine: ObservableObject {
         computing = true
         runningPassStart = DispatchTime.now().uptimeNanoseconds
         runningPassDays = maxDays
+        // 261019: set when this pass is ABANDONED (backgrounded mid-pass). Read by the re-arm below.
+        var abandonedThisPass = false
         defer {
             computing = false
             runningPassStart = nil
+            if pendingForcedRescore, abandonedThisPass {
+                // 261019: an abandoned pass does NOT re-arm. It gave up because the app is backgrounded,
+                // so re-running a full pass straight away only gives up again: the 261019-0743 log shows
+                // that chain eight times between 20:08 and 22:28 (each "ABANDONED after 1/21", ~32 min of
+                // background wall time). Nothing is lost: every full pass marks its re-score debt when it
+                // starts and an abandoned one leaves it set, so the next sync or foreground settles it
+                // under RescoreBackgroundScheduler's policy (see "RE-SCORE POLICY").
+                pendingForcedRescore = false
+                diagnosticSink?("re-score: queued full pass dropped — this pass was abandoned in the "
+                                + "background; its debt stays set for the next sync or foreground (261019)", nil)
+            }
             if pendingForcedRescore {
                 pendingForcedRescore = false
                 // A forced update queued during the upgrade repair owes a normal recent pass,
@@ -3425,6 +3438,7 @@ final class IntelligenceEngine: ObservableObject {
         // them. Skipping both leaves the state exactly as an interrupted pass already leaves it — the
         // debt mark stays set, and the next trigger re-runs under a policy that can defer properly.
         if wasAbandoned {
+            abandonedThisPass = true
             RescoreStats.recordAbandoned()
             let elapsed = Self.activeSeconds(since: reScoreStart)
             diagnosticSink?("re-score: gave up after \(Int(elapsed)) s of a full pass rather than "

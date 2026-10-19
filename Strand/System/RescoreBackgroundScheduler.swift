@@ -376,6 +376,17 @@ enum RescoreBackgroundScheduler {
     // Today refreshes, and the owed-debt resume on foreground / background-processing time
     // (`AppModel.runDeferredRescoreIfOwed`).
     //
+    // NOT A TRIGGER AT ALL (261019 — the 261019-0743 log found both starting full passes outside
+    // this rule):
+    //   • An app LAUNCH, including the silent background relaunches iOS makes to restore the strap
+    //     connection. The launch-time read-spine adopt refreshes the screen only
+    //     (`AppModel.adoptActiveDevice`); a real device switch / re-add still re-scores.
+    //   • A full pass queued behind one that was then ABANDONED. A full-pass request that arrives
+    //     while a pass runs normally re-runs once when it ends (#899-A), but not after an abandoned
+    //     pass: that pass gave up because the app is backgrounded, so the re-run would give up too
+    //     (the log's 20:08–22:28 chain, 8 in a row). The abandoned pass's debt stays owed, and the
+    //     next sync or foreground settles it under the rule above.
+    //
     // THE TODAY REFRESH BUTTON (both Today screens' `refreshEverything`): sync the strap and WAIT for it
     // (`BLEManager.syncNowAndWait`), then ONE forced full pass on the fresh data, then the coach read.
     // The sync's own routine still fires on completion (quick pass + a full pass only if the night
