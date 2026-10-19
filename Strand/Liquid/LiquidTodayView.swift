@@ -1405,14 +1405,18 @@ struct LiquidTodayView: View {
     /// Deliberately a LINK, not an embedded chat: `AICoachEngine` is a single app-lifetime instance with
     /// one `messages` transcript, so a second inline chat surface would either share that transcript or
     /// need the engine reworked to be conversation-keyed. Neither is worth it to save one tap.
-    /// The unified on-demand refresh: kick a manual strap offload (same gated path as pull-to-sync and
-    /// the Health screen's "Sync now" — bypasses the periodic floor, safely no-ops when disconnected or
-    /// already syncing; its completion re-scores whatever new data banks via the existing post-offload
-    /// pipeline), force a scoring pass over what is already on the device, then regenerate the
-    /// coach-written paragraph from the fresh scores (a no-op when the Coach is unconfigured).
+    /// The unified on-demand refresh: run a manual strap offload and WAIT for it (same gated path as
+    /// pull-to-sync and the Health screen's "Sync now" — bypasses the periodic floor, returns at once
+    /// when disconnected), then force ONE full scoring pass over the freshly-landed data (a deliberate
+    /// tap is never gated by the RE-SCORE POLICY), then regenerate the coach-written paragraph from the
+    /// fresh scores (a no-op when the Coach is unconfigured).
     /// Classic twin: `TodayView.refreshEverything` — keep the two in step.
     private func refreshEverything() async {
-        ble.syncNow()
+        // 261018: fetch FIRST, then score once. Starting the full pass alongside the sync scored the
+        // data as it stood before the sync, and the sync's own quick pass then found that pass running
+        // and skipped. `syncNowAndWait` returns at once when no strap is connected, so the scoring
+        // still runs on what is already on the device.
+        _ = await ble.syncNowAndWait()
         await intelligence.analyzeRecent()
         await coach.refreshSynthesis(force: true)
     }

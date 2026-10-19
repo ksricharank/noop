@@ -5138,6 +5138,43 @@ public final class BLEManager: NSObject, ObservableObject {
         requestSync(.manual)
     }
 
+    /// Kick a manual sync and WAIT for it to finish — the Today Refresh's "fetch, then score once"
+    /// (261018). The Refresh used to start its full re-score the instant it asked for a sync, so the
+    /// pass scored the data as it stood a moment BEFORE the sync, and the sync's own quick pass then
+    /// found that pass still running and skipped — the fresh steps waited for the next sync.
+    ///
+    /// Returns true once a sync has COMPLETED (`lastSyncedAt` advanced — only HISTORY_COMPLETE stamps
+    /// it) and the link has stayed idle for 2 s, since a productive offload auto-continues into another
+    /// session. Joins a sync already running rather than asking for a second. Returns false — and the
+    /// caller scores what is already on the device — when none started within 3 s (no strap, not
+    /// bonded) or nothing completed inside `timeout`.
+    public func syncNowAndWait(timeout: TimeInterval = 90) async -> Bool {
+        let before = state.lastSyncedAt
+        if !state.backfilling { syncNow() }
+        let start = Date()
+        var idleSince: Date?
+        while Date().timeIntervalSince(start) < timeout {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return false }
+            if state.backfilling { idleSince = nil; continue }
+            if state.lastSyncedAt != before {
+                if let idle = idleSince {
+                    if Date().timeIntervalSince(idle) >= 2 {
+                        log("Refresh: sync finished — scoring once on the fresh data (261018).")
+                        return true
+                    }
+                } else {
+                    idleSince = Date()
+                }
+            } else if Date().timeIntervalSince(start) >= 3 {
+                log("Refresh: no sync completed — scoring what is already on the device (261018).")
+                return false
+            }
+        }
+        log("Refresh: the sync did not finish within \(Int(timeout)) s — scoring what is on the device (261018).")
+        return false
+    }
+
     /// When the iOS "Sync Strap" shortcut asked for a sync while no strap link was ready. The connect
     /// handshake's own on-connect kick consumes it (`connectSyncTrigger`), so a request made while NOOP was
     /// still launching and reconnecting in the background runs as soon as the link can serve, at the

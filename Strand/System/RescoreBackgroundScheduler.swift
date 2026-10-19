@@ -375,6 +375,12 @@ enum RescoreBackgroundScheduler {
     // NOT ROUTINE — never gated by this: edits, imports, recalibrations, heals, the Sleep tab and
     // Today refreshes, and the owed-debt resume on foreground / background-processing time
     // (`AppModel.runDeferredRescoreIfOwed`).
+    //
+    // THE TODAY REFRESH BUTTON (both Today screens' `refreshEverything`): sync the strap and WAIT for it
+    // (`BLEManager.syncNowAndWait`), then ONE forced full pass on the fresh data, then the coach read.
+    // The sync's own routine still fires on completion (quick pass + a full pass only if the night
+    // moved); a full pass already running when the forced one arrives makes it re-run once after.
+    // Pull-to-refresh is a sync only, so it takes the routine path alone.
 
     static let nightMovedPendingKey = "rescore.nightMovedPending"
     static let lastFullPassCompletedAtKey = "rescore.lastFullPassCompletedAt"

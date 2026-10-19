@@ -2462,7 +2462,11 @@ struct TodayView: View {
     /// The unified on-demand refresh — sync kick, forced re-score, coach regeneration. Liquid twin:
     /// `LiquidTodayView.refreshEverything` (see its doc for the sequencing rationale) — keep in step.
     private func refreshEverything() async {
-        ble.syncNow()
+        // 261018: fetch FIRST, then score once. Starting the full pass alongside the sync scored the
+        // data as it stood before the sync, and the sync's own quick pass then found that pass running
+        // and skipped. `syncNowAndWait` returns at once when no strap is connected, so the scoring
+        // still runs on what is already on the device.
+        _ = await ble.syncNowAndWait()
         await intelligence.analyzeRecent()
         await coach.refreshSynthesis(force: true)
     }
