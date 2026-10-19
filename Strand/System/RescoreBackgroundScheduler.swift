@@ -237,6 +237,11 @@ enum RescoreBackgroundScheduler {
     /// Lock-guarded rather than a plain `static var`: a detached task reads it while the main actor
     /// writes it, which is a data race by definition however benign the values look. `NSLock` is the
     /// primitive the rest of this file already uses for exactly this.
+    /// True while the BGProcessingTask handler's operation is executing (260929). The engine's
+    /// starvation gate stands down inside a granted window: iOS provides real CPU there, which the
+    /// canary line the handler logs also verifies on every settle. Always false on macOS.
+    @MainActor static var inGrantedWindow = false
+
     nonisolated static var isBackgroundedSnapshot: Bool {
         #if os(iOS)
         mirrorLock.lock()
@@ -332,6 +337,50 @@ enum RescoreBackgroundScheduler {
                 ?? ContinuousHrvSchedule.defaultStartMinutes,
             endMin: d.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
                 ?? ContinuousHrvSchedule.defaultEndMinutes)
+    }
+
+    // MARK: - Daytime full-pass spacing (261018)
+
+    /// After the morning settle, routine syncs re-score the full 21-night window at most this often.
+    public static let daytimeFullPassSpacingSeconds: Double = 3 * 3600
+    /// How long after the sleep window ends full passes still run on every sync — the morning, while
+    /// the night's offloads are still landing and the night is still being scored.
+    public static let morningSettleMinutes = 180
+    static let lastFullPassCompletedAtKey = "rescore.lastFullPassCompletedAt"
+
+    /// Stamp a COMPLETED full pass (not light, not abandoned) — the spacing clock.
+    static func noteFullPassCompleted(at date: Date = Date()) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: lastFullPassCompletedAtKey)
+    }
+
+    /// May a ROUTINE trigger (a post-offload re-score, the 30-min backstop) start a full 21-night
+    /// pass now? Pure. 261018, the maintainer: "why do both the full pass (18 times) and quick pass
+    /// (10 times) happen during the day … should the number of times the full pass happens be lower".
+    /// It should: every sync with new heart-rate data started one, and during the day new data is
+    /// every sync — a 21-night re-score to move today's steps, calories and effort, which the light
+    /// pass already moves. So: inside the sleep window and for `morningSettleMinutes` after it, every
+    /// sync (the night is still landing); after that, at most one per `daytimeFullPassSpacingSeconds`
+    /// — which still catches a nap or anything else that changes a night — with the light pass
+    /// moving the numerators in between. Deliberate re-scores (an edit, an import, a recalibrate, the
+    /// Sleep tab's refresh, a heal) do not come through here and are never spaced.
+    static func routineFullPassAllowed(minuteOfDay: Int, windowEndMinute: Int, inSleepWindow: Bool,
+                                       now: Double, lastFullPassAt: Double?) -> Bool {
+        if inSleepWindow { return true }
+        let sinceWindowEnd = ((minuteOfDay - windowEndMinute) % 1440 + 1440) % 1440
+        if sinceWindowEnd < morningSettleMinutes { return true }
+        guard let last = lastFullPassAt else { return true }
+        return now - last >= daytimeFullPassSpacingSeconds
+    }
+
+    /// `routineFullPassAllowed` against the live clock, the stored window and the stored stamp.
+    static var routineFullPassAllowedNow: Bool {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        let end = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
+            ?? ContinuousHrvSchedule.defaultEndMinutes
+        let last = UserDefaults.standard.object(forKey: lastFullPassCompletedAtKey) as? Double
+        return routineFullPassAllowed(minuteOfDay: (comps.hour ?? 0) * 60 + (comps.minute ?? 0),
+                                      windowEndMinute: end, inSleepWindow: isInSleepWindow,
+                                      now: Date().timeIntervalSince1970, lastFullPassAt: last)
     }
 
     /// Should the post-offload LIGHT pass run? Pure — the decision the AppModel call site makes.
@@ -481,12 +530,19 @@ enum RescoreBackgroundScheduler {
     /// the uptime the work since the last rest started at, in nanoseconds. It is left alone until a quantum of
     /// work has built up (`backgroundWorkQuantumSeconds`), so short units run back to back, and it is reset
     /// after a rest or in the foreground.
-    nonisolated static func paceIfBackgrounded(since mark: inout UInt64) async {
+    /// Returns the seconds actually slept, so a pass can report how much of its wall time was
+    /// DELIBERATE pacing rather than work (260928: a 2272 s light pass is unreadable until the
+    /// done-line's wall splits into store-wait, compute and rest — and the rest is proportional to
+    /// measured WALL including store waits, so a contended store both slows the pass and earns it
+    /// longer sleeps; the tally is what shows whether that feedback matters in practice).
+    @discardableResult
+    nonisolated static func paceIfBackgrounded(since mark: inout UInt64) async -> Double {
         let workSeconds = Double(DispatchTime.now().uptimeNanoseconds &- mark) / 1_000_000_000
         let background = await MainActor.run { isBackgrounded }
         let rest = RescoreBackgroundPolicy.restSeconds(afterWorkSeconds: workSeconds, isBackground: background)
         if rest > 0 { try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000)) }
         if rest > 0 || !background { mark = DispatchTime.now().uptimeNanoseconds }
+        return rest
     }
 
     /// Hold an execution assertion for the duration of `work` so a SHORT pass is not suspended halfway.
@@ -581,6 +637,12 @@ enum RescoreBackgroundScheduler {
                         return
                     }
                 }
+                // 260929: verify, on every granted window, that iOS really does provide CPU here —
+                // the number that proves the posture change works (or catches iOS tightening again).
+                let canary = await BackgroundCPUCanary.measure()
+                log(String(format: "re-score: granted-window canary ×%.1f", canary.factor))
+                inGrantedWindow = true
+                defer { inGrantedWindow = false }
                 await operation()
                 guard !Task.isCancelled else { return }
                 // Only a pass that RAN TO COMPLETION here paces the next locked settle; a killed one
