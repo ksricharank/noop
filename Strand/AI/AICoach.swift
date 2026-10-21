@@ -705,12 +705,15 @@ final class AICoachEngine: ObservableObject {
     about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
       1. Theme — my HEART: where my heart rate is sitting against MY resting heart rate and which \
     way it is heading. Its figures: my latest 10-minute heart rate and my resting heart rate.
-      2. Theme — my STRESS: how RELAXED or WOUND-UP I am, calm versus tense or anxious, read from \
-    the last-hour stress index against today's and from a heart rate raised with no movement to \
-    explain it (flagged as a read, not a fact: stress, caffeine and digestion look alike). ALWAYS \
-    call out BOTH levels — my RECENT stress (the last hour) and my OVERALL stress for the day — and \
-    how the recent one compares with the day. Its figures: the last-hour Stress (SI) and today's \
-    whole-day Stress (SI); when the last hour has no reading, say so and give the day's.
+      2. Theme — my STRESS: how RELAXED or WOUND-UP I am right now compared with my day so far. \
+    Open with the verdict in plain words — calmer than my day, about the same, or more wound-up \
+    than my day (treat a gap of less than about 0.3 as about the same) — then what that means for \
+    me. Read it from the STRESS line in my data: my stress now against today's average, both on the \
+    0–3 scale. A heart rate raised with no movement to explain it may support the read, flagged as \
+    a read, not a fact (stress, caffeine and digestion look alike). Its figures, BOTH every time, in \
+    this form: (**X** now vs **Y** for the day, of 3). Use ONLY those two numbers — never the \
+    Stress (SI) index or any other stress measure. When my data has no stress reading for now, say \
+    why in a few words (I was moving, or nothing recent) and give the day's average alone.
       3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
@@ -847,6 +850,8 @@ final class AICoachEngine: ObservableObject {
         0x6914554dd01883d4, // 261016b: one idea per bullet, but 2-4 bullets and the delta computed by the model
         0xf2e98ad754f6ee15, // 261017: the maintainer's pasted fixed-theme copy (model subtracts the deltas)
         0xcd57051382654cce, // 261018: fixed themes; the stress bullet did not require both levels
+        0x9c0fcf6b8ad13d1b, // 261018b: stress bullet on the Baevsky index, last hour vs the day
+        0x9e897174a0fbb747, // 261021: that default with the maintainer's pasted stress-index bullet
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -2624,6 +2629,8 @@ final class AICoachEngine: ObservableObject {
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
         // derived number, never raw R-R egress. Omitted when there aren't enough clean beats yet.
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
+        // 261021: stress now vs today's average on the 0–3 scale — what the Today stress bullet quotes.
+        if let line = await stressNowLine() { ctx += "\n\n" + line }
         // The last few hours (260919). Without this the context has day-lines and today's targets
         // and nothing about NOW, so a prompt asking for current state can only restate the targets.
         if let recent = await recentStateBlock() { ctx += "\n\n" + recent }
@@ -2659,6 +2666,44 @@ final class AICoachEngine: ObservableObject {
             if !block.isEmpty { ctx += "\n\n" + block }
         }
         return ctx
+    }
+
+    /// The STRESS line (261021): stress NOW against today's average, on the Stress screen's 0–3 daytime
+    /// scale — the same curve and lens as the Stress screen's timeline and the Today stress card
+    /// (`StressDayCurve.today`, memoised on the heart-rate fingerprint, so an unchanged day costs one
+    /// query). The Today read's stress bullet quotes exactly these two figures. Nil when nothing in
+    /// today's waking hours could be scored, so the line is absent rather than invented.
+    func stressNowLine() async -> String? {
+        guard let today = await StressDayCurve.today(
+            repo: repo, personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled) else { return nil }
+        return Self.stressNowSummary(result: today.result, now: Int(Date().timeIntervalSince1970))
+    }
+
+    /// Pure formatter for the STRESS line, testable without a store.
+    ///
+    /// "Now" is the newest point of the display timeline, which re-reads the most recent full hour
+    /// every `DaytimeStress.timelineStepSeconds`; any stress read needs a stretch of beats, so this is
+    /// as close to the present as the scale goes. Two honest gaps instead of a stale number: an
+    /// ACTIVITY-masked newest point says I was moving (exertion is not scored as stress), and a
+    /// newest scored point that ended more than an hour ago says there is no recent reading. The
+    /// day figure is `dayMean` over `scored` hours, which is exactly the timeline header's "avg 1.4 · 3h".
+    nonisolated static func stressNowSummary(result: DaytimeStress.Result, now: Int) -> String? {
+        guard let dayMean = result.dayMean else { return nil }
+        let hours = result.scored.count
+        let day = "today's average \(StressTrace.formatLevel(dayMean)) over \(hours) scored "
+            + (hours == 1 ? "hour" : "hours")
+        let nowPart: String
+        let newest = result.timeline.last(where: { $0.level != nil || $0.maskedForActivity })
+        if let point = newest, point.maskedForActivity {
+            nowPart = "now: no reading — I was moving, and movement is effort, not stress, so it is not scored"
+        } else if let point = newest, let level = point.level,
+                  now - min(point.startTs + DaytimeStress.bucketSeconds, now) <= 3_600 {
+            nowPart = "now \(StressTrace.formatLevel(level))"
+        } else {
+            nowPart = "now: no recent reading — nothing scored in the last hour"
+        }
+        return "STRESS (0–3, the Stress screen's daytime scale: 0 calm, 3 highly activated; higher is "
+            + "more wound-up): \(nowPart) · \(day)."
     }
 
     /// One derived stress line for the coach context: the Baevsky Stress Index over TODAY's R-R, read
@@ -2698,9 +2743,8 @@ final class AICoachEngine: ObservableObject {
 
         // The last hour first, in finer steps: the Today read's Now is about this hour (261014).
         let newest = samples.map(\.ts).max() ?? to
-        let hourRR = await repo.rrIntervals(from: newest - 3600, to: newest, limit: 12_000)
         let hourSteps = await repo.recentStepSamples(from: newest - 3600, to: newest)
-        let lastHour = Self.lastHourLines(samples: samples, rr: hourRR, stepSamples: hourSteps,
+        let lastHour = Self.lastHourLines(samples: samples, stepSamples: hourSteps,
                                           restingHr: repo.days.last?.restingHr, now: to)
 
         var lines = lastHour
@@ -2759,10 +2803,10 @@ final class AICoachEngine: ObservableObject {
     ///
     /// The hour ends at the NEWEST sample, not at `now`: an hour the strap has not offloaded yet is
     /// unobserved, and the header says how old the data is when it is more than a few minutes. Derived
-    /// figures only — 10-minute means, time well above rest, the peak, steps, and the Baevsky stress
-    /// index over the hour's R-R, which the model compares with the whole-day line. Pure and static so
+    /// figures only — 10-minute means, time well above rest, the peak, and steps (the hour's stress
+    /// is the STRESS line's job — see `stressNowSummary`). Pure and static so
     /// it is testable without a store; empty when the hour holds too little to say anything honest.
-    nonisolated static func lastHourLines(samples: [HRSample], rr: [RRInterval], stepSamples: [StepSample],
+    nonisolated static func lastHourLines(samples: [HRSample], stepSamples: [StepSample],
                                           restingHr: Int?, now: Int) -> [String] {
         guard let newest = samples.map(\.ts).max() else { return [] }
         let start = newest - 3600
@@ -2792,11 +2836,9 @@ final class AICoachEngine: ObservableObject {
         }
         let steps = StepsCounter.stepsInWindow(stepSamples.filter { $0.ts > start && $0.ts <= newest }) ?? 0
         out.append("  Steps that hour: \(steps)")
-        if let si = StressIndex.stressIndex(rr: rr.filter { $0.ts > start && $0.ts <= newest }) {
-            out.append("  Stress (SI) that hour: \(Int(si.rounded())) — set it against today's whole-day"
-                       + " Stress (SI) line: higher means more tense / sympathetic, lower more relaxed;"
-                       + " movement raises it too, so read it beside the exertion line.")
-        }
+        // 261021: the hour's Baevsky index left this block. The Today stress bullet now reads the
+        // STRESS line (0–3, stress now vs today's average — `stressNowSummary`), and a second
+        // "recent stress" figure on another scale beside it only invited the two to be mixed.
         return out
     }
 

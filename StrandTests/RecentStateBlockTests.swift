@@ -100,7 +100,7 @@ final class RecentStateBlockTests: XCTestCase {
             let ts = newest - i * 60
             return (ts, i < 10 ? 100 : 60)
         }
-        let lines = AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+        let lines = AICoachEngine.lastHourLines(samples: samples(pts), stepSamples: [],
                                                 restingHr: 60, now: newest + 120)
         XCTAssertEqual(lines.first, "MY LAST HOUR, in 10-minute steps, most recent first:")
         XCTAssertTrue(lines[1].hasPrefix("  latest 10 min — mean 100 bpm"), lines[1])
@@ -109,14 +109,14 @@ final class RecentStateBlockTests: XCTestCase {
         XCTAssertTrue(lines.contains("  Exertion: 10 min at 90 bpm or more (30+ above my resting rate); peak 100 bpm"),
                       lines.joined(separator: "\n"))
         XCTAssertTrue(lines.contains("  Steps that hour: 0"))
-        XCTAssertFalse(lines.contains { $0.contains("Stress (SI)") }, "no R-R, no stress line")
+        XCTAssertFalse(lines.contains { $0.contains("Stress (SI)") }, "the hour's stress lives on the STRESS line (261021)")
     }
 
     /// An hour that ended a while ago says so, rather than presenting old data as the present.
     func testAStaleHourNamesItsAge() {
         let newest = 100_000
         let pts: [(ts: Int, bpm: Int)] = (0..<30).map { (newest - $0 * 60, 70) }
-        let lines = AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+        let lines = AICoachEngine.lastHourLines(samples: samples(pts), stepSamples: [],
                                                 restingHr: nil, now: newest + 25 * 60)
         XCTAssertEqual(lines.first,
                        "MY LAST HOUR (ending at the last strap sync, 25 min ago), in 10-minute steps, most recent first:")
@@ -125,7 +125,7 @@ final class RecentStateBlockTests: XCTestCase {
 
     func testTooLittleInTheHourSaysNothing() {
         let pts: [(ts: Int, bpm: Int)] = (0..<5).map { (1_000 + $0, 70) }
-        XCTAssertTrue(AICoachEngine.lastHourLines(samples: samples(pts), rr: [], stepSamples: [],
+        XCTAssertTrue(AICoachEngine.lastHourLines(samples: samples(pts), stepSamples: [],
                                                   restingHr: 60, now: 1_100).isEmpty)
     }
 }

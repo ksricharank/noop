@@ -163,8 +163,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("Theme — STEPS"))
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
         XCTAssertTrue(d.contains("Theme — SLEEP"))
-        // 261018: the stress bullet names both the recent and the day's overall level.
-        XCTAssertTrue(d.contains("ALWAYS call out BOTH levels"))
+        // 261021: the stress bullet is stress NOW against today's average, both on the 0–3 scale —
+        // the STRESS line's two figures — and never the Baevsky index beside them.
+        XCTAssertTrue(d.contains("(**X** now vs **Y** for the day, of 3)"))
+        XCTAssertTrue(d.contains("never the Stress (SI) index"))
+        XCTAssertFalse(d.contains("last-hour Stress (SI)"), "the stress-index bullet is retired")
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
