@@ -705,21 +705,29 @@ final class AICoachEngine: ObservableObject {
     about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
       1. Theme — my HEART: where my heart rate is sitting against MY resting heart rate and which \
     way it is heading. Its figures: my latest 10-minute heart rate and my resting heart rate.
-      2. Theme — my STRESS: how RELAXED or WOUND-UP I am right now compared with my day so far. \
-    Open with the verdict in plain words — calmer than my day, about the same, or more wound-up \
-    than my day (treat a gap of less than about 0.3 as about the same) — then what that means for \
-    me. Read it from the STRESS line in my data: my stress now against today's average, both on the \
-    0–3 scale. A heart rate raised with no movement to explain it may support the read, flagged as \
-    a read, not a fact (stress, caffeine and digestion look alike). Its figures, BOTH every time, in \
-    this form: (**X** now vs **Y** for the day, of 3). Use ONLY those two numbers — never the \
-    Stress (SI) index or any other stress measure. When the STRESS line says I am MOVING right \
-    now, say so in a few words — a walk is effort, not stress — and present the figure as my last \
-    settled reading; when it says the reading is old, say how old. Only when my data has no STRESS \
-    line at all, say there is no stress reading yet today.
+      2. Theme — my STRESS, in three parts, in this order. WHAT: how RELAXED or WOUND-UP I am \
+    right now compared with my day so far, as a plain verdict — calmer than my day, about the same, \
+    or more wound-up (a gap of less than about 0.3 is about the same). WHY: the most likely driver, \
+    read from the STRESS block in my data — WHEN it rose or eased in the day's readings, the heart \
+    rate behind the latest reading against my calmest hour, whether I had been sitting still (the \
+    sedentary line, the hour's steps) or had just exercised, and last night's sleep and my Charge \
+    (a short night or a low Charge runs everything hotter). Name it as a likely read, never a fact: \
+    a meeting, coffee or a meal look the same in the data. WHAT TO DO: ONE action, bolded, matched \
+    to that driver — e.g. after a long still stretch, **a five-minute walk**; after a short night, \
+    **slow breathing with a long exhale** rather than more coffee; a steady climb with no clear \
+    driver, **a two-minute breathing break**; when I am calm, no fix — say it is working, in a few \
+    words. Its figures, BOTH every time, in this form: (**X** now vs **Y** for the day, of 3). The \
+    driver may quote a time or a heart rate from the STRESS block. Use ONLY the STRESS block for \
+    stress — never the Stress (SI) index or any other stress measure. When it says I am MOVING right \
+    now, say so in a few words — a walk is effort, not stress — present the figure as my last \
+    settled reading, and the action is none. When it says the reading is old, say how old. Only \
+    when my data has no STRESS block at all, say there is no stress reading yet today. This bullet \
+    may run to ~45 words, and only it may reach for sleep or Charge.
       3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
-      Nothing else belongs in Now: not sleep, not Charge, not yesterday. Each bullet is a CONCLUSION \
+      Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond the stress bullet's \
+    why). Each bullet is a CONCLUSION \
     about my state, never a bare reading. The test every Now bullet must pass: delete every number \
     from it and it still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 \
     → active load" FAILS that test — it restates the chart. "Your heart is still running hot from a \
@@ -761,7 +769,8 @@ final class AICoachEngine: ObservableObject {
     differ in kind from each other (indoor/outdoor, one block vs split, hard-short vs easy-long, \
     folded into something I am doing anyway vs a session of its own). Lead every bullet with its \
     idea; its figures come AFTER it — never as the opener.
-    - Each bullet is ONE point, at most ~30 words after its short bolded title.
+    - Each bullet is ONE point, at most ~30 words after its short bolded title (the Now stress \
+    bullet ~45).
 
     About the targets, specifically:
     - In Next, speak ONLY in what is STILL TO GO — my data states it for each target ("… still to \
@@ -855,6 +864,7 @@ final class AICoachEngine: ObservableObject {
         0x9c0fcf6b8ad13d1b, // 261018b: stress bullet on the Baevsky index, last hour vs the day
         0x9e897174a0fbb747, // 261021: that default with the maintainer's pasted stress-index bullet
         0xc5cf215929a2bf0f, // 261021: 0–3 stress now vs the day, but "no reading" while moving
+        0x96f0677d3cc47f57, // 261021b: stress bullet states now vs the day, with no why and no action
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -2701,7 +2711,8 @@ final class AICoachEngine: ObservableObject {
     /// No new metric: a moving hour is still never scored as stress. The day figure is `dayMean`
     /// over `scored` hours, exactly the timeline header's "avg 1.4 · 3h". Nil only when nothing in
     /// today's waking hours was scored.
-    nonisolated static func stressNowSummary(result: DaytimeStress.Result, now: Int) -> String? {
+    nonisolated static func stressNowSummary(result: DaytimeStress.Result, now: Int,
+                                             timeZone: TimeZone = .current) -> String? {
         guard let dayMean = result.dayMean,
               let latest = result.timeline.last(where: { $0.level != nil }),
               let level = latest.level else { return nil }
@@ -2716,7 +2727,39 @@ final class AICoachEngine: ObservableObject {
         } else if ageMin > 60 {
             line += " The 'now' figure is my latest reading, from \(ageMin) min ago; nothing newer has been scored."
         }
-        return line
+        // 261022: the material for the bullet's WHY. When it rose or eased (the day's readings), and
+        // the heart rate behind the latest one against my calmest hour — the 0–3 score IS heart rate
+        // against a calm level, so this is what moved it. No new figure: each value is a timeline
+        // point's own level or mean heart rate.
+        var out = [line]
+        let series = stressSeries(result.timeline, now: now, timeZone: timeZone)
+        if !series.isEmpty {
+            out.append("  Through the day (each reading is the hour up to that time, oldest first): " + series)
+        }
+        let calmest = result.scored.compactMap(\.meanHR).min()
+        if let hr = latest.meanHR {
+            out.append("  Heart rate behind the latest reading: \(Int(hr.rounded())) bpm"
+                       + (calmest.map { "; my calmest scored hour today: \(Int($0.rounded())) bpm" } ?? "")
+                       + ".")
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// "10:00 1.1 · 10:30 1.3 · 11:00 moving": every timeline point that HAD heart rate, labelled by
+    /// the end of its hour-long window (clamped to `now` for the window still filling), oldest first.
+    nonisolated static func stressSeries(_ timeline: [DaytimeStress.HourPoint], now: Int,
+                                         timeZone: TimeZone) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = timeZone
+        return timeline.compactMap { p -> String? in
+            let value: String
+            if let level = p.level { value = StressTrace.formatLevel(level) }
+            else if p.maskedForActivity { value = "moving" }
+            else { return nil }
+            let end = Date(timeIntervalSince1970: TimeInterval(min(p.startTs + DaytimeStress.bucketSeconds, now)))
+            let c = cal.dateComponents([.hour, .minute], from: end)
+            return String(format: "%02d:%02d ", c.hour ?? 0, c.minute ?? 0) + value
+        }.joined(separator: " · ")
     }
 
     /// Whether the newest timeline point that HAD heart rate was masked as movement.

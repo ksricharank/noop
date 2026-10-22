@@ -170,6 +170,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertFalse(d.contains("last-hour Stress (SI)"), "the stress-index bullet is retired")
         // 261021b: moving keeps the level, as the last settled reading.
         XCTAssertTrue(d.contains("present the figure as my last settled reading"))
+        // 261022: the stress bullet explains itself and offers one matched action.
+        XCTAssertTrue(d.contains("WHAT: how RELAXED or WOUND-UP I am"))
+        XCTAssertTrue(d.contains("WHY: the most likely driver"))
+        XCTAssertTrue(d.contains("WHAT TO DO: ONE action, bolded, matched to that driver"))
+        XCTAssertTrue(d.contains("Name it as a likely read, never a fact"))
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
