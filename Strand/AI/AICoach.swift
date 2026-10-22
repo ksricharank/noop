@@ -712,8 +712,10 @@ final class AICoachEngine: ObservableObject {
     0–3 scale. A heart rate raised with no movement to explain it may support the read, flagged as \
     a read, not a fact (stress, caffeine and digestion look alike). Its figures, BOTH every time, in \
     this form: (**X** now vs **Y** for the day, of 3). Use ONLY those two numbers — never the \
-    Stress (SI) index or any other stress measure. When my data has no stress reading for now, say \
-    why in a few words (I was moving, or nothing recent) and give the day's average alone.
+    Stress (SI) index or any other stress measure. When the STRESS line says I am MOVING right \
+    now, say so in a few words — a walk is effort, not stress — and present the figure as my last \
+    settled reading; when it says the reading is old, say how old. Only when my data has no STRESS \
+    line at all, say there is no stress reading yet today.
       3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
@@ -852,6 +854,7 @@ final class AICoachEngine: ObservableObject {
         0xcd57051382654cce, // 261018: fixed themes; the stress bullet did not require both levels
         0x9c0fcf6b8ad13d1b, // 261018b: stress bullet on the Baevsky index, last hour vs the day
         0x9e897174a0fbb747, // 261021: that default with the maintainer's pasted stress-index bullet
+        0xc5cf215929a2bf0f, // 261021: 0–3 stress now vs the day, but "no reading" while moving
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -2675,35 +2678,67 @@ final class AICoachEngine: ObservableObject {
     /// today's waking hours could be scored, so the line is absent rather than invented.
     func stressNowLine() async -> String? {
         guard let today = await StressDayCurve.today(
-            repo: repo, personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled) else { return nil }
-        return Self.stressNowSummary(result: today.result, now: Int(Date().timeIntervalSince1970))
+            repo: repo, personalBaseline: PuffinExperiment.stressPersonalBaselineEnabled) else {
+            ScreenLedger.log("coach: STRESS line absent — today's stress curve could not be read")
+            return nil
+        }
+        let now = Int(Date().timeIntervalSince1970)
+        // 261021b: one line per context build (synthesis or chat send), so a log shows exactly what
+        // the coach was given — the maintainer kept seeing "no stress level" and nothing recorded why.
+        ScreenLedger.log(Self.stressNowDiagnostic(result: today.result, now: now))
+        return Self.stressNowSummary(result: today.result, now: now)
     }
 
     /// Pure formatter for the STRESS line, testable without a store.
     ///
-    /// "Now" is the newest point of the display timeline, which re-reads the most recent full hour
-    /// every `DaytimeStress.timelineStepSeconds`; any stress read needs a stretch of beats, so this is
-    /// as close to the present as the scale goes. Two honest gaps instead of a stale number: an
-    /// ACTIVITY-masked newest point says I was moving (exertion is not scored as stress), and a
-    /// newest scored point that ended more than an hour ago says there is no recent reading. The
-    /// day figure is `dayMean` over `scored` hours, which is exactly the timeline header's "avg 1.4 · 3h".
+    /// 261021b: there is ALWAYS a level once anything today has been scored. "Now" is the newest
+    /// SCORED point of the display timeline (which re-reads the most recent full hour every
+    /// `DaytimeStress.timelineStepSeconds`) — the point the Stress screen's line ends on, so the
+    /// bullet and the chart agree. Activity is taken into account rather than turned into a gap: when
+    /// a NEWER point was masked as movement, the line says I am moving now and that the level is my
+    /// last settled reading, with its age; a level older than an hour with nothing masked since says
+    /// how old it is. (19.20 printed "no reading" in both cases, while the chart still showed a value.)
+    /// No new metric: a moving hour is still never scored as stress. The day figure is `dayMean`
+    /// over `scored` hours, exactly the timeline header's "avg 1.4 · 3h". Nil only when nothing in
+    /// today's waking hours was scored.
     nonisolated static func stressNowSummary(result: DaytimeStress.Result, now: Int) -> String? {
-        guard let dayMean = result.dayMean else { return nil }
+        guard let dayMean = result.dayMean,
+              let latest = result.timeline.last(where: { $0.level != nil }),
+              let level = latest.level else { return nil }
         let hours = result.scored.count
-        let day = "today's average \(StressTrace.formatLevel(dayMean)) over \(hours) scored "
-            + (hours == 1 ? "hour" : "hours")
-        let nowPart: String
-        let newest = result.timeline.last(where: { $0.level != nil || $0.maskedForActivity })
-        if let point = newest, point.maskedForActivity {
-            nowPart = "now: no reading — I was moving, and movement is effort, not stress, so it is not scored"
-        } else if let point = newest, let level = point.level,
-                  now - min(point.startTs + DaytimeStress.bucketSeconds, now) <= 3_600 {
-            nowPart = "now \(StressTrace.formatLevel(level))"
-        } else {
-            nowPart = "now: no recent reading — nothing scored in the last hour"
+        let ageMin = max(0, (now - min(latest.startTs + DaytimeStress.bucketSeconds, now)) / 60)
+        var line = "STRESS (0–3, the Stress screen's daytime scale: 0 calm, 3 highly activated; higher is "
+            + "more wound-up): now \(StressTrace.formatLevel(level)) · today's average "
+            + "\(StressTrace.formatLevel(dayMean)) over \(hours) scored " + (hours == 1 ? "hour" : "hours") + "."
+        if movingNow(result) {
+            line += " I am MOVING right now: movement is effort, not stress, so it is not scored, and the"
+                + " 'now' figure is my last settled reading" + (ageMin > 0 ? ", from \(ageMin) min ago" : "") + "."
+        } else if ageMin > 60 {
+            line += " The 'now' figure is my latest reading, from \(ageMin) min ago; nothing newer has been scored."
         }
-        return "STRESS (0–3, the Stress screen's daytime scale: 0 calm, 3 highly activated; higher is "
-            + "more wound-up): \(nowPart) · \(day)."
+        return line
+    }
+
+    /// Whether the newest timeline point that HAD heart rate was masked as movement.
+    nonisolated static func movingNow(_ result: DaytimeStress.Result) -> Bool {
+        result.timeline.last(where: { $0.level != nil || $0.maskedForActivity })?.maskedForActivity == true
+    }
+
+    /// The strap-log line behind the STRESS line (261021b): what the curve held when the coach read
+    /// it — the latest scored level and its age, whether a newer point was masked as movement, the
+    /// day's average, and the timeline's point counts. Pure so it is pinnable.
+    nonisolated static func stressNowDiagnostic(result: DaytimeStress.Result, now: Int) -> String {
+        let scoredPts = result.timeline.filter { $0.level != nil }.count
+        let maskedPts = result.timeline.filter(\.maskedForActivity).count
+        let counts = "timeline points=\(result.timeline.count) scored=\(scoredPts) moving=\(maskedPts)"
+        guard let latest = result.timeline.last(where: { $0.level != nil }), let level = latest.level,
+              let dayMean = result.dayMean else {
+            return "coach: STRESS line absent — nothing scored today (\(counts))"
+        }
+        let ageMin = max(0, (now - min(latest.startTs + DaytimeStress.bucketSeconds, now)) / 60)
+        return "coach: STRESS line — now=\(StressTrace.formatLevel(level)) (latest scored, \(ageMin) min old)"
+            + " movingNow=\(movingNow(result)) day=\(StressTrace.formatLevel(dayMean))/\(result.scored.count)h"
+            + " (\(counts))"
     }
 
     /// One derived stress line for the coach context: the Baevsky Stress Index over TODAY's R-R, read

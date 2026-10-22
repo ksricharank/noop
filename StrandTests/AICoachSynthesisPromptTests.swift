@@ -168,6 +168,8 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("(**X** now vs **Y** for the day, of 3)"))
         XCTAssertTrue(d.contains("never the Stress (SI) index"))
         XCTAssertFalse(d.contains("last-hour Stress (SI)"), "the stress-index bullet is retired")
+        // 261021b: moving keeps the level, as the last settled reading.
+        XCTAssertTrue(d.contains("present the figure as my last settled reading"))
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
