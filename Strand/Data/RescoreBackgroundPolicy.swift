@@ -74,6 +74,34 @@ enum RescoreBackgroundPolicy {
     /// opportunity per ten seconds of work instead of one per night.
     static let backgroundWorkQuantumSeconds: Double = 10
 
+    /// 260929, THE iOS-27 POSTURE — the root-cause gate. DO NOT DELETE IN AN UPLIFT without
+    /// re-reading docs/releases/fork/v11.8.0.18.31.md.
+    ///
+    /// Root cause it answers, established from a controlled log comparison (same phone, same strap):
+    /// upstream v11.8.0's #2296 deleted the "defer heavy passes out of the background" policy and
+    /// paced them THROUGH the background instead. iOS 27 polices sustained background CPU by
+    /// starving the process progressively — measured directly on 260929: 585 s of wall for ~5 s of
+    /// compute — so paced background passes stretched from ≤30 s (260914-19, including iOS 27 on
+    /// the pre-uplift app) to 8360 s within a week, dragging every store consumer (screens queue on
+    /// the store actor behind starved reads) and HealthKit with them. Foreground was never affected
+    /// (30 ms/statement all week). If an uplift removes this gate, the signature returns within
+    /// days: multi-hundred-second light passes, multi-second `store sql` statements ONLY in
+    /// background, and Battery-screen complaints about the Health app.
+    ///
+    /// The rule: before any pass starts inline in the background, a 50 ms CPU canary
+    /// (`BackgroundCPUCanary`) measures the actual starvation; at or past this factor the pass is
+    /// not attempted inline — the debt machinery hands it to a granted `BGProcessingTask` window or
+    /// the next foreground, where iOS provides real CPU. Below it, background behaves as before.
+    /// 4× is deliberately permissive: mild contention (a spotlight index, a photo pass) should not
+    /// defer scoring; only genuine starvation (the measured episodes ran ×100+) should.
+    static let backgroundStarvationFactor = 4.0
+
+    /// Pure so it is pinned by tests: whether a pass may start inline in the background given the
+    /// canary's measured wall-per-CPU factor.
+    static func inlineBackgroundAllowed(canaryFactor: Double) -> Bool {
+        canaryFactor.isFinite && canaryFactor < backgroundStarvationFactor
+    }
+
     /// Seconds to rest after `workSeconds` of re-score work done since the last rest. Zero until a quantum of
     /// work has accumulated (`backgroundWorkQuantumSeconds`), and always zero in the foreground, where no CPU
     /// limit applies and the user is waiting on the result. A non-finite measurement rests zero.
@@ -200,10 +228,16 @@ enum RescoreBackgroundPolicy {
                 cause: .alreadyOutstanding)
         }
 
-        if !passInProgress, let since = secondsSinceLastAttempt, since >= 0, since < backgroundSpacingSeconds {
+        // The morning settle outranks the spacing: a debt owed ONLY by window deferrals was never
+        // attempted, and the attempt stamp it would be spaced against is yesterday evening's pass.
+        // Spacing it would push the first post-window settle — the one update the whole window waits
+        // for — onto a background task that may not arrive for hours.
+        if !passInProgress, !(rescoreAlreadyOwed && owedByWindowDeferralOnly),
+           let since = secondsSinceLastAttempt, since >= 0, since < backgroundSpacingSeconds {
             return .deferToBackgroundTask(
                 reason: "the last pass started \(Int(since / 60)) min ago; a backgrounded offload re-scores"
-                    + " at most every \(Int(backgroundSpacingSeconds / 60)) min")
+                    + " at most every \(Int(backgroundSpacingSeconds / 60)) min",
+                cause: .spacing)
         }
 
         return .run
