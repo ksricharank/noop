@@ -159,7 +159,7 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("MY LAST HOUR"))
         XCTAssertTrue(d.contains("LAST HOUR OR SO"))
-        XCTAssertTrue(d.contains("my HEART and STRESS, judged from ONE comparison"))
+        XCTAssertTrue(d.contains("my HEART and STRESS. The verdict comes from ONE comparison"))
         XCTAssertTrue(d.contains("my recent MOVEMENT, ACTIVITY and HYDRATION"))
         XCTAssertTrue(d.contains("Theme — STEPS"))
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
@@ -169,6 +169,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("within about 15 bpm of resting is SETTLED"))
         XCTAssertTrue(d.contains("more than 25 above is WOUND UP"))
         XCTAssertTrue(d.contains("as a read, never a fact"))
+        // 261022c: the why reads last night's HRV and resting rate against my own baseline.
+        XCTAssertTrue(d.contains("my HRV and resting heart rate against MY OWN baseline"))
+        XCTAssertTrue(d.contains("a high HRV means I have headroom"))
         XCTAssertTrue(d.contains("(**X** bpm now vs **Y** resting)"))
         XCTAssertTrue(d.contains("not the STRESS line, not the Stress (SI) index"))
         XCTAssertFalse(d.contains("for the day, of 3)"), "the 0–3 stress figures are retired from Now")
