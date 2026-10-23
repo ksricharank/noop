@@ -703,31 +703,21 @@ final class AICoachEngine: ObservableObject {
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
     - **Now** on its own line, then EXACTLY TWO bullets, in this order, each on a fixed THEME, \
     about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
-      1. Theme — my HEART and STRESS. The verdict comes from ONE comparison: my latest 10-minute \
-    heart rate against MY resting heart rate, while I am still (MY LAST HOUR shows few steps and \
-    little exertion). Sitting runs a little above my sleeping resting rate, so: within about 15 bpm \
-    of resting is SETTLED; about 15 to 25 above is A BIT KEYED UP; more than 25 above is WOUND UP. \
-    If I have been moving, my heart is up from EFFORT, not stress — say so and give no stress \
-    verdict. Read the rest of my data for the WHY: the direction (the 10-minute steps in MY LAST \
-    HOUR — climbing, easing or steady — and the hours before in MY LAST 6 HOURS); how long I have \
-    been still (the sedentary line) and how long since my last workout (Recent workouts); and my \
-    nervous-system backdrop from last night — my HRV and resting heart rate against MY OWN \
-    baseline (the z-scores if my data has them, else my 30-day averages), the night's sleep, my \
-    Charge and any sleep debt. A low HRV, a raised resting rate, a short night or a low Charge make \
-    the same heart rate mean more strain; a high HRV means I have headroom. Say three things, in \
-    this order: the verdict and which way it is heading; the most likely reason in a few words, as \
-    a read, never a fact (coffee, a meal, heat or standing up look the same); and ONE bolded thing to \
-    do now, matched to that reason (e.g. after a long still stretch **a five-minute walk**, after a \
-    short night or a low HRV **slow breathing with a long exhale**) — when I am settled, nothing to \
-    fix, just say so. Its figures: (**X** bpm now vs **Y** resting), plus last night's HRV in ms \
-    against my baseline when it is part of the reason. Use no other stress measure — not the STRESS \
-    line, not the Stress (SI) index. This bullet may run to ~50 words, and only it may reach for \
-    sleep, Charge or HRV.
+      1. Theme — am I STRESSED right now? Answer plainly, yes or no, from my heart rate and HRV: \
+    my latest 10-minute heart rate against MY resting heart rate while I am still (MY LAST HOUR \
+    shows few steps), and last night's HRV against MY usual (my 30-day average). Within about 15 \
+    bpm of resting is NOT stressed; more than 15 above is STRESSED; more than 25 above is VERY \
+    stressed. If last night's HRV is well below my usual, lean towards stressed. If I have been \
+    moving, my heart is up from effort — say I am active, not stressed. If I AM stressed: one short \
+    likely reason, as a read, not a fact, and ONE bolded thing to do now (e.g. **two minutes of \
+    slow breathing with a long exhale**, or **a five-minute walk** after a long sit). If I am not \
+    stressed, just say so — nothing to fix. Its figures: (**X** bpm now vs **Y** resting, HRV **Z** \
+    ms vs **W** usual). Use no other stress measure. At most ~35 words.
       2. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
-      Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond the heart-and-stress \
-    bullet's reason). Each bullet is a CONCLUSION \
+      Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond last night's HRV in \
+    the stress bullet). Each bullet is a CONCLUSION \
     about my state, never a bare reading. The test every Now bullet must pass: delete every number \
     from it and it still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 \
     → active load" FAILS that test — it restates the chart. "Your heart is still running hot from a \
@@ -770,7 +760,7 @@ final class AICoachEngine: ObservableObject {
     folded into something I am doing anyway vs a session of its own). Lead every bullet with its \
     idea; its figures come AFTER it — never as the opener.
     - Each bullet is ONE point, at most ~30 words after its short bolded title (the Now \
-    heart-and-stress bullet ~50).
+    stress bullet ~35).
 
     About the targets, specifically:
     - In Next, speak ONLY in what is STILL TO GO — my data states it for each target ("… still to \
@@ -867,6 +857,7 @@ final class AICoachEngine: ObservableObject {
         0x96f0677d3cc47f57, // 261021b: stress bullet states now vs the day, with no why and no action
         0x90752fd92b5cb5a7, // 261022: separate stress bullet on the flat 0–3 timeline (what/why/action)
         0x7c36b80331a5d8c4, // 261022b: heart and stress merged, but no HRV and a thin why
+        0xb616fefe43d1a520, // 261022c: heart-and-stress with a long why list (too complex)
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.

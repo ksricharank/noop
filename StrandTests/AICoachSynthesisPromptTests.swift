@@ -159,21 +159,17 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("MY LAST HOUR"))
         XCTAssertTrue(d.contains("LAST HOUR OR SO"))
-        XCTAssertTrue(d.contains("my HEART and STRESS. The verdict comes from ONE comparison"))
+        XCTAssertTrue(d.contains("am I STRESSED right now? Answer plainly, yes or no, from my heart rate and HRV"))
         XCTAssertTrue(d.contains("my recent MOVEMENT, ACTIVITY and HYDRATION"))
         XCTAssertTrue(d.contains("Theme — STEPS"))
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
         XCTAssertTrue(d.contains("Theme — SLEEP"))
-        // 261022: stress is heart rate while still against resting, with fixed verdict bands, a
-        // reason named as a read, and one action — no 0–3 timeline, no Baevsky index.
-        XCTAssertTrue(d.contains("within about 15 bpm of resting is SETTLED"))
-        XCTAssertTrue(d.contains("more than 25 above is WOUND UP"))
-        XCTAssertTrue(d.contains("as a read, never a fact"))
-        // 261022c: the why reads last night's HRV and resting rate against my own baseline.
-        XCTAssertTrue(d.contains("my HRV and resting heart rate against MY OWN baseline"))
-        XCTAssertTrue(d.contains("a high HRV means I have headroom"))
-        XCTAssertTrue(d.contains("(**X** bpm now vs **Y** resting)"))
-        XCTAssertTrue(d.contains("not the STRESS line, not the Stress (SI) index"))
+        // 261023: stressed or not, from heart rate while still vs resting and last night's HRV vs
+        // usual; one action only when stressed.
+        XCTAssertTrue(d.contains("Within about 15 bpm of resting is NOT stressed"))
+        XCTAssertTrue(d.contains("If I am not stressed, just say so"))
+        XCTAssertTrue(d.contains("(**X** bpm now vs **Y** resting, HRV **Z** ms vs **W** usual)"))
+        XCTAssertFalse(d.contains("Read the rest of my data for the WHY"), "the long why list is retired")
         XCTAssertFalse(d.contains("for the day, of 3)"), "the 0–3 stress figures are retired from Now")
         XCTAssertFalse(d.contains("my STRESS, in three parts"), "the separate stress bullet is retired")
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
@@ -210,7 +206,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertFalse(d.contains("grade yesterday as a finished day") == false && d.contains("Do NOT") == false,
                        "Today must be fenced off the other tabs")
         XCTAssertFalse(d.contains("blank line between sections"))
-        XCTAssertFalse(d.contains("STRESSED"), "the retired live verdict must not linger")
+        // 261023: a stressed / not-stressed verdict is back at the maintainer's request, but read from
+        // heart rate while STILL and last night's HRV — never from a raised heart rate alone.
+        XCTAssertTrue(d.contains("say I am active, not stressed"))
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
     }
 }
