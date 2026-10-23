@@ -701,33 +701,26 @@ final class AICoachEngine: ObservableObject {
 
     Shape — this exact skeleton, every time, nothing added and nothing dropped:
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
-    - **Now** on its own line, then EXACTLY THREE bullets, in this order, each on a fixed THEME, \
+    - **Now** on its own line, then EXACTLY TWO bullets, in this order, each on a fixed THEME, \
     about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
-      1. Theme — my HEART: where my heart rate is sitting against MY resting heart rate and which \
-    way it is heading. Its figures: my latest 10-minute heart rate and my resting heart rate.
-      2. Theme — my STRESS, in three parts, in this order. WHAT: how RELAXED or WOUND-UP I am \
-    right now compared with my day so far, as a plain verdict — calmer than my day, about the same, \
-    or more wound-up (a gap of less than about 0.3 is about the same). WHY: the most likely driver, \
-    read from the STRESS block in my data — WHEN it rose or eased in the day's readings, the heart \
-    rate behind the latest reading against my calmest hour, whether I had been sitting still (the \
-    sedentary line, the hour's steps) or had just exercised, and last night's sleep and my Charge \
-    (a short night or a low Charge runs everything hotter). Name it as a likely read, never a fact: \
-    a meeting, coffee or a meal look the same in the data. WHAT TO DO: ONE action, bolded, matched \
-    to that driver — e.g. after a long still stretch, **a five-minute walk**; after a short night, \
-    **slow breathing with a long exhale** rather than more coffee; a steady climb with no clear \
-    driver, **a two-minute breathing break**; when I am calm, no fix — say it is working, in a few \
-    words. Its figures, BOTH every time, in this form: (**X** now vs **Y** for the day, of 3). The \
-    driver may quote a time or a heart rate from the STRESS block. Use ONLY the STRESS block for \
-    stress — never the Stress (SI) index or any other stress measure. When it says I am MOVING right \
-    now, say so in a few words — a walk is effort, not stress — present the figure as my last \
-    settled reading, and the action is none. When it says the reading is old, say how old. Only \
-    when my data has no STRESS block at all, say there is no stress reading yet today. This bullet \
-    may run to ~45 words, and only it may reach for sleep or Charge.
-      3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
+      1. Theme — my HEART and STRESS, judged from ONE comparison: my latest 10-minute heart rate \
+    against MY resting heart rate, while I am still. I am still when MY LAST HOUR shows few steps \
+    and little exertion. Sitting runs a little above my sleeping resting rate, so: within about 15 \
+    bpm of resting is SETTLED; about 15 to 25 above is A BIT KEYED UP; more than 25 above is WOUND \
+    UP. If I have been moving, my heart is up from EFFORT, not stress — say so and give no stress \
+    verdict. Say three things, in this order: the verdict and which way my heart is heading; the \
+    most likely reason in a few words — a long still stretch, a short night or a low Charge, coming \
+    off exercise — as a read, never a fact (coffee, a meal or standing up look the same); and ONE \
+    bolded thing to do now, matched to that reason (e.g. after a long still stretch **a five-minute \
+    walk**, after a short night **slow breathing with a long exhale**) — when I am settled, nothing \
+    to fix, just say so. Its figures: (**X** bpm now vs **Y** resting). Use no other stress measure \
+    — not the STRESS line, not the Stress (SI) index. This bullet may run to ~45 words, and only it \
+    may reach for sleep or Charge.
+      2. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
-      Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond the stress bullet's \
-    why). Each bullet is a CONCLUSION \
+      Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond the heart-and-stress \
+    bullet's reason). Each bullet is a CONCLUSION \
     about my state, never a bare reading. The test every Now bullet must pass: delete every number \
     from it and it still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 \
     → active load" FAILS that test — it restates the chart. "Your heart is still running hot from a \
@@ -769,8 +762,8 @@ final class AICoachEngine: ObservableObject {
     differ in kind from each other (indoor/outdoor, one block vs split, hard-short vs easy-long, \
     folded into something I am doing anyway vs a session of its own). Lead every bullet with its \
     idea; its figures come AFTER it — never as the opener.
-    - Each bullet is ONE point, at most ~30 words after its short bolded title (the Now stress \
-    bullet ~45).
+    - Each bullet is ONE point, at most ~30 words after its short bolded title (the Now \
+    heart-and-stress bullet ~45).
 
     About the targets, specifically:
     - In Next, speak ONLY in what is STILL TO GO — my data states it for each target ("… still to \
@@ -865,6 +858,7 @@ final class AICoachEngine: ObservableObject {
         0x9e897174a0fbb747, // 261021: that default with the maintainer's pasted stress-index bullet
         0xc5cf215929a2bf0f, // 261021: 0–3 stress now vs the day, but "no reading" while moving
         0x96f0677d3cc47f57, // 261021b: stress bullet states now vs the day, with no why and no action
+        0x90752fd92b5cb5a7, // 261022: separate stress bullet on the flat 0–3 timeline (what/why/action)
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.

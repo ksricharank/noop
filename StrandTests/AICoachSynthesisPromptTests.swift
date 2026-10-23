@@ -118,8 +118,10 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("**Now**"))
         XCTAssertTrue(d.contains("**Next**"))
         XCTAssertTrue(d.contains("no other headings"))
-        // 261018: fixed counts and themes — Now three bullets, Next four, nothing dropped.
-        XCTAssertTrue(d.contains("EXACTLY THREE bullets"))
+        // 261018: fixed counts and themes, nothing dropped. 261022: Now is two bullets (heart and
+        // stress merged), Next four.
+        XCTAssertTrue(d.contains("EXACTLY TWO bullets"))
+        XCTAssertFalse(d.contains("EXACTLY THREE bullets"))
         XCTAssertTrue(d.contains("EXACTLY FOUR bullets"))
         XCTAssertTrue(d.contains("nothing added and nothing dropped"))
         XCTAssertFalse(d.contains("2 to 4 bullets"), "the variable bullet count is retired")
@@ -157,24 +159,20 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("MY LAST HOUR"))
         XCTAssertTrue(d.contains("LAST HOUR OR SO"))
-        XCTAssertTrue(d.contains("my HEART"))
-        XCTAssertTrue(d.contains("RELAXED or WOUND-UP"))
+        XCTAssertTrue(d.contains("my HEART and STRESS, judged from ONE comparison"))
         XCTAssertTrue(d.contains("my recent MOVEMENT, ACTIVITY and HYDRATION"))
         XCTAssertTrue(d.contains("Theme — STEPS"))
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
         XCTAssertTrue(d.contains("Theme — SLEEP"))
-        // 261021: the stress bullet is stress NOW against today's average, both on the 0–3 scale —
-        // the STRESS line's two figures — and never the Baevsky index beside them.
-        XCTAssertTrue(d.contains("(**X** now vs **Y** for the day, of 3)"))
-        XCTAssertTrue(d.contains("never the Stress (SI) index"))
-        XCTAssertFalse(d.contains("last-hour Stress (SI)"), "the stress-index bullet is retired")
-        // 261021b: moving keeps the level, as the last settled reading.
-        XCTAssertTrue(d.contains("present the figure as my last settled reading"))
-        // 261022: the stress bullet explains itself and offers one matched action.
-        XCTAssertTrue(d.contains("WHAT: how RELAXED or WOUND-UP I am"))
-        XCTAssertTrue(d.contains("WHY: the most likely driver"))
-        XCTAssertTrue(d.contains("WHAT TO DO: ONE action, bolded, matched to that driver"))
-        XCTAssertTrue(d.contains("Name it as a likely read, never a fact"))
+        // 261022: stress is heart rate while still against resting, with fixed verdict bands, a
+        // reason named as a read, and one action — no 0–3 timeline, no Baevsky index.
+        XCTAssertTrue(d.contains("within about 15 bpm of resting is SETTLED"))
+        XCTAssertTrue(d.contains("more than 25 above is WOUND UP"))
+        XCTAssertTrue(d.contains("as a read, never a fact"))
+        XCTAssertTrue(d.contains("(**X** bpm now vs **Y** resting)"))
+        XCTAssertTrue(d.contains("not the STRESS line, not the Stress (SI) index"))
+        XCTAssertFalse(d.contains("for the day, of 3)"), "the 0–3 stress figures are retired from Now")
+        XCTAssertFalse(d.contains("my STRESS, in three parts"), "the separate stress bullet is retired")
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
         XCTAssertTrue(d.contains("The IDEAS are the point of this section"))
         XCTAssertTrue(d.contains("never as the opener"), "the delta must not lead a Next bullet")
