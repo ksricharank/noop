@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The widget extension entry point. Bundles the glanceable widget, the live-HR Live Activity,
 /// the targets glance in both its bar and ring variants, the K10 Coach brief widget (stored morning brief on Lock Screen / Home Screen), the
-/// heart-rate trace widget (#1957), the stress curve widget (#2040), the Lift Log session
+/// heart-rate trace widget (#1957), the stress curve widget (#2040), the square NSS widget (261024c), the Lift Log session
 /// Live Activity, and the strap-sync Live Activity.
 @main
 struct NOOPWidgetBundle: WidgetBundle {
@@ -15,6 +15,7 @@ struct NOOPWidgetBundle: WidgetBundle {
         CoachBriefWidget()
         HeartRateWidget()
         StressWidget()
+        NSSWidget()
         LiftLiveActivity()
         SyncLiveActivity()
     }

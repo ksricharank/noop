@@ -40,6 +40,13 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// so the widget cannot show yesterday's afternoon under today's date while waiting for the first
     /// scorable hour after midnight.
     public var stressDay: Int?
+    /// 261024c: today's NSS (Normalized Stress Score) at 5-minute points, for the square NSS widget,
+    /// with the day it belongs to and the two figures the face prints. Optional, nil-default, like
+    /// every field added after the first build.
+    public var nssSeries: [NSSPoint]?
+    public var nssDay: Int?
+    public var nssNow: Int?
+    public var nssMean: Int?
     // The daily-targets glance trio (260830) — the fields behind the NOOP Targets widget, built for
     // running WITHOUT the Live Activity: the strap streams only overnight, and daytime data arrives
     // as ~15-minute offload bursts, so these are burst-cadence values, not live ones. Same optional
@@ -79,7 +86,9 @@ public struct WidgetSnapshot: Codable, Equatable {
                 stressDay: Int? = nil,
                 effortTargetDisplay: String? = nil, kcal: Int? = nil, kcalTarget: Int? = nil,
                 sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil,
-                waterHalfCups: Int? = nil, waterTargetCups: Int? = nil) {
+                waterHalfCups: Int? = nil, waterTargetCups: Int? = nil,
+                nssSeries: [NSSPoint]? = nil, nssDay: Int? = nil, nssNow: Int? = nil,
+                nssMean: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -102,6 +111,18 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.stepsTarget = stepsTarget
         self.waterHalfCups = waterHalfCups
         self.waterTargetCups = waterTargetCups
+        self.nssSeries = nssSeries
+        self.nssDay = nssDay
+        self.nssNow = nssNow
+        self.nssMean = nssMean
+    }
+
+    /// Today's NSS curve, or empty when what was published belongs to a day that is over — the same
+    /// resolve-on-read rule as `stressCurve`.
+    public func nssCurve(now: Date = Date(), calendar: Calendar = .current) -> [NSSPoint] {
+        guard let nssDay, let nssSeries,
+              nssDay == WidgetSnapshot.localDayNumber(now, calendar: calendar) else { return [] }
+        return nssSeries
     }
 
     /// The curve to DRAW: what was published, unless it belongs to a day that is over.
@@ -561,6 +582,12 @@ public struct WidgetSnapshot: Codable, Equatable {
             // midnight still reaches WidgetKit even when the new day has no scored hour yet.
             || previous.stressSeries != next.stressSeries
             || previous.stressDay != next.stressDay
+            // 261024c: NSS moves on every sync, so comparing its whole series would spend a reload
+            // request per sync against a background budget of ~40–70 a day. The face is compared at
+            // 5-point steps of the NOW figure plus the day; the curve rides along with any reload,
+            // and the widget's own 30-minute timeline picks it up regardless.
+            || previous.nssDay != next.nssDay
+            || previous.nssNow.map { $0 / 5 } != next.nssNow.map { $0 / 5 }
             || previous.effortTargetDisplay != next.effortTargetDisplay
             // Cal / Steps / Sleep compare at DISPLAY granularity (260831): every snapshot-fed widget
             // face renders the ABBREVIATED pairs ("4.1k/10k") and the "8h30" sleep string — the raw

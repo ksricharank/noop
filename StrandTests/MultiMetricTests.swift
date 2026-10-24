@@ -23,9 +23,22 @@ final class MultiMetricTests: XCTestCase {
     /// strips it carried before it became configurable, so an existing page looks unchanged until
     /// the wearer edits it.
     func testEachStyleHasItsOwnDefault() {
+        // 261024c: NSS joins the calendar's original three.
         XCTAssertEqual(MultiMetricPrefs.defaultSelection(for: .calendar),
-                       [.charge, .dayQuality, .sleep])
+                       [.charge, .dayQuality, .sleep, .nss])
         XCTAssertFalse(MultiMetricPrefs.defaultSelection(for: .rows).isEmpty)
+    }
+
+    /// 261024c: NSS is appended ONCE to a selection stored before it existed, and a later removal
+    /// in the picker sticks.
+    func testNSSJoinsAStoredSelectionOnce() {
+        let d = UserDefaults(suiteName: "multi-metric-nss-\(UUID().uuidString)")!
+        d.set(MultiMetricPrefs.encode([.charge, .hrv]), forKey: MultiMetricPrefs.selectionKey(for: .rows))
+        MultiMetricPrefs.addNSSOnce(defaults: d)
+        XCTAssertEqual(MultiMetricPrefs.resolved(style: .rows, defaults: d), [.charge, .hrv, .nss])
+        d.set(MultiMetricPrefs.encode([.charge]), forKey: MultiMetricPrefs.selectionKey(for: .rows))
+        MultiMetricPrefs.addNSSOnce(defaults: d)
+        XCTAssertEqual(MultiMetricPrefs.resolved(style: .rows, defaults: d), [.charge])
     }
 
     /// The three keys must not collide, or configuring one style would silently rewrite another.

@@ -130,7 +130,8 @@ struct TrendsView: View {
          .dayQuality: dayQualityByDay,
          .steps: seriesByDay { $0.steps.map(Double.init) },
          .respiratory: seriesByDay { $0.respRateBpm },
-         .water: waterCupsByDay]
+         .water: waterCupsByDay,
+         .nss: nss.snapshot.dailyByDay]
     }
 
     /// Per-metric window selections (260920). ONE dictionary keyed by section rather than seven
@@ -448,7 +449,10 @@ struct TrendsView: View {
         }
         // 260908 — the day-quality series, for the pip row, the week digest and the daily-signals grid.
         // 261024b — NSS daily averages for the NSS trend section (a no-op within minutes of the last update).
-        .task { await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) }) }
+        .task {
+            MultiMetricPrefs.addNSSOnce()   // 261024c: NSS joins the rows and calendar cards once
+            await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+        }
         .task(id: repo.days.count) {
             let s = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
             dayQualityByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
@@ -471,7 +475,7 @@ struct TrendsView: View {
         // 260922: the unified card's seven day-keyed series, rebuilt only when the data behind them
         // changes. Keyed on the three loaded series' counts too, so a late-arriving Rest / day-quality /
         // water load refreshes the card once.
-        .task(id: "\(repo.refreshSeq)-\(repo.days.count)-\(sleepPerfByDay.count)-\(dayQualityByDay.count)-\(waterCupsByDay.count)") {
+        .task(id: "\(repo.refreshSeq)-\(repo.days.count)-\(sleepPerfByDay.count)-\(dayQualityByDay.count)-\(waterCupsByDay.count)-\(nss.snapshot.dailyByDay.count)") {
             let t0 = DispatchTime.now().uptimeNanoseconds
             multiMetricSeries = buildMultiMetricSeries()
             ScreenLedger.recordLoad(screen: "trends", restored: false, since: t0)
@@ -1115,7 +1119,7 @@ struct TrendsView: View {
             guard let raw = series[d.day] else { return RecoveryDay(date: dt, score: nil) }
             let scaled: Double
             switch metric {
-            case .charge, .sleep:
+            case .charge, .sleep, .nss:
                 scaled = raw                                   // already 0–100
             case .dayQuality:
                 scaled = (raw - Double(DayQualityScore.publishedMinimum))
@@ -1140,7 +1144,7 @@ struct TrendsView: View {
         let span = hi - lo
         let display = metric.higherIsBetter ? shown : 100 - shown
         switch metric {
-        case .charge, .sleep:
+        case .charge, .sleep, .nss:
             return display
         case .dayQuality:
             return display / 100

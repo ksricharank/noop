@@ -97,6 +97,17 @@ extension WidgetSnapshot {
         // would decode the App Group blob twice on any publish that could not score, and this file
         // already went to the trouble of removing one such decode from the live path.
         let storedStress: WidgetSnapshot? = stress == nil ? load() : nil
+        // 261024c: today's NSS for the square NSS widget — the store's own snapshot (updated by the
+        // quick pass that ran just before this post-offload publish), thinned to the latest reading in
+        // each 5-minute slot so a day stays under ~200 points.
+        let nssSnap = NormalizedStressStore.shared.snapshot
+        let nssPoints: [NSSPoint] = {
+            var bySlot: [Int: NormalizedStress.Reading] = [:]
+            for r in nssSnap.readings { bySlot[r.ts / 300] = r }
+            return bySlot.keys.sorted().compactMap { k in
+                bySlot[k].map { NSSPoint(ts: Int64($0.ts), nss: $0.nss) }
+            }
+        }()
         // The daily-targets trio (260830, the NOOP Targets widget): the same deterministic numbers
         // the Live Activity card and the coach synthesis cite (memoized; recomputes only on a data
         // refresh or day roll). This full publish runs post-offload even in the BACKGROUND (#980),
@@ -149,7 +160,11 @@ extension WidgetSnapshot {
             // tracker's own resolution — the face quantizes to whole cups, which is also what keeps
             // a half-cup log from spending a WidgetKit reload. Nil target = tracking off = dash.
             waterHalfCups: targets.waterTodayML.map { HydrationGoal.halfCups(fromML: $0) },
-            waterTargetCups: targets.waterTargetCups
+            waterTargetCups: targets.waterTargetCups,
+            nssSeries: nssPoints,
+            nssDay: WidgetSnapshot.localDayNumber(now),
+            nssNow: nssSnap.current.map { Int($0.nss.rounded()) },
+            nssMean: nssSnap.dayMean.map { Int($0.rounded()) }
         )
         // Read the PREVIOUS snapshot once, before the save, so the scene split and the
         // unrendered-change probe both describe the transition this publish is about to make.

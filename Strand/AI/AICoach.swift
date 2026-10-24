@@ -2074,8 +2074,13 @@ final class AICoachEngine: ObservableObject {
         if !insights.isEmpty { facts += "\n\n" + insights }
         // 261004: the per-metric arithmetic (means, half-over-half, slopes, extremes, anomalies) the
         // seven-line format reads its numbers from — computed here, never left to model arithmetic.
+        // 261024c: NSS daily averages (the Insights tab's NSS trend), as rows and as a calc line.
+        await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+        let nssByDay = NormalizedStressStore.shared.snapshot.dailyByDay
+        let nssRows = Self.nssWindowBlock(days: window, nssByDay: nssByDay)
+        if !nssRows.isEmpty { facts += "\n\n" + nssRows }
         facts += "\n\n" + Self.perMetricTrendBlock(days: window, restByDay: restByDay,
-                                                   dayQualityByDay: dqByDay)
+                                                   dayQualityByDay: dqByDay, nssByDay: nssByDay)
         return await runNarrative(key: key, facts: facts, instruction: trendsPrompt) { outcome in
             self.lastTrendsOutcome = outcome
             ScreenLedger.log("coach: trends summary — \(outcome ?? "written")")
@@ -2110,8 +2115,12 @@ final class AICoachEngine: ObservableObject {
         let insights = Self.trendsInsightsBlock(days: window, restByDay: restByDay, dayQualityByDay: dqByDay,
                                                 today: Repository.localDayKey(Date()))
         if !insights.isEmpty { facts += "\n\n" + insights }
+        await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+        let nssByDay = NormalizedStressStore.shared.snapshot.dailyByDay
+        let nssRows = Self.nssWindowBlock(days: window, nssByDay: nssByDay)
+        if !nssRows.isEmpty { facts += "\n\n" + nssRows }
         facts += "\n\n" + Self.perMetricTrendBlock(days: window, restByDay: restByDay,
-                                                   dayQualityByDay: dqByDay)
+                                                   dayQualityByDay: dqByDay, nssByDay: nssByDay)
         facts += "\n\nTODAY'S DATE: \(Repository.localDayKey(Date()))"
         facts += "\nYESTERDAY: \(Repository.localDayKey(Date(timeIntervalSinceNow: -86_400)))"
         // The no-repeat mechanism (261005), deliberately simple: the model cannot remember what it
@@ -2474,7 +2483,7 @@ final class AICoachEngine: ObservableObject {
     per week, extremes and anomaly days. The arithmetic is done; your job is the reading of it, for \
     the person whose body it is, in the second person.
 
-    Output EXACTLY seven bullets, one per metric, each on its own line, in this order and nothing else:
+    Output EXACTLY eight bullets, one per metric, each on its own line, in this order and nothing else:
     - **Charge** — …
     - **HRV** — …
     - **Resting HR** — …
@@ -2482,6 +2491,7 @@ final class AICoachEngine: ObservableObject {
     - **Effort** — …
     - **Steps** — …
     - **Day quality** — …
+    - **Stress (NSS)** — …
 
     Each bullet: the bolded metric name, an em dash, then ONE short insight about that metric over \
     THIS window — at most ~20 words. Your lens is DIRECTION AND DURATION: what has been moving, for \
@@ -2491,7 +2501,9 @@ final class AICoachEngine: ObservableObject {
     (slope, halves, extremes, anomalies) and the daily rows to find it; connect two metrics when the \
     data supports it, flagged as a read. A metric that genuinely did not move gets an honest "held \
     steady at …" line — that is a real finding, never pad it. A metric whose calc says "too few \
-    readings" gets exactly that: not enough data yet.
+    readings" gets exactly that: not enough data yet. Stress (NSS) is my daily stress beyond what my \
+    activity explained — 50 is my usual, HIGHER is more keyed up, and it is experimental; with no \
+    Stress (NSS) calc line at all, its bullet says it is still building its history.
 
     Rules:
     - EVERY number you write must appear VERBATIM in the numbers above, in **bold**. Do not convert, \
@@ -2500,7 +2512,7 @@ final class AICoachEngine: ObservableObject {
     - Do NOT report today's values, grade a single day, or discuss last night. Other screens own those.
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
     - State confidence honestly in passing: a moderate link over 12 pairs is a lead, not a law.
-    - No headings, no preamble, no sign-off — the seven bullets are the whole output.
+    - No headings, no preamble, no sign-off — the eight bullets are the whole output.
     """
 
     static let sleepPromptKey = "ai.sleepPrompt"
@@ -3431,9 +3443,21 @@ final class AICoachEngine: ObservableObject {
     /// mean, half-over-half delta, least-squares slope per week, extremes with their days, |z| >= 2
     /// anomalies — is computed here rather than trusted to model arithmetic. A metric with fewer
     /// than 3 values prints "too few readings", which the prompt passes through honestly.
+    /// 261024c: the NSS daily averages over `days`, with what the number means, for the Insights
+    /// tab's two reads. Empty when none of those days has an average.
+    nonisolated static func nssWindowBlock(days: [DailyMetric], nssByDay: [String: Double]) -> String {
+        let pts = days.map(\.day).sorted().compactMap { d in nssByDay[d].map { (d, $0) } }
+        guard !pts.isEmpty else { return "" }
+        return "NSS — daily average stress beyond what my activity explained (0–100; 50 = my usual for "
+            + "the pace I was at; higher = more keyed up; experimental, scored against my own last 14 days; "
+            + "heat, caffeine, illness and poor sleep raise it too), oldest first: "
+            + pts.map { "\($0.0.dropFirst(5)) \(Int($0.1.rounded()))" }.joined(separator: " · ")
+    }
+
     nonisolated static func perMetricTrendBlock(days: [DailyMetric],
                                                 restByDay: [String: Double],
-                                                dayQualityByDay: [String: Double]) -> String {
+                                                dayQualityByDay: [String: Double],
+                                                nssByDay: [String: Double] = [:]) -> String {
         let ordered = days.sorted { $0.day < $1.day }
         func line(_ label: String, unit: String, decimals: Int,
                   _ value: (DailyMetric) -> Double?) -> String {
@@ -3481,7 +3505,11 @@ final class AICoachEngine: ObservableObject {
             line("Effort", unit: "", decimals: 1) { $0.strain },
             line("Steps", unit: "", decimals: 0) { $0.steps.map(Double.init) },
             line("Day quality", unit: "", decimals: 0) { dayQualityByDay[$0.day] },
-        ]
+        ] + (nssByDay.isEmpty ? [] : [
+            // 261024c: NSS, when the store has any — omitted entirely otherwise, so a build or an
+            // install without it reads exactly as before.
+            line("Stress (NSS)", unit: "", decimals: 0) { nssByDay[$0.day] },
+        ])
         return "PER-METRIC TREND CALCS (newest-half vs older-half, slope per week):\n"
             + lines.map { "  " + $0 }.joined(separator: "\n")
     }

@@ -64,4 +64,19 @@ final class PerMetricTrendBlockTests: XCTestCase {
         let block = AICoachEngine.perMetricTrendBlock(days: days, restByDay: [:], dayQualityByDay: [:])
         XCTAssertTrue(block.contains("anomalies=09-06(10)"), block)
     }
+
+    /// 261024c: NSS rides as an eighth calc line only when there is NSS to read — absent otherwise,
+    /// so a window without it reads exactly as before.
+    func testNSSLineOnlyWhenThereIsNSS() {
+        let days = (1...6).map { day(String(format: "2026-10-%02d", $0)) }
+        let without = AICoachEngine.perMetricTrendBlock(days: days, restByDay: [:], dayQualityByDay: [:])
+        XCTAssertFalse(without.contains("Stress (NSS)"), without)
+        let nss = Dictionary(uniqueKeysWithValues: days.enumerated().map { ($1.day, 45.0 + Double($0) * 2) })
+        let with = AICoachEngine.perMetricTrendBlock(days: days, restByDay: [:], dayQualityByDay: [:],
+                                                     nssByDay: nss)
+        XCTAssertTrue(with.contains("Stress (NSS): n=6 mean=50"), with)
+        XCTAssertTrue(AICoachEngine.nssWindowBlock(days: Array(days.prefix(2)), nssByDay: nss)
+            .hasSuffix("oldest first: 10-01 45 · 10-02 47"))
+        XCTAssertEqual(AICoachEngine.nssWindowBlock(days: days, nssByDay: [:]), "")
+    }
 }

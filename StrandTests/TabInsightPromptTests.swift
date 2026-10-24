@@ -108,6 +108,10 @@ final class TabInsightPromptTests: XCTestCase {
         // 261004: the seven-line format's permission to be brief is per metric — a flat series is
         // reported as held steady, never padded into a finding.
         XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("held steady"))
+        // 261024c: NSS is the eighth bullet, read with its direction (higher = more keyed up).
+        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("EXACTLY eight bullets"))
+        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("- **Stress (NSS)** — …"))
+        XCTAssertTrue(AICoachEngine.defaultTrendsPrompt.contains("HIGHER is more keyed up"))
     }
 
     /// No two prompts are the same text. A copy-paste that forgot to change the body would pass

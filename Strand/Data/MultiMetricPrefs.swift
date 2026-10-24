@@ -24,6 +24,8 @@ enum MultiMetric: String, CaseIterable, Identifiable {
     case steps
     case respiratory
     case water
+    /// NSS (261024c): daily average Normalized Stress Score, 0–100, 50 = usual for the activity.
+    case nss
 
     var id: String { rawValue }
 
@@ -38,6 +40,7 @@ enum MultiMetric: String, CaseIterable, Identifiable {
         case .steps:       return String(localized: "Steps")
         case .respiratory: return String(localized: "Respiratory")
         case .water:       return String(localized: "Water")
+        case .nss:         return String(localized: "Stress (NSS)")
         }
     }
 
@@ -53,6 +56,7 @@ enum MultiMetric: String, CaseIterable, Identifiable {
         case .steps:       return ""
         case .respiratory: return "rpm"
         case .water:       return String(localized: "cups")
+        case .nss:         return ""
         }
     }
 
@@ -69,6 +73,7 @@ enum MultiMetric: String, CaseIterable, Identifiable {
         case .steps:       return StrandPalette.metricAmber
         case .respiratory: return StrandPalette.accent
         case .water:       return StrandPalette.metricCyan
+        case .nss:         return StrandPalette.statusWarning
         }
     }
 
@@ -77,7 +82,7 @@ enum MultiMetric: String, CaseIterable, Identifiable {
     /// only thing that view is for.
     var higherIsBetter: Bool {
         switch self {
-        case .restingHr, .respiratory: return false
+        case .restingHr, .respiratory, .nss: return false
         default: return true
         }
     }
@@ -176,11 +181,27 @@ enum MultiMetricPrefs {
         switch style {
         case .rows:
             // Each row owns its own scale and ~38pt, so a couple more is still readable.
-            return [.charge, .hrv, .restingHr, .sleep, .effort, .steps]
+            return [.charge, .hrv, .restingHr, .sleep, .effort, .steps, .nss]
         case .calendar:
             // The three the calendar already carried before it became configurable, so an existing
             // page looks unchanged until the wearer edits it.
-            return [.charge, .dayQuality, .sleep]
+            return [.charge, .dayQuality, .sleep, .nss]
+        }
+    }
+
+    /// 261024c: NSS joins both cards' selections ONCE, for a wearer whose selection was stored before
+    /// it existed (the maintainer asked for it on both). A flag per style, so removing it afterwards in
+    /// the picker sticks.
+    static func nssAddedKey(for style: MultiMetricStyle) -> String { "trends.multiMetric.nssAdded.\(style.rawValue)" }
+
+    static func addNSSOnce(defaults: UserDefaults = .standard) {
+        for style in MultiMetricStyle.allCases where !defaults.bool(forKey: nssAddedKey(for: style)) {
+            var selection = resolved(style: style, defaults: defaults)
+            if !selection.contains(.nss) {
+                selection.append(.nss)
+                defaults.set(encode(selection), forKey: selectionKey(for: style))
+            }
+            defaults.set(true, forKey: nssAddedKey(for: style))
         }
     }
 
