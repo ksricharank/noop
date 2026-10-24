@@ -881,9 +881,11 @@ struct LiquidTodayView: View {
             // a second drawing of the same day.
             NoopCard(tint: StressRamp.calm) {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Stress through the day").strandOverline()
-                    if hostedStressHours.contains(where: { $0.level != nil }) {
-                        DaytimeLoadLine(hours: hostedStressHours)
+                    Text("Stress through the day · NSS").strandOverline()
+                    // 261024b: the Stress tab's timeline is NSS now, so its mirror here is too.
+                    let nssPoints = NSSCard.linePoints(nssStore.snapshot.readings)
+                    if nssPoints.contains(where: { $0.level != nil }) {
+                        DaytimeLoadLine(hours: nssPoints)
                     } else {
                         // The honest blank: only waking hours score and an hour needs enough heart
                         // rate, so early morning is empty by construction rather than by failure.
@@ -891,12 +893,6 @@ struct LiquidTodayView: View {
                             .font(StrandFont.subhead)
                             .foregroundStyle(StrandPalette.textTertiary)
                             .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
-                    }
-                    if let maskedCaption = stressActivityMaskedHoursCaption(hostedStressActivityMaskedHours) {
-                        Text(maskedCaption)
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

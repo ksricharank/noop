@@ -28,8 +28,9 @@ final class TrendsLayoutPrefsTests: XCTestCase {
         // hidden. The heatmap that briefly shipped beside it was removed the same day at the
         // maintainer's request ("I don't like the new heatmap widget"); the CALENDAR, which was
         // already on the page, absorbed its configurability instead.
-        XCTAssertEqual(visible, TrendsSection.defaultOrder + [.allMetrics],
-                       "the pre-260920 page, plus the row card")
+        // 261024b: the NSS trend ships SHOWN too — the maintainer asked for NSS on this page.
+        XCTAssertEqual(visible, TrendsSection.defaultOrder + [.allMetrics, .nssTrend],
+                       "the pre-260920 page, plus the row card and the NSS trend")
         for block in TrendsLayoutPrefs.defaultHidden {
             XCTAssertFalse(visible.contains(block), "\(block) must not appear uninvited")
         }

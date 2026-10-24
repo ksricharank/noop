@@ -14,6 +14,8 @@ import Foundation
 
 struct TrendsView: View {
     @EnvironmentObject var repo: Repository
+    /// 261024b: NSS daily averages for the NSS trend section.
+    @ObservedObject private var nss = NormalizedStressStore.shared
     @Environment(\.locale) private var locale
     // NOTE: deliberately does NOT observe LiveState — Trends shows historical data only, and
     // observing it forced a full re-render of this subtree on every ~1 Hz live-HR tick.
@@ -445,6 +447,8 @@ struct TrendsView: View {
             sleepPerfRevision += 1
         }
         // 260908 — the day-quality series, for the pip row, the week digest and the daily-signals grid.
+        // 261024b — NSS daily averages for the NSS trend section (a no-op within minutes of the last update).
+        .task { await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) }) }
         .task(id: repo.days.count) {
             let s = await repo.exploreSeries(key: DayQualityComputer.metricKey, source: "my-whoop")
             dayQualityByDay = Dictionary(s.map { ($0.day, $0.value) }, uniquingKeysWith: { _, last in last })
@@ -801,6 +805,11 @@ struct TrendsView: View {
                                range: 8...24, low: "Low", high: "High", unit: "rpm")
         case .allMetrics:
             multiMetricCard(.rows)
+        case .nssTrend:
+            // 261024b: daily average NSS, from the same store the Stress tab reads. 50 is the
+            // wearer's usual for their activity, so the band labels describe the direction from it.
+            metricTrendSection(.nssTrend, valuesByDay: nss.snapshot.dailyByDay,
+                               range: 0...100, low: "Calm", high: "Keyed up", unit: "")
         }
     }
 

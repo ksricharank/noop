@@ -56,6 +56,10 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// favour of it, so it is the one section that is SHOWN by default among the 260920 additions.
     case allMetrics
 
+    /// NSS — daily average Normalized Stress Score (261024b). Unlike the 260920 per-metric blocks it
+    /// is SHOWN by default (not in `defaultHidden`): the maintainer asked for it on this page.
+    case nssTrend
+
     var id: String { rawValue }
 
     /// The card's display label in the Arrange sheet.
@@ -77,6 +81,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
         case .waterTrend:       return String(localized: "Water trend")
         case .respiratoryTrend: return String(localized: "Respiratory trend")
         case .allMetrics:        return String(localized: "Metric rows")
+        case .nssTrend:          return String(localized: "Stress (NSS) trend")
         }
     }
 
@@ -98,7 +103,7 @@ enum TrendsSection: String, CaseIterable, Identifiable {
     /// contract anyone maintains deliberately. Writing the sequence out means a reordered enum
     /// cannot silently shuffle a wearer's appended cards.
     static let canonicalOrder: [TrendsSection] = defaultOrder + [
-        .allMetrics,
+        .allMetrics, .nssTrend,
         .hrvTrend, .restingHrTrend, .dayQualityTrend,
         .sleepTrend, .effortTrend, .waterTrend, .respiratoryTrend,
     ]

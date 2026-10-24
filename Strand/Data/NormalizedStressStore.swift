@@ -45,6 +45,9 @@ final class NormalizedStressStore: ObservableObject {
         /// The newest window today when it is NEWER than `current` and could not be scored (running, or
         /// a pace with too little history) — so "now" can say why it is showing an older reading.
         var unscoredNow: NormalizedStress.Window?
+        /// Daily average NSS by "yyyy-MM-dd", today included — the Stress tab's trend, the Markers
+        /// sparkline and the Insights tab's NSS trend all read this one map (261024b).
+        var dailyByDay: [String: Double] = [:]
 
         static let empty = Snapshot(current: nil, readings: [], dayMean: nil, lastHigh: nil,
                                     modelDays: 0, modelWindows: 0, modelledPaces: [], computedAt: 0,
@@ -66,7 +69,14 @@ final class NormalizedStressStore: ObservableObject {
         var history: [String: [NormalizedStress.Window]] = [:]
         var todayKey = ""
         var today: [NormalizedStress.Window] = []
+        /// 261024b: daily average NSS, kept for `dailyHistoryDays` — longer than the 14-day window
+        /// history, so a trend outlives the windows it was scored from. Optional so a file written
+        /// before it existed still decodes.
+        var daily: [String: Double]?
     }
+
+    /// How long daily averages are kept for the trends.
+    static let dailyHistoryDays = 400
 
     private var state: Persisted?
     private var running = false
@@ -93,7 +103,10 @@ final class NormalizedStressStore: ObservableObject {
         var st = state ?? Self.load() ?? Persisted()
 
         let todayKey = Repository.localDayKey(now)
-        if st.todayKey != todayKey { st.todayKey = todayKey; st.today = [] }
+        if st.todayKey != todayKey {
+            st.todayKey = todayKey
+            st.today = []
+        }
 
         // History: fill missing past days, a few per update.
         var filled = 0
@@ -129,16 +142,34 @@ final class NormalizedStressStore: ObservableObject {
         let historyDays = st.history.values.filter { !$0.isEmpty }
         let model = NormalizedStress.buildModel(historyDays.flatMap { $0 }, days: historyDays.count)
         let readings = NormalizedStress.readings(st.today, model: model)
+
+        // Daily averages: the 14 history days re-scored against today's model every update (their
+        // 5-minute windows, unsmoothed — the mean of an EMA and of its inputs agree), so the days a
+        // trend compares share one model; today from its live readings. A day older than the window
+        // history keeps the last average it was given.
+        var daily = st.daily ?? [:]
+        for (key, ws) in st.history where !ws.isEmpty {
+            let scores = ws.compactMap { NormalizedStress.score($0, model: model)?.raw }
+            if !scores.isEmpty { daily[key] = scores.reduce(0, +) / Double(scores.count) }
+        }
+        let todayMean = readings.isEmpty ? nil : readings.map(\.nss).reduce(0, +) / Double(readings.count)
+        if let todayMean { daily[todayKey] = todayMean }
+        if let cutoff = cal.date(byAdding: .day, value: -Self.dailyHistoryDays, to: startOfToday) {
+            let cutoffKey = Repository.localDayKey(cutoff)
+            daily = daily.filter { $0.key >= cutoffKey }
+        }
+        st.daily = daily
         snapshot = Snapshot(
             current: readings.last,
             readings: readings,
-            dayMean: readings.isEmpty ? nil : readings.map(\.nss).reduce(0, +) / Double(readings.count),
+            dayMean: todayMean,
             lastHigh: NormalizedStress.lastHighEpisode(readings),
             modelDays: model.days, modelWindows: model.windowCount,
             modelledPaces: model.paces.map(\.pace), computedAt: nowTs,
             unscoredNow: st.today.last.flatMap { w in
                 w.endTs > (readings.last?.ts ?? Int.min) ? w : nil
-            })
+            },
+            dailyByDay: daily)
         state = st
         lastUpdate = Date()
         Self.save(st)

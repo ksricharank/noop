@@ -203,12 +203,9 @@ struct StressView: View {
     private func content(_ model: StressModel) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
 
-            // 1. HERO — the liquid stress-level vessel + band + one plain-English line, all in one card.
-            heroCard(model)
-                .staggeredAppear(index: 0)
-
-            // 1a. NSS — stress beyond what activity explains, moving through the day (261024).
-            NSSCard(snapshot: nss.snapshot)
+            // 1. HERO — NSS, the Normalized Stress Score (261024b: it replaced the once-a-day 0–3 score
+            //    everywhere on this screen at the maintainer's ask). Today's line lives in section 3.
+            NSSCard(snapshot: nss.snapshot, showsLine: false)
                 .staggeredAppear(index: 0)
 
             // 1b. ADVANCED HRV readouts (additive, on-demand). A separate, clearly-labelled card
@@ -226,20 +223,15 @@ struct StressView: View {
             }
             .staggeredAppear(index: 1)
 
-            // 3. Today's intraday timeline — when in the day stress ran high, + a
-            //    passive Breathe suggestion when the recent hours stay elevated.
-            // #2535: THREE states, not two. `daytime` is nil only while the read is still running, and this
-            // used to render nothing then, so a fold that takes seconds looked exactly like a day with no
-            // data. An empty `scored` after the read is a fact about the day and still stays silent.
-            if daytime == nil {
-                daytimeLoading()
-                    .staggeredAppear(index: 2)
-            } else if let daytime, !daytime.scored.isEmpty {
-                daytimeSection(daytime)
+            // 3. Today's timeline — NSS through the day (261024b; it was the hourly 0–3 timeline), + a
+            //    passive Breathe suggestion while a high stretch is still running. Silent until today
+            //    has a scored minute: the hero already says when the score is still learning.
+            if !nss.snapshot.readings.isEmpty {
+                nssTimelineSection(nss.snapshot)
                     .staggeredAppear(index: 2)
             }
 
-            // 4. Trend over the chosen window.
+            // 4. Trend over the chosen window — daily NSS averages.
             trendSection(model)
                 .staggeredAppear(index: 3)
 
@@ -262,6 +254,86 @@ struct StressView: View {
             .frame(width: 520, height: 760)
             #endif
         }
+    }
+
+    // MARK: 3 · Today's timeline (NSS, 261024b)
+
+    @ViewBuilder
+    private func nssTimelineSection(_ snap: NormalizedStressStore.Snapshot) -> some View {
+        let points = NSSCard.linePoints(snap.readings)
+        let peak = snap.readings.max { $0.nss < $1.nss }
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Today's Timeline", overline: "Intraday · NSS",
+                          trailing: snap.dayMean.map {
+                              String(localized: "avg \(Int($0.rounded())) · \(Self.minutesLabel(snap.readings.count))")
+                          })
+            NoopCard(tint: StressRamp.calm) {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                    HStack {
+                        Text("Stress beyond activity through the day").strandOverline()
+                        Spacer()
+                        if let peak {
+                            Text("peak \(Int(peak.nss.rounded())) · \(NSSCard.clock(peak.ts))")
+                                .font(StrandFont.captionNumber)
+                                .foregroundStyle(StressRamp.color(NSSCard.level(peak.nss)))
+                        }
+                    }
+                    DaytimeLoadLine(hours: points)
+                    if let lo = points.first?.hour, let hi = points.last?.hour {
+                        HStack {
+                            Text(hourLabel(lo)).font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                            Spacer()
+                            Text(hourLabel((lo + hi) / 2)).font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                            Spacer()
+                            Text(hourLabel(hi)).font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                        }
+                    }
+                    Divider().overlay(StrandPalette.hairline)
+                    StressTotalsBar(totals: StressTotals(nssReadings: snap.readings))
+                    Text("Each point is the last 5 minutes against your usual at the pace you were moving. Gaps are times with too little heart rate, running, or a pace without enough history yet.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if let e = snap.lastHigh, let c = snap.current, e.endTs == c.ts {
+                nssBreatheCard(minutes: (e.endTs - e.startTs) / 60)
+            }
+        }
+    }
+
+    /// The passive Breathe suggestion while a high NSS stretch is still running.
+    private func nssBreatheCard(minutes: Int) -> some View {
+        NoopCard(tint: StressRamp.calm) {
+            VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                HStack(spacing: NoopMetrics.rowSpacing) {
+                    Image(systemName: "lungs.fill")
+                        .foregroundStyle(StressRamp.calm)
+                    Text("Sustained high stress").strandOverline()
+                    Spacer()
+                    StatePill("\(Self.minutesLabel(minutes)) high", tone: .warning, showsDot: true)
+                }
+                Text("Your NSS has stayed high for \(Self.minutesLabel(minutes)), beyond what your activity explains. A few minutes of paced breathing can help downshift your nervous system.")
+                    .font(StrandFont.subhead)
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                NoopButton("Start a Breathe session", systemImage: "wind",
+                           kind: .primary, fullWidth: true) {
+                    showBreathe = true
+                }
+            }
+        }
+        .softCardTransition()
+    }
+
+    /// "45 min" / "2h 10m".
+    static func minutesLabel(_ minutes: Int) -> String {
+        minutes < 60 ? String(localized: "\(minutes) min")
+            : (minutes % 60 == 0 ? String(localized: "\(minutes / 60)h")
+               : String(localized: "\(minutes / 60)h \(minutes % 60)m"))
     }
 
     // MARK: 3 · Daytime timeline (intraday, same 0–3 proxy)
@@ -523,14 +595,19 @@ struct StressView: View {
             alignment: .leading,
             spacing: NoopMetrics.gap
         ) {
-            // Today's stress value, with its band as the caption.
+            // NSS now, with its band as the caption; the sparkline is the last 14 daily averages
+            // (261024b — it was the once-a-day 0–3 score).
+            let snap = nss.snapshot
+            let nssLevel = snap.current.map { NSSCard.level($0.nss) } ?? 1.5
+            let spark = Self.nssDailyPoints(snap.dailyByDay).suffix(14).map(\.value)
             StatTile(
-                label: "Stress",
-                value: StressTrace.formatLevel(model.score),
-                caption: String(localized: "of 3 · \(model.band.title)"),
-                accent: StressRamp.color(model.score),
-                sparkline: model.sparkValues.count > 1 ? model.sparkValues : nil,
-                sparkColor: StressRamp.color(model.score)
+                label: "NSS",
+                value: snap.current.map { "\(Int($0.nss.rounded()))" } ?? "—",
+                caption: snap.current == nil ? String(localized: "of 100")
+                    : String(localized: "of 100 · \(StressBand(score: nssLevel).title)"),
+                accent: StressRamp.color(nssLevel),
+                sparkline: spark.count > 1 ? Array(spark) : nil,
+                sparkColor: StressRamp.color(nssLevel)
             )
             // Resting HR — an INCREASE is the stressful direction.
             markerTile(
@@ -548,11 +625,12 @@ struct StressView: View {
                 accent: StrandPalette.metricPurple,
                 higherIsStress: false
             )
-            // Estimated calm time — share of recent days spent in the LOW band.
+            // Calm time — share of today's scored NSS minutes in the LOW band (261024b; it was the
+            // share of recent days in the 0–3 LOW band).
             StatTile(
                 label: "Calm time",
-                value: model.calmTimeValue,
-                caption: model.calmTimeCaption,
+                value: snap.readings.isEmpty ? "—" : "\(Int((StressTotals(nssReadings: snap.readings).fraction(.low) * 100).rounded()))%",
+                caption: String(localized: "NSS low band · today"),
                 accent: StressRamp.calm
             )
         }
@@ -594,48 +672,41 @@ struct StressView: View {
 
     @ViewBuilder
     private func trendSection(_ model: StressModel) -> some View {
-        let points = windowedTrend(model)
+        let points = windowedNSSTrend()
+        let snap = nss.snapshot
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
-            SectionHeader("Stress Trend", overline: "History", trailing: range.name)
+            SectionHeader("Stress Trend", overline: "History · NSS", trailing: range.name)
             if points.count >= 2 {
                 let avg = points.map(\.value).reduce(0, +) / Double(points.count)
-                // Axis top = highest reading rounded up, plus a little headroom, so a peak curve and
-                // the top axis label clear the plot clip (#974). Floor of 1 keeps a flat calm history
-                // from collapsing to a zero-height axis. The gradient stays on the full 0–3 scale
-                // because TrendChart keys its colors off `valueRange`, not this domain.
-                let peak = (points.map(\.value).max() ?? 3).rounded(.up)
-                let yTop = max(1, peak + 0.3)
                 ChartCard(
-                    title: "Stress · \(range.label)",
-                    subtitle: String(localized: "Daily 0-3 proxy"),
-                    trailing: String(localized: "avg \(StressTrace.formatLevel(avg))"),
+                    title: "NSS · \(range.label)",
+                    subtitle: String(localized: "Daily average, 0-100"),
+                    trailing: String(localized: "avg \(Int(avg.rounded()))"),
                     tint: StressRamp.calm
                 ) {
                     TrendChart(
                         points: points,
                         gradient: StressRamp.gradient,
-                        valueRange: 0...3,
+                        valueRange: 0...100,
                         showsArea: true,
                         height: NoopMetrics.chartHeight,
-                        valueFormat: { StressTrace.formatLevel($0) },
-                        accessibilityLabel: String(localized: "Stress trend"),
-                        yDomain: 0...yTop
+                        valueFormat: { "\(Int($0.rounded()))" },
+                        accessibilityLabel: String(localized: "NSS trend"),
+                        yDomain: 0...100
                     )
                 } footer: {
                     ChartFooter([
-                        ("Today", StressTrace.formatLevel(model.score)),
-                        ("Average", StressTrace.formatLevel(avg)),
+                        ("Today", snap.dayMean.map { "\(Int($0.rounded()))" } ?? "—"),
+                        ("Average", "\(Int(avg.rounded()))"),
                         ("Days", "\(points.count)"),
                     ])
                 }
-                // The one segmented control. Its eight options use the shared adaptive-width mode so
-                // the control stays inside the same page gutter as the chart on compact iPhones.
                 SegmentedPillControl(ExploreRange.allCases, selection: $range,
                                      adaptsToAvailableWidth: true) { $0.label }
                     .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
                 NoopCard(tint: StressRamp.calm) {
-                    Text("Not enough recent days to chart a trend yet. Import a history or keep wearing your strap.")
+                    Text("Your NSS history builds as you wear the strap — \(points.count) day(s) so far. It fills in your last 14 days first, a day or two at a time.")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
@@ -645,10 +716,21 @@ struct StressView: View {
         }
     }
 
-    /// The full daily proxy trend, sliced to the selected trailing window. Falls
-    /// back to ALL when the trailing slice holds < 2 points.
-    private func windowedTrend(_ model: StressModel) -> [TrendPoint] {
-        let all = model.fullTrend
+    /// Daily NSS averages as trend points, oldest first.
+    static func nssDailyPoints(_ daily: [String: Double]) -> [TrendPoint] {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return daily.keys.sorted().compactMap { key in
+            guard let d = f.date(from: key), let v = daily[key] else { return nil }
+            return TrendPoint(date: d, value: v)
+        }
+    }
+
+    /// The daily NSS trend sliced to the selected trailing window; ALL when the slice holds < 2.
+    private func windowedNSSTrend() -> [TrendPoint] {
+        let all = Self.nssDailyPoints(nss.snapshot.dailyByDay)
         guard let days = range.days, let last = all.last?.date else { return all }
         let cutoff = last.addingTimeInterval(-Double(days - 1) * 86_400)
         let slice = all.filter { $0.date >= cutoff }
@@ -661,20 +743,22 @@ struct StressView: View {
         NoopCard(tint: StressRamp.calm) {
             VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
                 Text("How this is computed").strandOverline()
-                Text(model.usingStored
-                     ? "Today's value is your recorded daily stress score (0-3)."
-                     : "Stress is derived from two autonomic signals.")
+                Text("NSS — stress beyond what your activity explains.")
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("We compare today's resting heart rate and HRV to your own 30-day baseline. A higher-than-usual resting HR and a lower-than-usual HRV both push the score up, classic signs the body is activated. The combined shift is mapped onto a 0-3 scale: 0 is calm, 1.5 sits at your baseline, 3 is highly activated.")
+                Text("From your last 14 days, NOOP learns your usual heart rate, HRV and beat pattern at each pace — still, pottering, walking, brisk walking, moving without steps. Every 5 minutes it compares you with your usual at the pace you are moving at: a heart working harder and HRV lower than that pace explains push NSS up. 50 is your usual; each 15 points is one typical swing. Running isn't scored, because near full effort stress and exertion can't be told apart.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("It measures excess strain on your nervous system, not mental stress alone: heat, caffeine, a meal, poor sleep, illness and talking raise it too. Experimental — it updates on every strap sync. The resting HR and HRV markers are last night's, against your 30-day baseline.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(StrandPalette.hairline)
                 HStack(spacing: 0) {
-                    bandLegend("0-1", String(localized: "LOW"), StressRamp.calm)
-                    bandLegend("1-2", String(localized: "MEDIUM"), StressRamp.steady)
-                    bandLegend("2-3", String(localized: "HIGH"), StressRamp.tense)
+                    bandLegend("0-33", String(localized: "LOW"), StressRamp.calm)
+                    bandLegend("33-67", String(localized: "MEDIUM"), StressRamp.steady)
+                    bandLegend("67-100", String(localized: "HIGH"), StressRamp.tense)
                 }
             }
         }
@@ -1168,6 +1252,22 @@ struct StressTotals {
     let calmHours: Int
     let moderateHours: Int
     let highHours: Int
+    /// Minutes each counted unit stands for: 60 for the hourly timeline, 1 for NSS minutes (261024b).
+    var unitMinutes = 60
+
+    /// NSS minutes, banded on the screen's 0–3 scale at NSS × 3/100.
+    init(nssReadings: [NormalizedStress.Reading]) {
+        var c = 0, m = 0, hi = 0
+        for r in nssReadings {
+            switch StressBand(score: NSSCard.level(r.nss)) {
+            case .low:    c += 1
+            case .medium: m += 1
+            case .high:   hi += 1
+            }
+        }
+        calmHours = c; moderateHours = m; highHours = hi
+        unitMinutes = 1
+    }
 
     init(hours: [DaytimeStress.HourPoint]) {
         var c = 0, m = 0, hi = 0
@@ -1201,6 +1301,9 @@ struct StressTotals {
         case .high:   return highHours
         }
     }
+
+    /// The band's duration in minutes.
+    func minutes(_ band: StressBand) -> Int { hours(band) * unitMinutes }
 }
 
 // MARK: - Stress totals bar (README screen-9, liquid finish)
@@ -1238,7 +1341,7 @@ struct StressTotalsBar: View {
                             .font(StrandFont.captionNumber)
                             .foregroundStyle(StrandPalette.textPrimary)
                         Spacer()
-                        Text(durationLabel(totals.hours(b.band)))
+                        Text(durationLabel(totals.minutes(b.band)))
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                     }
@@ -1250,13 +1353,16 @@ struct StressTotalsBar: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            String(localized: "Today's stress split: calm \(durationLabel(totals.calmHours)), moderate \(durationLabel(totals.moderateHours)), high \(durationLabel(totals.highHours)).")
+            String(localized: "Today's stress split: calm \(durationLabel(totals.minutes(.low))), moderate \(durationLabel(totals.minutes(.medium))), high \(durationLabel(totals.minutes(.high))).")
         )
     }
 
-    /// "—" when a band had no scored hours, else "Nh" (each scored bucket is one hour).
-    private func durationLabel(_ hours: Int) -> String {
-        hours <= 0 ? "—" : String(localized: "\(hours)h")
+    /// "—" when a band had no scored time, else "Nh", "Nm" or "NhMMm".
+    private func durationLabel(_ minutes: Int) -> String {
+        guard minutes > 0 else { return "—" }
+        if minutes < 60 { return String(localized: "\(minutes)m") }
+        let h = minutes / 60, m = minutes % 60
+        return m == 0 ? String(localized: "\(h)h") : String(localized: "\(h)h\(String(format: "%02d", m))m")
     }
 }
 

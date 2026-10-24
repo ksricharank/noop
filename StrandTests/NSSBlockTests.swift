@@ -66,6 +66,14 @@ final class NSSBlockTests: XCTestCase {
         XCTAssertTrue(AICoachEngine.nssSummary(none, now: 0, timeZone: utc)!.contains("no reading yet today."))
     }
 
+    /// 261024b: past daily averages ride along (oldest first, today excluded), for the trend reads.
+    func testPastDailyAveragesRideAlong() {
+        let line = AICoachEngine.nssDailyLine(["2026-10-20": 52.4, "2026-10-22": 47, "2026-10-23": 61],
+                                              today: "2026-10-23")
+        XCTAssertEqual(line, "  daily averages, oldest first: 10-20 52 · 10-22 47.")
+        XCTAssertNil(AICoachEngine.nssDailyLine(["2026-10-23": 61], today: "2026-10-23"))
+    }
+
     func testBandWordsFollowTheStressScreenBands() {
         XCTAssertEqual(AICoachEngine.nssBandWord(67), "high")
         XCTAssertEqual(AICoachEngine.nssBandWord(50), "within my usual range")

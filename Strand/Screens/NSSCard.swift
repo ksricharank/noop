@@ -10,6 +10,9 @@ import StrandAnalytics
 /// look the same, and the line is the screen's own `DaytimeLoadLine` fed 5-minute points on that scale.
 struct NSSCard: View {
     let snapshot: NormalizedStressStore.Snapshot
+    /// The Stress tab's hero leaves the line to its own timeline section below (261024b), so the
+    /// screen draws today's NSS once.
+    var showsLine = true
 
     var body: some View {
         NoopCard(tint: StressRamp.calm) {
@@ -42,7 +45,7 @@ struct NSSCard: View {
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     let points = Self.linePoints(snapshot.readings)
-                    if points.contains(where: { $0.level != nil }) {
+                    if showsLine, points.contains(where: { $0.level != nil }) {
                         DaytimeLoadLine(hours: points)
                     }
                     if let e = snapshot.lastHigh {

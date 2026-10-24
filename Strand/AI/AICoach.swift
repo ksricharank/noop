@@ -2724,7 +2724,20 @@ final class AICoachEngine: ObservableObject {
             out.append("  last high today: \(clock(e.startTs, timeZone))–\(clock(e.endTs, timeZone)), peak "
                        + "\(Int(e.peak.nss.rounded())) while \(e.peak.pace.phrase) — " + nssParts(e.peak) + ".")
         }
+        if let past = nssDailyLine(s.dailyByDay, today: Repository.localDayKey(Date(timeIntervalSince1970: TimeInterval(now)))) {
+            out.append(past)
+        }
         return out.joined(separator: "\n")
+    }
+
+    /// 261024b: "  daily averages, oldest first: 10-11 52 · 10-12 47 …" over the last 14 days before
+    /// `today` — the history the Insights tab's NSS trend draws, so the trend and insight reads can
+    /// talk about direction. Nil with no past days.
+    nonisolated static func nssDailyLine(_ daily: [String: Double], today: String) -> String? {
+        let past = daily.keys.filter { $0 < today }.sorted().suffix(14)
+        guard !past.isEmpty else { return nil }
+        return "  daily averages, oldest first: "
+            + past.map { "\($0.dropFirst(5)) \(Int((daily[$0] ?? 0).rounded()))" }.joined(separator: " · ") + "."
     }
 
     /// Band words on the Stress screen's thresholds (NSS × 3/100 against its 1.0 / 2.0 band floors).
