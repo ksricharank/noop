@@ -48,6 +48,25 @@ struct IntegrationView: View {
                                     set: { if !$0 { preview = nil } })) {
             previewSheet
         }
+        // 261024: re-read the stored settings every time the page appears. Settings builds this view
+        // eagerly (`NavigationLink { IntegrationView() }`), so each `@State` above is seeded from the
+        // store when SETTINGS last rendered, not when the page is opened: edit a time, go back, come
+        // back, and the page showed the times from before the edit, although the edit was saved (the
+        // maintainer's report: "I can't change the default times"). Worse, editing again from that
+        // stale page wrote the stale times back over the others.
+        .onAppear { reloadFromStore() }
+    }
+
+    /// The stored values, into the page's state.
+    private func reloadFromStore() {
+        enabled = MuseIntegration.isEnabled
+        basename = MuseIntegration.filename
+        slots = MuseIntegration.slotMinutesRaw
+        shortcutName = MuseShortcutRunner.shortcutName
+        shortcutDelay = MuseShortcutRunner.delayMinutes
+        includeCoach = MuseIntegration.includesCoachNarratives
+        folderLabel = MuseIntegration.folderLabel()
+        lastMs = MuseIntegration.lastWrittenMs
     }
 
     // MARK: Cards
