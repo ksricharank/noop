@@ -162,20 +162,34 @@ public actor WhoopStore {
     // regular (non-async) functions, so overload resolution always selects the synchronous
     // GRDB API — which then blocks on the actor's serial executor (off main thread).
 
+    /// Seconds of ACTIVE time since `t`, excluding any stretch the device spent asleep.
+    ///
+    /// 260914: these counters read `Date()`, which keeps running while iOS suspends the app. A pass
+    /// that was suspended mid-loop reported `reads=608508ms/107` — ten minutes of SQL that never
+    /// happened — and that figure was about to be used to justify narrowing the read window. A
+    /// monotonic clock reports work actually done. (Kotlin twin: `SystemClock.elapsedRealtime` is the
+    /// wrong choice there too; `System.nanoTime` is the match.)
+    @inline(__always)
+    private static func activeSeconds(since t: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1_000_000_000
+    }
+
     @inline(__always)
     func syncRead<T>(_ block: (Database) throws -> T) throws -> T {
-        let t0 = Date()
+        let t0 = DispatchTime.now()
         defer {
-            perfSqlReadSeconds += Date().timeIntervalSince(t0)
+            let took = Self.activeSeconds(since: t0)
+            perfSqlReadSeconds += took
             perfSqlReadCount += 1
+            if took > perfMaxReadSeconds { perfMaxReadSeconds = took }
         }
         return try dbWriter.read(block)
     }
 
     @inline(__always)
     func syncWrite<T>(_ block: (Database) throws -> T) throws -> T {
-        let t0 = Date()
-        defer { perfSqlWriteSeconds += Date().timeIntervalSince(t0) }
+        let t0 = DispatchTime.now()
+        defer { perfSqlWriteSeconds += Self.activeSeconds(since: t0) }
         return try dbWriter.write(block)
     }
 
@@ -192,17 +206,41 @@ public actor WhoopStore {
     private var perfSqlReadSeconds = 0.0
     private var perfSqlReadCount = 0
     private var perfSqlWriteSeconds = 0.0
+    /// The single slowest read call since the last reset (260928): 500 s of read time reads very
+    /// differently as 100 × 5 s than as 3 × 160 s, and the aggregate cannot tell them apart.
+    private var perfMaxReadSeconds = 0.0
 
     /// SQL time and read-call count accrued since the last `perfReset()`. Snapshot + reset are
     /// separate so overlapping consumers can at worst double-report, never lose time.
-    public func perfSnapshot() -> (sqlReadSeconds: Double, sqlReadCount: Int, sqlWriteSeconds: Double) {
-        (perfSqlReadSeconds, perfSqlReadCount, perfSqlWriteSeconds)
+    public func perfSnapshot() -> (sqlReadSeconds: Double, sqlReadCount: Int,
+                                   sqlWriteSeconds: Double, maxReadSeconds: Double) {
+        (perfSqlReadSeconds, perfSqlReadCount, perfSqlWriteSeconds, perfMaxReadSeconds)
     }
 
     public func perfReset() {
         perfSqlReadSeconds = 0
         perfSqlReadCount = 0
         perfSqlWriteSeconds = 0
+        perfMaxReadSeconds = 0
+    }
+
+    /// Approximate per-table row counts, largest first: `max(rowid)` per table — O(1) via the rowid
+    /// btree, an over-count only where rows were deleted, and never a scan. For the strap log's
+    /// "where is the 1.7 GB" line (260928); a dbstat page walk would be exact but reads every page,
+    /// which under the pathology being diagnosed could stall the export for minutes.
+    public func tableRowEstimates(top: Int = 10) -> [(name: String, rows: Int)] {
+        (try? syncRead { db in
+            let names = try String.fetchAll(db, sql: """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'grdb_%'
+                """)
+            var out: [(String, Int)] = []
+            for name in names {
+                let rows = (try? Int.fetchOne(db, sql: "SELECT max(rowid) FROM \"\(name)\"")) ?? nil
+                out.append((name, rows ?? 0))
+            }
+            return out.sorted { $0.1 > $1.1 }.prefix(top).map { $0 }
+        }) ?? []
     }
 
     // MARK: - Maintenance
