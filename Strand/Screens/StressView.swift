@@ -38,6 +38,8 @@ func stressActivityMaskedHoursCaption(_ count: Int) -> String? {
 
 struct StressView: View {
     @EnvironmentObject var repo: Repository
+    /// 261024: NSS, the same snapshot the Today card and the coach read.
+    @ObservedObject private var nss = NormalizedStressStore.shared
 
     /// The stored 0–3 stress series ("my-whoop"), oldest→newest. Empty → derive.
     @State private var storedSeries: [(day: String, value: Double)] = []
@@ -97,6 +99,7 @@ struct StressView: View {
 
     private func load() async {
         storedSeries = await repo.series(key: "stress", source: "my-whoop")
+        await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
         loaded = true
         rebuildModelIfNeeded()
         await loadDaytime()
@@ -202,6 +205,10 @@ struct StressView: View {
 
             // 1. HERO — the liquid stress-level vessel + band + one plain-English line, all in one card.
             heroCard(model)
+                .staggeredAppear(index: 0)
+
+            // 1a. NSS — stress beyond what activity explains, moving through the day (261024).
+            NSSCard(snapshot: nss.snapshot)
                 .staggeredAppear(index: 0)
 
             // 1b. ADVANCED HRV readouts (additive, on-demand). A separate, clearly-labelled card

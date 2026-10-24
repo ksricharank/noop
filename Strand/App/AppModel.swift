@@ -1122,6 +1122,12 @@ final class AppModel: ObservableObject {
                 log: { [live] line in live.append(log: line) }
             ) {
                 await intelligence.analyzeRecent(maxDays: 2, lightPass: true)
+                // 261024: NSS moves on the quick pass's cadence (maintainer's ask), inside the same
+                // assertion. Incremental: today's new minutes, plus at most one missing history day
+                // when backgrounded (see `NormalizedStressStore`).
+                await NormalizedStressStore.shared.update(
+                    repo: repo, backfillDays: RescoreBackgroundScheduler.isBackgrounded ? 1 : 2,
+                    log: { [live] line in live.append(log: line) })
             }
         }
         if RescoreBackgroundScheduler.routineFullPassWantedNow {

@@ -118,10 +118,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("**Now**"))
         XCTAssertTrue(d.contains("**Next**"))
         XCTAssertTrue(d.contains("no other headings"))
-        // 261018: fixed counts and themes, nothing dropped. 261022: Now is two bullets (heart and
-        // stress merged), Next four.
-        XCTAssertTrue(d.contains("EXACTLY TWO bullets"))
-        XCTAssertFalse(d.contains("EXACTLY THREE bullets"))
+        // 261018: fixed counts and themes, nothing dropped. 261024: Now is three bullets again (NSS,
+        // heart, movement), Next four.
+        XCTAssertTrue(d.contains("EXACTLY THREE bullets"))
         XCTAssertTrue(d.contains("EXACTLY FOUR bullets"))
         XCTAssertTrue(d.contains("nothing added and nothing dropped"))
         XCTAssertFalse(d.contains("2 to 4 bullets"), "the variable bullet count is retired")
@@ -159,17 +158,18 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         let d = AICoachEngine.defaultSynthesisPrompt
         XCTAssertTrue(d.contains("MY LAST HOUR"))
         XCTAssertTrue(d.contains("LAST HOUR OR SO"))
-        XCTAssertTrue(d.contains("am I STRESSED right now? Answer plainly, yes or no, from my heart rate and HRV"))
+        XCTAssertTrue(d.contains("my NSS (normalized stress): how stressed I am right now beyond what my current activity explains"))
+        XCTAssertTrue(d.contains("Theme — my HEART: where my heart rate is now against MY resting heart rate"))
         XCTAssertTrue(d.contains("my recent MOVEMENT, ACTIVITY and HYDRATION"))
         XCTAssertTrue(d.contains("Theme — STEPS"))
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
         XCTAssertTrue(d.contains("Theme — SLEEP"))
-        // 261023: stressed or not, from heart rate while still vs resting and last night's HRV vs
-        // usual; one action only when stressed.
-        XCTAssertTrue(d.contains("Within about 15 bpm of resting is NOT stressed"))
-        XCTAssertTrue(d.contains("If I am not stressed, just say so"))
-        XCTAssertTrue(d.contains("(**X** bpm now vs **Y** resting, HRV **Z** ms vs **W** usual)"))
-        XCTAssertFalse(d.contains("Read the rest of my data for the WHY"), "the long why list is retired")
+        // 261024: NSS now, why from its parts, one action only above 60; stress from NSS alone.
+        XCTAssertTrue(d.contains("(NSS **X** now, **Y** today's average)"))
+        XCTAssertTrue(d.contains("when it is above 60, ONE bolded thing to do now to bring it down"))
+        XCTAssertTrue(d.contains("as a read, never a fact"))
+        XCTAssertTrue(d.contains("For stress use ONLY the NSS block"))
+        XCTAssertFalse(d.contains("am I STRESSED right now"), "the still-only stress verdict is retired")
         XCTAssertFalse(d.contains("for the day, of 3)"), "the 0–3 stress figures are retired from Now")
         XCTAssertFalse(d.contains("my STRESS, in three parts"), "the separate stress bullet is retired")
         XCTAssertTrue(d.contains("Nothing else belongs in Now"))
@@ -206,9 +206,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertFalse(d.contains("grade yesterday as a finished day") == false && d.contains("Do NOT") == false,
                        "Today must be fenced off the other tabs")
         XCTAssertFalse(d.contains("blank line between sections"))
-        // 261023: a stressed / not-stressed verdict is back at the maintainer's request, but read from
-        // heart rate while STILL and last night's HRV — never from a raised heart rate alone.
-        XCTAssertTrue(d.contains("say I am active, not stressed"))
+        // 261024: stress is read beyond what activity explains (NSS) — never from a raised heart rate
+        // alone.
+        XCTAssertTrue(d.contains("beyond what my current activity explains"))
         XCTAssertFalse(d.contains("turning RED"), "the retired red-digits cue must not linger")
     }
 }

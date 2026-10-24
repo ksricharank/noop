@@ -701,23 +701,28 @@ final class AICoachEngine: ObservableObject {
 
     Shape — this exact skeleton, every time, nothing added and nothing dropped:
     - Line 1, no bullet: **my state in at most twelve words**, committed, no hedging, in bold.
-    - **Now** on its own line, then EXACTLY TWO bullets, in this order, each on a fixed THEME, \
+    - **Now** on its own line, then EXACTLY THREE bullets, in this order, each on a fixed THEME, \
     about RIGHT NOW and the LAST HOUR OR SO (the hours before that only as contrast):
-      1. Theme — am I STRESSED right now? Answer plainly, yes or no, from my heart rate and HRV: \
-    my latest 10-minute heart rate against MY resting heart rate while I am still (MY LAST HOUR \
-    shows few steps), and last night's HRV against MY usual (my 30-day average). Within about 15 \
-    bpm of resting is NOT stressed; more than 15 above is STRESSED; more than 25 above is VERY \
-    stressed. If last night's HRV is well below my usual, lean towards stressed. If I have been \
-    moving, my heart is up from effort — say I am active, not stressed. If I AM stressed: one short \
-    likely reason, as a read, not a fact, and ONE bolded thing to do now (e.g. **two minutes of \
-    slow breathing with a long exhale**, or **a five-minute walk** after a long sit). If I am not \
-    stressed, just say so — nothing to fix. Its figures: (**X** bpm now vs **Y** resting, HRV **Z** \
-    ms vs **W** usual). Use no other stress measure. At most ~35 words.
-      2. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
+      1. Theme — my NSS (normalized stress): how stressed I am right now beyond what my current \
+    activity explains, read from the NSS block — 50 is my usual for the pace I am at; above 67 is \
+    high, below 33 calmer than usual. Say three things, in this order: where my NSS is now, against \
+    today's average; WHY, from the block's parts (my heart rate against my usual at this pace, my \
+    HRV and beat pattern against usual) and the most likely cause, as a read, never a fact — heat, \
+    caffeine, a meal, sleep debt, illness and talking raise it too; and, when it is above 60, ONE \
+    bolded thing to do now to bring it down, matched to that cause (e.g. **two minutes of slow \
+    breathing with a long exhale**, **a five-minute walk** after a long sit, **a glass of water**) — \
+    at 60 or below, nothing to fix, just say so. A last high today may get a few words. If the block \
+    says I am running, or that it is still learning, say so in a few words. Its figures: (NSS **X** \
+    now, **Y** today's average). For stress use ONLY the NSS block — not the STRESS line, not the \
+    Stress (SI) index. At most ~45 words.
+      2. Theme — my HEART: where my heart rate is now against MY resting heart rate, which way it is \
+    heading, and why — moving, still, just off a workout, or a low HRV last night against my 30-day \
+    average. Its figures: (**X** bpm now vs **Y** resting).
+      3. Theme — my recent MOVEMENT, ACTIVITY and HYDRATION: how much I have or have not used my \
     body in that hour, and how my drinking is keeping up with today's water target if my data has \
     it. Its figures: the hour's steps and minutes well above rest, and cups drunk so far.
       Nothing else belongs in Now: not sleep, not Charge, not yesterday (beyond last night's HRV in \
-    the stress bullet). Each bullet is a CONCLUSION \
+    the heart bullet). Each bullet is a CONCLUSION \
     about my state, never a bare reading. The test every Now bullet must pass: delete every number \
     from it and it still tells me something I could not see on the screen. "Mean HR 97, above RHR 61 \
     → active load" FAILS that test — it restates the chart. "Your heart is still running hot from a \
@@ -760,7 +765,7 @@ final class AICoachEngine: ObservableObject {
     folded into something I am doing anyway vs a session of its own). Lead every bullet with its \
     idea; its figures come AFTER it — never as the opener.
     - Each bullet is ONE point, at most ~30 words after its short bolded title (the Now \
-    stress bullet ~35).
+    NSS bullet ~45).
 
     About the targets, specifically:
     - In Next, speak ONLY in what is STILL TO GO — my data states it for each target ("… still to \
@@ -858,6 +863,7 @@ final class AICoachEngine: ObservableObject {
         0x90752fd92b5cb5a7, // 261022: separate stress bullet on the flat 0–3 timeline (what/why/action)
         0x7c36b80331a5d8c4, // 261022b: heart and stress merged, but no HRV and a thin why
         0xb616fefe43d1a520, // 261022c: heart-and-stress with a long why list (too complex)
+        0xabc7e8a2a56f2bad, // 261023: "am I stressed" from heart rate while still (no reading while moving)
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -2637,6 +2643,8 @@ final class AICoachEngine: ObservableObject {
         if let line = await stressIndexLine() { ctx += "\n\n" + line }
         // 261021: stress now vs today's average on the 0–3 scale — what the Today stress bullet quotes.
         if let line = await stressNowLine() { ctx += "\n\n" + line }
+        // 261024: NSS — stress against what my activity explains; what the Today NSS bullet reads.
+        if let block = await nssBlock() { ctx += "\n\n" + block }
         // The last few hours (260919). Without this the context has day-lines and today's targets
         // and nothing about NOW, so a prompt asking for current state can only restate the targets.
         if let recent = await recentStateBlock() { ctx += "\n\n" + recent }
@@ -2672,6 +2680,96 @@ final class AICoachEngine: ObservableObject {
             if !block.isEmpty { ctx += "\n\n" + block }
         }
         return ctx
+    }
+
+    /// The NSS block (261024): the Normalized Stress Score from `NormalizedStressStore` — the same
+    /// snapshot the Stress tab and the Today card show, refreshed here if it is more than a few minutes
+    /// old. The Today read's NSS bullet is built from it. Nil only when there is nothing at all to say.
+    func nssBlock() async -> String? {
+        await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+        return Self.nssSummary(NormalizedStressStore.shared.snapshot,
+                               now: Int(Date().timeIntervalSince1970), timeZone: .current)
+    }
+
+    /// Pure formatter for the NSS block. Words, not z-scores, for the HRV parts: the model reads
+    /// "lower than usual at this pace" correctly and would misread a bare ln-residual. Heart rate keeps
+    /// its numbers, since bpm against my usual at this pace is the figure that explains a score.
+    nonisolated static func nssSummary(_ s: NormalizedStressStore.Snapshot, now: Int,
+                                       timeZone: TimeZone) -> String? {
+        var out = ["NSS — NORMALIZED STRESS (0–100; 50 = my usual for the pace I am moving at; higher means "
+                   + "my heart is working harder and my HRV is lower than that activity explains, against my "
+                   + "own last 14 days; it measures excess sympathetic drive, so heat, caffeine, digestion, "
+                   + "sleep debt, illness and talking raise it too):"]
+        guard let c = s.current else {
+            out.append(s.modelledPaces.isEmpty
+                ? "  still learning my usual — \(s.modelDays) of 14 days of history so far; no score yet."
+                : "  no reading yet today.")
+            return out.joined(separator: "\n")
+        }
+        let age = max(0, (now - c.ts) / 60)
+        out.append("  now \(Int(c.nss.rounded())) (\(nssBandWord(c.nss))), while \(c.pace.phrase)"
+                   + (age >= 15 ? ", from \(age) min ago" : "") + " — " + nssParts(c) + ".")
+        if let u = s.unscoredNow {
+            out.append(u.pace == .run
+                ? "  right now I am running — not scored (too hard to separate from the effort); the figure above is my last scored reading."
+                : "  right now I am \(u.pace.phrase), a pace with too little history to score yet; the figure above is my last scored reading.")
+        }
+        if let mean = s.dayMean {
+            var line = "  today: average \(Int(mean.rounded())) over \(s.readings.count) scored minutes"
+            let series = nssSeries(s.readings, timeZone: timeZone)
+            if !series.isEmpty { line += "; every 30 min: " + series }
+            out.append(line + ".")
+        }
+        if let e = s.lastHigh {
+            out.append("  last high today: \(clock(e.startTs, timeZone))–\(clock(e.endTs, timeZone)), peak "
+                       + "\(Int(e.peak.nss.rounded())) while \(e.peak.pace.phrase) — " + nssParts(e.peak) + ".")
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// Band words on the Stress screen's thresholds (NSS × 3/100 against its 1.0 / 2.0 band floors).
+    nonisolated static func nssBandWord(_ nss: Double) -> String {
+        nss >= 200.0 / 3.0 ? "high" : (nss < 100.0 / 3.0 ? "low — calmer than usual for this pace" : "within my usual range")
+    }
+
+    /// What drove a reading, in words.
+    nonisolated static func nssParts(_ r: NormalizedStress.Reading) -> String {
+        let diff = Int((r.hr - r.hrPred).rounded())
+        var parts = ["heart rate \(Int(r.hr.rounded())) bpm vs my usual \(Int(r.hrPred.rounded())) at this pace"
+                     + (diff == 0 ? "" : " (\(diff > 0 ? "+" : "")\(diff))")]
+        if let z = r.zRMSSD {
+            parts.append(z >= 1 ? "HRV lower than usual at this pace"
+                         : (z <= -1 ? "HRV higher than usual at this pace" : "HRV about usual at this pace"))
+        }
+        if let z = r.zSI {
+            parts.append(z >= 1 ? "beat pattern more rigid than usual"
+                         : (z <= -1 ? "beat pattern more relaxed than usual" : "beat pattern about usual"))
+        }
+        if r.zRMSSD == nil && r.zSI == nil { parts.append("no clean HRV reading in that window") }
+        return parts.joined(separator: "; ")
+    }
+
+    /// "09:00 48 · 09:30 51": the reading at or just before each half hour (within 5 minutes).
+    nonisolated static func nssSeries(_ readings: [NormalizedStress.Reading], timeZone: TimeZone) -> String {
+        guard let first = readings.first, let last = readings.last else { return "" }
+        var out: [String] = []
+        var t = (first.ts / 1800 + 1) * 1800
+        var i = 0
+        while t <= last.ts {
+            while i + 1 < readings.count && readings[i + 1].ts <= t { i += 1 }
+            if readings[i].ts <= t, t - readings[i].ts <= 300 {
+                out.append("\(clock(t, timeZone)) \(Int(readings[i].nss.rounded()))")
+            }
+            t += 1800
+        }
+        return out.joined(separator: " · ")
+    }
+
+    nonisolated static func clock(_ ts: Int, _ timeZone: TimeZone) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = timeZone
+        let c = cal.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: TimeInterval(ts)))
+        return String(format: "%02d:%02d", c.hour ?? 0, c.minute ?? 0)
     }
 
     /// The STRESS line (261021): stress NOW against today's average, on the Stress screen's 0–3 daytime

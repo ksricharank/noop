@@ -22,6 +22,8 @@ struct LiquidTodayView: View {
     @AppStorage(DayCycleMode.storageKey) private var dayCycleModeRaw = DayCycleMode.sleepOnset.rawValue
     private var dayCycleMode: DayCycleMode { DayCycleMode.persisted(dayCycleModeRaw) }
     @EnvironmentObject var repo: Repository
+    /// 261024: the Stress card shows NSS (0–100) — the same snapshot the Stress tab and the coach read.
+    @ObservedObject private var nssStore = NormalizedStressStore.shared
     @EnvironmentObject var router: NavRouter
     @EnvironmentObject var profile: ProfileStore
     // For the pull-to-sync gesture (#334): a pull kicks a manual strap history offload via ble.syncNow().
@@ -1033,8 +1035,10 @@ struct LiquidTodayView: View {
         case .stepsAverage30:
             RollingStepsAverageCard(day: selectedDayKey)
         case .stress:
-            cardLink(.stress, title: card.title, sub: card.subtitle,
-                     value: stressText, tint: StrandPalette.accent, frac: fracOver(stress, 3))
+            // 261024: NSS now, in place of the once-a-day 0–3 score (maintainer's ask).
+            cardLink(.stress, title: card.title, sub: String(localized: "NSS · stress beyond activity"),
+                     value: nssText, tint: StrandPalette.accent,
+                     frac: fracOver(nssStore.snapshot.current?.nss, 100))
         case .fitnessAge:
             cardLink(.metric("fitness_age"), title: card.title, sub: card.subtitle,
                      // Bound symbol as on the Health hero (#2173), so a floored reading does not read
@@ -2184,6 +2188,9 @@ struct LiquidTodayView: View {
             hostedSleepModel = nil
         }
 
+        // 261024: NSS for the Stress card — incremental, and a no-op within a few minutes of the last update.
+        await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+
         // #2040: and today's stress, on the same "only when hosted" rule.
         if HostedCardPrefs.decodeEnabled(hostedCardsRaw).contains(.stressToday) {
             let result = await StressDayCurve.today(
@@ -2384,6 +2391,10 @@ struct LiquidTodayView: View {
     }
 
     private var stressText: String { stress.map { String(Int($0.rounded())) } ?? String(localized: "Calibrating") }
+    private var nssText: String {
+        if let c = nssStore.snapshot.current { return String(Int(c.nss.rounded())) }
+        return nssStore.snapshot.modelledPaces.isEmpty ? String(localized: "Learning") : Self.noValueDash
+    }
 
     private var sleepText: String {
         guard let m = displayDay?.totalSleepMin else { return "–" }
