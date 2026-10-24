@@ -106,7 +106,7 @@ final class NotificationSettingsStore: ObservableObject {
         onlyWhenWorn      = d.object(forKey: K.worn) as? Bool ?? true
         quietHoursEnabled = d.object(forKey: K.quiet) as? Bool ?? false
         quietStartMinutes = d.object(forKey: K.quietStart) as? Int ?? 22 * 60   // 22:00
-        quietEndMinutes   = d.object(forKey: K.quietEnd) as? Int ?? 7 * 60      // 07:00
+        quietEndMinutes   = d.object(forKey: K.quietEnd) as? Int ?? ContinuousHrvSchedule.defaultEndMinutes   // 06:30
 
         if let data = d.data(forKey: K.prefs),
            let decoded = try? JSONDecoder().decode([String: AppAlertPref].self, from: data) {

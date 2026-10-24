@@ -26,6 +26,22 @@ struct StrandApp: App {
         let router = NavRouter()
         _router = StateObject(wrappedValue: router)
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
+        // Register the hydration reminder's action category up front, so a reminder that fires
+        // before any Settings visit still carries its "Logged a cup" button (a category unknown at
+        // fire time silently drops the actions).
+        UNUserNotificationCenter.current().setNotificationCategories([
+            HydrationReminder.category,
+            // 260907: the strap-tap confirmation's Undo action. Registered alongside, because
+            // setNotificationCategories REPLACES the whole set — adding one in a second call would
+            // silently drop the hydration reminder's own actions.
+            WaterTapConfirmation.category,
+        ])
+        // Retire the pre-260903 repeating water reminders (260904). They were scheduled as
+        // `repeats: true` calendar triggers carrying a SNAPSHOT of the cup count, so iOS kept
+        // firing the same frozen "5 of 21 cups" daily — followed seconds later by the correct
+        // figure from the current sync-driven path. Idempotent, so it needs no run-once flag.
+        // In BOTH @main files, like the category and sink above: this file is one platform's only.
+        HydrationReminder.retireLegacyCalendarRequests()
     }
 
     @StateObject private var model = AppModel()
@@ -46,6 +62,7 @@ struct StrandApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .task { model.installHydrationReminderSink() }
                 .environmentObject(model)
                 .environmentObject(model.ble)   // #334: Today pull-to-sync reads BLEManager (no HR churn)
                 .environmentObject(model.live)
@@ -77,13 +94,7 @@ struct StrandApp: App {
                 // Single-param form (not the two-param `{ _, phase in }`) — that overload needs macOS 14,
                 // this target is macOS 13.
                 .onChange(of: scenePhase) { phase in
-                    if phase == .active {
-                        model.ble.requestSync(.foreground)
-                        // Regenerate the coach-written Today synthesis on activation, twin of the iOS
-                        // scenePhase handler: a no-op when the Coach is unconfigured or consent is off,
-                        // and self-throttled against rapid re-focusing (AICoachEngine.refreshSynthesis).
-                        Task { await model.coach.refreshSynthesis() }
-                    }
+                    if phase == .active { model.ble.requestSync(.foreground) }
                 }
         }
         .windowStyle(.hiddenTitleBar)

@@ -252,6 +252,32 @@ extension SleepModel {
     /// The browsable DAY list: every block grouped by the calendar day it ENDS on (matching the
     /// dashboard's per-night merge), newest day first, blocks within a day oldest→newest. Each day
     /// is ONE ◀/▶ stop. Mirrors the former `SleepView.navDays`. (#170)
+    /// The block list the tab browses: the fuller un-deduplicated list once it has loaded, the
+    /// one-per-night list until then — and (261018) the one-per-night list's NEWER nights on top of a
+    /// fuller list that is behind it.
+    ///
+    /// The report: on a morning of ~15 re-scores and syncs, the Sleep tab "would sometimes compute
+    /// (93) and sometimes not (more often not)", showing yesterday's night under "Last night's sleep
+    /// wasn't detected" while every pass had scored and stored the new night. The fuller list is a
+    /// separate load keyed on `refreshSeq` and dropped whenever the sequence moves under it, so on a
+    /// morning that moves it every few seconds it can stand for minutes on a list read before the
+    /// night existed; `repo.sleeps` is refreshed with the day rows themselves. A night the fuller list
+    /// has not caught up to is therefore taken from `sleeps` rather than shown as missing. Only nights
+    /// ending on a later local day than the fuller list's newest are added, so nothing it already has
+    /// is duplicated or replaced.
+    static func navSessions(allSessions: [CachedSleepSession],
+                            sleeps: [CachedSleepSession]) -> [CachedSleepSession] {
+        guard !allSessions.isEmpty else { return sleeps }
+        let cal = Calendar.current
+        func endDay(_ s: CachedSleepSession) -> Date {
+            cal.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(s.endTs)))
+        }
+        guard let newestLoaded = allSessions.map(endDay).max() else { return sleeps }
+        let newer = sleeps.filter { endDay($0) > newestLoaded }
+        guard !newer.isEmpty else { return allSessions }
+        return (allSessions + newer).sorted { $0.effectiveStartTs < $1.effectiveStartTs }
+    }
+
     static func navDays(navSessions: [CachedSleepSession]) -> [[CachedSleepSession]] {
         let cal = Calendar.current
         func endDay(_ s: CachedSleepSession) -> Date {
@@ -367,26 +393,30 @@ extension SleepModel {
         mean(days.compactMap { $0[keyPath: key] }.filter { $0 > 0 })
     }
 
-    /// The personal sleep need (minutes): mean asleep, but never below a 7.5h floor so
-    /// debt/performance read sensibly even for a chronically short sleeper.
-    static func sleepNeedMin(days: [DailyMetric]) -> Double {
-        Swift.max(450, typicalTotalMin(days: days) ?? 450)   // 450 min = 7.5h
+    /// THE personal sleep need (minutes) — one figure for every surface (260922).
+    ///
+    /// Three figures used to coexist: this descriptive mean (floored at 7.5 h), the debt ledger's
+    /// upper-quartile need over all history, and the population-anchored "tonight" target with
+    /// charge / rest / readiness notches — 7.6h, 8h27 and 8h05 on one screen set. This is now the
+    /// only estimator: `personalizedNeedHours` (the upper quartile of "unrestricted" nights, floored
+    /// at the adult 8 h target) over the trailing `needWindowNights` nights with sleep — the same
+    /// estimator and window the engine's Rest score uses, so the ledger, the Day-quality "needed",
+    /// tonight's target and the coach all read the number Rest was scored against.
+    /// Age is not plumbed (`age: nil` → adult floor): it only changes the floor under 18.
+    static let needWindowNights = 21
+
+    static func personalNeedMin(days: [DailyMetric]) -> Double {
+        let nightly = days.sorted { $0.day < $1.day }
+            .compactMap { $0.totalSleepMin }.filter { $0 > 0 }
+            .suffix(needWindowNights).map { $0 / 60.0 }
+        return AnalyticsEngine.Rest.personalizedNeedHours(nightlyHours: Array(nightly), age: nil) * 60.0
     }
 
-    /// The NORMATIVE per-user sleep need (minutes) the DEBT surfaces measure against — the
-    /// population-anchored, age-floored, upper-quartile `personalizedNeedHours`, the SAME estimator
-    /// Rest/Intelligence score against. Deliberately NOT the descriptive `sleepNeedMin` (mean total
-    /// sleep): the mean drifts DOWN toward a chronic under-sleeper's own deficit and quietly erases
-    /// their debt, whereas the upper-quartile floored at the ~8 h adult target only adjusts UP for
-    /// genuine long sleepers. Age isn't plumbed to this screen (age: nil → adult target); wiring it
-    /// would only raise it for under-18s. One need across every debt surface, agreeing with the engine.
-    /// (#242; need-unification from #464 by @vishk23. The descriptive `sleepNeedMin` still drives the
-    /// non-debt "hours vs needed" performance tile.)
-    static func debtNeedMin(days: [DailyMetric]) -> Double {
-        AnalyticsEngine.Rest.personalizedNeedHours(
-            nightlyHours: days.compactMap { $0.totalSleepMin.map { $0 / 60.0 } },
-            age: nil) * 60.0
-    }
+    /// The need the "hours vs needed" performance tile shows — the canonical need (see above).
+    static func sleepNeedMin(days: [DailyMetric]) -> Double { personalNeedMin(days: days) }
+
+    /// The need the debt surfaces measure against — the canonical need (see above).
+    static func debtNeedMin(days: [DailyMetric]) -> Double { personalNeedMin(days: days) }
 
     // MARK: Per-tile series (latest, typical mean, sparkline history)
 
@@ -541,7 +571,7 @@ extension SleepModel {
     /// `SleepView.buildModel()` body, re-expressed over explicit inputs. (#940)
     static func build(_ inputs: SleepModelInputs) -> SleepModel? {
         // Replicate `navSessions`: fall back to the one-per-night list until the fuller list loads.
-        let navSessions = inputs.allSessions.isEmpty ? inputs.sleeps : inputs.allSessions
+        let navSessions = Self.navSessions(allSessions: inputs.allSessions, sleeps: inputs.sleeps)
         let dayGroups = navDays(navSessions: navSessions)
         let habitual = inputs.habitualMidsleepSec
 

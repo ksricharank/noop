@@ -142,6 +142,17 @@ enum UnitPrefs {
             ? true : UserDefaults.standard.bool(forKey: liftLiveActivityKey)
     }
 
+    /// Whether Today offers the full-width "Start workout" button when no workout is active
+    /// (261004). Default ON — upstream v12 pinned the offer above the arrangeable sections, so
+    /// unlike every other Today surface it had no toggle. Off hides only the IDLE offer: an
+    /// in-progress workout's indicator card always shows, whatever this says — a running session
+    /// must never be invisible. The Workouts tab keeps its own Start control either way.
+    static let workoutStartOnTodayKey = "today.workoutStartButton"
+    static func workoutStartOnToday() -> Bool {
+        UserDefaults.standard.object(forKey: workoutStartOnTodayKey) == nil
+            ? true : UserDefaults.standard.bool(forKey: workoutStartOnTodayKey)
+    }
+
     /// How often the Live Activity refreshes while the phone is LOCKED, in minutes. The number shown
     /// is a moving average of HR over that window; 0 means fully live (~2 s, no locked slowdown at
     /// all) at the highest battery cost. ANY negative opts into the stream duty cycle instead: the
