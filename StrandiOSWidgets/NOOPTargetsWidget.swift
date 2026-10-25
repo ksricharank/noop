@@ -138,19 +138,30 @@ struct NOOPTargetsView: View {
         // 260919: row spacing 2 -> 5. The two rows sat almost touching, so Steps/Effort and
         // Cal/Water read as one four-line block rather than as two pairs. The ~72pt slot has the
         // room: the cells are 8+21pt, so 5pt between rows still fits without shrinking either.
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .top, spacing: 6) {
-                targetCell("Steps", text: snap.stepsAbbrev, size: 21, labelSize: 8,
-                           tint: StrandPalette.chargeColor)
-                targetCell("Effort", text: snap.effortNT, size: 21, labelSize: 8,
-                           tint: StrandPalette.effortColor)
+        // 261024e: the captions are gone (maintainer: "I already know what each stands for"), and the
+        // values take their room — 21 → 28pt. Position and colour still say which is which: Steps and
+        // Effort on top, Cal and Water below, each in its domain colour. VoiceOver keeps the names.
+        // The LONG pairs (Steps, Cal — "10.4k/11.6k") get ~63% of the width and the short ones the
+        // rest: at equal halves the long pairs scaled to half the short ones' size (checked by
+        // rendering the slot at 172×76 with the widest real values; no cell overflows, the
+        // `minimumScaleFactor` floor absorbs what is left). Rows align on their baselines.
+        GeometryReader { geo in
+            let longWidth = max(0, (geo.size.width - 6) * 0.63)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    targetCell("Steps", text: snap.stepsAbbrev, size: 28, showsLabel: false,
+                               tint: StrandPalette.chargeColor, width: longWidth)
+                    targetCell("Effort", text: snap.effortNT, size: 28, showsLabel: false,
+                               tint: StrandPalette.effortColor)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    targetCell("Cal", text: snap.calAbbrev, size: 28, showsLabel: false,
+                               tint: StrandPalette.metricAmber, width: longWidth)
+                    targetCell("Water", text: snap.waterDisplay, size: 28, showsLabel: false,
+                               tint: StrandPalette.metricCyan)
+                }
             }
-            HStack(alignment: .top, spacing: 6) {
-                targetCell("Cal", text: snap.calAbbrev, size: 21, labelSize: 8,
-                           tint: StrandPalette.metricAmber)
-                targetCell("Water", text: snap.waterDisplay, size: 21, labelSize: 8,
-                           tint: StrandPalette.metricCyan)
-            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
         }
     }
 
@@ -337,19 +348,27 @@ struct NOOPTargetsView: View {
     /// One labelled value column (value over caption), equal-width. Tint applies to the value only
     /// when it exists — a dash stays tertiary so missing data never wears a domain colour.
     /// `labelSize` lets the space-starved rectangular slot trade caption points for value points.
+    /// `showsLabel` false (261024e, the Lock-Screen rectangular face) drops the visible caption but
+    /// keeps it as the accessibility label.
     private func targetCell(_ label: String, text: String?, size: CGFloat, labelSize: CGFloat = 9,
-                            tint: Color = StrandPalette.textPrimary) -> some View {
+                            showsLabel: Bool = true,
+                            tint: Color = StrandPalette.textPrimary,
+                            width: CGFloat? = nil) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(text ?? "–")
                 .font(.system(size: size, weight: .bold, design: .rounded))
                 .foregroundStyle(text == nil ? StrandPalette.textTertiary : tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.5)
-            Text(label)
-                .font(.system(size: labelSize))
-                .foregroundStyle(StrandPalette.textTertiary)
+            if showsLabel {
+                Text(label)
+                    .font(.system(size: labelSize))
+                    .foregroundStyle(StrandPalette.textTertiary)
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // A fixed `width` (the rectangular face's long pairs) or the equal share every other face uses.
+        .frame(width: width, alignment: .leading)
+        .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
         .accessibilityValue(Text(text ?? "unavailable"))

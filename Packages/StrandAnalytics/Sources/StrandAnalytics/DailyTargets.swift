@@ -218,17 +218,27 @@ public enum DailyTargets {
     /// 261004: 25 → 10 kcal on the "more granular and continuous" ask — fine enough that the
     /// continuous session minutes show through, coarse enough not to imply single-kcal precision.
     public static let calorieRoundKcal = 10.0
+    ///
+    /// 261024e: priced NET of resting burn — the Keytel gross rate MINUS the resting rate — because
+    /// that is exactly how the day estimate credits a session (`Calories.estimateDayEnergy` adds only
+    /// `grossRate − restingRate` above the resting floor it already counts). Priced gross, the target
+    /// counted the session's resting minutes twice — once in the resting day, once in the session —
+    /// a ~70–100 kcal gap no workout could close (the maintainer: never hit the calorie target in 60
+    /// days). The explainer's "burns ≈ N kcal MORE" now says what it always meant.
     public static func sessionKcal(session: SessionPrescription, profile: UserProfile,
                                    restingHr: Int?) -> Int {
         let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0
+        let heightCm = profile.heightCm > 0 ? profile.heightCm : 170.0
         let age = profile.age > 0 ? profile.age : 30.0
         let hrmax = hrMax(age: age)
         let hr = Double(sessionHrBpm(session: session, restingHr: restingHr, age: age))
         let coeffs = Calories.resolveCoeffs(profile.sex)
         let vo2 = Calories.vo2maxFor(hrmax: hrmax, restingHR: restingHr.map(Double.init))
-        let perSecond = Calories.activeKcalPerS(coeffs, hr: hr, hrmax: hrmax,
-                                                weightKg: weightKg, age: age, vo2max: vo2)
-        let raw = perSecond * Double(session.minutes) * 60.0
+        let grossPerSecond = Calories.activeKcalPerS(coeffs, hr: hr, hrmax: hrmax,
+                                                     weightKg: weightKg, age: age, vo2max: vo2)
+        let restingPerSecond = Calories.restingKcalPerS(coeffs, weightKg: weightKg,
+                                                        heightCm: heightCm, age: age)
+        let raw = max(0, grossPerSecond - restingPerSecond) * Double(session.minutes) * 60.0
         return max(50, Int((raw / calorieRoundKcal).rounded() * calorieRoundKcal))
     }
 
@@ -244,9 +254,9 @@ public enum DailyTargets {
     /// Rounded to `calorieRoundKcal` like `sessionKcal`, so the glance never implies false precision.
     ///
     /// The numerator this is compared against is the raw whole-day HR estimate
-    /// (`Calories.estimateDayCalories`), which credits resting burn only for WORN seconds — so a
-    /// long unworn gap undercounts the numerator against this target. Stated, not hidden: the strap
-    /// is worn near-continuously on this install.
+    /// (`Calories.estimateDayCalories`). 261024e: it now credits resting burn from local midnight to
+    /// the day's last reading (`dayStartTs`), worn or not — resting burn happens off the wrist too —
+    /// so an unworn gap no longer undercounts it against this full-day resting part.
     public static func dayKcalTarget(session: SessionPrescription?, profile: UserProfile,
                                      restingHr: Int?) -> Int {
         let weightKg = profile.weightKg > 0 ? profile.weightKg : 70.0

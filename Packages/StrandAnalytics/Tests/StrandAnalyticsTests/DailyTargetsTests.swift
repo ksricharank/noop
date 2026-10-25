@@ -264,4 +264,21 @@ final class DailyTargetsTests: XCTestCase {
         XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 590, debtBalanceMin: -400), 600)
         XCTAssertEqual(DailyTargets.sleepNeedTonightMin(needMin: 400, debtBalanceMin: 0), 420)
     }
+
+    /// 261024e: the session is priced NET of resting burn — the same way the day estimate credits it —
+    /// so the resting minutes inside the session are not counted twice in the day target.
+    func testSessionKcalIsNetOfRestingBurn() {
+        let profile = UserProfile()
+        let z3 = DailyTargets.SessionPrescription(minutes: 60, hrrFraction: 0.75, edwardsZoneWeight: 3)
+        let coeffs = Calories.resolveCoeffs(profile.sex)
+        let hrmax = DailyTargets.hrMax(age: profile.age)
+        let hr = Double(DailyTargets.sessionHrBpm(session: z3, restingHr: 60, age: profile.age))
+        let gross = Calories.activeKcalPerS(coeffs, hr: hr, hrmax: hrmax, weightKg: profile.weightKg,
+                                            age: profile.age,
+                                            vo2max: Calories.vo2maxFor(hrmax: hrmax, restingHR: 60)) * 3_600
+        let resting = Calories.restingKcalPerS(coeffs, weightKg: profile.weightKg, heightCm: profile.heightCm,
+                                               age: profile.age) * 3_600
+        XCTAssertEqual(Double(DailyTargets.sessionKcal(session: z3, profile: profile, restingHr: 60)),
+                       gross - resting, accuracy: 5)
+    }
 }
