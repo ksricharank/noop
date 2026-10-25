@@ -47,6 +47,24 @@ final class NSSBlockTests: XCTestCase {
         XCTAssertTrue(block.contains("now 35 (a little above my typical — 5 above my typical 30)"), block)
     }
 
+    /// 261025: pickleball read as stress. Exercise and its recovery are unscored, and the block says so —
+    /// both for "now" and as today's minutes left out — so the coach cannot call a game stress.
+    func testExerciseNowAndTodaysExerciseMinutesAreNamed() {
+        let rs = [reading(36_000, 22)]
+        let game = NormalizedStress.Window(endTs: 36_600, pace: .walk, hr: 136, lnSI: nil, lnRMSSD: nil)
+        var s = snapshot(rs, unscored: game)
+        s.unscoredExercise = .exercise
+        s.exerciseMinutesToday = 75
+        s.recoveryMinutesToday = 30
+        let block = AICoachEngine.nssSummary(s, now: 36_660, timeZone: utc)!
+        XCTAssertTrue(block.contains("right now I am exercising — not scored"), block)
+        XCTAssertFalse(block.contains("too little history"), block)
+        XCTAssertTrue(block.contains("exercise today: 75 min, plus 30 min of recovery after it, left out of NSS"), block)
+        s.unscoredExercise = .recovery
+        XCTAssertTrue(AICoachEngine.nssSummary(s, now: 36_660, timeZone: utc)!
+            .contains("right now I am recovering from exercise — not scored for 30 min after it"))
+    }
+
     func testAnOldReadingNamesItsAge() {
         let block = AICoachEngine.nssSummary(snapshot([reading(36_000, 40)]), now: 36_000 + 25 * 60,
                                              timeZone: utc)!

@@ -213,4 +213,61 @@ final class NormalizedStressTests: XCTestCase {
         XCTAssertLessThan(usualScore, 20, "a usual walk sits near calm, not high")
         XCTAssertGreaterThan(hotScore, usualScore + 40)
     }
+
+    // MARK: - Exercise (261025)
+
+    func testExerciseLineIsHalfTheHeartRateReserve() {
+        XCTAssertEqual(NormalizedStress.exerciseHR(restingHR: 55, maxHR: 179)!, 117, accuracy: 1e-9)
+        XCTAssertNil(NormalizedStress.exerciseHR(restingHR: 60, maxHR: 60), "no reserve, no line")
+    }
+
+    /// The 261025 log: pickleball at WALK pace (the strap counted walking steps), 116–143 bpm against a
+    /// calm walk of 90, scored up to 91; then sitting at 97 bpm read 70. Every minute of the game is
+    /// exercise or recovery; the dips under the line mid-game ride the recovery tail; the sitting after it
+    /// is recovery for exactly `recoveryMinutes`, then scored again.
+    func testPickleballAtWalkPaceIsExerciseThenRecovery() {
+        let t0 = 7 * 3600
+        let pre = (1...10).map { w(t0 + $0 * 60, .walk, hr: 90) }
+        let game = (11...85).map { i in w(t0 + i * 60, .walk, hr: i % 7 == 0 ? 116 : (i % 2 == 0 ? 139 : 125)) }
+        let after = (86...140).map { w(t0 + $0 * 60, .still, hr: 97) }
+        let all = pre + game + after
+        let marks = NormalizedStress.exerciseMarks(all, exerciseHR: 117, workouts: [])
+        XCTAssertTrue(pre.allSatisfy { marks[$0.endTs] == nil }, "an ordinary walk before is scored")
+        XCTAssertTrue(game.allSatisfy { marks[$0.endTs] != nil }, "no minute of the game is scored")
+        XCTAssertEqual(marks[t0 + 77 * 60], .recovery, "a dip under the line mid-game rides the tail")
+        let lastExercise = game.last { $0.hr >= 117 }!.endTs
+        for x in after {
+            let inTail = x.endTs - NormalizedStress.windowSeconds < lastExercise + NormalizedStress.recoveryMinutes * 60
+            XCTAssertEqual(marks[x.endTs], inTail ? .recovery : nil, "minute ending \(x.endTs - t0)s")
+        }
+        XCTAssertTrue(after.contains { marks[$0.endTs] == nil }, "scoring resumes after the tail")
+
+        // And scored: against a calm walk of 90, nothing of the game reaches the readings.
+        let model = NormalizedStress.buildModel(history(.walk, center: 94) + history(.still, center: 70), days: 21)
+        let kept = NormalizedStress.excludingExercise(all, marks: marks)
+        let readings = NormalizedStress.readings(kept, model: model)
+        XCTAssertFalse(readings.contains { $0.ts > t0 + 10 * 60 && $0.ts <= lastExercise + 1500 })
+        XCTAssertLessThan(readings.filter { $0.ts <= t0 + 10 * 60 }.map(\.nss).max()!, 20)
+    }
+
+    /// A workout logged in the app is exercise for its whole span, even at a heart rate under the line
+    /// (warm-up, easy rallies), with the recovery tail from its end; without a line (no profile) running
+    /// pace and workouts still count, and nothing else does.
+    func testALoggedWorkoutIsExerciseWhateverTheHeartRate() {
+        let t0 = 7 * 3600
+        let ws = (1...90).map { w(t0 + $0 * 60, .light, hr: 100) }
+        let workout = (t0 + 10 * 60)...(t0 + 40 * 60)
+        let marks = NormalizedStress.exerciseMarks(ws, exerciseHR: nil, workouts: [workout])
+        XCTAssertNil(marks[t0 + 5 * 60], "a window ending before the workout starts is scored")
+        XCTAssertEqual(marks[t0 + 12 * 60], .exercise)
+        XCTAssertEqual(marks[t0 + 44 * 60], .exercise, "a window overlapping the workout's end")
+        XCTAssertEqual(marks[t0 + 46 * 60], .recovery)
+        XCTAssertEqual(marks[t0 + 74 * 60], .recovery, "starts 29 min after the end")
+        XCTAssertNil(marks[t0 + 75 * 60], "starts 30 min after the end: scored")
+        let run = NormalizedStress.exerciseMarks([w(t0, .run, hr: 150), w(t0 + 600, .still, hr: 160)],
+                                                 exerciseHR: nil, workouts: [])
+        XCTAssertEqual(run[t0], .exercise)
+        XCTAssertEqual(run[t0 + 600], .recovery, "high HR without a line is not exercise by itself")
+        XCTAssertTrue(NormalizedStress.exerciseMarks([w(t0, .walk, hr: 160)], exerciseHR: nil, workouts: []).isEmpty)
+    }
 }

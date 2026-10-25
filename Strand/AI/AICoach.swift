@@ -2845,7 +2845,11 @@ final class AICoachEngine: ObservableObject {
         let age = max(0, (now - c.ts) / 60)
         out.append("  now \(Int(c.nss.rounded())) (\(nssBandWord(c.nss, typical: s.typical, unusual: s.unusualLevel))), while \(c.pace.phrase)"
                    + (age >= 15 ? ", from \(age) min ago" : "") + " — " + nssParts(c) + ".")
-        if let u = s.unscoredNow {
+        if let mark = s.unscoredExercise {
+            out.append(mark == .exercise
+                ? "  right now I am exercising — not scored (NSS leaves exercise out); the figure above is my last scored reading."
+                : "  right now I am recovering from exercise — not scored for \(NormalizedStress.recoveryMinutes) min after it, while my heart rate comes down; the figure above is my last scored reading.")
+        } else if let u = s.unscoredNow {
             out.append(u.pace == .run
                 ? "  right now I am running — not scored (too hard to separate from the effort); the figure above is my last scored reading."
                 : "  right now I am \(u.pace.phrase), a pace with too little history to score yet; the figure above is my last scored reading.")
@@ -2855,6 +2859,10 @@ final class AICoachEngine: ObservableObject {
             let series = nssSeries(s.readings, timeZone: timeZone)
             if !series.isEmpty { line += "; every 30 min: " + series }
             out.append(line + ".")
+        }
+        if s.exerciseMinutesToday > 0 {
+            out.append("  exercise today: \(s.exerciseMinutesToday) min, plus \(s.recoveryMinutesToday) min of recovery after it, "
+                       + "left out of NSS — exercise heart rate is not stress.")
         }
         if let e = s.lastUnusual {
             out.append("  last unusual stretch today: \(clock(e.startTs, timeZone))–\(clock(e.endTs, timeZone)), peak "

@@ -289,6 +289,15 @@ final class AppModel: ObservableObject {
             UserProfile(weightKg: profile.weightKg, heightCm: profile.heightCm,
                         age: Double(profile.age), sex: profile.sex)
         }
+        // 261025: NSS leaves exercise unscored; its HR line needs resting + max HR, and a workout running
+        // in the app now (no stored row until it ends). Read at each update, so profile edits and a new
+        // night's resting HR apply on the next one. Strong captures, like the closures above.
+        NormalizedStressStore.shared.exerciseInputs = { [profile, repo, weak self] in
+            NormalizedStressStore.ExerciseInputs(
+                restingHR: repo.today?.restingHr.map(Double.init) ?? StrainScorer.defaultRestingHR,
+                maxHR: Double(profile.hrMax),
+                liveWorkoutStart: self?.activeWorkout.map { Int($0.start.timeIntervalSince1970) })
+        }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a

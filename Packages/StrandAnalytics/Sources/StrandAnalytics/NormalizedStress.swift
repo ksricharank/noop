@@ -43,6 +43,12 @@ import WhoopProtocol
 ///   explanation once activity is accounted for, but the formula cannot prove the cause.
 /// - It saturates at high intensity: near max HR, HRV is already floored and residuals compress. RUNNING
 ///   pace is not scored at all. Best from rest through moderate activity — desk, walking, chores.
+/// - EXERCISE is not scored either (261025, `exerciseMarks`): pace comes from steps, and a step-light
+///   sport reads as a walk. The 261025 log had pickleball at "walk" pace, 116–143 bpm against a calm walk
+///   of 90, scored 89. So a window at exercise-level HR (`exerciseHRRFraction` of heart-rate reserve),
+///   at running pace, or inside a logged workout is EXERCISE, and the `recoveryMinutes` after it are
+///   RECOVERY (that log read 70 sitting at 97 bpm ten minutes after the game). Both are left out of
+///   today's readings AND of the history the calm reference and my typical are learned from.
 /// - Movement without steps (cycling, arm work) gets its own pace bin, but its baseline is only as good
 ///   as the history of that kind of movement.
 /// - Time-domain only (HR, RMSSD, Baevsky): step cadence entrains heart rate and corrupts frequency
@@ -97,6 +103,12 @@ public enum NormalizedStress {
     public static let walkTicksPerMin = 40.0
     public static let briskTicksPerMin = 95.0
     public static let runTicksPerMin = 140.0
+    /// 261025: a window whose mean HR is at or above this share of heart-rate reserve above resting is
+    /// exercise — the same 50% line the day calorie model uses for exercise-level HR
+    /// (`Calories.dayActiveHRRFraction`). Stress alone very rarely holds HR there for five minutes.
+    public static let exerciseHRRFraction = 0.50
+    /// 261025: how long after exercise ends the windows stay unscored while HR comes back down.
+    public static let recoveryMinutes = 30
     /// Share of a window's wrist-motion records above the walk floor that makes a step-less window
     /// "moving without steps" rather than still — the same 30% `DaytimeStress` masks an hour at.
     public static let motionActiveFraction = 0.30
@@ -244,6 +256,55 @@ public enum NormalizedStress {
             if Double(moving) / Double(activity.count) >= motionActiveFraction { return .movingNoSteps }
         }
         return .still
+    }
+
+    // MARK: - Exercise (261025)
+
+    /// Why a window is left unscored for exercise.
+    public enum ExerciseMark: String, Codable, Sendable {
+        /// Exercise-level HR, running pace, or inside a logged workout.
+        case exercise
+        /// Within `recoveryMinutes` after exercise.
+        case recovery
+    }
+
+    /// The HR at `exerciseHRRFraction` of heart-rate reserve, or nil when the inputs make no reserve.
+    public static func exerciseHR(restingHR: Double, maxHR: Double) -> Double? {
+        guard restingHR > 0, maxHR > restingHR else { return nil }
+        return restingHR + exerciseHRRFraction * (maxHR - restingHR)
+    }
+
+    /// The exercise and recovery windows among `windows`, keyed by `endTs`. A window is EXERCISE when its
+    /// mean HR is at or above `exerciseHR`, its pace is running, or it overlaps a `workouts` span (unix
+    /// seconds, start...end); it is RECOVERY when it starts within `recoveryMinutes` after the end of the
+    /// latest exercise window or workout before it. Pass one day's windows (any order).
+    public static func exerciseMarks(_ windows: [Window], exerciseHR: Double?,
+                                     workouts: [ClosedRange<Int>]) -> [Int: ExerciseMark] {
+        var marks: [Int: ExerciseMark] = [:]
+        var lastEnd: Int?
+        let tail = recoveryMinutes * 60
+        for w in windows.sorted(by: { $0.endTs < $1.endTs }) {
+            let start = w.endTs - windowSeconds
+            let inWorkout = workouts.contains { $0.lowerBound < w.endTs && $0.upperBound > start }
+            let byHeart = w.pace == .run || exerciseHR.map({ w.hr >= $0 }) == true
+            if inWorkout || byHeart {
+                marks[w.endTs] = .exercise
+                // A workout's tail runs from its own end (below), not from a window overlapping it.
+                if byHeart { lastEnd = max(lastEnd ?? w.endTs, w.endTs) }
+                continue
+            }
+            // A workout that ended before this window counts as the end of exercise too.
+            let workoutEnd = workouts.map(\.upperBound).filter { $0 <= w.endTs }.max()
+            if let end = [lastEnd, workoutEnd].compactMap({ $0 }).max(), start < end + tail {
+                marks[w.endTs] = .recovery
+            }
+        }
+        return marks
+    }
+
+    /// `windows` without their exercise and recovery windows.
+    public static func excludingExercise(_ windows: [Window], marks: [Int: ExerciseMark]) -> [Window] {
+        marks.isEmpty ? windows : windows.filter { marks[$0.endTs] == nil }
     }
 
     // MARK: - The personal model

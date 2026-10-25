@@ -50,7 +50,7 @@ struct NSSCard: View {
                             }
                         }
                     }
-                    Text(Self.explanation(c, unscoredNow: snapshot.unscoredNow))
+                    Text(Self.explanation(c, unscoredNow: snapshot.unscoredNow, exercise: snapshot.unscoredExercise))
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -100,7 +100,8 @@ struct NSSCard: View {
     }
 
     /// One plain line: the pace and what moved the score, against calm at that pace.
-    static func explanation(_ r: NormalizedStress.Reading, unscoredNow: NormalizedStress.Window?) -> String {
+    static func explanation(_ r: NormalizedStress.Reading, unscoredNow: NormalizedStress.Window?,
+                            exercise: NormalizedStress.ExerciseMark? = nil) -> String {
         let diff = Int((r.hr - r.hrCalm).rounded())
         let heart = diff <= 0
             ? String(localized: "heart rate at your calm level for this pace")
@@ -110,7 +111,11 @@ struct NSSCard: View {
             line += String(localized: ", HRV below your calm level")
         }
         line += "."
-        if let u = unscoredNow {
+        if let exercise {
+            line += " " + (exercise == .exercise
+                ? String(localized: "Exercise isn't scored — this is your last reading.")
+                : String(localized: "Recovering from exercise isn't scored for \(NormalizedStress.recoveryMinutes) minutes — this is your last reading."))
+        } else if let u = unscoredNow {
             line += " " + (u.pace == .run
                 ? String(localized: "Running now isn't scored — this is your last reading.")
                 : String(localized: "Not enough history at your current pace yet — this is your last reading."))

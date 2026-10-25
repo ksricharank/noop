@@ -56,6 +56,12 @@ final class NormalizedStressStore: ObservableObject {
         var unusualLevel: Double?
         /// The baseline window in force, in days.
         var baselineDays: Int = NormalizedStress.defaultBaselineDays
+        /// 261025: why `unscoredNow` is unscored when it is exercise or recovery after it (nil otherwise).
+        var unscoredExercise: NormalizedStress.ExerciseMark?
+        /// 261025: today's minutes left out as exercise and as recovery, and the HR line in force.
+        var exerciseMinutesToday = 0
+        var recoveryMinutesToday = 0
+        var exerciseHR: Double?
 
         static let empty = Snapshot(current: nil, readings: [], dayMean: nil, lastUnusual: nil,
                                     modelDays: 0, modelWindows: 0, modelledPaces: [], computedAt: 0,
@@ -111,6 +117,16 @@ final class NormalizedStressStore: ObservableObject {
 
     /// How long daily averages are kept for the trends.
     static let dailyHistoryDays = 400
+
+    /// 261025: what the exercise gate needs from the app, read at each update — resting HR, max HR, and
+    /// the start of a workout running in the app now (it has no stored row until it ends). Set once by
+    /// `AppModel`; nil (a bare store) leaves only the stored workouts and running pace as exercise.
+    struct ExerciseInputs {
+        var restingHR: Double
+        var maxHR: Double
+        var liveWorkoutStart: Int?
+    }
+    var exerciseInputs: (@MainActor () -> ExerciseInputs)?
 
     private var state: Persisted?
     private var running = false
@@ -185,10 +201,26 @@ final class NormalizedStressStore: ObservableObject {
             st.today += fresh
         }
 
+        // 261025: exercise and the recovery after it are left out of today AND of the history, by day
+        // (windows never cross a day: waking hours only). Derived at read time from the stored window
+        // features, so a change here re-scores every stored day without re-reading a stream.
+        let inputs = exerciseInputs?()
+        let exerciseHR = inputs.flatMap { NormalizedStress.exerciseHR(restingHR: $0.restingHR, maxHR: $0.maxHR) }
+        let oldest = cal.date(byAdding: .day, value: -windowDays, to: startOfToday) ?? startOfToday
+        var workouts = await repo.workoutSpans(from: Int(oldest.timeIntervalSince1970) - 86_400, to: nowTs)
+        if let live = inputs?.liveWorkoutStart, live < nowTs { workouts.append(live...nowTs) }
+        func unscoredExercise(_ ws: [NormalizedStress.Window]) -> (kept: [NormalizedStress.Window],
+                                                                   marks: [Int: NormalizedStress.ExerciseMark]) {
+            let marks = NormalizedStress.exerciseMarks(ws, exerciseHR: exerciseHR, workouts: workouts)
+            return (NormalizedStress.excludingExercise(ws, marks: marks), marks)
+        }
+        let history = st.history.filter { !$0.value.isEmpty }.mapValues { unscoredExercise($0).kept }
+        let todayCut = unscoredExercise(st.today)
+
         // Model and readings.
-        let historyDays = st.history.values.filter { !$0.isEmpty }
+        let historyDays = Array(history.values)
         let model = NormalizedStress.buildModel(historyDays.flatMap { $0 }, days: historyDays.count)
-        let readings = NormalizedStress.readings(st.today, model: model)
+        let readings = NormalizedStress.readings(todayCut.kept, model: model)
 
         // What is normal for me over the window: the history windows' own scores (unsmoothed).
         let historyScores = historyDays.flatMap { $0 }.compactMap { NormalizedStress.score($0, model: model)?.raw }
@@ -201,7 +233,7 @@ final class NormalizedStressStore: ObservableObject {
         // trend compares share one model; today from its live readings. A day older than the window
         // history keeps the last average it was given.
         var daily = st.daily ?? [:]
-        for (key, ws) in st.history where !ws.isEmpty {
+        for (key, ws) in history where !ws.isEmpty {
             let scores = ws.compactMap { NormalizedStress.score($0, model: model)?.raw }
             if !scores.isEmpty { daily[key] = scores.reduce(0, +) / Double(scores.count) }
         }
@@ -223,7 +255,13 @@ final class NormalizedStressStore: ObservableObject {
                 w.endTs > (readings.last?.ts ?? Int.min) ? w : nil
             },
             dailyByDay: daily,
-            typical: typical, unusualLevel: unusual, baselineDays: windowDays)
+            typical: typical, unusualLevel: unusual, baselineDays: windowDays,
+            unscoredExercise: st.today.last.flatMap { w in
+                w.endTs > (readings.last?.ts ?? Int.min) ? todayCut.marks[w.endTs] : nil
+            },
+            exerciseMinutesToday: todayCut.marks.values.filter { $0 == .exercise }.count,
+            recoveryMinutesToday: todayCut.marks.values.filter { $0 == .recovery }.count,
+            exerciseHR: exerciseHR)
         state = st
         lastUpdate = Date()
         Self.save(st)
@@ -238,7 +276,11 @@ final class NormalizedStressStore: ObservableObject {
             + (s.modelledPaces.isEmpty ? "no pace yet" : s.modelledPaces.map(\.rawValue).joined(separator: ","))
             + ")"
         let cost = "today +\(added) window(s) · backfilled \(backfilled) day(s) · \(ms) ms"
-        guard let c = s.current else { return "nss: no reading · \(model) · \(cost)" }
+        // 261025: the exercise gate's line and what it left out today, so a log can check it.
+        let exercise = "exercise≥\(s.exerciseHR.map { "\(Int($0.rounded()))" } ?? "—") bpm: "
+            + "\(s.exerciseMinutesToday) min exercise, \(s.recoveryMinutesToday) min recovery unscored"
+            + (s.unscoredExercise.map { " (now: \($0.rawValue))" } ?? "")
+        guard let c = s.current else { return "nss: no reading · \(exercise) · \(model) · \(cost)" }
         func z(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "—" }
         return "nss: now \(Int(c.nss.rounded())) (raw \(Int(c.raw.rounded())), \(c.pace.rawValue), "
             + "\(max(0, (now - c.ts) / 60)) min old, hr \(Int(c.hr.rounded())) vs \(Int(c.hrCalm.rounded())) calm, "
@@ -246,7 +288,7 @@ final class NormalizedStressStore: ObservableObject {
             + " · typical \(s.typical.map { "\(Int($0.rounded()))" } ?? "—")"
             + " unusual≥\(s.unusualLevel.map { "\(Int($0.rounded()))" } ?? "—")"
             + " · day \(s.dayMean.map { "\(Int($0.rounded()))" } ?? "—") over \(s.readings.count) min"
-            + " · \(model) · \(cost)"
+            + " · \(exercise) · \(model) · \(cost)"
     }
 
     // MARK: - Reads

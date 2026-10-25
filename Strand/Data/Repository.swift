@@ -3386,6 +3386,20 @@ final class Repository: ObservableObject {
         _ = try? await store.deleteJournal(deviceId: Self.journalDeviceId, day: day, question: question)
     }
 
+    /// 261025: the time spans of every workout starting in [from, to] — the same namespaces and the same
+    /// dismissed-span filter as `workoutRows`, without its dedup or HR reconcile, which a span needs
+    /// neither of (two overlapping twins cover the same time). NSS leaves these spans unscored.
+    func workoutSpans(from: Int, to: Int) async -> [ClosedRange<Int>] {
+        guard let store = await ensureStore() else { return [] }
+        var rows: [WorkoutRow] = []
+        for id in Self.workoutNamespaces(rawIds: rawPhysiologyReadIds(store: store)) {
+            rows += (try? await store.workouts(deviceId: id, from: from, to: to, limit: 5000)) ?? []
+        }
+        let spans = WorkoutSource.parseDismissedSpans(dismissedDetectedSpans)
+        return rows.filter { !WorkoutSource.isDismissed($0, spans: spans) && $0.endTs > $0.startTs }
+            .map { $0.startTs...$0.endTs }
+    }
+
     /// All workouts (WHOOP + Apple Health + manual + grandfathered detected bouts), newest first.
     ///
     /// Legacy detected bouts remain surfaced with an honest "Detected" badge and stay editable,
