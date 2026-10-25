@@ -165,8 +165,11 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("Theme — HYDRATION"))
         XCTAssertTrue(d.contains("Theme — SLEEP"))
         // 261024: NSS now, why from its parts, one action only above 60; stress from NSS alone.
-        XCTAssertTrue(d.contains("(NSS **X** now, **Y** today's average)"))
-        XCTAssertTrue(d.contains("when it is above 60, ONE bolded thing to do now to bring it down"))
+        // 261024d: measured up from calm, read against my typical; action only above typical.
+        XCTAssertTrue(d.contains("(NSS **X** now, **Y** my typical)"))
+        XCTAssertTrue(d.contains("0 is my calm state for the pace I am at"))
+        XCTAssertTrue(d.contains("when the block calls it \"above my typical\" or \"unusual for me\""))
+        XCTAssertFalse(d.contains("50 is my usual"), "the median-centred scale is retired")
         XCTAssertTrue(d.contains("as a read, never a fact"))
         XCTAssertTrue(d.contains("For stress use ONLY the NSS block"))
         XCTAssertFalse(d.contains("am I STRESSED right now"), "the still-only stress verdict is retired")

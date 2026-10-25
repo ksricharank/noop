@@ -2,12 +2,15 @@ import SwiftUI
 import StrandDesign
 import StrandAnalytics
 
-/// The Stress tab's NSS card (261024): the Normalized Stress Score now, today's line, the last high,
-/// and an honest caption. Reads `NormalizedStressStore`'s snapshot — the same one the Today card and
-/// the coach read — so the three always show one number for one moment.
+/// The Stress tab's NSS card (261024): the Normalized Stress Score now, today's line, the last unusual
+/// stretch, and an honest caption. Reads `NormalizedStressStore`'s snapshot — the same one the Today
+/// card and the coach read — so the three always show one number for one moment.
 ///
-/// Colour and band reuse the Stress screen's ramp at NSS × 3/100, so a HIGH NSS and a HIGH 0–3 score
-/// look the same, and the line is the screen's own `DaytimeLoadLine` fed 5-minute points on that scale.
+/// 261024d: NSS is measured UP from my calm state at each pace (0 = calm, 20 points a swing), and what
+/// is normal for me is shown beside it — my TYPICAL and the level that is UNUSUAL for me — rather than
+/// pinned to 50. The pill says where now sits against those; the line's dashed reference is my typical.
+/// Colour still reuses the Stress screen's ramp at NSS × 3/100 (near calm blue, above calm green, far
+/// above calm amber).
 struct NSSCard: View {
     let snapshot: NormalizedStressStore.Snapshot
     /// The Stress tab's hero leaves the line to its own timeline section below (261024b), so the
@@ -21,8 +24,8 @@ struct NSSCard: View {
                     Text("Normalized stress · NSS").strandOverline()
                     Spacer()
                     if let c = snapshot.current {
-                        let band = StressBand(score: Self.level(c.nss))
-                        StatePill("\(band.title)", tone: band.tone, showsDot: true)
+                        let status = Self.status(c.nss, typical: snapshot.typical, unusual: snapshot.unusualLevel)
+                        StatePill("\(status.title)", tone: status.tone, showsDot: true)
                     }
                 }
                 if let c = snapshot.current {
@@ -34,10 +37,17 @@ struct NSSCard: View {
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textTertiary)
                         Spacer()
-                        if let mean = snapshot.dayMean {
-                            Text("today avg \(Int(mean.rounded()))")
-                                .font(StrandFont.captionNumber)
-                                .foregroundStyle(StrandPalette.textSecondary)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            if let typical = snapshot.typical {
+                                Text("your typical \(Int(typical.rounded()))")
+                                    .font(StrandFont.captionNumber)
+                                    .foregroundStyle(StrandPalette.textSecondary)
+                            }
+                            if let mean = snapshot.dayMean {
+                                Text("today avg \(Int(mean.rounded()))")
+                                    .font(StrandFont.captionNumber)
+                                    .foregroundStyle(StrandPalette.textTertiary)
+                            }
                         }
                     }
                     Text(Self.explanation(c, unscoredNow: snapshot.unscoredNow))
@@ -46,22 +56,22 @@ struct NSSCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                     let points = Self.linePoints(snapshot.readings)
                     if showsLine, points.contains(where: { $0.level != nil }) {
-                        DaytimeLoadLine(hours: points)
+                        DaytimeLoadLine(hours: points, referenceLevel: snapshot.typical.map(Self.level))
                     }
-                    if let e = snapshot.lastHigh {
-                        Text("Last high \(Self.clock(e.startTs))–\(Self.clock(e.endTs)) · peak \(Int(e.peak.nss.rounded())) while \(e.peak.pace.phrase)")
+                    if let e = snapshot.lastUnusual {
+                        Text("Unusual for you \(Self.clock(e.startTs))–\(Self.clock(e.endTs)) · peak \(Int(e.peak.nss.rounded())) while \(e.peak.pace.phrase)")
                             .font(StrandFont.footnote)
                             .foregroundStyle(StrandPalette.textSecondary)
                     }
                 } else {
                     Text(snapshot.modelledPaces.isEmpty
-                         ? "Learning your usual heart rate and HRV at each pace — \(snapshot.modelDays) of 14 days so far."
+                         ? "Learning your calm state at each pace — \(snapshot.modelDays) of \(snapshot.baselineDays) days so far."
                          : "No reading yet today.")
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Text("50 is your usual for the pace you're moving at. Higher means your heart is working harder and your HRV is lower than that activity explains, against your own last 14 days. Heat, caffeine, a meal, illness or talking raise it too. Experimental.")
+                Text("0 is your calm state for the pace you're moving at, from your calmest moments over the last \(snapshot.baselineDays) days. Each 20 points is one typical swing above it. Your typical is the middle of your days; unusual is your top 5%. Heat, caffeine, a meal, illness or talking raise it too. Experimental.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -72,15 +82,29 @@ struct NSSCard: View {
     /// NSS on the Stress screen's 0–3 band and colour scale.
     static func level(_ nss: Double) -> Double { nss * 3 / 100 }
 
-    /// One plain line: the pace and what moved the score.
+    /// Where a reading sits against MY normal (the coach's `nssBandWord`, as a pill): unusual for me
+    /// (my top 5%), above my typical (+10), typical, or calmer than typical; before there is a typical,
+    /// the fixed scale's own steps.
+    static func status(_ nss: Double, typical: Double?, unusual: Double?) -> (title: String, tone: StrandTone) {
+        if let typical, let unusual {
+            if nss >= unusual { return (String(localized: "UNUSUAL FOR YOU"), .critical) }
+            if nss >= typical + 10 { return (String(localized: "ABOVE TYPICAL"), .warning) }
+            if nss <= typical - 10 { return (String(localized: "CALMER THAN TYPICAL"), .positive) }
+            return (String(localized: "TYPICAL"), .positive)
+        }
+        if nss < 20 { return (String(localized: "NEAR CALM"), .positive) }
+        return nss < 60 ? (String(localized: "ABOVE CALM"), .warning) : (String(localized: "FAR ABOVE CALM"), .critical)
+    }
+
+    /// One plain line: the pace and what moved the score, against calm at that pace.
     static func explanation(_ r: NormalizedStress.Reading, unscoredNow: NormalizedStress.Window?) -> String {
-        let diff = Int((r.hr - r.hrPred).rounded())
-        let heart = diff == 0
-            ? String(localized: "heart rate right at your usual for this pace")
-            : String(localized: "heart rate \(abs(diff)) bpm \(diff > 0 ? String(localized: "above") : String(localized: "below")) your usual for this pace")
+        let diff = Int((r.hr - r.hrCalm).rounded())
+        let heart = diff <= 0
+            ? String(localized: "heart rate at your calm level for this pace")
+            : String(localized: "heart rate \(diff) bpm above your calm for this pace")
         var line = String(localized: "While \(r.pace.phrase): \(heart)")
-        if let z = r.zRMSSD, abs(z) >= 1 {
-            line += z > 0 ? String(localized: ", HRV lower than usual") : String(localized: ", HRV higher than usual")
+        if let z = r.zRMSSD, z >= 1 {
+            line += String(localized: ", HRV below your calm level")
         }
         line += "."
         if let u = unscoredNow {

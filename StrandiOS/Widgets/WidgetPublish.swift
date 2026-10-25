@@ -164,7 +164,8 @@ extension WidgetSnapshot {
             nssSeries: nssPoints,
             nssDay: WidgetSnapshot.localDayNumber(now),
             nssNow: nssSnap.current.map { Int($0.nss.rounded()) },
-            nssMean: nssSnap.dayMean.map { Int($0.rounded()) }
+            nssMean: nssSnap.dayMean.map { Int($0.rounded()) },
+            nssTypical: nssSnap.typical.map { Int($0.rounded()) }
         )
         // Read the PREVIOUS snapshot once, before the save, so the scene split and the
         // unrendered-change probe both describe the transition this publish is about to make.

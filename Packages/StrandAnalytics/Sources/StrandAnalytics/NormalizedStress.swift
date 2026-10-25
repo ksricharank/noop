@@ -12,24 +12,30 @@ import WhoopProtocol
 /// most of a heart-rate or HRV change, and what is left over after subtracting what this activity alone
 /// should cause is the stress-like part.
 ///
-/// THE METHOD, in three steps (the maintainer's spec, kept as written where it was concrete):
-/// 1. PERSONAL MODEL PER PACE. From the last `modelDays` days of waking-hour data, every 5-minute window
-///    gets a `Pace` (from strap locomotion ticks per minute, and wrist motion for movement without steps)
-///    and three observations: mean HR, ln Baevsky SI, ln RMSSD. Per pace, the MEDIAN of each is the
-///    prediction, so a few stressed days cannot poison the baseline, and the residual spread is a
-///    robust SD (1.4826 × MAD around that median).
-/// 2. RESIDUALS over a rolling 5-minute window, each as a z against that spread:
-///    zHR = (HR − HR_pred) / sd, zSI = (ln SI − ln SI_pred) / sd, zRMSSD = (ln RMSSD_pred − ln RMSSD) / sd.
-///    Positive on all three = heart working harder and variability lower than this pace warrants.
-/// 3. COMBINE: raw = 50 + 15 × (0.40·zHR + 0.35·zSI + 0.25·zRMSSD), clamped to 0–100, then smoothed by
-///    an exponential moving average (α = 0.2 per 1-minute step, reset after a 10-minute gap). A missing
-///    HRV term (too few clean beats, common on a moving wrist) is dropped and the remaining weights are
-///    renormalised, so heart rate alone still gives a number. Each z is clamped to ±4 so one artifact
-///    window cannot swing the score across the whole scale.
+/// THE METHOD (261024; the baseline and scale re-cut 261024d at the maintainer's ask):
+/// 1. A CALM REFERENCE PER PACE. From the last `baselineDays` days of waking-hour data (default 21, the
+///    long pass's window; the wearer can change it on the Stress tab), every 5-minute window gets a
+///    `Pace` (strap locomotion ticks per minute, and wrist motion for movement without steps) and three
+///    observations: mean HR, ln Baevsky SI, ln RMSSD. Per pace, the reference is my CALMEST typical
+///    state — the 10th percentile of HR and SI, the 90th of RMSSD — not the median. The maintainer's
+///    reasoning: even if most of the window was stressful, the calmest tenth is still calm, so stress
+///    cannot become the baseline. A low PERCENTILE rather than the minimum, because the single lowest
+///    window is usually a sensor glitch or a doze, and everything would read as stressed against it.
+///    The spread is a robust SD (1.4826 × MAD around the pace's median).
+/// 2. RESIDUALS over a rolling 5-minute window, as z's against that spread, above the calm reference:
+///    zHR = (HR − HR_calm) / sd, zSI = (ln SI − ln SI_calm) / sd, zRMSSD = (ln RMSSD_calm − ln RMSSD) / sd.
+/// 3. COMBINE: E = 0.40·zHR + 0.35·zSI + 0.25·zRMSSD (a missing HRV term dropped and the weights
+///    renormalised, so heart rate alone still scores); NSS = 20 × E, clamped to 0–100; smoothed by an
+///    EMA (α = 0.2 per 1-minute step, reset after a 10-minute gap). Each z is clamped to ±5.
 ///
-/// SCALE. 50 = my usual for the pace I am at. Each 15 points is one robust SD of combined excess. The
-/// Stress screen's band colours apply at NSS × 3/100 (so ≥ 67 is HIGH), and a "high episode" is NSS
-/// ≥ `highThreshold` held for at least `highMinMinutes`.
+/// SCALE (a FIXED scale, deliberately not stretched to the window — the maintainer first asked for
+/// 0 = the window's low, 100 = its high, 50 = its average, and took this instead once it was shown that
+/// a stretched scale would map a stressful fortnight onto "50, normal" and a calm one's wobble onto 100):
+/// 0 = my calm state at this pace; each 20 points = one typical swing above it; 100 = five swings.
+/// What is NORMAL for me is reported beside it, not pinned to a number: my TYPICAL is the median NSS of
+/// the window's history, and "UNUSUAL FOR ME" is its 95th percentile, held for `unusualMinMinutes`
+/// (see `lastEpisode`). So a stressful stretch stays high on the scale AND raises my typical, which is
+/// itself worth seeing; a spike always reads as a spike.
 ///
 /// HONEST LIMITS (also stated wherever the number is shown):
 /// - It measures EXCESS SYMPATHETIC DRIVE, not mental stress as such. Heat, caffeine, digestion, sleep
@@ -58,8 +64,15 @@ public enum NormalizedStress {
     public static let windowSeconds = 300
     /// Minimum HR samples in a window before its mean HR counts (half coverage at 1 Hz).
     public static let minWindowHRSamples = 150
-    /// History the personal model is learned from.
-    public static let modelDays = 14
+    /// History the calm reference is learned from, by default — the long pass's 21-day window. The
+    /// wearer's own setting (`NormalizedStressStore.baselineDaysKey`) overrides it.
+    public static let defaultBaselineDays = 21
+    /// The calm reference: this percentile of HR and SI (and 1 − this of RMSSD) per pace.
+    public static let calmPercentile = 0.10
+    /// NSS points per typical swing (one robust SD of combined excess) above calm.
+    public static let pointsPerSwing = 20.0
+    /// "Unusual for me": this percentile of the window's history NSS.
+    public static let unusualPercentile = 0.95
     /// A pace needs at least this many windows of history (one hour) before it is scored.
     public static let minWindowsPerPace = 12
     /// EMA weight on the new raw value, per 1-minute step.
@@ -70,18 +83,16 @@ public enum NormalizedStress {
     public static let weightHR = 0.40
     public static let weightSI = 0.35
     public static let weightRMSSD = 0.25
-    /// Each z is clamped to ±this before combining.
-    public static let zClamp = 4.0
+    /// Each z is clamped to ±this before combining (five swings fill the scale).
+    public static let zClamp = 5.0
     /// Robust-SD floors, so a very consistent pace cannot turn a tiny wobble into a big z.
     public static let minSdHR = 2.0
     public static let minSdLn = 0.05
-    /// A "high" reading, and how long it must hold to count as an episode. 200/3 is the Stress screen's
-    /// HIGH band (≥ 2.0 of 3) on this scale.
-    public static let highThreshold = 200.0 / 3.0
-    public static let highMinMinutes = 10
+    /// How long readings must hold at or above the "unusual" level to count as an episode.
+    public static let unusualMinMinutes = 10
     /// Pace thresholds in raw strap locomotion ticks per minute (`StepsCounter`, before the per-user
-    /// ticks-per-step calibration). The bins only group like with like: each bin's prediction is MY OWN
-    /// median, so the exact cut points matter far less than they would against population norms.
+    /// ticks-per-step calibration). The bins only group like with like: each bin's reference is MY OWN
+    /// calm state at it, so the exact cut points matter far less than they would against population norms.
     public static let lightTicksPerMin = 5.0
     public static let walkTicksPerMin = 40.0
     public static let briskTicksPerMin = 95.0
@@ -125,8 +136,8 @@ public enum NormalizedStress {
         }
     }
 
-    /// One pace's prediction (medians) and residual spreads (robust SDs). The HRV terms are nil when the
-    /// pace had too few windows with clean beats.
+    /// One pace's CALM reference (HR and SI at the 10th percentile, RMSSD at the 90th) and residual
+    /// spreads (robust SDs). The HRV terms are nil when the pace had too few windows with clean beats.
     public struct PaceBaseline: Codable, Equatable, Sendable {
         public let pace: Pace
         public let windows: Int
@@ -157,19 +168,20 @@ public enum NormalizedStress {
         public let raw: Double
         public let pace: Pace
         public let hr: Double
-        public let hrPred: Double
+        /// My calm heart rate at this pace (the reference the score is measured from).
+        public let hrCalm: Double
         public let zHR: Double
         public let zSI: Double?
         public let zRMSSD: Double?
 
-        public init(ts: Int, nss: Double, raw: Double, pace: Pace, hr: Double, hrPred: Double,
+        public init(ts: Int, nss: Double, raw: Double, pace: Pace, hr: Double, hrCalm: Double,
                     zHR: Double, zSI: Double?, zRMSSD: Double?) {
             self.ts = ts; self.nss = nss; self.raw = raw; self.pace = pace; self.hr = hr
-            self.hrPred = hrPred; self.zHR = zHR; self.zSI = zSI; self.zRMSSD = zRMSSD
+            self.hrCalm = hrCalm; self.zHR = zHR; self.zSI = zSI; self.zRMSSD = zRMSSD
         }
     }
 
-    /// A stretch of high readings.
+    /// A stretch of readings at or above a level (the "unusual for me" episodes).
     public struct Episode: Equatable, Sendable {
         public let startTs: Int
         public let endTs: Int
@@ -236,32 +248,34 @@ public enum NormalizedStress {
 
     // MARK: - The personal model
 
-    /// Medians and robust spreads per pace, from history windows.
+    /// Calm references and robust spreads per pace, from history windows.
     public static func buildModel(_ windows: [Window], days: Int) -> Model {
         var paces: [PaceBaseline] = []
         for pace in Pace.allCases where pace.isScored {
             let ws = windows.filter { $0.pace == pace }
             guard ws.count >= minWindowsPerPace else { continue }
             let hrs = ws.map(\.hr)
-            let hrMed = median(hrs)
             let sis = ws.compactMap(\.lnSI)
             let rms = ws.compactMap(\.lnRMSSD)
-            let siMed = sis.count >= minWindowsPerPace ? median(sis) : nil
-            let rmMed = rms.count >= minWindowsPerPace ? median(rms) : nil
+            let siOK = sis.count >= minWindowsPerPace, rmOK = rms.count >= minWindowsPerPace
             paces.append(PaceBaseline(
                 pace: pace, windows: ws.count,
-                hr: hrMed, sdHR: max(minSdHR, robustSD(hrs, around: hrMed)),
-                lnSI: siMed, sdSI: siMed.map { max(minSdLn, robustSD(sis, around: $0)) },
-                lnRMSSD: rmMed, sdRMSSD: rmMed.map { max(minSdLn, robustSD(rms, around: $0)) }))
+                hr: percentile(hrs, calmPercentile) ?? median(hrs),
+                sdHR: max(minSdHR, robustSD(hrs, around: median(hrs))),
+                lnSI: siOK ? percentile(sis, calmPercentile) : nil,
+                sdSI: siOK ? max(minSdLn, robustSD(sis, around: median(sis))) : nil,
+                lnRMSSD: rmOK ? percentile(rms, 1 - calmPercentile) : nil,
+                sdRMSSD: rmOK ? max(minSdLn, robustSD(rms, around: median(rms))) : nil))
         }
         return Model(paces: paces, days: days)
     }
 
     // MARK: - Steps 2 and 3: residuals and the score
 
-    /// One window's unsmoothed NSS and its residual z's, or nil when its pace is unscored or unmodelled.
+    /// One window's unsmoothed NSS and its residual z's above calm, or nil when its pace is unscored or
+    /// unmodelled.
     public static func score(_ w: Window, model: Model)
-        -> (raw: Double, hrPred: Double, zHR: Double, zSI: Double?, zRMSSD: Double?)? {
+        -> (raw: Double, hrCalm: Double, zHR: Double, zSI: Double?, zRMSSD: Double?)? {
         guard w.pace.isScored, let b = model.baseline(for: w.pace) else { return nil }
         func clampZ(_ z: Double) -> Double { min(max(z, -zClamp), zClamp) }
         let zHR = clampZ((w.hr - b.hr) / b.sdHR)
@@ -273,7 +287,7 @@ public enum NormalizedStress {
         var weight = weightHR
         if let z = zSI { sum += weightSI * z; weight += weightSI }
         if let z = zRMSSD { sum += weightRMSSD * z; weight += weightRMSSD }
-        let raw = min(max(50 + 15 * (sum / weight), 0), 100)
+        let raw = min(max(pointsPerSwing * (sum / weight), 0), 100)
         return (raw, b.hr, zHR, zSI, zRMSSD)
     }
 
@@ -291,27 +305,27 @@ public enum NormalizedStress {
             }
             last = (w.endTs, value)
             out.append(Reading(ts: w.endTs, nss: value, raw: s.raw, pace: w.pace, hr: w.hr,
-                               hrPred: s.hrPred, zHR: s.zHR, zSI: s.zSI, zRMSSD: s.zRMSSD))
+                               hrCalm: s.hrCalm, zHR: s.zHR, zSI: s.zSI, zRMSSD: s.zRMSSD))
         }
         return out
     }
 
-    /// The most recent stretch of readings at or above `highThreshold` lasting at least
-    /// `highMinMinutes` (consecutive readings at most two minutes apart), or nil.
-    public static func lastHighEpisode(_ readings: [Reading]) -> Episode? {
+    /// The most recent stretch of readings at or above `threshold` lasting at least
+    /// `unusualMinMinutes` (consecutive readings at most two minutes apart), or nil.
+    public static func lastEpisode(_ readings: [Reading], threshold: Double) -> Episode? {
         var best: Episode?
         var runStart: Reading?
         var runPeak: Reading?
         var prev: Reading?
         func close() {
             if let s = runStart, let p = runPeak, let e = prev,
-               e.ts - s.ts + 60 >= highMinMinutes * 60 {
+               e.ts - s.ts + 60 >= unusualMinMinutes * 60 {
                 best = Episode(startTs: s.ts - 60, endTs: e.ts, peak: p)
             }
             runStart = nil; runPeak = nil
         }
         for r in readings {
-            if r.nss >= highThreshold {
+            if r.nss >= threshold {
                 if let p = prev, runStart != nil, r.ts - p.ts > 120 { close() }
                 if runStart == nil { runStart = r }
                 if runPeak == nil || r.nss > runPeak!.nss { runPeak = r }
@@ -337,6 +351,15 @@ public enum NormalizedStress {
             return lo
         }
         return sorted[lowerBound(from)..<lowerBound(to)]
+    }
+
+    /// The `p` quantile (0…1) by linear interpolation between order statistics, or nil when empty.
+    public static func percentile(_ xs: [Double], _ p: Double) -> Double? {
+        let s = xs.sorted()
+        guard !s.isEmpty else { return nil }
+        let pos = min(max(p, 0), 1) * Double(s.count - 1)
+        let lo = Int(pos.rounded(.down)), hi = Int(pos.rounded(.up))
+        return s[lo] + (s[hi] - s[lo]) * (pos - Double(lo))
     }
 
     static func median(_ xs: [Double]) -> Double {

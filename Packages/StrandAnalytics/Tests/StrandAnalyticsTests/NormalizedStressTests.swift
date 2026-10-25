@@ -6,7 +6,8 @@ import WhoopProtocol
 /// signal; the validation the type doc asks for is on-device, against known moments. What these do
 /// insist on, per the derived-signal rule: the score TRACKS a varying input — several injected excess
 /// heart rates map to several distinct, ordered scores — and movement is EXPLAINED rather than read as
-/// stress (a usual walking heart rate scores the same 50 as a usual still one).
+/// stress (a usual walking heart rate scores the same as a usual still one). 261024d: measured from a
+/// calm reference (the calm tenth per pace) on a fixed 20-points-per-swing scale.
 final class NormalizedStressTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -41,17 +42,28 @@ final class NormalizedStressTests: XCTestCase {
         XCTAssertEqual(NormalizedStress.pace(steps: [], activity: still), .still)
     }
 
-    // MARK: - Model
+    // MARK: - Model (261024d: a CALM reference per pace)
 
-    func testTheModelIsMedianAndRobustSpreadPerPace() {
+    func testTheReferenceIsTheCalmTenthNotTheMedian() {
         let model = NormalizedStress.buildModel(history(.still, center: 62) + history(.walk, center: 98),
-                                                days: 14)
+                                                days: 21)
         let still = model.baseline(for: .still)!
-        XCTAssertEqual(still.hr, 62, accuracy: 1e-9)
-        XCTAssertEqual(model.baseline(for: .walk)!.hr, 98, accuracy: 1e-9)
+        // 21 values from 58 to 66 in 0.4 steps: the 10th percentile sits at index 2, 58.8.
+        XCTAssertEqual(still.hr, 58.8, accuracy: 1e-9)
+        XCTAssertEqual(model.baseline(for: .walk)!.hr, 94.8, accuracy: 1e-9)
         XCTAssertGreaterThanOrEqual(still.sdHR, NormalizedStress.minSdHR)
         XCTAssertNil(model.baseline(for: .brisk), "a pace with no history is not modelled")
         XCTAssertNil(still.lnSI, "no SI history, no SI term")
+    }
+
+    /// The maintainer's case: mostly-stressed history still yields a calm reference — the calm tenth.
+    func testAMostlyStressedWindowStillHasACalmReference() {
+        let calm = (0..<5).map { w($0 * 300, .still, hr: 60) }
+        let stressed = (5..<40).map { w($0 * 300, .still, hr: 80) }
+        let model = NormalizedStress.buildModel(calm + stressed, days: 21)
+        XCTAssertEqual(model.baseline(for: .still)!.hr, 60, accuracy: 1e-9)
+        XCTAssertGreaterThan(NormalizedStress.score(w(0, .still, hr: 80), model: model)!.raw, 50,
+                             "the stressed state reads as stressed, not as the new normal")
     }
 
     func testTooLittleHistoryLeavesAPaceUnmodelled() {
@@ -61,29 +73,43 @@ final class NormalizedStressTests: XCTestCase {
         XCTAssertNil(NormalizedStress.score(w(0, .still, hr: 80), model: model))
     }
 
+    func testPercentileInterpolates() {
+        XCTAssertEqual(NormalizedStress.percentile([1, 2, 3, 4, 5], 0.5), 3)
+        XCTAssertEqual(NormalizedStress.percentile([1, 2, 3, 4, 5], 0.1)!, 1.4, accuracy: 1e-9)
+        XCTAssertNil(NormalizedStress.percentile([], 0.5))
+    }
+
     // MARK: - Score: tracks the input, and movement is explained
 
-    func testUsualHeartRateScoresFiftyWhetherStillOrWalking() {
+    func testCalmScoresZeroAndTheSameExcessScoresTheSameAtAnyPace() {
         let model = NormalizedStress.buildModel(history(.still, center: 62) + history(.walk, center: 98),
-                                                days: 14)
-        XCTAssertEqual(NormalizedStress.score(w(0, .still, hr: 62), model: model)!.raw, 50, accuracy: 1e-9)
-        // A walking heart rate of 98 would be "36 above resting" to a still-only rule; here it is usual.
-        XCTAssertEqual(NormalizedStress.score(w(0, .walk, hr: 98), model: model)!.raw, 50, accuracy: 1e-9)
+                                                days: 21)
+        for pace in [NormalizedStress.Pace.still, .walk] {
+            let b = model.baseline(for: pace)!
+            XCTAssertEqual(NormalizedStress.score(w(0, pace, hr: b.hr), model: model)!.raw, 0, accuracy: 1e-9)
+            XCTAssertEqual(NormalizedStress.score(w(0, pace, hr: b.hr - 5), model: model)!.raw, 0,
+                           "below calm clamps at 0")
+        }
+        // A usual (median) walk and a usual still minute score the same: the walk is explained.
+        let still = NormalizedStress.score(w(0, .still, hr: 62), model: model)!.raw
+        let walk = NormalizedStress.score(w(0, .walk, hr: 98), model: model)!.raw
+        XCTAssertEqual(still, walk, accuracy: 1e-9)
+        XCTAssertGreaterThan(still, 0)
     }
 
     func testSeveralInjectedExcessesGiveSeveralOrderedScores() {
         let model = NormalizedStress.buildModel(history(.still, center: 62) + history(.walk, center: 98),
-                                                days: 14)
+                                                days: 21)
         for pace in [NormalizedStress.Pace.still, .walk] {
             let b = model.baseline(for: pace)!
-            // HR-only windows: raw = 50 + 15 × zHR exactly (the weight renormalises to HR alone).
-            let scores = [0.0, 1.0, 2.0, -1.0].map { k in
+            // HR-only windows: raw = 20 × zHR exactly (the weight renormalises to HR alone).
+            let scores = [0.0, 1.0, 2.0, 3.0].map { k in
                 NormalizedStress.score(w(0, pace, hr: b.hr + k * b.sdHR), model: model)!.raw
             }
-            XCTAssertEqual(scores[0], 50, accuracy: 1e-9)
-            XCTAssertEqual(scores[1], 65, accuracy: 1e-9)
-            XCTAssertEqual(scores[2], 80, accuracy: 1e-9)
-            XCTAssertEqual(scores[3], 35, accuracy: 1e-9)
+            XCTAssertEqual(scores[0], 0, accuracy: 1e-9)
+            XCTAssertEqual(scores[1], 20, accuracy: 1e-9)
+            XCTAssertEqual(scores[2], 40, accuracy: 1e-9)
+            XCTAssertEqual(scores[3], 60, accuracy: 1e-9)
         }
     }
 
@@ -93,62 +119,62 @@ final class NormalizedStressTests: XCTestCase {
             let d = Double(i - 10) / 10   // −1 … +1
             hist.append(w(i * 300, .still, hr: 62 + 4 * d, si: 4 + 0.2 * d, rmssd: 3.5 + 0.2 * d))
         }
-        let model = NormalizedStress.buildModel(hist, days: 14)
+        let model = NormalizedStress.buildModel(hist, days: 21)
         let b = model.baseline(for: .still)!
-        // +1 SD on every term in the stressed direction: SI UP, RMSSD DOWN.
+        // +1 SD above calm on every term in the stressed direction: SI UP, RMSSD DOWN.
         let s = NormalizedStress.score(
             w(0, .still, hr: b.hr + b.sdHR, si: b.lnSI! + b.sdSI!, rmssd: b.lnRMSSD! - b.sdRMSSD!), model: model)!
         XCTAssertEqual(s.zHR, 1, accuracy: 1e-9)
         XCTAssertEqual(s.zSI!, 1, accuracy: 1e-9)
         XCTAssertEqual(s.zRMSSD!, 1, accuracy: 1e-9)
-        XCTAssertEqual(s.raw, 65, accuracy: 1e-9)
-        // Only HRV lower than usual (heart rate usual): 50 + 15 × 0.25 / 1.0.
+        XCTAssertEqual(s.raw, 20, accuracy: 1e-9)
+        // Only HRV lower than calm (heart rate and SI at calm): 20 × 0.25 / 1.0.
         let hrvOnly = NormalizedStress.score(
             w(0, .still, hr: b.hr, si: b.lnSI!, rmssd: b.lnRMSSD! - b.sdRMSSD!), model: model)!
-        XCTAssertEqual(hrvOnly.raw, 50 + 15 * 0.25, accuracy: 1e-9)
+        XCTAssertEqual(hrvOnly.raw, 20 * 0.25, accuracy: 1e-9)
     }
 
     func testRunningIsNotScoredAndArtifactsAreClamped() {
-        let model = NormalizedStress.buildModel(history(.still, center: 62), days: 14)
+        let model = NormalizedStress.buildModel(history(.still, center: 62), days: 21)
         XCTAssertNil(NormalizedStress.score(w(0, .run, hr: 170), model: model))
         let wild = NormalizedStress.score(w(0, .still, hr: 200), model: model)!
         XCTAssertEqual(wild.zHR, NormalizedStress.zClamp)
-        XCTAssertEqual(wild.raw, 100, "50 + 15 × 4 clamps at the top of the scale")
+        XCTAssertEqual(wild.raw, 100, "20 × 5 is the top of the scale")
     }
 
     // MARK: - Smoothing and episodes
 
     func testTheEMASmoothsAndRestartsAfterAGap() {
-        let model = NormalizedStress.buildModel(history(.still, center: 62), days: 14)
+        let model = NormalizedStress.buildModel(history(.still, center: 62), days: 21)
         let b = model.baseline(for: .still)!
         let windows = [w(1_000, .still, hr: b.hr), w(1_060, .still, hr: b.hr + 2 * b.sdHR),
                        w(1_060 + 3_600, .still, hr: b.hr + 2 * b.sdHR)]
         let r = NormalizedStress.readings(windows, model: model)
-        XCTAssertEqual(r[0].nss, 50, accuracy: 1e-9)
-        XCTAssertEqual(r[1].nss, 0.2 * 80 + 0.8 * 50, accuracy: 1e-9, "one step towards the jump")
-        XCTAssertEqual(r[2].nss, 80, accuracy: 1e-9, "an hour's gap restarts the average")
+        XCTAssertEqual(r[0].nss, 0, accuracy: 1e-9)
+        XCTAssertEqual(r[1].nss, 0.2 * 40, accuracy: 1e-9, "one step towards the jump")
+        XCTAssertEqual(r[2].nss, 40, accuracy: 1e-9, "an hour's gap restarts the average")
     }
 
-    func testALongEnoughHighStretchIsAnEpisodeAndAShortOneIsNot() {
+    func testALongEnoughStretchAboveTheLevelIsAnEpisodeAndAShortOneIsNot() {
         func readings(_ values: [Double], from start: Int) -> [NormalizedStress.Reading] {
             values.enumerated().map { i, v in
-                .init(ts: start + i * 60, nss: v, raw: v, pace: .still, hr: 70, hrPred: 62,
+                .init(ts: start + i * 60, nss: v, raw: v, pace: .still, hr: 70, hrCalm: 62,
                       zHR: 1, zSI: nil, zRMSSD: nil)
             }
         }
-        let long = readings([50] + Array(repeating: 75, count: 6) + [82] + Array(repeating: 72, count: 4) + [55],
+        let long = readings([30] + Array(repeating: 55, count: 6) + [62] + Array(repeating: 52, count: 4) + [35],
                             from: 10_000)
-        let e = NormalizedStress.lastHighEpisode(long)!
-        XCTAssertEqual(e.peak.nss, 82)
+        let e = NormalizedStress.lastEpisode(long, threshold: 50)!
+        XCTAssertEqual(e.peak.nss, 62)
         XCTAssertEqual(e.endTs - e.startTs, 11 * 60)
-        XCTAssertNil(NormalizedStress.lastHighEpisode(readings([50] + Array(repeating: 75, count: 8) + [50],
-                                                               from: 10_000)), "8 minutes is not 10")
+        XCTAssertNil(NormalizedStress.lastEpisode(readings([30] + Array(repeating: 55, count: 8) + [30],
+                                                           from: 10_000), threshold: 50), "8 minutes is not 10")
     }
 
     // MARK: - From streams
 
     /// End to end on synthetic streams: still at 62 bpm, walking (70 ticks/min) at 98 bpm. The model
-    /// learns both; a usual walk then scores ~50 and a walk 12 bpm hotter scores clearly higher.
+    /// learns both; a usual walk then scores near calm and a walk 12 bpm hotter scores clearly higher.
     func testStreamsToWindowsToAScoreThatExplainsTheWalk() {
         func day(_ dayStart: Int, walkHR: Int) -> (hr: [HRSample], steps: [StepSample]) {
             var hr: [HRSample] = []
@@ -174,7 +200,7 @@ final class NormalizedStressTests: XCTestCase {
         }
         XCTAssertTrue(history.contains { $0.pace == .walk } && history.contains { $0.pace == .still })
         let model = NormalizedStress.buildModel(history, days: 3)
-        XCTAssertEqual(model.baseline(for: .walk)!.hr, 98, accuracy: 1.5)
+        XCTAssertEqual(model.baseline(for: .walk)!.hr, 98, accuracy: 1.5, "a steady walk's calm tenth is ~its level")
         let today = 10 * 86_400
         let usual = day(today, walkHR: 98), hot = day(today, walkHR: 110)
         let usualWalk = NormalizedStress.windows(from: today + 5_400, to: today + 5_700, stepSeconds: 300,
@@ -184,7 +210,7 @@ final class NormalizedStressTests: XCTestCase {
         let usualScore = NormalizedStress.score(usualWalk[0], model: model)!.raw
         let hotScore = NormalizedStress.score(hotWalk[0], model: model)!.raw
         XCTAssertEqual(usualWalk[0].pace, .walk)
-        XCTAssertEqual(usualScore, 50, accuracy: 8)
-        XCTAssertGreaterThan(hotScore, usualScore + 20)
+        XCTAssertLessThan(usualScore, 20, "a usual walk sits near calm, not high")
+        XCTAssertGreaterThan(hotScore, usualScore + 40)
     }
 }

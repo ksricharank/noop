@@ -4,8 +4,9 @@ import WidgetKit
 
 /// Square home-screen widget: today's NSS (Normalized Stress Score), moving through the day (261024c).
 ///
-/// The number is NSS now, out of 100 (50 = the wearer's usual for the pace they were at), with today's
-/// average beside it and today's curve beneath. It reads `WidgetSnapshot`'s NSS fields, which the app
+/// The number is NSS now, out of 100 (261024d: 0 = the wearer's calm state for the pace they were at,
+/// 20 points a swing above it), with their TYPICAL beside it and today's curve beneath over a dashed
+/// line at that typical. It reads `WidgetSnapshot`'s NSS fields, which the app
 /// publishes after every quick pass from `NormalizedStressStore` — the same snapshot the Stress tab and
 /// the Today card show, so the three agree. The curve reuses the stress widget's geometry
 /// (`StressTrace`, `StressCurveShape`) with NSS mapped onto its fixed domain, so a gap is a gap and the
@@ -45,6 +46,7 @@ struct NSSWidgetView: View {
     /// The figures, only for today: a snapshot from a finished day shows nothing rather than yesterday.
     private var now: Int? { points.isEmpty ? nil : entry.snap?.nssNow }
     private var mean: Int? { points.isEmpty ? nil : entry.snap?.nssMean }
+    private var typical: Int? { points.isEmpty ? nil : entry.snap?.nssTypical }
 
     private var calm: Color { StrandPalette.accent }
     private var steady: Color { StrandPalette.statusPositive }
@@ -70,7 +72,11 @@ struct NSSWidgetView: View {
                         .foregroundStyle(StrandPalette.textSecondary)
                 }
             }
-            if let mean {
+            if let typical {
+                Text("typical \(typical)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(StrandPalette.textSecondary)
+            } else if let mean {
                 Text("avg \(mean)")
                     .font(.system(size: 11))
                     .foregroundStyle(StrandPalette.textSecondary)
@@ -82,15 +88,17 @@ struct NSSWidgetView: View {
             Spacer(minLength: 2)
             if series.contains(where: { $0.level != nil }) {
                 ZStack {
-                    // The usual-for-your-activity line at 50.
-                    GeometryReader { geo in
-                        Path { p in
-                            let y = geo.size.height / 2
-                            p.move(to: CGPoint(x: 0, y: y))
-                            p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                    // The wearer's typical, dashed, when there is one.
+                    if let typical {
+                        GeometryReader { geo in
+                            Path { p in
+                                let y = geo.size.height * (1 - CGFloat(min(max(typical, 0), 100)) / 100)
+                                p.move(to: CGPoint(x: 0, y: y))
+                                p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                            }
+                            .stroke(StrandPalette.textSecondary.opacity(0.35),
+                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                         }
-                        .stroke(StrandPalette.textSecondary.opacity(0.35),
-                                style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                     }
                     StressCurveShape(series: series, filled: true)
                         .fill(LinearGradient(colors: [steady.opacity(0.3), steady.opacity(0)],
@@ -110,6 +118,7 @@ struct NSSWidgetView: View {
 
     private var accessibilityText: String {
         guard let now else { return String(localized: "NSS, no reading today") }
+        if let typical { return String(localized: "NSS \(now) of 100, your typical \(typical)") }
         guard let mean else { return String(localized: "NSS \(now) of 100") }
         return String(localized: "NSS \(now) of 100, today's average \(mean)")
     }

@@ -47,6 +47,8 @@ public struct WidgetSnapshot: Codable, Equatable {
     public var nssDay: Int?
     public var nssNow: Int?
     public var nssMean: Int?
+    /// 261024d: the wearer's typical NSS over the baseline window — the widget's dashed reference.
+    public var nssTypical: Int?
     // The daily-targets glance trio (260830) — the fields behind the NOOP Targets widget, built for
     // running WITHOUT the Live Activity: the strap streams only overnight, and daytime data arrives
     // as ~15-minute offload bursts, so these are burst-cadence values, not live ones. Same optional
@@ -88,7 +90,7 @@ public struct WidgetSnapshot: Codable, Equatable {
                 sleepNeedMin: Int? = nil, steps: Int? = nil, stepsTarget: Int? = nil,
                 waterHalfCups: Int? = nil, waterTargetCups: Int? = nil,
                 nssSeries: [NSSPoint]? = nil, nssDay: Int? = nil, nssNow: Int? = nil,
-                nssMean: Int? = nil) {
+                nssMean: Int? = nil, nssTypical: Int? = nil) {
         self.recovery = recovery
         self.bpm = bpm
         self.batteryPct = batteryPct
@@ -115,6 +117,7 @@ public struct WidgetSnapshot: Codable, Equatable {
         self.nssDay = nssDay
         self.nssNow = nssNow
         self.nssMean = nssMean
+        self.nssTypical = nssTypical
     }
 
     /// Today's NSS curve, or empty when what was published belongs to a day that is over — the same

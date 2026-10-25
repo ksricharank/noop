@@ -40,6 +40,8 @@ struct StressView: View {
     @EnvironmentObject var repo: Repository
     /// 261024: NSS, the same snapshot the Today card and the coach read.
     @ObservedObject private var nss = NormalizedStressStore.shared
+    /// 261024d: the NSS baseline window, as typed on the method card (free-form, applied on submit).
+    @State private var baselineDaysText = "\(NormalizedStressStore.baselineDays)"
 
     /// The stored 0–3 stress series ("my-whoop"), oldest→newest. Empty → derive.
     @State private var storedSeries: [(day: String, value: Double)] = []
@@ -278,7 +280,7 @@ struct StressView: View {
                                 .foregroundStyle(StressRamp.color(NSSCard.level(peak.nss)))
                         }
                     }
-                    DaytimeLoadLine(hours: points)
+                    DaytimeLoadLine(hours: points, referenceLevel: snap.typical.map(NSSCard.level))
                     if let lo = points.first?.hour, let hi = points.last?.hour {
                         HStack {
                             Text(hourLabel(lo)).font(StrandFont.footnote)
@@ -293,13 +295,13 @@ struct StressView: View {
                     }
                     Divider().overlay(StrandPalette.hairline)
                     StressTotalsBar(totals: StressTotals(nssReadings: snap.readings))
-                    Text("Each point is the last 5 minutes against your usual at the pace you were moving. Gaps are times with too little heart rate, running, or a pace without enough history yet.")
+                    Text("Each point is the last 5 minutes measured up from your calm state at the pace you were moving; the dashed line is your typical. Gaps are times with too little heart rate, running, or a pace without enough history yet.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if let e = snap.lastHigh, let c = snap.current, e.endTs == c.ts {
+            if let e = snap.lastUnusual, let c = snap.current, e.endTs == c.ts {
                 nssBreatheCard(minutes: (e.endTs - e.startTs) / 60)
             }
         }
@@ -312,11 +314,11 @@ struct StressView: View {
                 HStack(spacing: NoopMetrics.rowSpacing) {
                     Image(systemName: "lungs.fill")
                         .foregroundStyle(StressRamp.calm)
-                    Text("Sustained high stress").strandOverline()
+                    Text("Unusual stress for you").strandOverline()
                     Spacer()
-                    StatePill("\(Self.minutesLabel(minutes)) high", tone: .warning, showsDot: true)
+                    StatePill("\(Self.minutesLabel(minutes))", tone: .warning, showsDot: true)
                 }
-                Text("Your NSS has stayed high for \(Self.minutesLabel(minutes)), beyond what your activity explains. A few minutes of paced breathing can help downshift your nervous system.")
+                Text("Your NSS has stayed in your top 5% for \(Self.minutesLabel(minutes)), beyond what your activity explains. A few minutes of paced breathing can help downshift your nervous system.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -746,22 +748,66 @@ struct StressView: View {
                 Text("NSS — stress beyond what your activity explains.")
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("From your last 14 days, NOOP learns your usual heart rate, HRV and beat pattern at each pace — still, pottering, walking, brisk walking, moving without steps. Every 5 minutes it compares you with your usual at the pace you are moving at: a heart working harder and HRV lower than that pace explains push NSS up. 50 is your usual; each 15 points is one typical swing. Running isn't scored, because near full effort stress and exertion can't be told apart.")
+                Text("NOOP learns your CALM state at each pace — still, pottering, walking, brisk walking, moving without steps — from your calmest 10% of moments over the baseline window: the lowest heart rate and the highest HRV you typically reach at that pace. Even if most of the window was stressful, those moments are still calm. Every 5 minutes it measures how far above that calm state you are: 0 is calm, each 20 points is one typical swing above it. Running isn't scored, because near full effort stress and exertion can't be told apart.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("It measures excess strain on your nervous system, not mental stress alone: heat, caffeine, a meal, poor sleep, illness and talking raise it too. Experimental — it updates on every strap sync. The resting HR and HRV markers are last night's, against your 30-day baseline.")
+                Text("Your typical is the middle of your NSS over the window, and unusual is your top 5%. They are shown beside the number rather than built into it, so a stressful stretch still reads high. It measures excess strain on your nervous system, not mental stress alone: heat, caffeine, a meal, poor sleep, illness and talking raise it too. Experimental. The resting HR and HRV markers are last night's, against your 30-day baseline.")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(StrandPalette.hairline)
+                baselineWindowRow
+                Divider().overlay(StrandPalette.hairline)
                 HStack(spacing: 0) {
-                    bandLegend("0-33", String(localized: "LOW"), StressRamp.calm)
-                    bandLegend("33-67", String(localized: "MEDIUM"), StressRamp.steady)
-                    bandLegend("67-100", String(localized: "HIGH"), StressRamp.tense)
+                    bandLegend("0-33", String(localized: "NEAR CALM"), StressRamp.calm)
+                    bandLegend("33-67", String(localized: "ABOVE CALM"), StressRamp.steady)
+                    bandLegend("67-100", String(localized: "FAR ABOVE"), StressRamp.tense)
                 }
             }
         }
+    }
+
+    /// 261024d: the NSS baseline window, free-form (maintainer: "make the window parameter free form
+    /// that I can enter"), default 21 days. Applied on submit; a changed window re-reads now, and a
+    /// longer one backfills its extra days a day or two per update.
+    private var baselineWindowRow: some View {
+        HStack(spacing: NoopMetrics.space2) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Baseline window")
+                    .font(StrandFont.body)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text("Days of history your calm state, typical and unusual are learned from (\(NormalizedStressStore.baselineDaysRange.lowerBound)–\(NormalizedStressStore.baselineDaysRange.upperBound); default \(NormalizedStress.defaultBaselineDays)).")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            TextField("\(NormalizedStress.defaultBaselineDays)", text: $baselineDaysText)
+                .font(StrandFont.bodyNumber)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 56)
+                #if os(iOS)
+                .keyboardType(.numberPad)
+                #endif
+                .onSubmit { applyBaselineDays() }
+            Text("days")
+                .font(StrandFont.footnote)
+                .foregroundStyle(StrandPalette.textTertiary)
+            Button("Apply") { applyBaselineDays() }
+                .font(StrandFont.footnote)
+                .tint(StrandPalette.accent)
+        }
+    }
+
+    private func applyBaselineDays() {
+        guard let n = Int(baselineDaysText.trimmingCharacters(in: .whitespaces)) else {
+            baselineDaysText = "\(NormalizedStressStore.baselineDays)"
+            return
+        }
+        NormalizedStressStore.baselineDays = n
+        baselineDaysText = "\(NormalizedStressStore.baselineDays)"   // reflect the clamped value
+        Task { await NormalizedStressStore.shared.baselineDaysChanged(repo: repo, log: { ScreenLedger.log($0) }) }
     }
 
     private func bandLegend(_ range: String, _ label: String, _ color: Color) -> some View {
@@ -1105,6 +1151,9 @@ enum StressMath {
 
 struct DaytimeLoadLine: View {
     let hours: [DaytimeStress.HourPoint]
+    /// The dashed reference, on the 0–3 scale: 1.5 (baseline) for the 0–3 timeline; for NSS (261024d)
+    /// the wearer's TYPICAL at NSS × 3/100, or none while there is no typical yet.
+    var referenceLevel: Double? = 1.5
 
     private let chartHeight: CGFloat = 78
 
@@ -1122,13 +1171,15 @@ struct DaytimeLoadLine: View {
             let runs = scoredRuns(width: w, height: h)
 
             ZStack {
-                // Baseline (1.5 of 3) reference line.
-                Path { p in
-                    let yb = y(1.5)
-                    p.move(to: CGPoint(x: 0, y: yb))
-                    p.addLine(to: CGPoint(x: w, y: yb))
+                // Reference line: the 0–3 baseline (1.5), or the wearer's NSS typical.
+                if let referenceLevel {
+                    Path { p in
+                        let yb = y(referenceLevel)
+                        p.move(to: CGPoint(x: 0, y: yb))
+                        p.addLine(to: CGPoint(x: w, y: yb))
+                    }
+                    .stroke(StrandPalette.hairline, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
-                .stroke(StrandPalette.hairline, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                 // The ramp runs DOWN the chart, not across the day.
                 //

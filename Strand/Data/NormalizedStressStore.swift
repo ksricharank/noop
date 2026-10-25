@@ -34,8 +34,9 @@ final class NormalizedStressStore: ObservableObject {
         var readings: [NormalizedStress.Reading]
         /// Mean NSS over today's readings.
         var dayMean: Double?
-        /// Today's most recent high episode.
-        var lastHigh: NormalizedStress.Episode?
+        /// Today's most recent "unusual for me" episode: NSS at or above `unusualLevel` for at least
+        /// `NormalizedStress.unusualMinMinutes` (261024d; it was "high" at a fixed 67).
+        var lastUnusual: NormalizedStress.Episode?
         /// How much history the model learned from.
         var modelDays: Int
         var modelWindows: Int
@@ -48,8 +49,15 @@ final class NormalizedStressStore: ObservableObject {
         /// Daily average NSS by "yyyy-MM-dd", today included — the Stress tab's trend, the Markers
         /// sparkline and the Insights tab's NSS trend all read this one map (261024b).
         var dailyByDay: [String: Double] = [:]
+        /// 261024d: what is normal for ME over the baseline window, beside the fixed scale — my TYPICAL
+        /// (the median NSS of the window's history windows) and the level that is UNUSUAL for me (their
+        /// 95th percentile). Nil until the history holds enough scored windows to say.
+        var typical: Double?
+        var unusualLevel: Double?
+        /// The baseline window in force, in days.
+        var baselineDays: Int = NormalizedStress.defaultBaselineDays
 
-        static let empty = Snapshot(current: nil, readings: [], dayMean: nil, lastHigh: nil,
+        static let empty = Snapshot(current: nil, readings: [], dayMean: nil, lastUnusual: nil,
                                     modelDays: 0, modelWindows: 0, modelledPaces: [], computedAt: 0,
                                     unscoredNow: nil)
     }
@@ -62,6 +70,30 @@ final class NormalizedStressStore: ObservableObject {
     /// A foreground surface re-reads only when the last update is older than this.
     static let staleAfter: TimeInterval = 240
 
+    /// 261024d: the baseline window — how many past days the calm reference, my typical and my
+    /// "unusual" level are learned from. Free-form on the Stress tab; default 21 (the long pass's
+    /// window), bounded to `baselineDaysRange` so a typo cannot ask for a year of backfill.
+    static let baselineDaysKey = "nss.baselineDays"
+    static let baselineDaysRange = 3...180
+
+    static var baselineDays: Int {
+        get {
+            let v = UserDefaults.standard.integer(forKey: baselineDaysKey)
+            return v > 0 ? min(max(v, baselineDaysRange.lowerBound), baselineDaysRange.upperBound)
+                : NormalizedStress.defaultBaselineDays
+        }
+        set {
+            UserDefaults.standard.set(min(max(newValue, baselineDaysRange.lowerBound), baselineDaysRange.upperBound),
+                                      forKey: baselineDaysKey)
+        }
+    }
+
+    /// Fewest scored history windows before a typical and an unusual level are reported (a day's worth).
+    static let minWindowsForTypical = 100
+
+    /// The scale version the stored daily averages were computed on; a different one drops them.
+    static let scaleVersion = 2
+
     private struct Persisted: Codable {
         var version = 1
         /// Past days' 5-minute windows, keyed "yyyy-MM-dd". An EMPTY array marks a day already read that
@@ -69,6 +101,8 @@ final class NormalizedStressStore: ObservableObject {
         var history: [String: [NormalizedStress.Window]] = [:]
         var todayKey = ""
         var today: [NormalizedStress.Window] = []
+        /// 261024d: the scale `daily` was computed on (nil = the 261024 median-centred scale).
+        var scale: Int?
         /// 261024b: daily average NSS, kept for `dailyHistoryDays` — longer than the 14-day window
         /// history, so a trend outlives the windows it was scored from. Optional so a file written
         /// before it existed still decodes.
@@ -83,6 +117,12 @@ final class NormalizedStressStore: ObservableObject {
     private var lastUpdate: Date?
 
     private init() {}
+
+    /// The wearer changed the baseline window: re-read now, whatever the cadence says.
+    func baselineDaysChanged(repo: Repository, log: ((String) -> Void)? = nil) async {
+        lastUpdate = nil
+        await update(repo: repo, backfillDays: 2, log: log)
+    }
 
     /// Update unless one ran within `staleAfter`.
     func updateIfStale(repo: Repository, log: ((String) -> Void)? = nil) async {
@@ -101,6 +141,13 @@ final class NormalizedStressStore: ObservableObject {
         let nowTs = Int(now.timeIntervalSince1970)
         let startOfToday = cal.startOfDay(for: now)
         var st = state ?? Self.load() ?? Persisted()
+        if st.scale != Self.scaleVersion {
+            // The 261024d re-cut (calm reference, fixed scale) changes every daily average; the window
+            // features themselves are unchanged and stay.
+            st.daily = [:]
+            st.scale = Self.scaleVersion
+        }
+        let windowDays = Self.baselineDays
 
         let todayKey = Repository.localDayKey(now)
         if st.todayKey != todayKey {
@@ -110,7 +157,7 @@ final class NormalizedStressStore: ObservableObject {
 
         // History: fill missing past days, a few per update.
         var filled = 0
-        for back in 1...NormalizedStress.modelDays where filled < backfillDays {
+        for back in 1...windowDays where filled < backfillDays {
             guard let date = cal.date(byAdding: .day, value: -back, to: startOfToday) else { continue }
             let key = Repository.localDayKey(date)
             guard st.history[key] == nil else { continue }
@@ -120,7 +167,7 @@ final class NormalizedStressStore: ObservableObject {
                                                  from: from, to: to, step: NormalizedStress.windowSeconds)
             filled += 1
         }
-        let keep = Set((1...NormalizedStress.modelDays).compactMap {
+        let keep = Set((1...windowDays).compactMap {
             cal.date(byAdding: .day, value: -$0, to: startOfToday).map(Repository.localDayKey)
         })
         st.history = st.history.filter { keep.contains($0.key) }
@@ -143,6 +190,12 @@ final class NormalizedStressStore: ObservableObject {
         let model = NormalizedStress.buildModel(historyDays.flatMap { $0 }, days: historyDays.count)
         let readings = NormalizedStress.readings(st.today, model: model)
 
+        // What is normal for me over the window: the history windows' own scores (unsmoothed).
+        let historyScores = historyDays.flatMap { $0 }.compactMap { NormalizedStress.score($0, model: model)?.raw }
+        let enough = historyScores.count >= Self.minWindowsForTypical
+        let typical = enough ? NormalizedStress.percentile(historyScores, 0.5) : nil
+        let unusual = enough ? NormalizedStress.percentile(historyScores, NormalizedStress.unusualPercentile) : nil
+
         // Daily averages: the 14 history days re-scored against today's model every update (their
         // 5-minute windows, unsmoothed — the mean of an EMA and of its inputs agree), so the days a
         // trend compares share one model; today from its live readings. A day older than the window
@@ -163,13 +216,14 @@ final class NormalizedStressStore: ObservableObject {
             current: readings.last,
             readings: readings,
             dayMean: todayMean,
-            lastHigh: NormalizedStress.lastHighEpisode(readings),
+            lastUnusual: unusual.flatMap { NormalizedStress.lastEpisode(readings, threshold: $0) },
             modelDays: model.days, modelWindows: model.windowCount,
             modelledPaces: model.paces.map(\.pace), computedAt: nowTs,
             unscoredNow: st.today.last.flatMap { w in
                 w.endTs > (readings.last?.ts ?? Int.min) ? w : nil
             },
-            dailyByDay: daily)
+            dailyByDay: daily,
+            typical: typical, unusualLevel: unusual, baselineDays: windowDays)
         state = st
         lastUpdate = Date()
         Self.save(st)
@@ -180,15 +234,17 @@ final class NormalizedStressStore: ObservableObject {
     /// The `nss:` strap-log line — the validation record the engine's doc asks for: what was scored,
     /// against how much history, and what it cost.
     nonisolated static func logLine(_ s: Snapshot, added: Int, backfilled: Int, ms: Int, now: Int) -> String {
-        let model = "model \(s.modelDays)d/\(s.modelWindows) windows ("
+        let model = "model \(s.modelDays)/\(s.baselineDays)d, \(s.modelWindows) windows ("
             + (s.modelledPaces.isEmpty ? "no pace yet" : s.modelledPaces.map(\.rawValue).joined(separator: ","))
             + ")"
         let cost = "today +\(added) window(s) · backfilled \(backfilled) day(s) · \(ms) ms"
         guard let c = s.current else { return "nss: no reading · \(model) · \(cost)" }
         func z(_ v: Double?) -> String { v.map { String(format: "%.1f", $0) } ?? "—" }
         return "nss: now \(Int(c.nss.rounded())) (raw \(Int(c.raw.rounded())), \(c.pace.rawValue), "
-            + "\(max(0, (now - c.ts) / 60)) min old, hr \(Int(c.hr.rounded())) vs \(Int(c.hrPred.rounded())) usual, "
+            + "\(max(0, (now - c.ts) / 60)) min old, hr \(Int(c.hr.rounded())) vs \(Int(c.hrCalm.rounded())) calm, "
             + "zHR \(z(c.zHR)) zSI \(z(c.zSI)) zRMSSD \(z(c.zRMSSD)))"
+            + " · typical \(s.typical.map { "\(Int($0.rounded()))" } ?? "—")"
+            + " unusual≥\(s.unusualLevel.map { "\(Int($0.rounded()))" } ?? "—")"
             + " · day \(s.dayMean.map { "\(Int($0.rounded()))" } ?? "—") over \(s.readings.count) min"
             + " · \(model) · \(cost)"
     }

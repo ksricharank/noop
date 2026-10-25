@@ -885,7 +885,8 @@ struct LiquidTodayView: View {
                     // 261024b: the Stress tab's timeline is NSS now, so its mirror here is too.
                     let nssPoints = NSSCard.linePoints(nssStore.snapshot.readings)
                     if nssPoints.contains(where: { $0.level != nil }) {
-                        DaytimeLoadLine(hours: nssPoints)
+                        DaytimeLoadLine(hours: nssPoints,
+                                        referenceLevel: nssStore.snapshot.typical.map(NSSCard.level))
                     } else {
                         // The honest blank: only waking hours score and an hour needs enough heart
                         // rate, so early morning is empty by construction rather than by failure.
