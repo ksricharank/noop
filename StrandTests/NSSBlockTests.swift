@@ -34,7 +34,7 @@ final class NSSBlockTests: XCTestCase {
         XCTAssertTrue(lines[0].hasPrefix("NSS — NORMALIZED STRESS (0–100; 0 = my calm state for the pace"), block)
         XCTAssertTrue(lines[0].contains("over the last 21 days"), block)
         XCTAssertEqual(lines[1], "  my normal over the last 21 days: typical 30; unusual for me from 62.")
-        XCTAssertEqual(lines[2], "  now 70 (unusual for me), while walking — heart rate 106 bpm vs my calm 97 at this pace (+9); "
+        XCTAssertEqual(lines[2], "  now 70 (unusual for me — 40 above my typical 30), while walking — heart rate 106 bpm vs my calm 97 at this pace (+9); "
                        + "HRV well below my calm level; beat pattern much more rigid than when calm.")
         XCTAssertTrue(lines[3].hasPrefix("  today: average 50 over 62 scored minutes; every 30 min: 10:30 30 · 11:00 70"), block)
     }
@@ -44,7 +44,7 @@ final class NSSBlockTests: XCTestCase {
         let run = NormalizedStress.Window(endTs: 36_600, pace: .run, hr: 160, lnSI: nil, lnRMSSD: nil)
         let block = AICoachEngine.nssSummary(snapshot(rs, unscored: run), now: 36_660, timeZone: utc)!
         XCTAssertTrue(block.contains("right now I am running — not scored"), block)
-        XCTAssertTrue(block.contains("now 35 (about my typical)"), block)
+        XCTAssertTrue(block.contains("now 35 (a little above my typical — 5 above my typical 30)"), block)
     }
 
     func testAnOldReadingNamesItsAge() {
@@ -81,11 +81,17 @@ final class NSSBlockTests: XCTestCase {
     }
 
     /// The words read a reading against MY normal; before there is one, against the fixed scale.
+    /// 261024g: the words carry the gap, and "about" means within 3 — the maintainer's bullet read
+    /// 18 as "sitting right at" a typical of 27.
     func testBandWordsFollowMyNormalThenTheScale() {
-        XCTAssertEqual(AICoachEngine.nssBandWord(62, typical: 30, unusual: 62), "unusual for me")
-        XCTAssertEqual(AICoachEngine.nssBandWord(41, typical: 30, unusual: 62), "above my typical")
-        XCTAssertEqual(AICoachEngine.nssBandWord(35, typical: 30, unusual: 62), "about my typical")
-        XCTAssertEqual(AICoachEngine.nssBandWord(18, typical: 30, unusual: 62), "calmer than my typical")
+        XCTAssertEqual(AICoachEngine.nssBandWord(62, typical: 30, unusual: 62), "unusual for me — 32 above my typical 30")
+        XCTAssertEqual(AICoachEngine.nssBandWord(41, typical: 30, unusual: 62), "well above my typical — 11 above my typical 30")
+        XCTAssertEqual(AICoachEngine.nssBandWord(35, typical: 30, unusual: 62), "a little above my typical — 5 above my typical 30")
+        XCTAssertEqual(AICoachEngine.nssBandWord(32, typical: 30, unusual: 62), "about my typical 30")
+        XCTAssertEqual(AICoachEngine.nssBandWord(18, typical: 27, unusual: 62),
+                       "a little below my typical, calmer than usual — 9 below my typical 27")
+        XCTAssertEqual(AICoachEngine.nssBandWord(10, typical: 27, unusual: 62),
+                       "well below my typical, calmer than usual — 17 below my typical 27")
         XCTAssertEqual(AICoachEngine.nssBandWord(12, typical: nil, unusual: nil), "close to my calm state")
         XCTAssertEqual(AICoachEngine.nssBandWord(70, typical: nil, unusual: nil), "far above calm")
     }

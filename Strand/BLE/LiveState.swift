@@ -1204,6 +1204,9 @@ public final class LiveState: ObservableObject {
         // starting work that was then thrown away. Silent until a pass runs.
         let rescoreLines = RescoreStats.summaryLines()
         if !rescoreLines.isEmpty { header += rescoreLines.joined(separator: "\n") + "\n" }
+        // 261024g: the wearer's coach prompts — which layer is in force, and the full text of any saved
+        // default or edit — so the next build can read them back and fold them into the built-ins.
+        header += AICoachEngine.promptExportLines().joined(separator: "\n") + "\n"
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
         // for a re-added or second strap. Same redactor, so one export cannot be safe while the other leaks.

@@ -338,21 +338,22 @@ struct CoachSettingsView: View {
                         }
                         .accessibilityLabel("Coach instructions editor")
 
-                    HStack {
-                        Spacer()
-                        Button {
+                    PromptDefaultActions(
+                        title: "coach instructions",
+                        isCustomised: coach.hasCustomSystemPrompt,
+                        hasMyDefault: AICoachEngine.myDefault(AICoachEngine.systemPromptKey) != nil,
+                        onMakeDefault: {
+                            coach.makeMyDefault(promptKey: AICoachEngine.systemPromptKey, text: promptDraft)
+                            promptDraft = coach.customSystemPrompt
+                        },
+                        onRestoreBuiltIn: {
+                            coach.restoreBuiltInDefault(promptKey: AICoachEngine.systemPromptKey)
+                            promptDraft = coach.customSystemPrompt
+                        },
+                        onReset: {
                             coach.resetSystemPrompt()
                             promptDraft = coach.customSystemPrompt
-                        } label: {
-                            Label("Reset to default", systemImage: "arrow.uturn.backward")
-                                .font(StrandFont.footnote)
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(StrandPalette.accent)
-                        .disabled(!coach.hasCustomSystemPrompt)
-                        .accessibilityLabel("Reset coach instructions to default")
-                    }
+                        })
                 }
             }
         }
@@ -420,6 +421,7 @@ struct CoachSettingsView: View {
     /// The differences are the title, the copy, and which accessor trio it reads — everything else
     /// is identical by construction.
     private func promptEditorBar(title: String,
+                                 promptKey: String,
                                  icon: String,
                                  customisedNote: String,
                                  defaultNote: String,
@@ -471,21 +473,22 @@ struct CoachSettingsView: View {
                         .onChangeCompat(of: draft.wrappedValue) { newValue in commit(newValue) }
                         .accessibilityLabel("\(title) editor")
 
-                    HStack {
-                        Spacer()
-                        Button {
+                    PromptDefaultActions(
+                        title: title,
+                        isCustomised: isCustomised,
+                        hasMyDefault: AICoachEngine.myDefault(promptKey) != nil,
+                        onMakeDefault: {
+                            coach.makeMyDefault(promptKey: promptKey, text: draft.wrappedValue)
+                            draft.wrappedValue = current()
+                        },
+                        onRestoreBuiltIn: {
+                            coach.restoreBuiltInDefault(promptKey: promptKey)
+                            draft.wrappedValue = current()
+                        },
+                        onReset: {
                             reset()
                             draft.wrappedValue = current()
-                        } label: {
-                            Label("Reset to default", systemImage: "arrow.uturn.backward")
-                                .font(StrandFont.footnote)
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(StrandPalette.accent)
-                        .disabled(!isCustomised)
-                        .accessibilityLabel("Reset \(title) to default")
-                    }
+                        })
                 }
             }
         }
@@ -494,6 +497,7 @@ struct CoachSettingsView: View {
     private var dayQualityPromptBar: some View {
         promptEditorBar(
             title: "Recap summary instructions",
+            promptKey: AICoachEngine.dayQualityPromptKey,
             icon: "calendar.badge.checkmark",
             customisedNote: "Customised. Your instructions shape the Recap tab's summary.",
             defaultNote: "Edit what the coach says about a finished day on the Recap tab.",
@@ -510,6 +514,7 @@ struct CoachSettingsView: View {
     private var plainLanguagePromptBar: some View {
         promptEditorBar(
             title: "Plain-language instructions",
+            promptKey: AICoachEngine.plainLanguagePromptKey,
             icon: "text.bubble",
             customisedNote: "Customised. Your words set how simply the coach explains things everywhere.",
             defaultNote: "Explain-like-I'm-10 by default. Change the age, or the wording, to suit you.",
@@ -524,6 +529,7 @@ struct CoachSettingsView: View {
     private var insightPromptBar: some View {
         promptEditorBar(
             title: "Daily insight instructions",
+            promptKey: AICoachEngine.insightPromptKey,
             icon: "lightbulb.max",
             customisedNote: "Customised. Your instructions shape the daily insight on the Insights tab.",
             defaultNote: "Edit the one interesting thing the coach surfaces each day on the Insights tab.",
@@ -538,6 +544,7 @@ struct CoachSettingsView: View {
     private var trendsPromptBar: some View {
         promptEditorBar(
             title: "Trend summary instructions",
+            promptKey: AICoachEngine.trendsPromptKey,
             icon: "chart.line.uptrend.xyaxis",
             customisedNote: "Customised. Your instructions shape the Insights tab's trend summary.",
             defaultNote: "Edit the per-metric trend lines on the Insights tab.",
@@ -552,6 +559,7 @@ struct CoachSettingsView: View {
     private var sleepPromptBar: some View {
         promptEditorBar(
             title: "Sleep summary instructions",
+            promptKey: AICoachEngine.sleepPromptKey,
             icon: "bed.double",
             customisedNote: "Customised. Your instructions shape the Sleep tab's summary.",
             defaultNote: "Edit what the coach says about last night on the Sleep tab.",
@@ -610,21 +618,22 @@ struct CoachSettingsView: View {
                         }
                         .accessibilityLabel("Today synthesis instructions editor")
 
-                    HStack {
-                        Spacer()
-                        Button {
+                    PromptDefaultActions(
+                        title: "Today synthesis instructions",
+                        isCustomised: coach.hasCustomSynthesisPrompt,
+                        hasMyDefault: AICoachEngine.myDefault(AICoachEngine.synthesisPromptKey) != nil,
+                        onMakeDefault: {
+                            coach.makeMyDefault(promptKey: AICoachEngine.synthesisPromptKey, text: synthesisPromptDraft)
+                            synthesisPromptDraft = coach.customSynthesisPrompt
+                        },
+                        onRestoreBuiltIn: {
+                            coach.restoreBuiltInDefault(promptKey: AICoachEngine.synthesisPromptKey)
+                            synthesisPromptDraft = coach.customSynthesisPrompt
+                        },
+                        onReset: {
                             coach.resetSynthesisPrompt()
                             synthesisPromptDraft = coach.customSynthesisPrompt
-                        } label: {
-                            Label("Reset to default", systemImage: "arrow.uturn.backward")
-                                .font(StrandFont.footnote)
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(StrandPalette.accent)
-                        .disabled(!coach.hasCustomSynthesisPrompt)
-                        .accessibilityLabel("Reset Today synthesis instructions to default")
-                    }
+                        })
                 }
             }
         }
@@ -692,21 +701,22 @@ struct CoachSettingsView: View {
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    HStack {
-                        Spacer()
-                        Button {
+                    PromptDefaultActions(
+                        title: "notification title instructions",
+                        isCustomised: coach.hasCustomNotificationTitlePrompt,
+                        hasMyDefault: AICoachEngine.myDefault(AICoachEngine.notificationTitlePromptKey) != nil,
+                        onMakeDefault: {
+                            coach.makeMyDefault(promptKey: AICoachEngine.notificationTitlePromptKey, text: notifTitlePromptDraft)
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        },
+                        onRestoreBuiltIn: {
+                            coach.restoreBuiltInDefault(promptKey: AICoachEngine.notificationTitlePromptKey)
+                            notifTitlePromptDraft = coach.customNotificationTitlePrompt
+                        },
+                        onReset: {
                             coach.resetNotificationTitlePrompt()
                             notifTitlePromptDraft = coach.customNotificationTitlePrompt
-                        } label: {
-                            Label("Reset to default", systemImage: "arrow.uturn.backward")
-                                .font(StrandFont.footnote)
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(StrandPalette.accent)
-                        .disabled(!coach.hasCustomNotificationTitlePrompt)
-                        .accessibilityLabel("Reset notification title instructions to default")
-                    }
+                        })
                 }
             }
         }

@@ -98,3 +98,62 @@ struct CoachPromptEditor: View {
         }
     }
 }
+
+/// 261024g: the action row under every coach prompt editor — the maintainer asked to be able to make
+/// an edited prompt THE default, so later builds can read it back (it travels in the strap log, see
+/// `AICoachEngine.promptExportLines`) and fold it in. Three actions over the three prompt layers
+/// (edit → my default → built-in, `AICoachEngine`'s "My default prompts"):
+/// - Make this my default — promotes the current edit; enabled only while there is an edit.
+/// - Restore built-in — drops my default; shown only while one is saved.
+/// - Reset — discards the edit, back to my default when one is saved, else the built-in.
+struct PromptDefaultActions: View {
+    let title: String
+    let isCustomised: Bool
+    let hasMyDefault: Bool
+    let onMakeDefault: () -> Void
+    let onRestoreBuiltIn: () -> Void
+    let onReset: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
+                Button(action: onMakeDefault) {
+                    Label("Make this my default", systemImage: "checkmark.seal")
+                        .font(StrandFont.footnote)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StrandPalette.accent)
+                .disabled(!isCustomised)
+                .accessibilityLabel(Text("Make this \(title) my default"))
+                if hasMyDefault {
+                    Button(action: onRestoreBuiltIn) {
+                        Label("Restore built-in", systemImage: "shippingbox")
+                            .font(StrandFont.footnote)
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StrandPalette.accent)
+                    .accessibilityLabel(Text("Restore the built-in \(title)"))
+                }
+                Spacer(minLength: 0)
+                Button(action: onReset) {
+                    Label(hasMyDefault ? "Reset to my default" : "Reset to default",
+                          systemImage: "arrow.uturn.backward")
+                        .font(StrandFont.footnote)
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(StrandPalette.accent)
+                .disabled(!isCustomised)
+                .accessibilityLabel(Text("Reset \(title) to default"))
+            }
+            if hasMyDefault {
+                Text("Using your saved default. It rides along in the strap log, so a future build can adopt it.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}

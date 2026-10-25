@@ -83,14 +83,17 @@ struct NSSCard: View {
     static func level(_ nss: Double) -> Double { nss * 3 / 100 }
 
     /// Where a reading sits against MY normal (the coach's `nssBandWord`, as a pill): unusual for me
-    /// (my top 5%), above my typical (+10), typical, or calmer than typical; before there is a typical,
-    /// the fixed scale's own steps.
+    /// (my top 5%), above my typical, typical (within ±3 — 261024g, it was ±10, which labelled 18
+    /// against a typical of 27 "typical"), or below typical; before there is a typical, the fixed
+    /// scale's own steps.
     static func status(_ nss: Double, typical: Double?, unusual: Double?) -> (title: String, tone: StrandTone) {
         if let typical, let unusual {
+            let gap = nss - typical
             if nss >= unusual { return (String(localized: "UNUSUAL FOR YOU"), .critical) }
-            if nss >= typical + 10 { return (String(localized: "ABOVE TYPICAL"), .warning) }
-            if nss <= typical - 10 { return (String(localized: "CALMER THAN TYPICAL"), .positive) }
-            return (String(localized: "TYPICAL"), .positive)
+            if gap >= 10 { return (String(localized: "WELL ABOVE TYPICAL"), .warning) }
+            if gap > 3 { return (String(localized: "ABOVE TYPICAL"), .warning) }
+            if gap >= -3 { return (String(localized: "TYPICAL"), .positive) }
+            return (String(localized: "BELOW TYPICAL"), .positive)
         }
         if nss < 20 { return (String(localized: "NEAR CALM"), .positive) }
         return nss < 60 ? (String(localized: "ABOVE CALM"), .warning) : (String(localized: "FAR ABOVE CALM"), .critical)

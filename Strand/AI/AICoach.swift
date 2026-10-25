@@ -479,6 +479,94 @@ final class AICoachEngine: ObservableObject {
     /// UserDefaults key holding the user's EDITED system prompt. Absent (or blank) means "use the
     /// built-in default". Small text key, never a secret, so plain UserDefaults is fine. Read FRESH
     /// per request (see `systemPrompt`) so an edit takes effect on the very next message.
+    // MARK: - My default prompts (261024g)
+    //
+    // The maintainer: "for all the prompts in the coach section, give me an option to make my edited
+    // prompt the default — so that I can make changes that you can then read when editing next". So
+    // each prompt has THREE layers, resolved in this order:
+    //   1. an EDIT in progress (the stored override — what "Reset to default" clears);
+    //   2. MY DEFAULT — an edit the wearer promoted with "Make this my default", stored under
+    //      `<key>.myDefault`; "Reset to default" returns here, "Restore built-in" clears it;
+    //   3. the BUILT-IN default in this file.
+    // Every saved default and every edit travels verbatim in the strap-log export (`promptExportLines`),
+    // which is how a later build reads them back and folds them into the built-in text. Once a build's
+    // built-in equals a saved default, `absorbMyDefaultsIntoBuild` (at engine start) retires the saved
+    // copy, so the build's later changes to that prompt reach the wearer again. A saved default is the
+    // wearer's explicit choice, so the synthesis retired-default fingerprints never apply to it.
+
+    /// Where a prompt's promoted default is stored.
+    nonisolated static func myDefaultKey(_ promptKey: String) -> String { promptKey + ".myDefault" }
+
+    /// The wearer's promoted default for `promptKey`, or nil.
+    nonisolated static func myDefault(_ promptKey: String, defaults: UserDefaults = .standard) -> String? {
+        let v = defaults.string(forKey: myDefaultKey(promptKey))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (v?.isEmpty == false) ? v : nil
+    }
+
+    /// The default in force: the wearer's promoted default, else the built-in.
+    nonisolated static func effectiveDefault(_ builtIn: String, key: String,
+                                             defaults: UserDefaults = .standard) -> String {
+        myDefault(key, defaults: defaults) ?? builtIn
+    }
+
+    /// Every editable prompt: its title (as on the Coach screen), key, and built-in text.
+    static var promptCatalog: [(title: String, key: String, builtIn: String)] {
+        [("Coach instructions", systemPromptKey, defaultSystemPrompt),
+         ("Plain-language instructions", plainLanguagePromptKey, defaultPlainLanguagePrompt),
+         ("Today synthesis instructions", synthesisPromptKey, defaultSynthesisPrompt),
+         ("Recap summary instructions", dayQualityPromptKey, defaultDayQualityPrompt),
+         ("Sleep summary instructions", sleepPromptKey, defaultSleepPrompt),
+         ("Trend summary instructions", trendsPromptKey, defaultTrendsPrompt),
+         ("Daily insight instructions", insightPromptKey, defaultInsightPrompt),
+         ("Notification title instructions", notificationTitlePromptKey, defaultNotificationTitlePrompt)]
+    }
+
+    /// Promote the current text of `promptKey` to MY DEFAULT and clear the edit it came from.
+    func makeMyDefault(promptKey: String, text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        UserDefaults.standard.set(t, forKey: Self.myDefaultKey(promptKey))
+        UserDefaults.standard.removeObject(forKey: promptKey)
+        objectWillChange.send()
+    }
+
+    /// Drop MY DEFAULT for `promptKey`, back to the built-in (an edit in progress is kept).
+    func restoreBuiltInDefault(promptKey: String) {
+        UserDefaults.standard.removeObject(forKey: Self.myDefaultKey(promptKey))
+        objectWillChange.send()
+    }
+
+    /// A saved default the build has adopted verbatim (whitespace-insensitive) is retired, so later
+    /// built-in changes reach the wearer. Called once at engine start.
+    static func absorbMyDefaultsIntoBuild(defaults: UserDefaults = .standard) {
+        for p in promptCatalog {
+            if let mine = myDefault(p.key, defaults: defaults),
+               promptFingerprint(mine) == promptFingerprint(p.builtIn) {
+                defaults.removeObject(forKey: myDefaultKey(p.key))
+            }
+        }
+    }
+
+    /// The strap-log section that carries the wearer's prompts back to the next build: per prompt,
+    /// which layer is in force, with its fingerprint, and the FULL text of any saved default or edit.
+    static func promptExportLines(defaults: UserDefaults = .standard) -> [String] {
+        var out = ["Coach prompts (261024g — saved defaults and edits, verbatim, for the next build to read):"]
+        for p in promptCatalog {
+            let mine = myDefault(p.key, defaults: defaults)
+            let edit = defaults.string(forKey: p.key)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasEdit = (edit?.isEmpty == false) && edit != (mine ?? p.builtIn)
+            let fp = { (t: String) in String(promptFingerprint(t), radix: 16) }
+            out.append("  \(p.title) [\(p.key)]: "
+                       + (hasEdit ? "EDITED" : (mine != nil ? "MY DEFAULT" : "built-in"))
+                       + " · built-in fp \(fp(p.builtIn))"
+                       + (mine.map { " · my default fp \(fp($0))" } ?? "")
+                       + (hasEdit ? " · edit fp \(fp(edit!))" : ""))
+            if let mine { out.append("  >>> MY DEFAULT — \(p.key)\n" + mine + "\n  <<< END MY DEFAULT") }
+            if hasEdit, let edit { out.append("  >>> EDIT — \(p.key)\n" + edit + "\n  <<< END EDIT") }
+        }
+        return out
+    }
+
     static let systemPromptKey = "ai.systemPrompt"
     static let synthesisPromptKey = "ai.synthesisPrompt"
     /// The editable instruction behind every coach-written NOTIFICATION TITLE (260903).
@@ -516,7 +604,7 @@ final class AICoachEngine: ObservableObject {
         let stored = UserDefaults.standard.string(forKey: Self.systemPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let stored, !stored.isEmpty { return stored }
-        return Self.defaultSystemPrompt
+        return Self.effectiveDefault(Self.defaultSystemPrompt, key: Self.systemPromptKey)
     }
 
     /// What is actually SENT as the instructions: the coach prompt, plus the on-device rider when the
@@ -570,7 +658,7 @@ final class AICoachEngine: ObservableObject {
         let stored = UserDefaults.standard.string(forKey: Self.plainLanguagePromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let stored, !stored.isEmpty { return stored }
-        return Self.defaultPlainLanguagePrompt
+        return Self.effectiveDefault(Self.defaultPlainLanguagePrompt, key: Self.plainLanguagePromptKey)
     }
 
     // Same three accessors as the surface prompts.
@@ -578,7 +666,8 @@ final class AICoachEngine: ObservableObject {
         get { plainLanguagePrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultPlainLanguagePrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultPlainLanguagePrompt, key: Self.plainLanguagePromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.plainLanguagePromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.plainLanguagePromptKey)
@@ -590,7 +679,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomPlainLanguagePrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.plainLanguagePromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultPlainLanguagePrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultPlainLanguagePrompt, key: Self.plainLanguagePromptKey)
     }
 
     func resetPlainLanguagePrompt() {
@@ -618,7 +708,8 @@ final class AICoachEngine: ObservableObject {
         get { systemPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultSystemPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultSystemPrompt, key: Self.systemPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.systemPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.systemPromptKey)
@@ -632,7 +723,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomSystemPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.systemPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultSystemPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultSystemPrompt, key: Self.systemPromptKey)
     }
 
     /// Restore the built-in system prompt by clearing the stored override.
@@ -706,10 +798,12 @@ final class AICoachEngine: ObservableObject {
       1. Theme — my NSS (normalized stress): how stressed I am right now beyond what my current \
     activity explains, read from the NSS block — 0 is my calm state for the pace I am at, each 20 \
     points one typical swing above it, and the block states my typical and the level that is \
-    unusual for me. Say three things, in this order: where my NSS is now, against my typical; WHY, \
+    unusual for me. Say three things, in this order: where my NSS is now against my typical, in the \
+    block's own words and with its gap (above, below or about — never call two different numbers \
+    the same); WHY, \
     from the block's parts (my heart rate against my calm at this pace, my HRV and beat pattern \
     against calm) and the most likely cause, as a read, never a fact — heat, caffeine, a meal, sleep \
-    debt, illness and talking raise it too; and, when the block calls it "above my typical" or \
+    debt, illness and talking raise it too; and, when the block calls it "well above my typical" or \
     "unusual for me", ONE bolded thing to do now to bring it down, matched to that cause (e.g. **two \
     minutes of slow breathing with a long exhale**, **a five-minute walk** after a long sit, **a \
     glass of water**) — otherwise nothing to fix, just say so. A last unusual stretch today may get \
@@ -834,7 +928,7 @@ final class AICoachEngine: ObservableObject {
         let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let stored, !stored.isEmpty { return stored }
-        return Self.defaultNotificationTitlePrompt
+        return Self.effectiveDefault(Self.defaultNotificationTitlePrompt, key: Self.notificationTitlePromptKey)
     }
 
     /// The synthesis instruction actually sent, read FRESH from UserDefaults on every generation so an
@@ -844,7 +938,7 @@ final class AICoachEngine: ObservableObject {
         let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let stored, !stored.isEmpty, !Self.isRetiredSynthesisDefault(stored) { return stored }
-        return Self.defaultSynthesisPrompt
+        return Self.effectiveDefault(Self.defaultSynthesisPrompt, key: Self.synthesisPromptKey)
     }
 
     /// Fingerprints of earlier BUILT-IN synthesis instructions (261014). A stored override equal to
@@ -869,6 +963,7 @@ final class AICoachEngine: ObservableObject {
         0xabc7e8a2a56f2bad, // 261023: "am I stressed" from heart rate while still (no reading while moving)
         0xb6f193d799415c28, // 261024: NSS bullet on the median-centred scale (50 = usual, action above 60)
         0x0d47d0517d761645, // 261024d: calm-based NSS bullet, but Next's session idea ignored an unusual NSS
+        0x6272a1ab9b230dba, // 261024f: NSS bullet compared now with typical loosely (18 "sitting right at" 27)
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.
@@ -892,7 +987,8 @@ final class AICoachEngine: ObservableObject {
         get { synthesisPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultSynthesisPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultSynthesisPrompt, key: Self.synthesisPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.synthesisPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.synthesisPromptKey)
@@ -905,7 +1001,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomSynthesisPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.synthesisPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultSynthesisPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultSynthesisPrompt, key: Self.synthesisPromptKey)
             && !Self.isRetiredSynthesisDefault(stored ?? "")
     }
 
@@ -922,7 +1019,8 @@ final class AICoachEngine: ObservableObject {
         get { dayQualityPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultDayQualityPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultDayQualityPrompt, key: Self.dayQualityPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.dayQualityPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.dayQualityPromptKey)
@@ -934,7 +1032,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomDayQualityPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultDayQualityPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultDayQualityPrompt, key: Self.dayQualityPromptKey)
     }
 
     func resetDayQualityPrompt() {
@@ -947,7 +1046,8 @@ final class AICoachEngine: ObservableObject {
         get { trendsPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultTrendsPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultTrendsPrompt, key: Self.trendsPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.trendsPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.trendsPromptKey)
@@ -959,7 +1059,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomTrendsPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultTrendsPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultTrendsPrompt, key: Self.trendsPromptKey)
     }
 
     func resetTrendsPrompt() {
@@ -972,7 +1073,8 @@ final class AICoachEngine: ObservableObject {
         get { insightPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultInsightPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultInsightPrompt, key: Self.insightPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.insightPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.insightPromptKey)
@@ -984,7 +1086,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomInsightPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.insightPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultInsightPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultInsightPrompt, key: Self.insightPromptKey)
     }
 
     func resetInsightPrompt() {
@@ -997,7 +1100,8 @@ final class AICoachEngine: ObservableObject {
         get { sleepPrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultSleepPrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultSleepPrompt, key: Self.sleepPromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.sleepPromptKey)
@@ -1009,7 +1113,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomSleepPrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultSleepPrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultSleepPrompt, key: Self.sleepPromptKey)
     }
 
     func resetSleepPrompt() {
@@ -1022,7 +1127,8 @@ final class AICoachEngine: ObservableObject {
         get { notificationTitlePrompt }
         set {
             let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed == Self.defaultNotificationTitlePrompt {
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultNotificationTitlePrompt, key: Self.notificationTitlePromptKey) {
                 UserDefaults.standard.removeObject(forKey: Self.notificationTitlePromptKey)
             } else {
                 UserDefaults.standard.set(newValue, forKey: Self.notificationTitlePromptKey)
@@ -1034,7 +1140,8 @@ final class AICoachEngine: ObservableObject {
     var hasCustomNotificationTitlePrompt: Bool {
         let stored = UserDefaults.standard.string(forKey: Self.notificationTitlePromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !(stored ?? "").isEmpty && stored != Self.defaultNotificationTitlePrompt
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultNotificationTitlePrompt, key: Self.notificationTitlePromptKey)
     }
 
     func resetNotificationTitlePrompt() {
@@ -1108,6 +1215,8 @@ final class AICoachEngine: ObservableObject {
     init(repo: Repository, session: URLSession? = nil) {
         self.repo = repo
         self.session = session ?? Self.makeDefaultSession()
+        // 261024g: a saved default this build has adopted verbatim stops shadowing the built-in.
+        Self.absorbMyDefaultsIntoBuild()
 
         // Restore persisted provider / model (falling back to sane defaults).
         let storedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
@@ -2377,7 +2486,8 @@ final class AICoachEngine: ObservableObject {
     var dayQualityPrompt: String {
         let stored = UserDefaults.standard.string(forKey: Self.dayQualityPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (stored?.isEmpty == false ? stored! : Self.defaultDayQualityPrompt)
+        return (stored?.isEmpty == false ? stored!
+                : Self.effectiveDefault(Self.defaultDayQualityPrompt, key: Self.dayQualityPromptKey))
     }
 
     /// The RECAP lens: one finished day, graded.
@@ -2418,7 +2528,8 @@ final class AICoachEngine: ObservableObject {
     var trendsPrompt: String {
         let stored = UserDefaults.standard.string(forKey: Self.trendsPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (stored?.isEmpty == false ? stored! : Self.defaultTrendsPrompt)
+        return (stored?.isEmpty == false ? stored!
+                : Self.effectiveDefault(Self.defaultTrendsPrompt, key: Self.trendsPromptKey))
     }
 
     static let insightPromptKey = "ai.insightPrompt"
@@ -2427,7 +2538,8 @@ final class AICoachEngine: ObservableObject {
     var insightPrompt: String {
         let stored = UserDefaults.standard.string(forKey: Self.insightPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (stored?.isEmpty == false ? stored! : Self.defaultInsightPrompt)
+        return (stored?.isEmpty == false ? stored!
+                : Self.effectiveDefault(Self.defaultInsightPrompt, key: Self.insightPromptKey))
     }
 
     /// The INSIGHTS lens (261004). The one summary allowed to roam: every other tab prompt is
@@ -2526,7 +2638,8 @@ final class AICoachEngine: ObservableObject {
     var sleepPrompt: String {
         let stored = UserDefaults.standard.string(forKey: Self.sleepPromptKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (stored?.isEmpty == false ? stored! : Self.defaultSleepPrompt)
+        return (stored?.isEmpty == false ? stored!
+                : Self.effectiveDefault(Self.defaultSleepPrompt, key: Self.sleepPromptKey))
     }
 
     /// The SLEEP lens (260919): one night's architecture, and what it means for today. Banned from
@@ -2763,15 +2876,20 @@ final class AICoachEngine: ObservableObject {
             + past.map { "\($0.dropFirst(5)) \(Int((daily[$0] ?? 0).rounded()))" }.joined(separator: " · ") + "."
     }
 
-    /// 261024d: words for a reading against MY normal — unusual for me (at or above my 95th
-    /// percentile), above / about / calmer than my typical (±10) — or, before there is a typical, the
-    /// fixed scale's own steps (20 points a swing above calm).
+    /// 261024d: words for a reading against MY normal — or, before there is a typical, the fixed
+    /// scale's own steps (20 points a swing above calm). 261024g: "about my typical" only within ±3,
+    /// and the words carry the GAP itself, because a ±10 "about" band let 18 against a typical of 27
+    /// read as "sitting right at your typical" — two numbers the bullet then called equal.
     nonisolated static func nssBandWord(_ nss: Double, typical: Double?, unusual: Double?) -> String {
         if let typical, let unusual {
-            if nss >= unusual { return "unusual for me" }
-            if nss >= typical + 10 { return "above my typical" }
-            if nss <= typical - 10 { return "calmer than my typical" }
-            return "about my typical"
+            let gap = Int((nss - typical).rounded())
+            let t = Int(typical.rounded())
+            if nss >= unusual { return "unusual for me — \(gap) above my typical \(t)" }
+            if gap >= 10 { return "well above my typical — \(gap) above my typical \(t)" }
+            if gap > 3 { return "a little above my typical — \(gap) above my typical \(t)" }
+            if gap >= -3 { return "about my typical \(t)" }
+            if gap > -10 { return "a little below my typical, calmer than usual — \(-gap) below my typical \(t)" }
+            return "well below my typical, calmer than usual — \(-gap) below my typical \(t)"
         }
         return nss < 20 ? "close to my calm state" : (nss < 40 ? "a bit above calm"
             : (nss < 60 ? "well above calm" : "far above calm"))

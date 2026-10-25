@@ -168,7 +168,9 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         // 261024d: measured up from calm, read against my typical; action only above typical.
         XCTAssertTrue(d.contains("(NSS **X** now, **Y** my typical)"))
         XCTAssertTrue(d.contains("0 is my calm state for the pace I am at"))
-        XCTAssertTrue(d.contains("when the block calls it \"above my typical\" or \"unusual for me\""))
+        XCTAssertTrue(d.contains("when the block calls it \"well above my typical\" or \"unusual for me\""))
+        // 261024g: the comparison uses the block's words and gap, never "the same" for two numbers.
+        XCTAssertTrue(d.contains("never call two different numbers the same"))
         XCTAssertFalse(d.contains("50 is my usual"), "the median-centred scale is retired")
         // 261024f: an unusual NSS steers Next's session idea easier.
         XCTAssertTrue(d.contains("an easier session rather than a hard one"))
