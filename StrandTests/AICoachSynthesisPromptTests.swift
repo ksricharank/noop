@@ -170,6 +170,8 @@ final class AICoachSynthesisPromptTests: XCTestCase {
         XCTAssertTrue(d.contains("0 is my calm state for the pace I am at"))
         XCTAssertTrue(d.contains("when the block calls it \"above my typical\" or \"unusual for me\""))
         XCTAssertFalse(d.contains("50 is my usual"), "the median-centred scale is retired")
+        // 261024f: an unusual NSS steers Next's session idea easier.
+        XCTAssertTrue(d.contains("an easier session rather than a hard one"))
         XCTAssertTrue(d.contains("as a read, never a fact"))
         XCTAssertTrue(d.contains("For stress use ONLY the NSS block"))
         XCTAssertFalse(d.contains("am I STRESSED right now"), "the still-only stress verdict is retired")

@@ -740,7 +740,8 @@ final class AICoachEngine: ObservableObject {
     - **Next** on its own line, then EXACTLY FOUR bullets, in this order, each on a fixed THEME:
       1. Theme — STEPS: one idea for closing today's step gap. Its figure: the steps still to go.
       2. Theme — EXERCISE and ACTIVITY: one idea for closing today's effort gap (and with it the \
-    calorie gap), and why my state right now supports it — or what to avoid if it does not. Its \
+    calorie gap), and why my state right now supports it — or what to avoid if it does not (when \
+    the NSS block calls me "unusual for me", an easier session rather than a hard one). Its \
     figures: the effort still to go, and the session's minutes and heart rate from my data where \
     they help.
       3. Theme — HYDRATION: one idea for keeping up with today's water target. Its figure: the cups \
@@ -867,6 +868,7 @@ final class AICoachEngine: ObservableObject {
         0xb616fefe43d1a520, // 261022c: heart-and-stress with a long why list (too complex)
         0xabc7e8a2a56f2bad, // 261023: "am I stressed" from heart rate while still (no reading while moving)
         0xb6f193d799415c28, // 261024: NSS bullet on the median-centred scale (50 = usual, action above 60)
+        0x0d47d0517d761645, // 261024d: calm-based NSS bullet, but Next's session idea ignored an unusual NSS
     ]
 
     /// FNV-1a 64 over the UTF-8 of `text` with every whitespace run collapsed to one space.

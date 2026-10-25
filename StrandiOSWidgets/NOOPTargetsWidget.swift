@@ -138,26 +138,30 @@ struct NOOPTargetsView: View {
         // 260919: row spacing 2 -> 5. The two rows sat almost touching, so Steps/Effort and
         // Cal/Water read as one four-line block rather than as two pairs. The ~72pt slot has the
         // room: the cells are 8+21pt, so 5pt between rows still fits without shrinking either.
-        // 261024e: the captions are gone (maintainer: "I already know what each stands for"), and the
-        // values take their room — 21 → 28pt. Position and colour still say which is which: Steps and
-        // Effort on top, Cal and Water below, each in its domain colour. VoiceOver keeps the names.
-        // The LONG pairs (Steps, Cal — "10.4k/11.6k") get ~63% of the width and the short ones the
-        // rest: at equal halves the long pairs scaled to half the short ones' size (checked by
-        // rendering the slot at 172×76 with the widest real values; no cell overflows, the
-        // `minimumScaleFactor` floor absorbs what is left). Rows align on their baselines.
+        // 261024e: the captions are gone (maintainer: "I already know what each stands for"); position
+        // and colour still say which is which — Steps and Effort on top, Cal and Water below, each in
+        // its domain colour — and VoiceOver keeps the names. The LONG pairs (Steps, Cal —
+        // "10.4k/11.6k") get ~63% of the width, the short ones the rest.
+        // 261024f: ONE size for all four (20.5pt — the maintainer asked for Effort and Cal half a point
+        // smaller and Steps/Water to match them), chosen as the largest at which the widest real long
+        // pair fits its column WITHOUT scaling, so the four never read at different sizes; and a little
+        // more air between the columns (6 → 10pt) now that the type is smaller. Checked by rendering
+        // the 172×76 slot with the widest values: nothing overflows; only a WHOOP-scale Effort pair
+        // ("6.2/13.5") still leans on `minimumScaleFactor`.
         GeometryReader { geo in
-            let longWidth = max(0, (geo.size.width - 6) * 0.63)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    targetCell("Steps", text: snap.stepsAbbrev, size: 28, showsLabel: false,
+            let gap: CGFloat = 10
+            let longWidth = max(0, (geo.size.width - gap) * 0.63)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: gap) {
+                    targetCell("Steps", text: snap.stepsAbbrev, size: 20.5, showsLabel: false,
                                tint: StrandPalette.chargeColor, width: longWidth)
-                    targetCell("Effort", text: snap.effortNT, size: 28, showsLabel: false,
+                    targetCell("Effort", text: snap.effortNT, size: 20.5, showsLabel: false,
                                tint: StrandPalette.effortColor)
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    targetCell("Cal", text: snap.calAbbrev, size: 28, showsLabel: false,
+                HStack(alignment: .firstTextBaseline, spacing: gap) {
+                    targetCell("Cal", text: snap.calAbbrev, size: 20.5, showsLabel: false,
                                tint: StrandPalette.metricAmber, width: longWidth)
-                    targetCell("Water", text: snap.waterDisplay, size: 28, showsLabel: false,
+                    targetCell("Water", text: snap.waterDisplay, size: 20.5, showsLabel: false,
                                tint: StrandPalette.metricCyan)
                 }
             }
