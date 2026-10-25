@@ -46,7 +46,8 @@ struct StressProvider: TimelineProvider {
 /// Runs rather than one path because an unscored hour is a hole, and a line drawn across it would
 /// invent a reading. When `filled` each run is closed to the baseline SEPARATELY, so the area cannot
 /// spread under hours that were never scored, which would undo the gap the broken line exists to draw.
-private struct StressCurveShape: Shape {
+/// Internal (not private) since 261024c: the square NSS widget draws its curve with it too.
+struct StressCurveShape: Shape {
     let series: [StressPoint]
     let filled: Bool
 

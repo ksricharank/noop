@@ -23,6 +23,20 @@ public final class FrameRouter {
     /// nil in pure/unit contexts, which the verdict treats as unattributed rather than guessing.
     var deviceId: String?
 
+    /// #1712: the `event_timestamp` of the last physical gesture already acted on, per event name.
+    ///
+    /// One physical double-tap reaches the handlers through TWO independent paths whenever an offload
+    /// is running: `handle(parsed:)` (the live path) and `dispatchLiveGestureIfFresh` (the mid-offload
+    /// carve-out, #69). The strap also re-sends the EVENT inside its 45 s freshness window, so the same
+    /// tap can arrive several seconds apart. That is exactly what the 260906 log caught: the strap
+    /// reported ONE `SENSORS: IMU double tap detected` and the app logged TWO cups of water, 1.3 s apart
+    /// — just past AppModel's 1.2 s wall-clock debounce.
+    ///
+    /// Deduping on the event's OWN timestamp instead of on arrival time makes the duplicate structurally
+    /// impossible rather than merely unlikely: `event_timestamp` is the strap RTC's real-unix second and
+    /// is the gesture's identity, whereas a debounce only guesses at identity from timing and fails as
+    /// soon as an offload chunk pushes the second delivery past whatever window was chosen.
+    ///
     /// Which family's framing to decode with. Set per connection by BLEManager. WHOOP 5.0/MG frames
     /// use the CRC16/offset-8 envelope; the biometric field decode for puffin is still a stub, so
     /// WHOOP 5 custom frames currently surface only their envelope (live HR/battery come from the
@@ -34,6 +48,9 @@ public final class FrameRouter {
         didSet {
             rawDumpedRespCmds.removeAll(); loggedFirmwareGate = nil; deviceId = nil
             rejectTally = FrameRejectTally(); loggedRejectReasons.removeAll()
+            // Per connection: a reconnect re-reads recent events, so a timestamp held over from the
+            // previous link would suppress the first genuine gesture after it.
+            dispatchedDoubleTapEventTs.removeAll()
         }
     }
 
@@ -515,7 +532,8 @@ public final class FrameRouter {
                     state.charging = false
                 }
                 // The other physical inputs the strap exposes — live only, as above. The double-tap
-                // was handled before the sync kick.
+                // was handled before the sync kick (#1712: through `dispatchDoubleTapOnce`, gated on
+                // the event's own timestamp — a second dispatch here double-logged one physical tap).
                 if ev.hasPrefix("WRIST_ON") {
                     handleWrist(on: true, duringSync: false)
                 } else if ev.hasPrefix("WRIST_OFF") {
@@ -834,6 +852,8 @@ public final class FrameRouter {
             }
             return
         }
+        // #1712: the OTHER half of the duplicate, so it must consult the SAME guard the live path
+        // uses for either to be effective.
         if ev.hasPrefix("DOUBLE_TAP") {
             dispatchDoubleTapOnce(eventTimestamp: ts)
         } else if ev.hasPrefix("WRIST_ON") {
@@ -899,7 +919,9 @@ public final class FrameRouter {
     private static let dispatchedDoubleTapMemory = 32
 
     private func dispatchDoubleTapOnce(eventTimestamp ts: Int?) {
-        if let ts {
+        // `ts > 0`, not merely non-nil: a frame carrying 0 has no identity, and treating it as one
+        // makes two separate taps collapse into a single dispatch. Fails OPEN, like a missing field.
+        if let ts, ts > 0 {
             guard !dispatchedDoubleTapEventTs.contains(ts) else {
                 // Only a gesture actually held back leaves a line, so a tap reported as missing can be
                 // told apart from a replay being suppressed.
