@@ -21,6 +21,29 @@ public struct StressPoint: Codable, Equatable, Sendable {
     }
 }
 
+/// One 5-minute point of today's NSS (Normalized Stress Score, 0–100) for the square NSS widget
+/// (261024c). The app publishes these from `NormalizedStressStore`; the widget draws them through the
+/// stress trace's own geometry by mapping NSS onto its fixed 0–3 domain (NSS × 3/100) — the same
+/// mapping the Stress screen uses for NSS colours and bands, so HIGH means the same thing on both.
+public struct NSSPoint: Codable, Equatable, Sendable {
+    public let ts: Int64
+    public let nss: Double
+    public init(ts: Int64, nss: Double) { self.ts = ts; self.nss = nss }
+
+    /// The stress-trace series for `points`, with a nil-level point wherever two readings are more
+    /// than `gapSeconds` apart, so the curve breaks at a gap instead of drawing across it.
+    public static func stressSeries(_ points: [NSSPoint], gapSeconds: Int64 = 600) -> [StressPoint] {
+        var out: [StressPoint] = []
+        var prev: Int64?
+        for p in points.sorted(by: { $0.ts < $1.ts }) {
+            if let prev, p.ts - prev > gapSeconds { out.append(StressPoint(ts: prev + 1, level: nil)) }
+            out.append(StressPoint(ts: p.ts, level: p.nss * StressTrace.domainMax / 100))
+            prev = p.ts
+        }
+        return out
+    }
+}
+
 /// The pure half of the stress widget: what the curve CONTAINS and where its ink goes.
 ///
 /// Swift twin of the Kotlin `StressTrace`. The domain, the gap rule, the band threshold and the tick
