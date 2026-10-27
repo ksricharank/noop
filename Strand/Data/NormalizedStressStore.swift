@@ -267,6 +267,8 @@ final class NormalizedStressStore: ObservableObject {
         Self.save(st)
         log?(Self.logLine(snapshot, added: added, backfilled: filled,
                           ms: Int(Date().timeIntervalSince(started) * 1000), now: nowTs))
+        // 261026: the high-NSS notification, on the snapshot every surface now shows.
+        if let line = NSSNotifier.evaluate(snapshot, now: nowTs) { log?(line) }
     }
 
     /// The `nss:` strap-log line — the validation record the engine's doc asks for: what was scored,

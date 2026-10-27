@@ -42,6 +42,8 @@ struct StressView: View {
     @ObservedObject private var nss = NormalizedStressStore.shared
     /// 261024d: the NSS baseline window, as typed on the method card (free-form, applied on submit).
     @State private var baselineDaysText = "\(NormalizedStressStore.baselineDays)"
+    /// 261026: the high-NSS notification switch (`NSSNotifier`, on by default).
+    @State private var notifyHigh = NSSNotifier.enabled
 
     /// The stored 0–3 stress series ("my-whoop"), oldest→newest. Empty → derive.
     @State private var storedSeries: [(day: String, value: Double)] = []
@@ -102,6 +104,8 @@ struct StressView: View {
     private func load() async {
         storedSeries = await repo.series(key: "stress", source: "my-whoop")
         await NormalizedStressStore.shared.updateIfStale(repo: repo, log: { ScreenLedger.log($0) })
+        // 261026: the high-NSS notification is on by default; ask here, on a screen about it, not mid-high.
+        if NSSNotifier.enabled { NSSNotifier.requestAuthorization() }
         loaded = true
         rebuildModelIfNeeded()
         await loadDaytime()
@@ -205,6 +209,12 @@ struct StressView: View {
     private func content(_ model: StressModel) -> some View {
         VStack(alignment: .leading, spacing: NoopMetrics.sectionSpacing) {
 
+            // 0. The coach's read of my stress today (261026, maintainer: "the top of the stress tab to
+            //    have a more detailed explanation of just my stress situation"). Its prompt is the Coach
+            //    screen's "Stress summary instructions".
+            stressInsightCard
+                .staggeredAppear(index: 0)
+
             // 1. HERO — NSS, the Normalized Stress Score (261024b: it replaced the once-a-day 0–3 score
             //    everywhere on this screen at the maintainer's ask). Today's line lives in section 3.
             NSSCard(snapshot: nss.snapshot, showsLine: false)
@@ -258,11 +268,45 @@ struct StressView: View {
         }
     }
 
+    // MARK: 0 · The coach's stress read (261026)
+
+    /// What the summary reads, coarsened so it re-asks when the situation moves — a 10-point step of NSS
+    /// now, a new unusual stretch, exercise starting or ending, a new typical — not on every sync.
+    static func stressSummaryKey(_ s: NormalizedStressStore.Snapshot) -> String? {
+        guard let c = s.current else { return nil }
+        return ["\(Int(c.nss) / 10)", s.lastUnusual.map { "\($0.startTs)" } ?? "-",
+                s.unscoredExercise?.rawValue ?? "-", s.typical.map { "\(Int($0.rounded()))" } ?? "-"]
+            .joined(separator: "|")
+    }
+
+    private var stressInsightCard: some View {
+        NoopCard {
+            TabInsightCard(
+                title: "What your stress says",
+                subject: "stress-\(Repository.localDayKey(Date()))",
+                dataKey: Self.stressSummaryKey(nss.snapshot),
+                generate: { coach in await coach.stressNarrative() },
+                lastOutcome: { $0.lastStressOutcome },
+                startsExpanded: true,
+                showsAskCoach: true,
+                coachFollowUp: { summary in
+                    """
+                    I am looking at the Stress tab for today. It shows me this summary of my stress:
+
+                    \(summary)
+
+                    Treat this as the start of the conversation and answer follow-ups about my stress \
+                    today. Do not repeat the summary back to me.
+                    """
+                }
+            )
+        }
+    }
+
     // MARK: 3 · Today's timeline (NSS, 261024b)
 
     @ViewBuilder
     private func nssTimelineSection(_ snap: NormalizedStressStore.Snapshot) -> some View {
-        let points = NSSCard.linePoints(snap.readings)
         let peak = snap.readings.max { $0.nss < $1.nss }
         VStack(alignment: .leading, spacing: NoopMetrics.gap) {
             SectionHeader("Today's Timeline", overline: "Intraday · NSS",
@@ -280,19 +324,7 @@ struct StressView: View {
                                 .foregroundStyle(StressRamp.color(NSSCard.level(peak.nss)))
                         }
                     }
-                    DaytimeLoadLine(hours: points, referenceLevel: snap.typical.map(NSSCard.level))
-                    if let lo = points.first?.hour, let hi = points.last?.hour {
-                        HStack {
-                            Text(hourLabel(lo)).font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                            Spacer()
-                            Text(hourLabel((lo + hi) / 2)).font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                            Spacer()
-                            Text(hourLabel(hi)).font(StrandFont.footnote)
-                                .foregroundStyle(StrandPalette.textTertiary)
-                        }
-                    }
+                    NSSDayChart(readings: snap.readings, typical: snap.typical)
                     Divider().overlay(StrandPalette.hairline)
                     StressTotalsBar(totals: StressTotals(nssReadings: snap.readings))
                     Text("Each point is the last 5 minutes measured up from your calm state at the pace you were moving; the dashed line is your typical. Gaps are times with too little heart rate, running, or a pace without enough history yet.")
@@ -748,7 +780,7 @@ struct StressView: View {
                 Text("NSS — stress beyond what your activity explains.")
                     .font(StrandFont.body)
                     .foregroundStyle(StrandPalette.textPrimary)
-                Text("NOOP learns your CALM state at each pace — still, pottering, walking, brisk walking, moving without steps — from your calmest 10% of moments over the baseline window: the lowest heart rate and the highest HRV you typically reach at that pace. Even if most of the window was stressful, those moments are still calm. Every 5 minutes it measures how far above that calm state you are: 0 is calm, each 20 points is one typical swing above it. Running isn't scored, because near full effort stress and exertion can't be told apart.")
+                Text("NOOP learns your CALM state at each pace — still, pottering, walking, brisk walking, moving without steps — from your calmest 10% of moments over the baseline window: the lowest heart rate and the highest HRV you typically reach at that pace. Even if most of the window was stressful, those moments are still calm. Every 5 minutes it measures how far above that calm state you are: 0 is calm, each 20 points is one typical swing above it. Exercise isn't scored: 5 minutes at workout-level heart rate (half your heart-rate reserve), running, or a workout you logged, nor the 30 minutes of recovery after it.")
                     .font(StrandFont.subhead)
                     .foregroundStyle(StrandPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -758,6 +790,23 @@ struct StressView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Divider().overlay(StrandPalette.hairline)
                 baselineWindowRow
+                Divider().overlay(StrandPalette.hairline)
+                Toggle(isOn: $notifyHigh) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Notify me when NSS reaches 67")
+                            .font(StrandFont.body)
+                            .foregroundStyle(StrandPalette.textPrimary)
+                        Text("Once per high stretch, at most hourly, and only for a fresh reading. Exercise never sets it off.")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .tint(StrandPalette.accent)
+                .onChangeCompat(of: notifyHigh) { on in
+                    NSSNotifier.enabled = on
+                    if on { NSSNotifier.requestAuthorization() }
+                }
                 Divider().overlay(StrandPalette.hairline)
                 HStack(spacing: 0) {
                     bandLegend("0-33", String(localized: "NEAR CALM"), StressRamp.calm)
@@ -1154,8 +1203,9 @@ struct DaytimeLoadLine: View {
     /// The dashed reference, on the 0–3 scale: 1.5 (baseline) for the 0–3 timeline; for NSS (261024d)
     /// the wearer's TYPICAL at NSS × 3/100, or none while there is no typical yet.
     var referenceLevel: Double? = 1.5
-
-    private let chartHeight: CGFloat = 78
+    /// 261026: faint horizontal grid lines at these 0–3 levels — the y-axis ticks `NSSDayChart` labels.
+    var gridLevels: [Double] = []
+    var chartHeight: CGFloat = 78
 
     var body: some View {
         GeometryReader { geo in
@@ -1171,6 +1221,14 @@ struct DaytimeLoadLine: View {
             let runs = scoredRuns(width: w, height: h)
 
             ZStack {
+                ForEach(gridLevels, id: \.self) { level in
+                    Path { p in
+                        let yg = y(level)
+                        p.move(to: CGPoint(x: 0, y: yg))
+                        p.addLine(to: CGPoint(x: w, y: yg))
+                    }
+                    .stroke(StrandPalette.hairline.opacity(0.5), lineWidth: 0.5)
+                }
                 // Reference line: the 0–3 baseline (1.5), or the wearer's NSS typical.
                 if let referenceLevel {
                     Path { p in

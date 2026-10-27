@@ -54,9 +54,8 @@ struct NSSCard: View {
                         .font(StrandFont.subhead)
                         .foregroundStyle(StrandPalette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    let points = Self.linePoints(snapshot.readings)
-                    if showsLine, points.contains(where: { $0.level != nil }) {
-                        DaytimeLoadLine(hours: points, referenceLevel: snapshot.typical.map(Self.level))
+                    if showsLine, !snapshot.readings.isEmpty {
+                        NSSDayChart(readings: snapshot.readings, typical: snapshot.typical)
                     }
                     if let e = snapshot.lastUnusual {
                         Text("Unusual for you \(Self.clock(e.startTs))–\(Self.clock(e.endTs)) · peak \(Int(e.peak.nss.rounded())) while \(e.peak.pace.phrase)")
@@ -145,3 +144,131 @@ struct NSSCard: View {
         return f.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
     }
 }
+
+/// Today's NSS through the day WITH ITS AXES (261026: the maintainer "can't see what values the chart is
+/// referring to" — the line had only the dashed typical). The Stress tab's own `DaytimeLoadLine`, so there
+/// is one drawing of the day, framed by a y-axis at the band edges (0 · 33 · 67 · 100, the screen's calm /
+/// moderate / high cut points and the notification line at 67), the first, middle and last times under
+/// it, and a key for the dashed typical. Used by the Stress tab's timeline, the NSS card, Today's NSS
+/// section and the Today-hosted stress card.
+struct NSSDayChart: View {
+    let readings: [NormalizedStress.Reading]
+    let typical: Double?
+    var height: CGFloat = 92
+
+    /// The y-axis ticks, on the NSS scale.
+    static let ticks: [Double] = [0, 33, 67, 100]
+    private let gutter: CGFloat = 26
+
+    var body: some View {
+        let points = NSSCard.linePoints(readings)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 4) {
+                // y-axis labels, placed on the same 0–100 mapping the line uses (level = NSS × 3/100).
+                GeometryReader { geo in
+                    ForEach(Self.ticks, id: \.self) { t in
+                        Text("\(Int(t))")
+                            .font(StrandFont.footnote)
+                            .monospacedDigit()
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .frame(width: gutter, alignment: .trailing)
+                            .position(x: gutter / 2, y: geo.size.height * (1 - CGFloat(t / 100)))
+                    }
+                }
+                .frame(width: gutter, height: height)
+                DaytimeLoadLine(hours: points, referenceLevel: typical.map(NSSCard.level),
+                                gridLevels: Self.ticks.map(NSSCard.level), chartHeight: height)
+            }
+            .padding(.vertical, 6)   // room for the 0 and 100 labels, which centre on the chart's edges
+            HStack {
+                if let first = points.first, let last = points.last {
+                    Text(NSSCard.clock(first.startTs))
+                    Spacer()
+                    Text(NSSCard.clock((first.startTs + last.startTs) / 2))
+                    Spacer()
+                    Text(NSSCard.clock(last.startTs))
+                }
+            }
+            .font(StrandFont.footnote)
+            .foregroundStyle(StrandPalette.textTertiary)
+            .padding(.leading, gutter + 4)
+            if let typical {
+                Text("Dashed line: your typical \(Int(typical.rounded())). 67 and above is high.")
+                    .font(StrandFont.footnote)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .padding(.leading, gutter + 4)
+            }
+        }
+    }
+}
+
+/// The Today page's NSS card body (261026): NSS now beside its label, like the heart-rate card's bpm,
+/// today's chart with its axes, and the day's low, average and high. The same snapshot as every other
+/// NSS surface. The caller supplies the card chrome and the tap.
+struct NSSTodayChart: View {
+    let snapshot: NormalizedStressStore.Snapshot
+
+    var body: some View {
+        let scores = snapshot.readings.map(\.nss)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: NoopMetrics.space2) {
+                HStack(spacing: NoopMetrics.space1) {
+                    Text("NORMALIZED STRESS")
+                        .font(StrandFont.overline)
+                        .tracking(1.6)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(StrandPalette.stressColor)
+                        .accessibilityHidden(true)
+                }
+                .layoutPriority(1)
+                Spacer(minLength: NoopMetrics.space2)
+                if let c = snapshot.current {
+                    (Text("\(Int(c.nss.rounded()))").font(StrandFont.rounded(22)).monospacedDigit()
+                        + Text(" of 100").font(StrandFont.caption))
+                        .foregroundStyle(StressRamp.color(NSSCard.level(c.nss)))
+                }
+            }
+            Text(subtitle)
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textTertiary)
+            if !scores.isEmpty {
+                NSSDayChart(readings: snapshot.readings, typical: snapshot.typical)
+                HStack {
+                    stat(String(localized: "Min"), scores.min())
+                    Spacer()
+                    stat(String(localized: "Avg"), snapshot.dayMean)
+                    Spacer()
+                    stat(String(localized: "Max"), scores.max())
+                }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        guard let c = snapshot.current else {
+            return snapshot.modelledPaces.isEmpty
+                ? String(localized: "Learning your calm state — \(snapshot.modelDays) of \(snapshot.baselineDays) days")
+                : String(localized: "No reading yet today")
+        }
+        let status = NSSCard.status(c.nss, typical: snapshot.typical, unusual: snapshot.unusualLevel).title
+        if let mark = snapshot.unscoredExercise {
+            return mark == .exercise
+                ? String(localized: "Exercising — not scored · last reading \(NSSCard.clock(c.ts))")
+                : String(localized: "Recovering from exercise — not scored · last reading \(NSSCard.clock(c.ts))")
+        }
+        return String(localized: "\(status.capitalized) · 5-minute readings since \(NSSCard.clock(snapshot.readings.first?.ts ?? c.ts))")
+    }
+
+    private func stat(_ label: String, _ v: Double?) -> some View {
+        HStack(spacing: 5) {
+            Text(label).font(StrandFont.caption).foregroundStyle(StrandPalette.textTertiary)
+            Text(v.map { String(Int($0.rounded())) } ?? "–")
+                .font(StrandFont.captionNumber).foregroundStyle(StrandPalette.textSecondary)
+        }
+    }
+}
+

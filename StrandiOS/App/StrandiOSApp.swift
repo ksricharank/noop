@@ -100,6 +100,7 @@ struct StrandiOSApp: App {
         let router = NavRouter()
         _router = StateObject(wrappedValue: router)
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
+        NotificationPresenter.shared.onNSSHighTapped = { [weak router] in router?.openStress() }
         let model = AppModel()
         _model = StateObject(wrappedValue: model)
         CoachBriefScheduler.register(generateBrief: { [weak coach = model.coach] in
@@ -509,6 +510,9 @@ struct StrandiOSApp: App {
                 .onOpenURL { url in
                     if url.host == "import-health" {
                         model.handleHealthImportURL(url)
+                    } else if url.host == "stress" {
+                        // 261026: the NSS widget's tap (`widgetURL`).
+                        router.openStress()
                     }
                 }
                 .alert("Import Apple Health data?", isPresented: healthImportAlertPresented) {

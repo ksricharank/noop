@@ -338,6 +338,14 @@ struct RootTabView: View {
                 // so a deep-link lands on the Today tab where that entry lives.
                 withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.today }
                 router.requestedDestination = nil
+            case .stress:
+                // 261026: the NSS widget and the high-NSS notification land on the Stress screen, pushed
+                // on TODAY's stack — the same place Today's NSS chart opens it, so back returns to Today.
+                withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = Tab.today }
+                var path = NavigationPath()
+                path.append(TabRoute.stress)
+                tabPaths[Tab.today] = path
+                router.requestedDestination = nil
             case .journal:
                 // The #627 Today journal widget opens the journal through the quick-action Journal sheet
                 // (InsightsView), matching the FAB's "Log journal" action. Calm sheet easing.
@@ -438,6 +446,8 @@ struct RootTabView: View {
                 // it ever reaches the host.
                 case .coach: CoachView()
                 case .alarms: SmartAlarmView()
+                // .stress pushes onto Today's stack (handled above); exhaustive fallback.
+                case .stress: StressView()
                 }
             }
             // The Trends/Today fallbacks above emit TabRoute value pushes (#198), which need a

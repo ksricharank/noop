@@ -1965,6 +1965,14 @@ struct TodayView: View {
             workoutsSection
         case .heartRate:
             heartRateTrendSection
+        case .nss:
+            // 261026: today's NSS, as on the iOS Today; a tap opens the Stress screen.
+            if selectedDayOffset == 0 {
+                Button { router.openStress() } label: {
+                    NoopCard(tint: StressRamp.calm) { NSSTodayChart(snapshot: NormalizedStressStore.shared.snapshot) }
+                }
+                .buttonStyle(.plain)
+            }
         case .recoveryVitals:
             recoveryVitalsSection
         case .yourCards:

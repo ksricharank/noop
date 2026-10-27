@@ -406,6 +406,7 @@ struct LiquidTodayView: View {
                         case .keyMetrics: keyMetricsSection
                         case .workouts: lastWorkoutsSection
                         case .heartRate: heartRateSection
+                        case .nss: if selectedDayOffset == 0 { nssSection }
                         case .recoveryVitals: recoveryVitalsSection
                         // 260920: reads as a continuation of KEY METRICS — no second section
                         // header — but stays its OWN section so it can be moved and hidden
@@ -807,6 +808,22 @@ struct LiquidTodayView: View {
         }
     }
 
+    // MARK: - Stress (NSS, 261026)
+
+    /// Today's NSS through the day, laid out like the heart-rate card above it (maintainer: "the daily
+    /// NSS chart to show up similar to how the heart rate chart shows up on the today page"). A tap
+    /// opens the Stress screen on this tab's stack — where the widget and the notification land too.
+    private var nssSection: some View {
+        VStack(spacing: 8) {
+            sectionHead("STRESS · NSS", trailing: "Today")
+            NavigationLink(value: TabRoute.stress) {
+                card { NSSTodayChart(snapshot: nssStore.snapshot) }
+            }
+            .buttonStyle(LiquidPressStyle())
+            .accessibilityHint("Opens the Stress screen")
+        }
+    }
+
     // MARK: - Your cards
 
     private var yourCardsSection: some View {
@@ -883,10 +900,8 @@ struct LiquidTodayView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Stress through the day · NSS").strandOverline()
                     // 261024b: the Stress tab's timeline is NSS now, so its mirror here is too.
-                    let nssPoints = NSSCard.linePoints(nssStore.snapshot.readings)
-                    if nssPoints.contains(where: { $0.level != nil }) {
-                        DaytimeLoadLine(hours: nssPoints,
-                                        referenceLevel: nssStore.snapshot.typical.map(NSSCard.level))
+                    if !nssStore.snapshot.readings.isEmpty {
+                        NSSDayChart(readings: nssStore.snapshot.readings, typical: nssStore.snapshot.typical)
                     } else {
                         // The honest blank: only waking hours score and an hour needs enough heart
                         // rate, so early morning is empty by construction rather than by failure.

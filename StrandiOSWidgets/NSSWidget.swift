@@ -87,7 +87,32 @@ struct NSSWidgetView: View {
             }
             Spacer(minLength: 2)
             if series.contains(where: { $0.level != nil }) {
+                HStack(alignment: .top, spacing: 3) {
+                    // 261026: a y-axis (the maintainer "can't see what values the chart is referring to"):
+                    // the band edges 0 · 33 · 67 · 100 on the curve's fixed 0–100 domain, with faint grid
+                    // lines behind the curve at 33 and 67.
+                    GeometryReader { geo in
+                        ForEach([0, 33, 67, 100], id: \.self) { t in
+                            Text("\(t)")
+                                .font(.system(size: 7, weight: .medium).monospacedDigit())
+                                .lineLimit(1).fixedSize()
+                                .foregroundStyle(StrandPalette.textSecondary)
+                                .position(x: geo.size.width / 2,
+                                          y: geo.size.height * (1 - CGFloat(t) / 100))
+                        }
+                    }
+                    .frame(width: 16, height: 46)
                 ZStack {
+                    GeometryReader { geo in
+                        Path { p in
+                            for t in [33.0, 67.0] {
+                                let y = geo.size.height * (1 - CGFloat(t) / 100)
+                                p.move(to: CGPoint(x: 0, y: y))
+                                p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                            }
+                        }
+                        .stroke(StrandPalette.textSecondary.opacity(0.18), lineWidth: 0.5)
+                    }
                     // The wearer's typical, dashed, when there is one.
                     if let typical {
                         GeometryReader { geo in
@@ -110,10 +135,13 @@ struct NSSWidgetView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 46)
+                }
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+        // 261026: a tap opens the Stress tab (`noop://stress`, handled in `StrandiOSApp.onOpenURL`).
+        .widgetURL(URL(string: "noop://stress"))
     }
 
     private var accessibilityText: String {

@@ -516,6 +516,7 @@ final class AICoachEngine: ObservableObject {
          ("Today synthesis instructions", synthesisPromptKey, defaultSynthesisPrompt),
          ("Recap summary instructions", dayQualityPromptKey, defaultDayQualityPrompt),
          ("Sleep summary instructions", sleepPromptKey, defaultSleepPrompt),
+         ("Stress summary instructions", stressPromptKey, defaultStressPrompt),
          ("Trend summary instructions", trendsPromptKey, defaultTrendsPrompt),
          ("Daily insight instructions", insightPromptKey, defaultInsightPrompt),
          ("Notification title instructions", notificationTitlePromptKey, defaultNotificationTitlePrompt)]
@@ -1119,6 +1120,33 @@ final class AICoachEngine: ObservableObject {
 
     func resetSleepPrompt() {
         UserDefaults.standard.removeObject(forKey: Self.sleepPromptKey)
+        objectWillChange.send()
+    }
+
+    // The Stress tab's summary instruction (261026). Same three accessors as its siblings.
+    var customStressPrompt: String {
+        get { stressPrompt }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty
+                || trimmed == Self.effectiveDefault(Self.defaultStressPrompt, key: Self.stressPromptKey) {
+                UserDefaults.standard.removeObject(forKey: Self.stressPromptKey)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Self.stressPromptKey)
+            }
+            objectWillChange.send()
+        }
+    }
+
+    var hasCustomStressPrompt: Bool {
+        let stored = UserDefaults.standard.string(forKey: Self.stressPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !(stored ?? "").isEmpty
+            && stored != Self.effectiveDefault(Self.defaultStressPrompt, key: Self.stressPromptKey)
+    }
+
+    func resetStressPrompt() {
+        UserDefaults.standard.removeObject(forKey: Self.stressPromptKey)
         objectWillChange.send()
     }
 
@@ -2378,6 +2406,42 @@ final class AICoachEngine: ObservableObject {
 
     @Published private(set) var lastSleepOutcome: String?
 
+    /// The Stress tab's summary (261026, maintainer: "the top of the stress tab to have a more detailed
+    /// explanation of just my stress situation"). The facts are the SAME NSS block the Today synthesis
+    /// reads (one resolver: `NormalizedStressStore`'s snapshot), plus last night and the nights before
+    /// it — the recovery context the "why" leans on.
+    func stressNarrative() async -> String? {
+        guard isConfigured, dataConsent, let key = resolvedKey else {
+            lastStressOutcome = isConfigured
+                ? (dataConsent ? "no API key" : "data consent off")
+                : "no provider configured"
+            return nil
+        }
+        guard let nss = await nssBlock() else {
+            lastStressOutcome = "no NSS yet"
+            return nil
+        }
+        let now = Date()
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        var facts = "IT IS NOW \(f.string(from: now)).\n\n" + nss
+        let today = Repository.localDayKey(now)
+        if let night = repo.days.first(where: { $0.day == today }) {
+            facts += "\n\nLAST NIGHT AND THIS MORNING'S RECOVERY (the row for \(today)):\n  " + dayLine(night)
+        }
+        let prior = repo.days.filter { $0.day < today }.suffix(7)
+        if prior.count >= 3 {
+            facts += "\n\nMY PRECEDING DAYS (oldest first), for comparison:\n"
+                + prior.map { "  " + dayLine($0) }.joined(separator: "\n")
+        }
+        return await runNarrative(key: key, facts: facts, instruction: stressPrompt) { outcome in
+            self.lastStressOutcome = outcome
+            ScreenLedger.log("coach: stress summary — \(outcome ?? "written")")
+        }
+    }
+
+    @Published private(set) var lastStressOutcome: String?
+
     /// The shared call shape behind the tab narratives: facts, a separator, the instruction — the
     /// same wire format `refreshSynthesis` uses — and nil on every failure with the reason recorded.
     ///
@@ -2665,6 +2729,45 @@ final class AICoachEngine: ObservableObject {
     - A field marked NOT RECORDED means no data. Never describe it as a bad result.
     - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one \
     short clause. Numbers in **bold**. No headings, no preamble, no sign-off.
+    """
+
+    static let stressPromptKey = "ai.stressPrompt"
+
+    /// User-overridable, read fresh on every generation like its siblings.
+    var stressPrompt: String {
+        let stored = UserDefaults.standard.string(forKey: Self.stressPromptKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (stored?.isEmpty == false ? stored!
+                : Self.effectiveDefault(Self.defaultStressPrompt, key: Self.stressPromptKey))
+    }
+
+    /// The STRESS lens (261026): my stress situation today, in more depth than the Today bullet has room
+    /// for — now, the day's shape, the likely why, and what would help. Banned from grading the day
+    /// (Recap) and from the night's architecture (Sleep).
+    static let defaultStressPrompt = """
+    The numbers above describe MY STRESS TODAY as NOOP measures it — NSS, the Normalized Stress Score — \
+    with last night's recovery for context. Write the read at the top of my Stress tab, in the second \
+    person, as 3-5 bullets in this order:
+    - **Right now** — NSS now against my typical, in the block's own words and with its gap (never call \
+    two different numbers the same), the pace I am at, and what is driving it: heart rate above my calm \
+    for this pace, HRV, beat pattern. If I am exercising or recovering from exercise, say so and that \
+    it is not scored.
+    - **Today so far** — the shape of the day from the 30-minute readings: when it rose, when it \
+    settled, today's average against my typical, and the last unusual stretch if there was one.
+    - **Likely why** — the most likely contributors, as a read, not a fact: last night's sleep, HRV and \
+    resting heart rate against my preceding days, exercise earlier, the time of day. NSS also rises \
+    with heat, caffeine, a meal, illness and talking.
+    - **What would help** — only when NSS now is "well above my typical" or "unusual for me": ONE \
+    bolded, concrete action for the next hour. Otherwise say plainly that nothing is needed.
+    - **This week** — only if daily averages are given: how today compares with my recent days.
+
+    Rules:
+    - EVERY number you write must appear VERBATIM in the numbers above. Do not compute a new figure; \
+    if one you want is absent, say it in words with no number.
+    - NSS measures extra load on my nervous system beyond what my movement explains, not mental stress \
+    alone. Never diagnose, and never call exercise stress.
+    - Each bullet starts with a **bolded claim of at most eight words**, then an em dash, then one or \
+    two short clauses. Numbers in **bold**. No headings, no preamble, no sign-off.
     """
 
     /// Canned lines that are REJECTED as titles: a model echoing one has told us nothing about the

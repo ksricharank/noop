@@ -26,6 +26,7 @@ struct StrandApp: App {
         let router = NavRouter()
         _router = StateObject(wrappedValue: router)
         NotificationPresenter.shared.onCoachBriefTapped = { [weak router] in router?.openCoach() }
+        NotificationPresenter.shared.onNSSHighTapped = { [weak router] in router?.openStress() }
         // Register the hydration reminder's action category up front, so a reminder that fires
         // before any Settings visit still carries its "Logged a cup" button (a category unknown at
         // fire time silently drops the actions).

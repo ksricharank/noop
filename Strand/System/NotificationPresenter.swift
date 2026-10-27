@@ -23,6 +23,8 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
     /// is a safe no-op (the tap is simply not routed) rather than a crash if this ever fires before the
     /// root has wired it.
     var onCoachBriefTapped: (() -> Void)?
+    /// 261026: a tapped high-NSS notification opens the Stress tab (`NSSNotifier`).
+    var onNSSHighTapped: (() -> Void)?
 
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
@@ -61,6 +63,9 @@ final class NotificationPresenter: NSObject, UNUserNotificationCenterDelegate {
         // water/hydration checks below still run for any other category.
         if response.notification.request.content.categoryIdentifier == CoachBriefScheduler.notificationCategoryId {
             onCoachBriefTapped?()
+        }
+        if response.notification.request.content.categoryIdentifier == NSSNotifier.categoryId {
+            onNSSHighTapped?()
         }
         // 260907: the strap-tap confirmation's Undo, handled before the add actions — it carries an
         // entry id in userInfo rather than an amount, so it cannot be expressed through the same sink.

@@ -49,6 +49,8 @@ struct CoachSettingsView: View {
     @State private var plainLanguagePromptDraft: String = ""
     @State private var sleepPromptExpanded: Bool = false
     @State private var sleepPromptDraft: String = ""
+    @State private var stressPromptExpanded: Bool = false
+    @State private var stressPromptDraft: String = ""
     @State private var notifTitlePromptDraft: String = ""
 
     var body: some View {
@@ -91,6 +93,7 @@ struct CoachSettingsView: View {
             insightPromptBar
             trendsPromptBar
             sleepPromptBar
+            stressPromptBar
             notifTitlePromptBar
         }
         // Opening this screen is the moment a stale catalogue is worth refreshing: a key exists here by
@@ -569,6 +572,21 @@ struct CoachSettingsView: View {
             current: { coach.customSleepPrompt },
             commit: { coach.customSleepPrompt = $0 },
             reset: { coach.resetSleepPrompt() })
+    }
+
+    private var stressPromptBar: some View {
+        promptEditorBar(
+            title: "Stress summary instructions",
+            promptKey: AICoachEngine.stressPromptKey,
+            icon: "bolt.heart",
+            customisedNote: "Customised. Your instructions shape the Stress tab's summary.",
+            defaultNote: "Edit what the coach says about your stress at the top of the Stress tab.",
+            expanded: $stressPromptExpanded,
+            draft: $stressPromptDraft,
+            isCustomised: coach.hasCustomStressPrompt,
+            current: { coach.customStressPrompt },
+            commit: { coach.customStressPrompt = $0 },
+            reset: { coach.resetStressPrompt() })
     }
 
     private var synthesisPromptBar: some View {

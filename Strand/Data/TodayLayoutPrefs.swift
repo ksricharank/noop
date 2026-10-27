@@ -29,6 +29,9 @@ enum TodaySection: String, CaseIterable, Identifiable {
     case keyMetrics
     case workouts
     case heartRate
+    /// 261026 (fork): today's NSS through the day, under the heart-rate card. Fork-only: no Android twin,
+    /// and `decodeOrder` back-fills it after Heart Rate in an order saved before it existed.
+    case nss
     case recoveryVitals
     case yourCards
     case menstrualCycle
@@ -49,6 +52,7 @@ enum TodaySection: String, CaseIterable, Identifiable {
         case .keyMetrics:     return String(localized: "Key Metrics")
         case .workouts:       return String(localized: "Workouts")
         case .heartRate:      return String(localized: "Heart Rate")
+        case .nss:            return String(localized: "Stress (NSS)")
         case .recoveryVitals: return String(localized: "Recovery Vitals")
         case .yourCards:      return String(localized: "Your Cards")
         case .menstrualCycle: return String(localized: "Menstrual Cycle")
@@ -64,7 +68,7 @@ enum TodaySection: String, CaseIterable, Identifiable {
     /// hero stays in the registry (right after Start-session) so un-hiding it lands somewhere sensible.
     /// The journal widget (#656) is last by default, where it was first added, above data-sources.
     static let defaultOrder: [TodaySection] = [
-        .synthesis, .liveSession, .hero, .keyMetrics, .workouts, .heartRate, .recoveryVitals, .yourCards,
+        .synthesis, .liveSession, .hero, .keyMetrics, .workouts, .heartRate, .nss, .recoveryVitals, .yourCards,
         .menstrualCycle, .journal, .addedCards,
     ]
 }
