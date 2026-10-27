@@ -8,6 +8,10 @@ import ActivityKit
 public struct NOOPActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable {
         public var bpm: Int?
+        /// Charge (0-100). No longer RENDERED anywhere (260905 — the maintainer removed it from the
+        /// expanded island, the last surface that showed it), but still populated on every push: it
+        /// is the decode-continuity field for activities re-adopted across a build change, exactly
+        /// as `bpm` was while the HR column was away, and it costs nothing to carry.
         public var recovery: Int?
         public var bonded: Bool
         // Effort / strain on NOOP's 0–100 axis (#446) — one more stat in the Dynamic Island expanded
@@ -23,15 +27,64 @@ public struct NOOPActivityAttributes: ActivityAttributes {
         // the phone (no pushes can reach it) is left holding the honest plain form, never the live
         // marker. Optional with a nil default (= no marker) so older builds' activities still decode.
         public var live: Bool?
+        // The three-pillar targets (deterministic, `DailyTargets` — the same numbers the coach
+        // synthesis cites). All optional with nil defaults for the same decode-compatibility reason
+        // as `effort`: nil simply drops the denominator / column on the card.
+        /// HISTORY: briefly the HR column's denominator (a calm ceiling). Retired 260830 — the
+        /// maintainer replaced the threshold with the live autonomic read (`breathe`) — but the
+        /// field stays declared so activities written by the 268/269 builds still decode.
+        public var hrCeiling: Int?
+        /// HISTORY: the breathe cue (true = non-metabolic HRV dip → red HR digits) lived one build
+        /// (270–271) and was retired 260830 with the HR column itself — the cue moved to the stress
+        /// check-in's strap buzz + screen notification. Declared so 270/271 activities still decode.
+        public var breathe: Bool?
+        /// Today's effort, PRE-FORMATTED on the user's chosen scale by the controller (the widget
+        /// extension can't read the scale preference) — the Effort column's numerator, and the
+        /// compact/minimal slots' whole payload.
+        public var effortDisplay: String?
+        /// Today's effort target, same pre-formatted scale — the Effort column's denominator.
+        public var effortTargetDisplay: String?
+        /// TOTAL calories so far today (resting metabolism included).
+        public var kcal: Int?
+        /// Today's TOTAL-calorie target (a full resting day + the prescribed session) — the Cal
+        /// column's denominator.
+        public var kcalTarget: Int?
+        /// Minutes of sleep to target tonight — the Sleep column ("8h05").
+        public var sleepNeedMin: Int?
+        /// Today's steps and today's step target — the Steps column ("6.2k/8k").
+        public var steps: Int?
+        public var stepsTarget: Int?
+        /// Today's water, in HALF-cups drunk and whole cups targeted (260905) — the expanded
+        /// island's Water column ("5/21"). Half-cups because that is the tracker's own resolution,
+        /// matching `WidgetSnapshot`; the column renders whole cups. Same nil-default
+        /// decode-compatibility rule as every field above — an activity written by an older build
+        /// still decodes, and a nil simply drops the column.
+        public var waterHalfCups: Int?
+        public var waterTargetCups: Int?
 
         public init(bpm: Int?, recovery: Int?, bonded: Bool, effort: Int? = nil, rest: Int? = nil,
-                    live: Bool? = nil) {
+                    live: Bool? = nil, effortDisplay: String? = nil,
+                    effortTargetDisplay: String? = nil, kcal: Int? = nil,
+                    kcalTarget: Int? = nil, sleepNeedMin: Int? = nil,
+                    steps: Int? = nil, stepsTarget: Int? = nil,
+                    waterHalfCups: Int? = nil, waterTargetCups: Int? = nil) {
             self.bpm = bpm
             self.recovery = recovery
             self.bonded = bonded
             self.effort = effort
             self.rest = rest
             self.live = live
+            self.hrCeiling = nil
+            self.breathe = nil
+            self.effortDisplay = effortDisplay
+            self.effortTargetDisplay = effortTargetDisplay
+            self.kcal = kcal
+            self.kcalTarget = kcalTarget
+            self.sleepNeedMin = sleepNeedMin
+            self.steps = steps
+            self.stepsTarget = stepsTarget
+            self.waterHalfCups = waterHalfCups
+            self.waterTargetCups = waterTargetCups
         }
     }
 
