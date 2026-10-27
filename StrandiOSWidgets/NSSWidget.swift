@@ -5,8 +5,8 @@ import WidgetKit
 /// Square home-screen widget: today's NSS (Normalized Stress Score), moving through the day (261024c).
 ///
 /// The number is NSS now, out of 100 (261024d: 0 = the wearer's calm state for the pace they were at,
-/// 20 points a swing above it), with their TYPICAL beside it and today's curve beneath over a dashed
-/// line at that typical. It reads `WidgetSnapshot`'s NSS fields, which the app
+/// 20 points a swing above it), top right; the rest of the box is today's curve (261026b), with a
+/// 0 · 33 · 67 · 100 y-axis, the time of day under it, and the wearer's TYPICAL as its own dashed line. It reads `WidgetSnapshot`'s NSS fields, which the app
 /// publishes after every quick pass from `NormalizedStressStore` — the same snapshot the Stress tab and
 /// the Today card show, so the three agree. The curve reuses the stress widget's geometry
 /// (`StressTrace`, `StressCurveShape`) with NSS mapped onto its fixed domain, so a gap is a gap and the
@@ -58,39 +58,39 @@ struct NSSWidgetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("NSS")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(StrandPalette.textPrimary)
-            HStack(alignment: .lastTextBaseline, spacing: 3) {
-                Text(now.map { "\($0)" } ?? "—")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .foregroundStyle(now.map(tint) ?? StrandPalette.textPrimary)
-                if now != nil {
-                    Text("of 100")
-                        .font(.system(size: 11))
+        // 261026b (maintainer: "lot of wasted space. use most of it for the chart"): one compact header
+        // row — the label and the typical key left, NSS now top right — and the chart takes the rest of
+        // the box, with its y-axis left and the time of day under it.
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .top, spacing: 4) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("NSS")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(StrandPalette.textPrimary)
+                    if let typical {
+                        HStack(spacing: 3) {
+                            typicalStroke.frame(width: 12, height: 1)
+                            Text("typical \(typical)")
+                        }
+                        .font(.system(size: 9))
                         .foregroundStyle(StrandPalette.textSecondary)
+                    } else if mean == nil {
+                        Text("No reading yet")
+                            .font(.system(size: 9))
+                            .foregroundStyle(StrandPalette.textSecondary)
+                    }
                 }
+                Spacer(minLength: 0)
+                Text(now.map { "\($0)" } ?? "—")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(now.map(tint) ?? StrandPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
             }
-            if let typical {
-                Text("typical \(typical)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(StrandPalette.textSecondary)
-            } else if let mean {
-                Text("avg \(mean)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(StrandPalette.textSecondary)
-            } else {
-                Text("No reading yet today")
-                    .font(.system(size: 11))
-                    .foregroundStyle(StrandPalette.textSecondary)
-            }
-            Spacer(minLength: 2)
             if series.contains(where: { $0.level != nil }) {
                 HStack(alignment: .top, spacing: 3) {
-                    // 261026: a y-axis (the maintainer "can't see what values the chart is referring to"):
-                    // the band edges 0 · 33 · 67 · 100 on the curve's fixed 0–100 domain, with faint grid
-                    // lines behind the curve at 33 and 67.
+                    // The y-axis: the band edges 0 · 33 · 67 · 100 on the curve's fixed 0–100 domain.
                     GeometryReader { geo in
                         ForEach([0, 33, 67, 100], id: \.self) { t in
                             Text("\(t)")
@@ -101,47 +101,77 @@ struct NSSWidgetView: View {
                                           y: geo.size.height * (1 - CGFloat(t) / 100))
                         }
                     }
-                    .frame(width: 16, height: 46)
-                ZStack {
-                    GeometryReader { geo in
-                        Path { p in
-                            for t in [33.0, 67.0] {
-                                let y = geo.size.height * (1 - CGFloat(t) / 100)
-                                p.move(to: CGPoint(x: 0, y: y))
-                                p.addLine(to: CGPoint(x: geo.size.width, y: y))
-                            }
-                        }
-                        .stroke(StrandPalette.textSecondary.opacity(0.18), lineWidth: 0.5)
-                    }
-                    // The wearer's typical, dashed, when there is one.
-                    if let typical {
+                    .frame(width: 16)
+                    ZStack {
+                        // Faint grid at the band edges, solid, so the dashed typical stands apart.
                         GeometryReader { geo in
                             Path { p in
-                                let y = geo.size.height * (1 - CGFloat(min(max(typical, 0), 100)) / 100)
-                                p.move(to: CGPoint(x: 0, y: y))
-                                p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                                for t in [0.0, 33.0, 67.0, 100.0] {
+                                    let y = geo.size.height * (1 - CGFloat(t) / 100)
+                                    p.move(to: CGPoint(x: 0, y: y))
+                                    p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                                }
                             }
-                            .stroke(StrandPalette.textSecondary.opacity(0.35),
-                                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .stroke(StrandPalette.textSecondary.opacity(0.18), lineWidth: 0.5)
+                        }
+                        StressCurveShape(series: series, filled: true)
+                            .fill(LinearGradient(colors: [steady.opacity(0.3), steady.opacity(0)],
+                                                 startPoint: .top, endPoint: .bottom))
+                        StressCurveShape(series: series, filled: false)
+                            .stroke(LinearGradient(colors: [tense, steady, calm],
+                                                   startPoint: .top, endPoint: .bottom),
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        // My typical: its own dashed line, brighter than the grid and drawn over the curve.
+                        if let typical {
+                            GeometryReader { geo in
+                                let y = geo.size.height * (1 - CGFloat(min(max(typical, 0), 100)) / 100)
+                                typicalStroke
+                                    .frame(width: geo.size.width, height: 1)
+                                    .position(x: geo.size.width / 2, y: y)
+                            }
                         }
                     }
-                    StressCurveShape(series: series, filled: true)
-                        .fill(LinearGradient(colors: [steady.opacity(0.3), steady.opacity(0)],
-                                             startPoint: .top, endPoint: .bottom))
-                    StressCurveShape(series: series, filled: false)
-                        .stroke(LinearGradient(colors: [tense, steady, calm],
-                                               startPoint: .top, endPoint: .bottom),
-                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 46)
+                .frame(maxHeight: .infinity)
+                .padding(.top, 4)   // room for the "100" label, centred on the top edge
+                // Time of day under the chart: first, middle and last reading.
+                if let first = points.first?.ts, let last = points.last?.ts {
+                    HStack {
+                        Text(Self.clock(first))
+                        Spacer(minLength: 2)
+                        Text(Self.clock((first + last) / 2))
+                        Spacer(minLength: 2)
+                        Text(Self.clock(last))
+                    }
+                    .font(.system(size: 8, weight: .medium).monospacedDigit())
+                    .foregroundStyle(StrandPalette.textSecondary)
+                    .lineLimit(1)
+                    .padding(.leading, 19)
                 }
+            } else {
+                Spacer(minLength: 0)
             }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         // 261026: a tap opens the Stress tab (`noop://stress`, handled in `StrandiOSApp.onOpenURL`).
         .widgetURL(URL(string: "noop://stress"))
+    }
+
+    /// The typical's dash: brighter than the grid and dashed, so it reads as a different line.
+    private var typicalStroke: some View {
+        Line()
+            .stroke(StrandPalette.textPrimary.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+    }
+
+    /// A compact clock for the time axis: "6:45a", "12:10p".
+    static func clock(_ ts: Int64) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "h:mma"
+        f.amSymbol = "a"
+        f.pmSymbol = "p"
+        return f.string(from: Date(timeIntervalSince1970: TimeInterval(ts)))
     }
 
     private var accessibilityText: String {
@@ -171,3 +201,14 @@ struct NSSWidget: Widget {
         .supportedFamilies([.systemSmall])
     }
 }
+
+/// A horizontal line across its frame's vertical centre, for the typical's dash.
+private struct Line: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.midY))
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return p
+    }
+}
+
