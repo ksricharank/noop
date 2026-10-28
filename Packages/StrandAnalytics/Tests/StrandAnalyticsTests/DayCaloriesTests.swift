@@ -280,4 +280,24 @@ final class DayCaloriesTests: XCTestCase {
         XCTAssertEqual(forward.activeKcal, 0.0, accuracy: 1e-12,
                        "the tie resolves to the lower reading, so no active energy is credited")
     }
+
+    /// 261024e: with the day's start, resting burn runs from midnight to the last reading whether or
+    /// not the strap saw it — an unworn stretch no longer costs resting calories. Active energy is
+    /// untouched, and without a start the worn-seconds behaviour is unchanged.
+    func testRestingBurnCoversTheUnwornPartOfTheDay() {
+        let profile = UserProfile()
+        let rate = Calories.restingKcalPerS(Calories.resolveCoeffs(profile.sex), weightKg: profile.weightKg,
+                                            heightCm: profile.heightCm, age: profile.age)
+        // Worn 00:00–01:00, off 01:00–03:00 (charging), worn 03:00–04:00, all at rest.
+        let hr = hrDay(bpm: 60, n: 3_600) + hrDay(bpm: 60, n: 3_600, start: 3 * 3_600)
+        let worn = Calories.estimateDayEnergy(hr, profile: profile, hrmax: 185, restingHR: 55)
+        let allDay = Calories.estimateDayEnergy(hr, profile: profile, hrmax: 185, restingHR: 55, dayStartTs: 0)
+        XCTAssertEqual(worn.restingKcal, rate * 7_261, accuracy: rate * 2, "worn seconds plus one capped gap")
+        XCTAssertEqual(allDay.restingKcal, rate * 4 * 3_600, accuracy: rate * 2,
+                       "midnight to the last reading, the charging gap included")
+        XCTAssertEqual(allDay.activeKcal, worn.activeKcal)
+        // A start after the readings cannot shrink below what was observed.
+        let late = Calories.estimateDayEnergy(hr, profile: profile, hrmax: 185, restingHR: 55, dayStartTs: 99_999)
+        XCTAssertEqual(late.restingKcal, worn.restingKcal, accuracy: 1e-9)
+    }
 }

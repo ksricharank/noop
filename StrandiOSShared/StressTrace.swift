@@ -21,6 +21,59 @@ public struct StressPoint: Codable, Equatable, Sendable {
     }
 }
 
+/// One 5-minute point of today's NSS (Normalized Stress Score, 0–100) for the square NSS widget
+/// (261024c). The app publishes these from `NormalizedStressStore`; the widget draws them through the
+/// stress trace's own geometry by mapping NSS onto its fixed 0–3 domain (NSS × 3/100) — the same
+/// mapping the Stress screen uses for NSS colours and bands, so HIGH means the same thing on both.
+public struct NSSPoint: Codable, Equatable, Sendable {
+    public let ts: Int64
+    public let nss: Double
+    public init(ts: Int64, nss: Double) { self.ts = ts; self.nss = nss }
+
+    /// The stress-trace series for `points`, with a nil-level point wherever two readings are more
+    /// than `gapSeconds` apart, so the curve breaks at a gap instead of drawing across it.
+    /// `scaleMax` (261028) is the top of the chart's y-axis on the NSS scale (`NSSChartScale`); the level
+    /// is mapped so that value lands at the top of the curve's fixed domain.
+    public static func stressSeries(_ points: [NSSPoint], gapSeconds: Int64 = 600,
+                                    scaleMax: Double = 100) -> [StressPoint] {
+        var out: [StressPoint] = []
+        var prev: Int64?
+        for p in points.sorted(by: { $0.ts < $1.ts }) {
+            if let prev, p.ts - prev > gapSeconds { out.append(StressPoint(ts: prev + 1, level: nil)) }
+            out.append(StressPoint(ts: p.ts, level: p.nss * StressTrace.domainMax / max(scaleMax, 1)))
+            prev = p.ts
+        }
+        return out
+    }
+}
+
+/// The y-axis of an NSS chart (261028, maintainer: "a flexible range wrt the y axis so that the space
+/// between 100 and the max NSS is not wasted empty space"). The top is the day's highest value (the
+/// readings, the typical line, and any extra reference such as the alert level) plus a little headroom,
+/// rounded up to a tick, never below `minimumTop` and never above 100. The ticks are evenly spaced
+/// round numbers from 0 to the top. One function for the app charts and the widget, so the two cannot
+/// disagree about where a value sits.
+public enum NSSChartScale {
+    public static let minimumTop = 30.0
+    public static let headroom = 5.0
+
+    public static func top(peak: Double) -> Double {
+        let raw = min(100, max(minimumTop, peak + headroom))
+        let step = tickStep(forTop: raw)
+        return min(100, (raw / step).rounded(.up) * step)
+    }
+
+    public static func ticks(top: Double) -> [Double] {
+        let step = tickStep(forTop: top)
+        return stride(from: 0.0, through: top + 0.001, by: step).map { $0 }
+    }
+
+    /// 10 up to 40, 20 up to 80, 25 above — three to five ticks.
+    static func tickStep(forTop top: Double) -> Double {
+        top <= 40 ? 10 : (top <= 80 ? 20 : 25)
+    }
+}
+
 /// The pure half of the stress widget: what the curve CONTAINS and where its ink goes.
 ///
 /// Swift twin of the Kotlin `StressTrace`. The domain, the gap rule, the band threshold and the tick
