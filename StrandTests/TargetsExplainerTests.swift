@@ -123,10 +123,10 @@ final class TargetsExplainerTests: XCTestCase {
             age: 34, restingHr: 55, profile: profile, debtBalanceMin: 0,
             waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50),
             effortForWater: 50, waterEffortIsAccrued: false)
-        XCTAssertTrue(planned[0].hasPrefix("WATER TARGET → 21 cups"), planned[0])
+        XCTAssertTrue(planned[0].hasPrefix("WATER TARGET → 17 cups"), planned[0])
         XCTAssertTrue(planned[0].contains("today's effort target 50 adds 5 cups"), planned[0])
         XCTAssertTrue(planned[0].contains("one cup per 10 points"), planned[0])
-        XCTAssertTrue(planned[0].contains("16 + 5 = 21 cups"), planned[0])
+        XCTAssertTrue(planned[0].contains("12 + 5 = 17 cups"), planned[0])
 
         // Exceeded the plan: the block says so, and says the ask cannot shrink back.
         let exceeded = TargetsExplainer.lines(
@@ -151,8 +151,8 @@ final class TargetsExplainerTests: XCTestCase {
             age: 34, restingHr: nil, profile: profile, debtBalanceMin: 0,
             waterTargetCups: HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil),
             effortForWater: nil, waterEffortIsAccrued: false)
-        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 16 cups"), blocks[0])
-        XCTAssertTrue(blocks[0].contains("baseline for your body: 16 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].hasPrefix("WATER TARGET → 12 cups"), blocks[0])
+        XCTAssertTrue(blocks[0].contains("baseline for your body: 12 cups"), blocks[0])
         XCTAssertTrue(blocks[0].contains("rest day, no effort target → +0 cups"), blocks[0])
     }
 

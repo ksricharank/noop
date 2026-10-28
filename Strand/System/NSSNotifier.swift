@@ -2,8 +2,9 @@ import Foundation
 import UserNotifications
 import StrandAnalytics
 
-/// A notification when NSS reaches the high band (261026, maintainer: "I want a notification when NSS
-/// exceeds 67"). 67 is the Stress screen's HIGH cut (NSS × 3/100 ≥ 2), the top gridline on the NSS chart.
+/// A notification when NSS reaches the wearer's alert level (261026, maintainer: "I want a notification
+/// when NSS exceeds 67"; 261028: "a configurable parameter … make the default as 50", set at the bottom
+/// of the Stress tab — `threshold`, stored under `thresholdKey`).
 ///
 /// Evaluated on every `NormalizedStressStore.update`, so it moves on the strap's sync cadence like the
 /// score itself; the reading is the smoothed one every surface shows, so the banner can never quote a
@@ -11,15 +12,31 @@ import StrandAnalytics
 /// cannot set this off. Gates, in `decide` (pure, pinned by `NSSNotifierTests`):
 /// - FRESH only: a reading more than `maxAgeSeconds` old (the last one before a workout or a strap gap)
 ///   neither fires nor re-arms — a banner must be about now.
-/// - ONE per high stretch: firing disarms it, and it re-arms only once NSS drops below `rearmBelow`, so
-///   a reading wobbling around 67 does not buzz on every sync.
+/// - ONE per high stretch: firing disarms it, and it re-arms only once NSS drops `rearmGap` below the
+///   alert level, so a reading wobbling around it does not buzz on every sync.
 /// - At most one per `cooldownSeconds` even across stretches.
 /// Tapping it opens the Stress tab (`NotificationPresenter.onNSSHighTapped`). On by default; the switch
-/// is on the Stress tab's "How NSS works" card. Fork-only: no Kotlin twin.
+/// and the level are on the Stress tab's last card. Fork-only: no Kotlin twin.
 enum NSSNotifier {
     static let categoryId = "nss-high"
-    static let threshold = 67.0
-    static let rearmBelow = 60.0
+    static let defaultThreshold = 50
+    static let thresholdRange = 10...95
+    static let thresholdKey = "nss.notifyThreshold"
+    /// How far below the alert level NSS must fall before the next stretch can alert.
+    static let rearmGap = 7.0
+
+    /// The alert level in force, clamped to `thresholdRange`.
+    static var threshold: Double {
+        get {
+            let v = UserDefaults.standard.integer(forKey: thresholdKey)
+            return Double(v > 0 ? min(max(v, thresholdRange.lowerBound), thresholdRange.upperBound)
+                          : defaultThreshold)
+        }
+        set {
+            let v = min(max(Int(newValue.rounded()), thresholdRange.lowerBound), thresholdRange.upperBound)
+            UserDefaults.standard.set(v, forKey: thresholdKey)
+        }
+    }
     static let cooldownSeconds = 3_600
     static let maxAgeSeconds = 15 * 60
 
@@ -38,9 +55,9 @@ enum NSSNotifier {
 
     /// Whether to post now, and the armed state to keep. Pure.
     static func decide(nss: Double?, readingTs: Int?, now: Int, armed: Bool,
-                       lastFired: Int?) -> (post: Bool, armed: Bool) {
+                       lastFired: Int?, threshold: Double) -> (post: Bool, armed: Bool) {
         guard let nss, let ts = readingTs, now - ts <= maxAgeSeconds else { return (false, armed) }
-        if nss < rearmBelow { return (false, true) }
+        if nss < threshold - rearmGap { return (false, true) }
         guard armed, nss >= threshold else { return (false, armed) }
         if let last = lastFired, now - last < cooldownSeconds { return (false, armed) }
         return (true, false)
@@ -55,16 +72,16 @@ enum NSSNotifier {
         let armed = d.object(forKey: armedKey) as? Bool ?? true
         let last = d.object(forKey: lastFiredKey) as? Int
         let decision = decide(nss: s.current?.nss, readingTs: s.current?.ts, now: now, armed: armed,
-                              lastFired: last)
+                              lastFired: last, threshold: threshold)
         if decision.armed != armed { d.set(decision.armed, forKey: armedKey) }
         guard decision.post, let c = s.current else { return nil }
         d.set(now, forKey: lastFiredKey)
         post(title: title(c), body: body(c, typical: s.typical, now: now))
-        return "nss: high notification posted (NSS \(Int(c.nss.rounded())), \(max(0, (now - c.ts) / 60)) min old)"
+        return "nss: high notification posted (NSS \(Int(c.nss.rounded())) ≥ alert \(Int(threshold)), \(max(0, (now - c.ts) / 60)) min old)"
     }
 
     static func title(_ c: NormalizedStress.Reading) -> String {
-        String(localized: "Stress is high — NSS \(Int(c.nss.rounded()))")
+        String(localized: "Stress is up — NSS \(Int(c.nss.rounded()))")
     }
 
     static func body(_ c: NormalizedStress.Reading, typical: Double?, now: Int) -> String {

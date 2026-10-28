@@ -97,6 +97,25 @@ public enum HydrationGoal {
         roundToNearest(baselineForSex(sex) + effortBump(effort: effort), step: roundToML)
     }
 
+    /// The body baseline for the CUPS target (261028, maintainer: "default of 19 cups seems high. should
+    /// this be like 11 or 12?"): what to DRINK, not total water.
+    ///
+    /// The ml baselines above (3.7 / 2.7 L) are the US National Academies' adequate intake of TOTAL
+    /// water, which includes roughly a fifth that comes from food. The cups target used them as a
+    /// drinking goal, so a man's day started at 16 cups before any effort. The Academies' own figure for
+    /// water from BEVERAGES is about 3.0 L (men) and 2.2 L (women), and that counts coffee, tea and milk,
+    /// which the tracker's taps do not; the European (EFSA) intake is lower still (about 2.0 L and 1.6 L
+    /// from drinks). So: 12 cups (2.8 L) for men, 9 (2.1 L) for women, 11 (2.6 L) unspecified — then
+    /// one cup per 10 points of effort target, unchanged. Fork-only (the cups path has no Android twin);
+    /// the ml goal and its Android twin are untouched.
+    public static func drinkingBaselineCups(sex: String) -> Int {
+        switch sex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "male", "m":   return 12
+        case "female", "f": return 9
+        default:            return 11
+        }
+    }
+
     /// Cups per 10 points of effort target — the maintainer's 260903 rule: "a target strain today
     /// of 50 leads to 16 + 50/10 = 21 cups". One extra cup per 10 points, on top of the body
     /// baseline in cups.
@@ -117,7 +136,7 @@ public enum HydrationGoal {
     /// "yesterday's effort of 8" when yesterday finished at 7), so a target priced off it was
     /// neither today's ask nor stable.
     public static func dailyGoalCups(sex: String, effortTarget: Double?) -> Int {
-        let baselineCups = cups(fromML: Double(baselineForSex(sex)))
+        let baselineCups = drinkingBaselineCups(sex: sex)
         let bump = Int(((effortTarget ?? 0) / 10.0 * cupsPerTenEffort).rounded())
         return max(1, baselineCups + max(0, bump))
     }

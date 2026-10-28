@@ -208,13 +208,16 @@ public struct DayQualityScore: Equatable, Sendable {
         public var restingHrBaseline: Double?
         /// Mean of the wearer's own recent daily targets, for the load factor. Nil disables it.
         public var recentAvgEffortTarget: Double?
+        /// 261028: the wearer's resting burn over a whole day (BMR × 24 h, the floor of `kcalTarget`).
+        /// When known it is the calorie ramp's zero — see `normalKcal`.
+        public var kcalResting: Int?
 
         public init(steps: Int? = nil, stepsTarget: Int? = nil, kcal: Int? = nil,
                     kcalTarget: Int? = nil, effort: Int? = nil, effortTarget: Int? = nil,
                     waterCups: Int? = nil, waterTargetCups: Int? = nil, sleepMin: Double? = nil,
                     sleepNeedMin: Int? = nil, hrv: Double? = nil, hrvBaseline: Double? = nil,
                     restingHr: Int? = nil, restingHrBaseline: Double? = nil,
-                    recentAvgEffortTarget: Double? = nil) {
+                    recentAvgEffortTarget: Double? = nil, kcalResting: Int? = nil) {
             self.steps = steps; self.stepsTarget = stepsTarget
             self.kcal = kcal; self.kcalTarget = kcalTarget
             self.effort = effort; self.effortTarget = effortTarget
@@ -223,6 +226,7 @@ public struct DayQualityScore: Equatable, Sendable {
             self.hrv = hrv; self.hrvBaseline = hrvBaseline
             self.restingHr = restingHr; self.restingHrBaseline = restingHrBaseline
             self.recentAvgEffortTarget = recentAvgEffortTarget
+            self.kcalResting = kcalResting
         }
     }
 
@@ -331,6 +335,24 @@ public struct DayQualityScore: Equatable, Sendable {
         return max(shortfallMultiple, min(max(cap, 1.0), x))
     }
 
+    /// The calorie ramp's zero (261028). The maintainer: "I got -13.9 out of 11 for accruing 1321 of 1840
+    /// cals which seems harsh". Since 19.28 a day's calories are its WHOLE burn — resting all day plus
+    /// exercise — and the target is resting burn (BMR × 24 h) plus the session. The fixed normal of 1600
+    /// sat BELOW a full day of pure rest (about 1700 for the maintainer), and only 240 kcal under that
+    /// 1840 target, so the ramp gave one point per 22 kcal and a day credited 1321 scored −13.9 of 11.
+    ///
+    /// A whole day cannot burn less than its resting burn, so a total below it means the day was not
+    /// fully recorded (the strap off, or the day's last reading early) — never under-activity. So when
+    /// the resting burn is known it is the zero (doing nothing earns nothing), the target earns the full
+    /// weight, and the component never goes below zero (`calorieFloor`). The fixed normal remains only
+    /// as the fallback when no profile resting burn is available.
+    public static func normalKcal(_ input: DayInput, config: Config) -> Double {
+        input.kcalResting.map(Double.init) ?? config.normalDay.kcal
+    }
+
+    /// The lowest calorie points when the resting burn is known: zero (see `normalKcal`).
+    public static let calorieFloor = 0.0
+
     /// The lowest and highest values `score(...)` can publish.
     public static let publishedMinimum = -100
     public static let publishedMaximum = 100
@@ -384,14 +406,15 @@ public struct DayQualityScore: Equatable, Sendable {
 
         /// Add one target-bearing component, or record it as missing.
         func addTarget(_ label: String, actual: Double?, target: Double?, rawWeight: Double,
-                       normalValue: Double, isRecovery: Bool,
+                       normalValue: Double, isRecovery: Bool, floor: Double? = nil,
                        detail: (Double, Double) -> String) {
             guard rawWeight > 0 else { return }
             guard let actual, let target, target > 0 else { missing.append(label); return }
             let weight = scaledWeight(rawWeight)
-            let points = componentPoints(actual: actual, normal: normalValue,
+            var points = componentPoints(actual: actual, normal: normalValue,
                                          target: target, weight: weight,
                                          cap: config.overshootCap)
+            if let floor { points = max(floor * weight, points) }
             if isRecovery { recPoints += points } else { execPoints += points }
             // `achieved` stays a fraction OF TARGET, which is what the evidence line and the
             // attribution card read — it is the plain-language "how much of it did I do", and it is
@@ -406,8 +429,14 @@ public struct DayQualityScore: Equatable, Sendable {
                   detail: { "\(Int($0)) of \(Int($1)) steps" })
         addTarget("Calories", actual: input.kcal.map(Double.init),
                   target: input.kcalTarget.map(Double.init), rawWeight: config.calorieWeight,
-                  normalValue: normal.kcal, isRecovery: false,
-                  detail: { "\(Int($0)) of \(Int($1)) kcal" })
+                  normalValue: normalKcal(input, config: config), isRecovery: false,
+                  floor: input.kcalResting == nil ? nil : calorieFloor,
+                  detail: { actual, target in
+                      guard let resting = input.kcalResting else { return "\(Int(actual)) of \(Int(target)) kcal" }
+                      return actual < Double(resting)
+                          ? "\(Int(actual)) of \(Int(target)) kcal — under your resting \(resting), day not fully recorded"
+                          : "\(Int(actual)) of \(Int(target)) kcal (resting \(resting))"
+                  })
         addTarget("Effort", actual: input.effort.map(Double.init),
                   target: input.effortTarget.map(Double.init), rawWeight: config.effortWeight,
                   normalValue: normal.effort, isRecovery: false,

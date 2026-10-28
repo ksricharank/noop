@@ -207,14 +207,17 @@ final class HydrationReminderTests: XCTestCase {
 @MainActor
 final class FrozenWaterTargetTests: XCTestCase {
 
-    /// The maintainer's rule: "a target strain today of 50 leads to 16 + 50/10 = 21 cups".
+    /// The maintainer's rule: "a target strain today of 50 leads to 16 + 50/10 = 21 cups" — with the
+    /// body baseline lowered to a DRINKING baseline on 261028 (16 → 12 cups for men), so 12 + 5 = 17.
     func testGoalIsBaselineCupsPlusOneCupPerTenEffort() {
-        XCTAssertEqual(HydrationGoal.cups(fromML: Double(HydrationGoal.baselineMaleML)), 16,
-                       "16 cups is the male baseline the rule is anchored on")
-        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50), 21)
-        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 0), 16)
-        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 100), 26)
-        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil), 16,
+        XCTAssertEqual(HydrationGoal.drinkingBaselineCups(sex: "male"), 12,
+                       "12 cups is the male drinking baseline the rule is anchored on")
+        XCTAssertEqual(HydrationGoal.drinkingBaselineCups(sex: "female"), 9)
+        XCTAssertEqual(HydrationGoal.drinkingBaselineCups(sex: "other"), 11)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 50), 17)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 0), 12)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: 100), 22)
+        XCTAssertEqual(HydrationGoal.dailyGoalCups(sex: "male", effortTarget: nil), 12,
                        "a rest day prices the body baseline alone")
         XCTAssertGreaterThanOrEqual(HydrationGoal.dailyGoalCups(sex: "", effortTarget: -50), 1)
     }

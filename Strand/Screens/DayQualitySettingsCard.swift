@@ -22,7 +22,6 @@ struct DayQualitySettingsCard: View {
     @State private var expanded = false
     // The absolute normal-day anchor — the day the score calls zero (260909).
     @State private var normalSteps = DayQualityPrefs.normalSteps
-    @State private var normalKcal = DayQualityPrefs.normalKcal
     @State private var normalEffort = DayQualityPrefs.normalEffort
     @State private var normalWater = DayQualityPrefs.normalWaterCups
     @State private var normalSleepMin = DayQualityPrefs.normalSleepMin
@@ -44,7 +43,7 @@ struct DayQualitySettingsCard: View {
                             // for weighting knobs but the wrong one for the definition of zero: it is
                             // what the whole number means, and a reader needs it to interpret every
                             // score on the page above.
-                            Text("Zero is \(normalSteps) steps · \(normalKcal) kcal · effort \(normalEffort) · \(normalWater) cups · \(Self.hours(normalSleepMin)) sleep")
+                            Text("Zero is \(normalSteps) steps · your resting burn · effort \(normalEffort) · \(normalWater) cups · \(Self.hours(normalSleepMin)) sleep")
                                 .font(StrandFont.caption)
                                 .foregroundStyle(StrandPalette.textTertiary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -83,12 +82,8 @@ struct DayQualitySettingsCard: View {
                         value: $normalSteps, suffix: "", range: 0...20_000, step: 250
                     ) { DayQualityPrefs.setNormalSteps($0) }
 
-                    rowDivider
-                    stepperRow(
-                        label: "Normal calories",
-                        help: "Active calories burned on such a day.",
-                        value: $normalKcal, suffix: " kcal", range: 0...6000, step: 50
-                    ) { DayQualityPrefs.setNormalKcal($0) }
+                    // 261028: no "Normal calories" knob. Calories are a whole day's burn, and their zero is
+                    // the wearer's own resting burn (`DayQualityScore.normalKcal`), not a typed number.
 
                     rowDivider
                     stepperRow(
@@ -118,7 +113,6 @@ struct DayQualitySettingsCard: View {
                         Button("Reset the normal day") {
                             DayQualityPrefs.resetNormalDay()
                             normalSteps = DayQualityPrefs.normalSteps
-                            normalKcal = DayQualityPrefs.normalKcal
                             normalEffort = DayQualityPrefs.normalEffort
                             normalWater = DayQualityPrefs.normalWaterCups
                             normalSleepMin = DayQualityPrefs.normalSleepMin

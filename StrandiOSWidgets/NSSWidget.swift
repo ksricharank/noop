@@ -6,7 +6,7 @@ import WidgetKit
 ///
 /// The number is NSS now, out of 100 (261024d: 0 = the wearer's calm state for the pace they were at,
 /// 20 points a swing above it), top right; the rest of the box is today's curve (261026b), with a
-/// 0 · 33 · 67 · 100 y-axis, the time of day under it, and the wearer's TYPICAL as its own dashed line. It reads `WidgetSnapshot`'s NSS fields, which the app
+/// y-axis whose top follows the day (261028, `NSSChartScale`), the time of day under it, and the wearer's TYPICAL as its own dashed line. It reads `WidgetSnapshot`'s NSS fields, which the app
 /// publishes after every quick pass from `NormalizedStressStore` — the same snapshot the Stress tab and
 /// the Today card show, so the three agree. The curve reuses the stress widget's geometry
 /// (`StressTrace`, `StressCurveShape`) with NSS mapped onto its fixed domain, so a gap is a gap and the
@@ -42,7 +42,11 @@ struct NSSWidgetView: View {
     let entry: NSSEntry
 
     private var points: [NSSPoint] { entry.snap?.nssCurve(now: entry.date) ?? [] }
-    private var series: [StressPoint] { NSSPoint.stressSeries(points) }
+    /// 261028: the y-axis top follows the day (`NSSChartScale`, the same function as the app's charts).
+    private var top: Double {
+        NSSChartScale.top(peak: max(points.map(\.nss).max() ?? 0, Double(typical ?? 0)))
+    }
+    private var series: [StressPoint] { NSSPoint.stressSeries(points, scaleMax: top) }
     /// The figures, only for today: a snapshot from a finished day shows nothing rather than yesterday.
     private var now: Int? { points.isEmpty ? nil : entry.snap?.nssNow }
     private var mean: Int? { points.isEmpty ? nil : entry.snap?.nssMean }
@@ -90,15 +94,15 @@ struct NSSWidgetView: View {
             }
             if series.contains(where: { $0.level != nil }) {
                 HStack(alignment: .top, spacing: 3) {
-                    // The y-axis: the band edges 0 · 33 · 67 · 100 on the curve's fixed 0–100 domain.
+                    // The y-axis: round ticks from 0 to the day's top (261028; it was a fixed 0–100).
                     GeometryReader { geo in
-                        ForEach([0, 33, 67, 100], id: \.self) { t in
-                            Text("\(t)")
+                        ForEach(NSSChartScale.ticks(top: top), id: \.self) { t in
+                            Text("\(Int(t))")
                                 .font(.system(size: 7, weight: .medium).monospacedDigit())
                                 .lineLimit(1).fixedSize()
                                 .foregroundStyle(StrandPalette.textSecondary)
                                 .position(x: geo.size.width / 2,
-                                          y: geo.size.height * (1 - CGFloat(t) / 100))
+                                          y: geo.size.height * (1 - CGFloat(t / top)))
                         }
                     }
                     .frame(width: 16)
@@ -106,8 +110,8 @@ struct NSSWidgetView: View {
                         // Faint grid at the band edges, solid, so the dashed typical stands apart.
                         GeometryReader { geo in
                             Path { p in
-                                for t in [0.0, 33.0, 67.0, 100.0] {
-                                    let y = geo.size.height * (1 - CGFloat(t) / 100)
+                                for t in NSSChartScale.ticks(top: top) {
+                                    let y = geo.size.height * (1 - CGFloat(t / top))
                                     p.move(to: CGPoint(x: 0, y: y))
                                     p.addLine(to: CGPoint(x: geo.size.width, y: y))
                                 }
@@ -118,13 +122,17 @@ struct NSSWidgetView: View {
                             .fill(LinearGradient(colors: [steady.opacity(0.3), steady.opacity(0)],
                                                  startPoint: .top, endPoint: .bottom))
                         StressCurveShape(series: series, filled: false)
-                            .stroke(LinearGradient(colors: [tense, steady, calm],
-                                                   startPoint: .top, endPoint: .bottom),
+                            // Colour by value, not by height: sampled down the visible range, so the
+                            // band colours stay true however far the axis is zoomed in.
+                            .stroke(LinearGradient(stops: (0...8).map { i in
+                                        let f = Double(i) / 8
+                                        return .init(color: tint(Int(top * (1 - f))), location: f)
+                                    }, startPoint: .top, endPoint: .bottom),
                                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                         // My typical: its own dashed line, brighter than the grid and drawn over the curve.
                         if let typical {
                             GeometryReader { geo in
-                                let y = geo.size.height * (1 - CGFloat(min(max(typical, 0), 100)) / 100)
+                                let y = geo.size.height * (1 - CGFloat(min(max(Double(typical), 0), top) / top))
                                 typicalStroke
                                     .frame(width: geo.size.width, height: 1)
                                     .position(x: geo.size.width / 2, y: y)

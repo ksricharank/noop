@@ -147,8 +147,7 @@ struct NSSCard: View {
 
 /// Today's NSS through the day WITH ITS AXES (261026: the maintainer "can't see what values the chart is
 /// referring to" — the line had only the dashed typical). The Stress tab's own `DaytimeLoadLine`, so there
-/// is one drawing of the day, framed by a y-axis at the band edges (0 · 33 · 67 · 100, the screen's calm /
-/// moderate / high cut points and the notification line at 67), the first, middle and last times under
+/// is one drawing of the day, framed by a y-axis (261028: its top follows the day's highest value, see `NSSChartScale`), the first, middle and last times under
 /// it, and a key for the dashed typical. Used by the Stress tab's timeline, the NSS card, Today's NSS
 /// section and the Today-hosted stress card.
 struct NSSDayChart: View {
@@ -156,30 +155,37 @@ struct NSSDayChart: View {
     let typical: Double?
     var height: CGFloat = 92
 
-    /// The y-axis ticks, on the NSS scale.
-    static let ticks: [Double] = [0, 33, 67, 100]
     private let gutter: CGFloat = 26
+
+    /// 261028: the top of the y-axis follows the day (`NSSChartScale`), so the space above the day's
+    /// highest reading is not empty chart.
+    private var top: Double {
+        NSSChartScale.top(peak: max(readings.map(\.nss).max() ?? 0, typical ?? 0))
+    }
 
     var body: some View {
         let points = NSSCard.linePoints(readings)
+        let top = self.top
+        let ticks = NSSChartScale.ticks(top: top)
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: 4) {
-                // y-axis labels, placed on the same 0–100 mapping the line uses (level = NSS × 3/100).
+                // y-axis labels, placed on the same mapping the line uses (level = NSS × 3/100).
                 GeometryReader { geo in
-                    ForEach(Self.ticks, id: \.self) { t in
+                    ForEach(ticks, id: \.self) { t in
                         Text("\(Int(t))")
                             .font(StrandFont.footnote)
                             .monospacedDigit()
                             .foregroundStyle(StrandPalette.textTertiary)
                             .frame(width: gutter, alignment: .trailing)
-                            .position(x: gutter / 2, y: geo.size.height * (1 - CGFloat(t / 100)))
+                            .position(x: gutter / 2, y: geo.size.height * (1 - CGFloat(t / top)))
                     }
                 }
                 .frame(width: gutter, height: height)
                 DaytimeLoadLine(hours: points, referenceLevel: typical.map(NSSCard.level),
-                                gridLevels: Self.ticks.map(NSSCard.level), chartHeight: height)
+                                gridLevels: ticks.map(NSSCard.level), chartHeight: height,
+                                domainMax: NSSCard.level(top))
             }
-            .padding(.vertical, 6)   // room for the 0 and 100 labels, which centre on the chart's edges
+            .padding(.vertical, 6)   // room for the bottom and top labels, which centre on the chart's edges
             HStack {
                 if let first = points.first, let last = points.last {
                     Text(NSSCard.clock(first.startTs))
@@ -193,7 +199,7 @@ struct NSSDayChart: View {
             .foregroundStyle(StrandPalette.textTertiary)
             .padding(.leading, gutter + 4)
             if let typical {
-                Text("Dashed line: your typical \(Int(typical.rounded())). 67 and above is high.")
+                Text("Dashed line: your typical \(Int(typical.rounded())). You're alerted at \(Int(NSSNotifier.threshold)).")
                     .font(StrandFont.footnote)
                     .foregroundStyle(StrandPalette.textTertiary)
                     .padding(.leading, gutter + 4)

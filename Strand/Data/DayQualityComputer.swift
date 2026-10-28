@@ -143,7 +143,9 @@ enum DayQualityComputer {
             hrvBaseline: hrvBaseline,
             restingHr: nightRow?.restingHr,
             restingHrBaseline: rhrBaseline,
-            recentAvgEffortTarget: recentAvgEffortTarget(before: day, targetsByDay: targetsByDay)
+            recentAvgEffortTarget: recentAvgEffortTarget(before: day, targetsByDay: targetsByDay),
+            // 261028: the calorie ramp's zero — a whole day of resting burn, the target's own floor.
+            kcalResting: DailyTargets.dayKcalTarget(session: nil, profile: profile, restingHr: nil)
         )
     }
 

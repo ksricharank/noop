@@ -269,12 +269,12 @@ enum TargetsExplainer {
 
         // ── WATER: body-size baseline in cups, plus a cup per 10 points of effort target ───
         if let waterTargetCups {
-            let baselineML = HydrationGoal.baselineForSex(profile.sex)
-            let baselineCups = HydrationGoal.cups(fromML: Double(baselineML))
+            let baselineCups = HydrationGoal.drinkingBaselineCups(sex: profile.sex)
+            let baselineML = baselineCups * HydrationGoal.cupML
             let target = Int((effortForWater ?? 0).rounded())
             let bumpCups = max(0, waterTargetCups - baselineCups)
             var w: [String] = ["WATER TARGET → \(waterTargetCups) cups"]
-            w.append("baseline for your body: \(baselineCups) cups (\(baselineML) ml at "
+            w.append("baseline for your body: \(baselineCups) cups to drink (\(baselineML) ml at "
                      + "\(HydrationGoal.cupML) ml a cup)")
             if target > 0 {
                 // Name WHICH of the two the number came from, or a day that went harder than

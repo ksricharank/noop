@@ -104,12 +104,14 @@ struct DayQualityCounterfactualCard: View {
     let actuals: [String: Double]
     let targets: [String: Double]
     let config: DayQualityScore.Config
+    /// 261028: the calorie ramp's zero for this day (`DayQualityScore.normalKcal`), when known.
+    var kcalNormal: Double? = nil
 
     /// The normal-day reference each component's ramp starts from, keyed by the SAME labels the scorer
     /// emits. Derived from the config rather than restated here, so a tuned anchor moves the
     /// suggestions with it.
     private var normals: [String: Double] {
-        ["Steps": config.normalDay.steps, "Calories": config.normalDay.kcal,
+        ["Steps": config.normalDay.steps, "Calories": kcalNormal ?? config.normalDay.kcal,
          "Effort": config.normalDay.effort, "Water": config.normalDay.waterCups,
          "Sleep": config.normalDay.sleepMin]
     }

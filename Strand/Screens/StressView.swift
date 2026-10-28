@@ -44,6 +44,8 @@ struct StressView: View {
     @State private var baselineDaysText = "\(NormalizedStressStore.baselineDays)"
     /// 261026: the high-NSS notification switch (`NSSNotifier`, on by default).
     @State private var notifyHigh = NSSNotifier.enabled
+    /// 261028: the alert level, as typed (applied on submit).
+    @State private var alertLevelText = "\(Int(NSSNotifier.threshold))"
 
     /// The stored 0–3 stress series ("my-whoop"), oldest→newest. Empty → derive.
     @State private var storedSeries: [(day: String, value: Double)] = []
@@ -250,6 +252,10 @@ struct StressView: View {
             // 5. Transparency — how the number is built.
             methodologyCard(model)
                 .staggeredAppear(index: 4)
+
+            // 6. The high-stress alert (261028: its level is configurable, default 50, "at the bottom").
+            alertCard
+                .staggeredAppear(index: 5)
         }
         // The sustained-stress suggestion opens the existing Breathe trainer in a sheet —
         // in-app and passive (no alert / notification), inheriting the app environment.
@@ -791,23 +797,6 @@ struct StressView: View {
                 Divider().overlay(StrandPalette.hairline)
                 baselineWindowRow
                 Divider().overlay(StrandPalette.hairline)
-                Toggle(isOn: $notifyHigh) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Notify me when NSS reaches 67")
-                            .font(StrandFont.body)
-                            .foregroundStyle(StrandPalette.textPrimary)
-                        Text("Once per high stretch, at most hourly, and only for a fresh reading. Exercise never sets it off.")
-                            .font(StrandFont.footnote)
-                            .foregroundStyle(StrandPalette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .tint(StrandPalette.accent)
-                .onChangeCompat(of: notifyHigh) { on in
-                    NSSNotifier.enabled = on
-                    if on { NSSNotifier.requestAuthorization() }
-                }
-                Divider().overlay(StrandPalette.hairline)
                 HStack(spacing: 0) {
                     bandLegend("0-33", String(localized: "NEAR CALM"), StressRamp.calm)
                     bandLegend("33-67", String(localized: "ABOVE CALM"), StressRamp.steady)
@@ -815,6 +804,66 @@ struct StressView: View {
                 }
             }
         }
+    }
+
+    /// 261028: the high-NSS notification — on/off and the NSS it fires at (`NSSNotifier`).
+    private var alertCard: some View {
+        VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+            SectionHeader("Alerts", overline: "High stress")
+            NoopCard {
+                VStack(alignment: .leading, spacing: NoopMetrics.cardInnerSpacing) {
+                    Toggle(isOn: $notifyHigh) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Notify me when stress is high")
+                                .font(StrandFont.body)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text("Once per high stretch, at most hourly, and only for a fresh reading. Exercise never sets it off.")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(StrandPalette.accent)
+                    .onChangeCompat(of: notifyHigh) { on in
+                        NSSNotifier.enabled = on
+                        if on { NSSNotifier.requestAuthorization() }
+                    }
+                    Divider().overlay(StrandPalette.hairline)
+                    HStack(spacing: NoopMetrics.space2) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Alert at NSS")
+                                .font(StrandFont.body)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text("\(NSSNotifier.thresholdRange.lowerBound)–\(NSSNotifier.thresholdRange.upperBound); default \(NSSNotifier.defaultThreshold).\(nss.snapshot.typical.map { " Your typical is \(Int($0.rounded()))." } ?? "")")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                        TextField("\(NSSNotifier.defaultThreshold)", text: $alertLevelText)
+                            .font(StrandFont.bodyNumber)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 56)
+                            #if os(iOS)
+                            .keyboardType(.numberPad)
+                            #endif
+                            .onSubmit { applyAlertLevel() }
+                        Button("Apply") { applyAlertLevel() }
+                            .font(StrandFont.footnote)
+                            .tint(StrandPalette.accent)
+                    }
+                    .opacity(notifyHigh ? 1 : 0.45)
+                    .disabled(!notifyHigh)
+                }
+            }
+        }
+    }
+
+    private func applyAlertLevel() {
+        if let n = Int(alertLevelText.trimmingCharacters(in: .whitespaces)) {
+            NSSNotifier.threshold = Double(n)
+        }
+        alertLevelText = "\(Int(NSSNotifier.threshold))"   // reflect the clamped value
     }
 
     /// 261024d: the NSS baseline window, free-form (maintainer: "make the window parameter free form
@@ -1206,6 +1255,10 @@ struct DaytimeLoadLine: View {
     /// 261026: faint horizontal grid lines at these 0–3 levels — the y-axis ticks `NSSDayChart` labels.
     var gridLevels: [Double] = []
     var chartHeight: CGFloat = 78
+    /// 261028: the 0–3 level at the TOP of the chart — 3 for the full scale; NSS charts pass a lower top
+    /// (`NSSChartScale`) so a calm day is not drawn in the bottom third. The colour ramp follows it, so a
+    /// colour still means its level.
+    var domainMax: Double = 3
 
     var body: some View {
         GeometryReader { geo in
@@ -1214,7 +1267,7 @@ struct DaytimeLoadLine: View {
             // y maps a 0–3 level into the chart (0 at bottom), for the baseline rule below. The x
             // placement moved into `scoredRuns`, which needs it per point anyway.
             // (a closure, not a `func` — a `@ViewBuilder` closure can't contain declarations)
-            let y: (Double) -> CGFloat = { level in h - h * CGFloat(min(max(level / 3.0, 0), 1)) }
+            let y: (Double) -> CGFloat = { level in h - h * CGFloat(min(max(level / domainMax, 0), 1)) }
 
             // Contiguous runs of scored hours. Built in a method, not here: this is a
             // `@ViewBuilder` closure and cannot hold statements.
@@ -1248,7 +1301,10 @@ struct DaytimeLoadLine: View {
                 // is what the Kotlin twin does and what the legend claims. Amber at the top, blue at the
                 // bottom: `StressRamp.gradient` runs calm-first, so it is reversed here.
                 let levelRamp = LinearGradient(
-                    gradient: Gradient(colors: Array(StressRamp.stops.map(\.color).reversed())),
+                    gradient: Gradient(stops: (0...6).map { i in
+                        let f = Double(i) / 6
+                        return Gradient.Stop(color: StressRamp.color(domainMax * (1 - f)), location: f)
+                    }),
                     startPoint: .top, endPoint: .bottom
                 )
                 ForEach(Array(runs.enumerated()), id: \.offset) { _, seg in
@@ -1302,7 +1358,7 @@ struct DaytimeLoadLine: View {
                 continue
             }
             let px = n <= 1 ? w / 2 : w * CGFloat(i) / CGFloat(n - 1)
-            let py = h - h * CGFloat(min(max(level / 3.0, 0), 1))
+            let py = h - h * CGFloat(min(max(level / domainMax, 0), 1))
             run.append((px, py))
         }
         if !run.isEmpty { out.append(run) }
@@ -1313,7 +1369,7 @@ struct DaytimeLoadLine: View {
     /// point can be coloured by what it actually reads rather than by a fixed guess.
     private func level(at yPos: CGFloat, height: CGFloat) -> Double {
         guard height > 0 else { return 0 }
-        return Double((height - yPos) / height) * 3.0
+        return Double((height - yPos) / height) * domainMax
     }
 
     /// A smooth (Catmull-Rom-ish) stroke through the scored points.

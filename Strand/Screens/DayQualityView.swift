@@ -50,6 +50,8 @@ struct DayQualityView: View {
     @State private var browsedBreakdown: DayQualityScore?
     @State private var browsedActuals: [String: Double] = [:]
     @State private var browsedTargets: [String: Double] = [:]
+    /// 261028: the browsed day's calorie zero (its resting burn), for the counterfactual card.
+    @State private var browsedKcalNormal: Double?
 
     private var visibleSections: [DaySection] {
         DayLayoutPrefs.visibleOrder(orderRaw: daySectionOrderRaw, hiddenRaw: dayHiddenSectionsRaw)
@@ -114,7 +116,8 @@ struct DayQualityView: View {
         case .counterfactual:
             if let b = browsedBreakdown {
                 DayQualityCounterfactualCard(score: b, actuals: browsedActuals,
-                                             targets: browsedTargets, config: DayQualityPrefs.config)
+                                             targets: browsedTargets, config: DayQualityPrefs.config,
+                                             kcalNormal: browsedKcalNormal)
             }
         case .streaks:
             DayQualityStreakCard(valuesByDay: scoresByDay, windowLabel: window.label)
@@ -423,7 +426,7 @@ struct DayQualityView: View {
         // The browsed day's actuals and targets, keyed by the SAME component labels the scorer emits —
         // the counterfactual card matches on those, so they have to agree exactly.
         guard let browsed, let i = input(browsed) else {
-            browsedBreakdown = nil; browsedActuals = [:]; browsedTargets = [:]
+            browsedBreakdown = nil; browsedActuals = [:]; browsedTargets = [:]; browsedKcalNormal = nil
             return
         }
         browsedBreakdown = DayQualityScore.score(i, config: config)
@@ -439,6 +442,7 @@ struct DayQualityView: View {
         // for gains within reach, and an autonomic signal is not one of them.
         browsedActuals = actuals
         browsedTargets = tgts
+        browsedKcalNormal = DayQualityScore.normalKcal(i, config: config)
     }
 
     private static let dayParser: DateFormatter = {
