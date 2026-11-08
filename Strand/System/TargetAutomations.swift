@@ -72,6 +72,7 @@ enum TargetAutomations {
         case paceCheck = "auto.wristBuzz.paceCheck"
         case water = "auto.wristBuzz.water"
         case breathe = "auto.wristBuzz.breathe"
+        case nssHigh = "auto.wristBuzz.nssHigh"
 
         var label: String {
             switch self {
@@ -79,6 +80,7 @@ enum TargetAutomations {
             case .paceCheck: return String(localized: "Pace checks")
             case .water: return String(localized: "Water reminders")
             case .breathe: return String(localized: "Stress check-ins")
+            case .nssHigh: return String(localized: "High stress alerts")
             }
         }
     }
@@ -93,9 +95,11 @@ enum TargetAutomations {
     /// shipped, on its own path and with its own Automations toggle. Making it depend on the new
     /// master would SILENCE an existing cue for anyone who leaves the master off — a regression
     /// dressed as a feature. So its per-cue switch stands alone: on unless explicitly turned off.
+    /// `nssHigh` (261108) stands alone for the same reason: the NSS alert has its own switch on the
+    /// Stress tab, and an alert the user turned on should be felt without a second master switch.
     static func buzzEnabled(_ cue: BuzzCue) -> Bool {
         let ownSwitch = d.object(forKey: cue.rawValue) as? Bool ?? true
-        guard cue != .breathe else { return ownSwitch }
+        guard cue != .breathe, cue != .nssHigh else { return ownSwitch }
         return wristBuzzEnabled && ownSwitch
     }
     /// Check-in cadence: nudge-eligible at the top of every N hours through the waking window.

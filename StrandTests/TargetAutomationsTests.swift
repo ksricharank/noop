@@ -312,6 +312,15 @@ final class NudgeWristBuzzTests: XCTestCase {
         XCTAssertFalse(TargetAutomations.buzzEnabled(.breathe))
     }
 
+    /// 261108: the high-NSS alert has its own switch on the Stress tab, so its buzz must not depend on
+    /// the Automations master — "when my NSS exceeds the target, I don't feel a vibration".
+    func testTheHighStressAlertBuzzesWithTheMasterOff() {
+        UserDefaults.standard.set(false, forKey: TargetAutomations.K.wristBuzz)
+        XCTAssertTrue(TargetAutomations.buzzEnabled(.nssHigh))
+        UserDefaults.standard.set(false, forKey: TargetAutomations.BuzzCue.nssHigh.rawValue)
+        XCTAssertFalse(TargetAutomations.buzzEnabled(.nssHigh))
+    }
+
     /// Structural, like the recovery guard: every app-posted nudge must offer the buzz, so a new
     /// nudge cannot ship as a cue the user expected and never felt.
     func testEveryAppPostedNudgeBuzzes() throws {

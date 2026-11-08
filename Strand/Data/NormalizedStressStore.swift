@@ -127,6 +127,9 @@ final class NormalizedStressStore: ObservableObject {
         var liveWorkoutStart: Int?
     }
     var exerciseInputs: (@MainActor () -> ExerciseInputs)?
+    /// 261108: called right after a high-NSS notification posts, so `AppModel` can buzz the strap with
+    /// it (the store has no link of its own). Returns the log line for what the buzz did.
+    var onHighAlert: (@MainActor () -> String?)?
 
     private var state: Persisted?
     private var running = false
@@ -268,7 +271,10 @@ final class NormalizedStressStore: ObservableObject {
         log?(Self.logLine(snapshot, added: added, backfilled: filled,
                           ms: Int(Date().timeIntervalSince(started) * 1000), now: nowTs))
         // 261026: the high-NSS notification, on the snapshot every surface now shows.
-        if let line = NSSNotifier.evaluate(snapshot, now: nowTs) { log?(line) }
+        if let line = NSSNotifier.evaluate(snapshot, now: nowTs) {
+            log?(line)
+            if let buzz = onHighAlert?() { log?(buzz) }
+        }
     }
 
     /// The `nss:` strap-log line — the validation record the engine's doc asks for: what was scored,

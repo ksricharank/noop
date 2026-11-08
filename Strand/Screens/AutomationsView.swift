@@ -412,6 +412,8 @@ struct AutomationsView: View {
                         ToggleRow(label: cue.label,
                                   help: cue == .breathe
                                       ? String(localized: "Stress check-ins buzz on their own path too, so this stays on even with the switch above off.")
+                                      : cue == .nssHigh
+                                      ? String(localized: "Buzzes with the high-NSS alert from the Stress tab, so this stays on even with the switch above off.")
                                       : String(localized: "Buzz the strap when this nudge is posted."),
                                   isOn: buzzCueBinding(cue))
                     }

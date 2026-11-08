@@ -44,6 +44,7 @@ struct StressView: View {
     @State private var baselineDaysText = "\(NormalizedStressStore.baselineDays)"
     /// 261026: the high-NSS notification switch (`NSSNotifier`, on by default).
     @State private var notifyHigh = NSSNotifier.enabled
+    @State private var buzzHigh = TargetAutomations.buzzEnabled(.nssHigh)
     /// 261028: the alert level, as typed (applied on submit).
     @State private var alertLevelText = "\(Int(NSSNotifier.threshold))"
 
@@ -851,6 +852,25 @@ struct StressView: View {
                         Button("Apply") { applyAlertLevel() }
                             .font(StrandFont.footnote)
                             .tint(StrandPalette.accent)
+                    }
+                    .opacity(notifyHigh ? 1 : 0.45)
+                    .disabled(!notifyHigh)
+                    Divider().overlay(StrandPalette.hairline)
+                    // 261108: the same switch as Automations › Buzz my wrist › High stress alerts.
+                    Toggle(isOn: $buzzHigh) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Buzz my strap too")
+                                .font(StrandFont.body)
+                                .foregroundStyle(StrandPalette.textPrimary)
+                            Text("Needs the strap connected; a charging or out-of-range strap gets no buzz.")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .tint(StrandPalette.accent)
+                    .onChangeCompat(of: buzzHigh) { on in
+                        UserDefaults.standard.set(on, forKey: TargetAutomations.BuzzCue.nssHigh.rawValue)
                     }
                     .opacity(notifyHigh ? 1 : 0.45)
                     .disabled(!notifyHigh)

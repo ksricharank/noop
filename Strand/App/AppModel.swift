@@ -298,6 +298,15 @@ final class AppModel: ObservableObject {
                 maxHR: Double(profile.hrMax),
                 liveWorkoutStart: self?.activeWorkout.map { Int($0.start.timeIntervalSince1970) })
         }
+        // 261108: the high-NSS alert buzzes the strap too (the user felt nothing). Same acknowledged
+        // path as the other nudges; the line says what happened, since a skipped buzz is invisible.
+        NormalizedStressStore.shared.onHighAlert = { [weak self] in
+            guard let self else { return nil }
+            guard TargetAutomations.buzzEnabled(.nssHigh) else { return "nss: strap buzz off (Automations)" }
+            guard self.canBuzz else { return "nss: strap buzz skipped — strap not bonded" }
+            self.buzzStrapOnce()
+            return "nss: strap buzz sent"
+        }
         // #961: give the read model the user's HRmax + sex so it can backfill a strap-native workout's
         // Effort on display when the stored value is nil (a live/manual session that ended with sparse HR).
         // Seed it now and keep it in step with any profile edit (objectWillChange fires just before a
