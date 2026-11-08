@@ -148,6 +148,23 @@ public struct DailyMetric: Equatable, Codable {
         self.sleepHrOnly = sleepHrOnly
     }
 
+    /// This row with a different step count, every other field carried through unchanged.
+    ///
+    /// A whole-struct rebuild is the only way to change one field of a `let`-only value type, and
+    /// doing it by hand at the call site means listing all 21 fields — which is exactly where a
+    /// later-added column gets silently dropped (the field is simply forgotten, and the row loses
+    /// data with no compile error). Keeping the rebuild HERE, beside the memberwise init, means one
+    /// place to update when a column is added.
+    public func replacingSteps(_ steps: Int?) -> DailyMetric {
+        DailyMetric(day: day, totalSleepMin: totalSleepMin, efficiency: efficiency,
+                    deepMin: deepMin, remMin: remMin, lightMin: lightMin,
+                    disturbances: disturbances, restingHr: restingHr, avgHrv: avgHrv,
+                    recovery: recovery, strain: strain, exerciseCount: exerciseCount,
+                    spo2Pct: spo2Pct, skinTempDevC: skinTempDevC, respRateBpm: respRateBpm,
+                    steps: steps, activeKcalEst: activeKcalEst,
+                    spo2Red: spo2Red, spo2Ir: spo2Ir, avgSdnn: avgSdnn, skinTempC: skinTempC)
+    }
+
     /// The freshest STRICTLY-PRIOR day that carries at least one overnight vital (HRV / resting HR /
     /// respiratory), or nil. This is the recovery-INDEPENDENT twin of the whole-row Charge carry: it never
     /// gates on `recovery != nil`, so a night whose recovery is null but which still recorded real HRV/RHR
@@ -219,6 +236,11 @@ extension WhoopStore {
 
     // MARK: - Upserts (idempotent by natural key; latest server value wins on conflict)
 
+    /// How much EARLIER than the stored row a same-start, non-edited candidate must end to be treated
+    /// as a truncated re-detection and skipped (261018). Two hours: a window-clipped opening stretch
+    /// ends many hours before the real wake; a re-stage of the same night moves it by minutes.
+    public static let truncatedRedetectionMinShortfallSec = 2 * 3600
+
     /// Upsert cached sleep sessions. Natural key (deviceId, startTs). Returns rows changed.
     ///
     /// A non-user-edited candidate whose stage timeline is LESS complete than what's already stored for
@@ -241,6 +263,14 @@ extension WhoopStore {
                                                        restingHr: nil, avgHrv: nil, stagesJSON: s.stagesJSON)
                     if SleepMerge.richness(candidate) < SleepMerge.richness(existing) {
                         continue   // a less-complete re-serve of this night must never clobber the stored one
+                    }
+                    // 261018: nor may a TRUNCATED re-detection shorten it. A night that began before an
+                    // earlier day's analysis window closed is re-detected in that window as its opening
+                    // stretch only — same start, ending hours early at the window's edge. Written over
+                    // the whole night, it pulled the night back onto the previous day (the Sleep tab
+                    // showed yesterday). A genuine re-stage moves a wake by minutes, not hours.
+                    if existing.endTs - s.endTs >= Self.truncatedRedetectionMinShortfallSec {
+                        continue
                     }
                 }
                 try db.execute(sql: """

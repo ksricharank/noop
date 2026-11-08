@@ -29,6 +29,9 @@ enum TodaySection: String, CaseIterable, Identifiable {
     case keyMetrics
     case workouts
     case heartRate
+    /// 261026 (fork): today's NSS through the day, under the heart-rate card. Fork-only: no Android twin,
+    /// and `decodeOrder` back-fills it after Heart Rate in an order saved before it existed.
+    case nss
     case recoveryVitals
     case yourCards
     case menstrualCycle
@@ -49,6 +52,7 @@ enum TodaySection: String, CaseIterable, Identifiable {
         case .keyMetrics:     return String(localized: "Key Metrics")
         case .workouts:       return String(localized: "Workouts")
         case .heartRate:      return String(localized: "Heart Rate")
+        case .nss:            return String(localized: "Stress (NSS)")
         case .recoveryVitals: return String(localized: "Recovery Vitals")
         case .yourCards:      return String(localized: "Your Cards")
         case .menstrualCycle: return String(localized: "Menstrual Cycle")
@@ -57,10 +61,14 @@ enum TodaySection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The original, hard-coded section order — the default when the layout isn't customised. The journal
-    /// widget (#656) is last by default, where it was first added, above the data-sources card.
+    /// The default section order when the layout isn't customised. FORK DIVERGENCE (260830, deliberate):
+    /// the maintainer's Today opens on Synthesis with Start-session directly under it — the upstream /
+    /// Android default leads with `.hero`. Display-only, so the parity contract (analytics + stored data
+    /// byte-identical) is untouched; the persisted FORMAT stays byte-identical for backup/restore. The
+    /// hero stays in the registry (right after Start-session) so un-hiding it lands somewhere sensible.
+    /// The journal widget (#656) is last by default, where it was first added, above data-sources.
     static let defaultOrder: [TodaySection] = [
-        .hero, .liveSession, .synthesis, .keyMetrics, .workouts, .heartRate, .recoveryVitals, .yourCards,
+        .synthesis, .liveSession, .hero, .keyMetrics, .workouts, .heartRate, .nss, .recoveryVitals, .yourCards,
         .menstrualCycle, .journal, .addedCards,
     ]
 }
@@ -72,6 +80,19 @@ enum TodayLayoutPrefs {
     static let orderKey = "today.sectionOrder"
     /// UserDefaults key — a comma-joined list of explicitly hidden `TodaySection` rawValues.
     static let hiddenKey = "today.hiddenSections"
+
+    /// FORK DIVERGENCE (260830): on an install that has NEVER customised Today (neither key written),
+    /// seed the hero as hidden — its Charge/Effort/Rest numbers repeat in Key Metrics, and the
+    /// maintainer wants the app to open straight onto Synthesis. A one-time SEED, not a default:
+    /// `decodeHidden("")` must keep meaning "nothing hidden" (the Customise sheet writes "" when the
+    /// user un-hides everything, and a standing default there would resurrect the hero forever).
+    /// Once either key exists, the user's own choices — including un-hiding the hero — always win.
+    /// Idempotent; called from AppModel init on both platforms.
+    static func seedForkDefaultsIfNeverCustomised(defaults: UserDefaults = .standard) {
+        guard defaults.object(forKey: orderKey) == nil,
+              defaults.object(forKey: hiddenKey) == nil else { return }
+        defaults.set(TodaySection.hero.rawValue, forKey: hiddenKey)
+    }
 
     /// Encode an ordered section list into the stored comma-joined string.
     static func encode(_ sections: [TodaySection]) -> String {

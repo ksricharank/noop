@@ -31,7 +31,11 @@ final class MacIdleAtLaunchTests: XCTestCase {
             return XCTFail("connectFromSystem not found — the gate's host method was renamed.")
         }
         // Look only at the method body, so an unrelated `#if os(macOS)` elsewhere cannot satisfy this.
-        let body = String(src[fn.lowerBound...].prefix(1600))
+        // 2600, not 1600: upstream's #1881 gate (connect the strap the user actually selected) and its
+        // rationale now sit ahead of ours in the same method, which pushed the macOS gate past the old
+        // window. The bound still stops well short of the next method, so the scoping this test exists
+        // for is unchanged — it was measuring the wrong thing, not catching a real regression.
+        let body = String(src[fn.lowerBound...].prefix(2600))
         XCTAssertTrue(body.contains("#if os(macOS)"),
                       "the idle gate must be macOS-only — iOS auto-connect on radio-on IS the product")
         XCTAssertTrue(body.contains("macAutoConnectKey"),

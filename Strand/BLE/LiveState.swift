@@ -1180,6 +1180,18 @@ public final class LiveState: ObservableObject {
         // someone with Health off or unauthorized is unchanged.
         let healthLines = HealthSyncStats.summaryLines()
         if !healthLines.isEmpty { header += healthLines.joined(separator: "\n") + "\n" }
+        // 260831: whether the widget snapshot actually published after each sync, with what values,
+        // and whether WidgetKit was asked to repaint — the evidence the frozen-widget report lacked
+        // (syncs were landing every ~10 min; nothing measured the publish half). Silent until a
+        // publish ever runs.
+        let widgetLines = WidgetPublishStats.summaryLines()
+        if !widgetLines.isEmpty { header += widgetLines.joined(separator: "\n") + "\n" }
+        // 260831: the retro stress scan's daily cost (runs every completed sync; was unmeasured).
+        let retroLines = RetroScanStats.summaryLines()
+        if !retroLines.isEmpty { header += retroLines.joined(separator: "\n") + "\n" }
+        // 260901: nudge-frequency evidence for the configurable sensitivity knobs.
+        let breatheLines = BreatheCueStats.summaryLines()
+        if !breatheLines.isEmpty { header += breatheLines.joined(separator: "\n") + "\n" }
         #endif
         // Battery attribution (same shape as the Health line): per-channel BLE wake counts, the
         // process's CPU bill, and — on iOS — MetricKit's own daily numbers. Silent when the strap
@@ -1192,6 +1204,9 @@ public final class LiveState: ObservableObject {
         // starting work that was then thrown away. Silent until a pass runs.
         let rescoreLines = RescoreStats.summaryLines()
         if !rescoreLines.isEmpty { header += rescoreLines.joined(separator: "\n") + "\n" }
+        // 261024g: the wearer's coach prompts — which layer is in force, and the full text of any saved
+        // default or edit — so the next build can read them back and fold them into the built-ins.
+        header += AICoachEngine.promptExportLines().joined(separator: "\n") + "\n"
         // #453: the BODY is scrubbed as it is appended, but these header lines come from the diagnostics
         // block and never pass through that path - and they carry device ids, which embed a BLE address
         // for a re-added or second strap. Same redactor, so one export cannot be safe while the other leaks.

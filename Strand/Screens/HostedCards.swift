@@ -92,7 +92,7 @@ enum HostedCard: String, CaseIterable, Identifiable {
         switch self {
         case .sleepMarks, .asleepDuration, .stagesVsTypical, .nightDetail, .sleepDebt, .stages, .hoursVsNeeded, .consistency: return String(localized: "Sleep")
         case .stressToday: return String(localized: "Stress")
-        case .trendHRV, .trendRestingHR, .trendEffort: return String(localized: "Trends")
+        case .trendHRV, .trendRestingHR, .trendEffort: return String(localized: "Insights")
         }
     }
 

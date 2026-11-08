@@ -25,13 +25,44 @@ enum WindDownNudge {
         // Empty / no entry for a day = that day uses the default `wakeMinutes`, so the feature is purely
         // additive (no override → exactly the old single-time behaviour).
         static let perDayWake = "windDown.perDayWakeMinutes"
+        // 260901 (automation B): derive the need from TONIGHT'S computed sleep target instead of
+        // the fixed value — the target already prices charge, Rest, the body check and the sleep
+        // ledger, so the reminder moves with the day. `dynamicNeed` caches the last applied target
+        // so a relaunch schedules from it before the next score lands.
+        static let useTargetNeed = "windDown.useTargetNeed"
+        static let dynamicNeed = "windDown.dynamicNeedMinutes"
     }
 
     static var isEnabled: Bool { UserDefaults.standard.bool(forKey: K.enabled) }
 
     static var sleepNeedMinutes: Int {
+        // Automation B (260901): when the user opted into the dynamic need and a computed sleep
+        // target has been applied, the reminder derives from it; the fixed value is the fallback
+        // (fresh install, no scored night yet, or the option off). Same 5–11 h sanity bounds.
+        if useTargetNeed {
+            let dynamic = UserDefaults.standard.integer(forKey: K.dynamicNeed)
+            if dynamic > 0 { return min(max(dynamic, 5 * 60), 11 * 60) }
+        }
         let v = UserDefaults.standard.object(forKey: K.sleepNeed) as? Int ?? 8 * 60
         return min(max(v, 5 * 60), 11 * 60)
+    }
+
+    /// Automation B: whether the need tracks tonight's computed sleep target (default off).
+    static var useTargetNeed: Bool { UserDefaults.standard.bool(forKey: K.useTargetNeed) }
+
+    static func setUseTargetNeed(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: K.useTargetNeed)
+        if isEnabled { schedule() }
+    }
+
+    /// Apply tonight's computed sleep target (minutes). Called from the post-score path whenever
+    /// fresh targets land; reschedules only when the applied value actually changes, so the
+    /// every-sync caller costs nothing in steady state. Inert unless the user opted in.
+    static func applyTargetNeed(minutes: Int?) {
+        guard useTargetNeed, let minutes, minutes > 0 else { return }
+        guard UserDefaults.standard.integer(forKey: K.dynamicNeed) != minutes else { return }
+        UserDefaults.standard.set(minutes, forKey: K.dynamicNeed)
+        if isEnabled { schedule() }
     }
 
     static var leadMinutes: Int {

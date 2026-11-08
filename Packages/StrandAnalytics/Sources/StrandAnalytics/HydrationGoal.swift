@@ -37,7 +37,28 @@ public enum HydrationGoal {
     public static let sipML = 30
     public static let cupML = 237     // a US cup (8 fl oz)
     public static let bottleML = 500  // a standard small water bottle
+    /// Half a cup (260903) — the increment the Today water row and the reminder's second action
+    /// log in. Integer-halved from `cupML`, so two half-cups equal one cup exactly and a day
+    /// logged in halves can never drift from one logged in cups.
+    public static var halfCupML: Int { cupML / 2 }
 
+    /// Whole cups from a millilitre figure, rounded to nearest — the unit every water SURFACE
+    /// speaks in (the Today row, the reminder copy, the derivation block). Rounded rather than
+    /// truncated so 2.5 cups reads as 3, and shared so those surfaces cannot disagree.
+    public static func cups(fromML ml: Double) -> Int {
+        Int((ml / Double(cupML)).rounded())
+    }
+
+    /// Half-cup steps from a millilitre figure — the granularity the Today row edits in, so
+    /// "2.5 cups" can be shown without a float creeping into storage.
+    public static func halfCups(fromML ml: Double) -> Int {
+        Int((ml / Double(halfCupML)).rounded())
+    }
+
+    /// "2.5" / "3" — a half-cup count rendered for display, dropping a pointless ".0".
+    public static func cupsDisplay(halfCups: Int) -> String {
+        halfCups % 2 == 0 ? "\(halfCups / 2)" : String(format: "%.1f", Double(halfCups) / 2)
+    }
     // MARK: - Pieces (each pure + independently testable; mirror the Kotlin twin)
 
     /// Baseline ml for a sex token. Case- and whitespace-insensitive; "male"/"m" and "female"/"f" map to
@@ -74,6 +95,50 @@ public enum HydrationGoal {
     /// profile sex token and the day's Effort score (or nil). The result is always a multiple of 50.
     public static func dailyGoalML(sex: String, effort: Double?) -> Int {
         roundToNearest(baselineForSex(sex) + effortBump(effort: effort), step: roundToML)
+    }
+
+    /// The body baseline for the CUPS target (261028, maintainer: "default of 19 cups seems high. should
+    /// this be like 11 or 12?"): what to DRINK, not total water.
+    ///
+    /// The ml baselines above (3.7 / 2.7 L) are the US National Academies' adequate intake of TOTAL
+    /// water, which includes roughly a fifth that comes from food. The cups target used them as a
+    /// drinking goal, so a man's day started at 16 cups before any effort. The Academies' own figure for
+    /// water from BEVERAGES is about 3.0 L (men) and 2.2 L (women), and that counts coffee, tea and milk,
+    /// which the tracker's taps do not; the European (EFSA) intake is lower still (about 2.0 L and 1.6 L
+    /// from drinks). So: 12 cups (2.8 L) for men, 9 (2.1 L) for women, 11 (2.6 L) unspecified — then
+    /// one cup per 10 points of effort target, unchanged. Fork-only (the cups path has no Android twin);
+    /// the ml goal and its Android twin are untouched.
+    public static func drinkingBaselineCups(sex: String) -> Int {
+        switch sex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "male", "m":   return 12
+        case "female", "f": return 9
+        default:            return 11
+        }
+    }
+
+    /// Cups per 10 points of effort target — the maintainer's 260903 rule: "a target strain today
+    /// of 50 leads to 16 + 50/10 = 21 cups". One extra cup per 10 points, on top of the body
+    /// baseline in cups.
+    public static let cupsPerTenEffort = 1.0
+
+    /// Today's water goal IN CUPS, priced off today's EFFORT TARGET (260903, replacing the
+    /// millilitre chain for the water surfaces).
+    ///
+    /// Why cups and not ml: the number is only ever SHOWN in cups, logged in cups and half-cups,
+    /// and the old path rounded a millilitre sum to 50 ml before dividing by 237 — so a one-cup
+    /// change in the ask was invisible until the underlying effort moved a long way, and the
+    /// arithmetic in the derivation block could not be checked by eye. Pricing in cups makes the
+    /// whole rule legible: baseline cups + effortTarget/10.
+    ///
+    /// `effortTarget` is TODAY'S prescribed effort (nil on a rest day → the baseline alone), which
+    /// is set once at the morning score. Deliberately NOT yesterday's scored strain: that number
+    /// is still being rewritten by the 2-day light pass hours into the next day (the reported
+    /// "yesterday's effort of 8" when yesterday finished at 7), so a target priced off it was
+    /// neither today's ask nor stable.
+    public static func dailyGoalCups(sex: String, effortTarget: Double?) -> Int {
+        let baselineCups = drinkingBaselineCups(sex: sex)
+        let bump = Int(((effortTarget ?? 0) / 10.0 * cupsPerTenEffort).rounded())
+        return max(1, baselineCups + max(0, bump))
     }
 
     // MARK: - Display helpers

@@ -1019,9 +1019,13 @@ public enum AnalyticsEngine {
         // night-window hr for pure-function callers that don't supply dayHr. Strain keeps the full
         // window (bounded log).
         let dayHrFiltered = (dayHr ?? hr).filter { tsInDay($0.ts) }
+        // 261024e: resting burn from local midnight to the day's last reading, worn or not (see
+        // `estimateDayEnergy`'s `dayStartTs`). `dayStartUtc` is on the tz-shifted axis `tsInDay`
+        // compares against, so the wall-clock start is it minus the offset.
         let activeKcalEst: Double? = dayHrFiltered.isEmpty ? nil : Calories.estimateDayCalories(
             dayHrFiltered, profile: profile, hrmax: effMaxHR,
-            restingHR: restingHRDaily.map(Double.init))
+            restingHR: restingHRDaily.map(Double.init),
+            dayStartTs: dayStartUtc - tzOffsetSeconds)
 
         // ── Assemble DailyMetric ──────────────────────────────────────────────
         let daily = DailyMetric(
