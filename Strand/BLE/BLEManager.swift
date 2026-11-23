@@ -2546,7 +2546,7 @@ public final class BLEManager: NSObject, ObservableObject {
             // that asked for one. Kotlin twin: `WhoopBleClient.maverickHapticBody`.
             let buzzLoops = payload.count >= 2 ? Int(payload[1]) : 1
             let puffinPayload: [UInt8] = isHaptics
-                ? MaverickHaptics.notificationBuzz(loops: buzzLoops) : payload
+                ? MaverickHaptics.notificationBuzz(loops: buzzLoops, effects: StrapBuzzPrefs.style.effects) : payload
             seq = seq &+ 1
             let frame = puffinCommandFrame(cmd: puffinCmd, seq: seq, payload: puffinPayload)
             p.writeValue(Data(frame), for: ch, type: writeType)
@@ -5770,7 +5770,9 @@ public final class BLEManager: NSObject, ObservableObject {
     ///
     /// Haptic firing cannot be verified in the simulator (no strap motor). Test on-device only.
     func buzzStrapOnce() {
-        send(.runHapticsPattern, payload: [2, 3, 0, 0, 0], writeType: .withResponse)  // patternId=2, 3 loops (5/MG: send() remaps to the maverick notify buzz)
+        // 261122 (fork): the count and (5/MG) waveform come from Automations › Buzz my wrist.
+        let count = StrapBuzzPrefs.count
+        send(.runHapticsPattern, payload: [2, UInt8(count), 0, 0, 0], writeType: .withResponse)  // patternId=2 (5/MG: send() remaps to the maverick notify buzz)
         if selectedModel.deviceFamily == .whoop5 {
             send(.runAlarm, payload: AlarmPayload.runAlarmRev2(), writeType: .withResponse)   // REVISION_2 [0x02, alarmId]
             // "written", NOT "acked" (260904). `.withResponse` gets an acknowledgement from the
@@ -5782,12 +5784,12 @@ public final class BLEManager: NSObject, ObservableObject {
             // what sent that diagnosis backwards (see CLAUDE.md: a diagnostic may only assert what
             // it can attribute). The command responses arrive asynchronously on the notify
             // characteristic and are already logged there; this line no longer pre-empts them.
-            log("Buzz: one-shot written (5/MG maverick buzz + runAlarm rev2; "
+            log("Buzz: one-shot written (5/MG maverick buzz ×\(count) \(StrapBuzzPrefs.style.rawValue) + runAlarm rev2; "
                 + "watch for the command responses)")
             return
         }
         send(.runAlarm, payload: [0x01], writeType: .withResponse)
-        log("Buzz: one-shot written (patternId=2 loops=3 + runAlarm; "
+        log("Buzz: one-shot written (patternId=2 loops=\(count) + runAlarm; "
             + "watch for the command responses)")
     }
 

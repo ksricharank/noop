@@ -73,6 +73,12 @@ enum TargetAutomations {
         case water = "auto.wristBuzz.water"
         case breathe = "auto.wristBuzz.breathe"
         case nssHigh = "auto.wristBuzz.nssHigh"
+        // 261122: every other notification NOOP posts.
+        case strainTarget = "auto.wristBuzz.strainTarget"
+        case illness = "auto.wristBuzz.illness"
+        case coachBrief = "auto.wristBuzz.coachBrief"
+        case windDown = "auto.wristBuzz.windDown"
+        case battery = "auto.wristBuzz.battery"
 
         var label: String {
             switch self {
@@ -81,6 +87,11 @@ enum TargetAutomations {
             case .water: return String(localized: "Water reminders")
             case .breathe: return String(localized: "Stress check-ins")
             case .nssHigh: return String(localized: "High stress alerts")
+            case .strainTarget: return String(localized: "Effort target reached")
+            case .illness: return String(localized: "Illness watch")
+            case .coachBrief: return String(localized: "Coach brief")
+            case .windDown: return String(localized: "Wind-down")
+            case .battery: return String(localized: "Strap battery")
             }
         }
     }

@@ -1918,6 +1918,7 @@ struct LiquidTodayView: View {
         // #989: today's hydration total + goal. One metricSeries row + a UserDefaults read, same as classic
         // TodayView.reloadHydration(). Cleared when the feature is off so the card can't show a stale total.
         if hydrationEnabled {
+            await repo.ensureHydrationDayStart()
             hydrationTotalML = await repo.hydrationTotal(day: Repository.localDayKey(Date()))
             hydrationGoalML = repo.hydrationGoalML(profileSex: profile.sex)
         } else {

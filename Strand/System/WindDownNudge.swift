@@ -226,6 +226,12 @@ enum WindDownNudge {
     /// a stale trigger behind.
     private static var perDayRequestIds: [String] { (1...7).map { "\(requestId)-wd\($0)" } }
 
+    /// Is this delivered notification a wind-down reminder (either schedule form)? 261122: the reminder
+    /// is pre-scheduled, so iOS shows it without waking NOOP; the next sync finds it here to buzz.
+    nonisolated static func isWindDownRequest(_ identifier: String) -> Bool {
+        identifier == "wind-down-nudge" || identifier.hasPrefix("wind-down-nudge-wd")
+    }
+
     private static func schedule() {
         let center = UNUserNotificationCenter.current()
         // Clear BOTH the single trigger and any per-day triggers so switching between the two modes (or

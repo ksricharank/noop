@@ -113,6 +113,33 @@ enum HydrationEntries {
     }
 }
 
+// MARK: - Water already counted at the start of each day (261122, fork)
+
+/// "I don't always remember to drink" — and the drinks that do happen (coffee, a glass with a meal) go
+/// unlogged, so a day started at 0 understates what was drunk. Each local day therefore opens with ONE
+/// ordinary entry of `cups`, logged through `logHydration` like a tap, so the Today row, reminders,
+/// recap and widget all read the same total. It is an entry like any other: editing or deleting it
+/// sticks for that day. Water is read-only to Apple Health, so nothing is exported.
+enum HydrationDayStart {
+    static let cupsKey = "hydration.dayStartCups"
+    static let loggedDayKey = "hydration.dayStartLoggedDay"
+    static let defaultCups = 6
+    static let range = 0...12
+
+    static var cups: Int {
+        get {
+            let v = UserDefaults.standard.object(forKey: cupsKey) as? Int ?? defaultCups
+            return min(max(v, range.lowerBound), range.upperBound)
+        }
+        set { UserDefaults.standard.set(min(max(newValue, range.lowerBound), range.upperBound), forKey: cupsKey) }
+    }
+
+    /// Log today's starting cups? Once per day, never with tracking off or the amount set to 0.
+    static func shouldLog(today: String, loggedDay: String?, cups: Int, trackingOn: Bool) -> Bool {
+        trackingOn && cups > 0 && loggedDay != today
+    }
+}
+
 // MARK: - Logging + read seam (Repository extension)
 
 extension Repository {
@@ -242,6 +269,18 @@ extension Repository {
         // bump refreshSeq, so the card has no other signal.
         refreshHydrationCache()
         noteHydrationChanged()
+    }
+
+    /// Open today with the starting cups (see `HydrationDayStart`). The day is claimed before the write,
+    /// so the sync path and a screen load arriving together cannot both log it.
+    func ensureHydrationDayStart(now: Date = Date()) async {
+        let today = Repository.localDayKey(now)
+        let d = UserDefaults.standard
+        let cups = HydrationDayStart.cups
+        guard HydrationDayStart.shouldLog(today: today, loggedDay: d.string(forKey: HydrationDayStart.loggedDayKey),
+                                          cups: cups, trackingOn: d.bool(forKey: HydrationStore.enabledKey)) else { return }
+        d.set(today, forKey: HydrationDayStart.loggedDayKey)
+        await logHydration(amountMl: cups * HydrationGoal.cupML, day: today)
     }
 
     /// Log `amountMl` of fluid for `day` (defaults to today's local day). Reads the day's current total

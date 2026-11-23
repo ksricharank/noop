@@ -300,6 +300,8 @@ final class AppModel: ObservableObject {
         }
         // 261108: the high-NSS alert buzzes the strap too (the user felt nothing). Same acknowledged
         // path as the other nudges; the line says what happened, since a skipped buzz is invisible.
+        // 261122: every other notifier buzzes through the same per-cue switch.
+        NotificationBuzz.handler = { [weak self] cue in self?.buzzForNudgeIfEnabled(cue) }
         NormalizedStressStore.shared.onHighAlert = { [weak self] in
             guard let self else { return nil }
             guard TargetAutomations.buzzEnabled(.nssHigh) else { return "nss: strap buzz off (Automations)" }
@@ -844,11 +846,13 @@ final class AppModel: ObservableObject {
     }
 
     private func runTargetAutomations() async {
+        await repo.ensureHydrationDayStart()   // 261122: today's starting cups, before any reminder reads it
         let targets = repo.cachedLiveTargets()
         // B: the wind-down reminder tracks tonight's computed sleep target (inert unless opted in;
         // reschedules only when the applied value changes). Works on both platforms.
         WindDownNudge.applyTargetNeed(minutes: targets.sleepNeedTonightMin)
         #if os(iOS)
+        await buzzForDeliveredWindDownIfDue()
         let now = Date()
         let todayKey = Repository.localDayKey(now)
         let comps = Calendar.current.dateComponents([.hour, .minute], from: now)
@@ -990,6 +994,23 @@ final class AppModel: ObservableObject {
         // is written but not felt is indistinguishable from one that never fired.
         buzzStrapOnce()
     }
+
+    #if os(iOS)
+    /// 261122: buzz for a wind-down reminder iOS delivered on its own schedule. Runs on every sync, so the
+    /// buzz lands within one sync of the banner; one buzz per delivery, none for one over 30 min old.
+    private func buzzForDeliveredWindDownIfDue() async {
+        let key = "auto.wristBuzz.windDown.lastDelivery"
+        let last = UserDefaults.standard.object(forKey: key) as? Date ?? .distantPast
+        let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
+        guard let newest = delivered.filter({ WindDownNudge.isWindDownRequest($0.request.identifier) })
+                .map(\.date).max(),
+              newest > last else { return }
+        UserDefaults.standard.set(newest, forKey: key)
+        guard Date().timeIntervalSince(newest) < 30 * 60 else { return }
+        buzzForNudgeIfEnabled(.windDown)
+        live.append(log: "Automation: wind-down buzz (delivered \(Int(Date().timeIntervalSince(newest) / 60)) min ago)")
+    }
+    #endif
 
     /// Wire the hydration reminder's "Logged a cup" action to the EXISTING tracker, and keep the
     /// reminder's copy current. Called once at startup (see `StrandApp`).

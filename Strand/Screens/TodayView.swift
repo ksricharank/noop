@@ -5003,6 +5003,7 @@ struct TodayView: View {
     /// enough to run on every pass.
     private func reloadHydration() async {
         if hydrationEnabled {
+            await repo.ensureHydrationDayStart()
             hydrationTotalML = await repo.hydrationTotal(day: Repository.localDayKey(Date()))
             hydrationGoalML = repo.hydrationGoalML(profileSex: profile.sex)
         } else {

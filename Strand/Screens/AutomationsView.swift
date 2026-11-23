@@ -58,6 +58,11 @@ struct AutomationsView: View {
     // an @AppStorage default of false against a logic default of true would render the switch off
     // while the buzz was in fact firing.
     @AppStorage(TargetAutomations.K.wristBuzz) private var nudgeWristBuzz = true
+    // 261122: how the buzz feels, and the water already counted each morning. @State mirrors so the
+    // clamped accessors stay the one authority on the stored values.
+    @State private var buzzStyle = StrapBuzzPrefs.style
+    @State private var buzzCount = StrapBuzzPrefs.count
+    @State private var waterStartCups = HydrationDayStart.cups
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
     @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
     // 260904 pacing delivery window. Both OPTIONAL — nil means unbounded (wake -> midnight, the
@@ -401,7 +406,7 @@ struct AutomationsView: View {
                  active: nudgeWristBuzz) {
             VStack(spacing: 0) {
                 ToggleRow(label: String(localized: "Buzz on NOOP nudges"),
-                          help: String(localized: "Applies to the morning brief, pace checks and water reminders, and confirms a cup logged from a reminder. Stress check-ins already buzz on their own."),
+                          help: String(localized: "Applies to every notification NOOP sends, and confirms a cup logged from a reminder. Stress check-ins and high-stress alerts keep buzzing with this off."),
                           isOn: $nudgeWristBuzz)
                 if nudgeWristBuzz {
                     // One row per cue, so nothing is silently off and it is obvious which nudges
@@ -410,13 +415,17 @@ struct AutomationsView: View {
                     ForEach(TargetAutomations.BuzzCue.allCases, id: \.rawValue) { cue in
                         rowDivider
                         ToggleRow(label: cue.label,
-                                  help: cue == .breathe
+                                  help: cue == .windDown
+                                      ? String(localized: "The wind-down reminder is scheduled ahead, so the buzz follows on your next strap sync, within about ten minutes.")
+                                      : cue == .breathe
                                       ? String(localized: "Stress check-ins buzz on their own path too, so this stays on even with the switch above off.")
                                       : cue == .nssHigh
                                       ? String(localized: "Buzzes with the high-NSS alert from the Stress tab, so this stays on even with the switch above off.")
                                       : String(localized: "Buzz the strap when this nudge is posted."),
                                   isOn: buzzCueBinding(cue))
                     }
+                    rowDivider
+                    buzzFeelRows
                     rowDivider
                     Text("The buzz needs the strap connected and bonded, so a charging or out-of-range strap simply gets no cue. The Move reminder has its own buzz and its own switch \u{2014} see Inactivity reminder below.")
                         .font(StrandFont.caption)
@@ -425,6 +434,41 @@ struct AutomationsView: View {
                 }
             }
         }
+    }
+
+    /// 261122: how a notification buzz feels — the waveform, how many times it repeats, and a button to
+    /// feel the result now. Strength is already at the strap's maximum, so length and count are the levers.
+    @ViewBuilder private var buzzFeelRows: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Buzz style").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                Text("Standard is the confirmed buzz. The others are longer pulses that may not play on every strap, so try them with Test buzz.")
+                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Picker("", selection: $buzzStyle) {
+                ForEach(StrapBuzzPrefs.Style.allCases) { Text($0.label).tag($0) }
+            }
+            .labelsHidden().pickerStyle(.menu)
+            .accessibilityLabel("Buzz style")
+            .onChangeCompat(of: buzzStyle) { StrapBuzzPrefs.style = $0 }
+        }
+        .frame(minHeight: 42).padding(.vertical, 4)
+        rowDivider
+        stepperRow(label: String(localized: "Buzzes per notification"),
+                   help: String(localized: "How many times the pattern repeats."),
+                   value: $buzzCount, suffix: "", range: StrapBuzzPrefs.countRange, step: 1)
+            .onChangeCompat(of: buzzCount) { StrapBuzzPrefs.count = $0 }
+        rowDivider
+        HStack {
+            Text("Feel it now").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+            Spacer()
+            Button(String(localized: "Test buzz")) { model.buzzStrapOnce() }
+                .font(StrandFont.subhead)
+                .tint(StrandPalette.accent)
+        }
+        .frame(minHeight: 42).padding(.vertical, 4)
     }
 
     /// A per-cue buzz switch, read/written through `TargetAutomations` so the default-ON semantics
@@ -631,6 +675,12 @@ struct AutomationsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 6)
                 } else {
+                    stepperRow(label: String(localized: "Cups counted each morning"),
+                               help: String(localized: "Drinks you don't log, like coffee or water with meals. Each day starts with this many as one entry you can edit or delete."),
+                               value: $waterStartCups, suffix: String(localized: "cups"),
+                               range: HydrationDayStart.range, step: 1)
+                        .onChangeCompat(of: waterStartCups) { HydrationDayStart.cups = $0 }
+                    rowDivider
                     ToggleRow(label: String(localized: "Enable water reminders"),
                               help: String(localized: "Reminds you to drink through the day."),
                               isOn: $hydrationRemindersOn)

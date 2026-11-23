@@ -321,6 +321,33 @@ final class NudgeWristBuzzTests: XCTestCase {
         XCTAssertFalse(TargetAutomations.buzzEnabled(.nssHigh))
     }
 
+    /// 261122: the buzz count is clamped to what the strap can repeat, and defaults to the long-standing 3.
+    func testBuzzCountAndStyleDefaultsAndClamps() {
+        defer {
+            UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.countKey)
+            UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.styleKey)
+        }
+        XCTAssertEqual(StrapBuzzPrefs.count, 3)
+        XCTAssertEqual(StrapBuzzPrefs.style, .standard)
+        XCTAssertEqual(StrapBuzzPrefs.style.effects, [47, 152], "standard is the shipped, confirmed waveform")
+        StrapBuzzPrefs.count = 20
+        XCTAssertEqual(StrapBuzzPrefs.count, 8)
+        StrapBuzzPrefs.count = 0
+        XCTAssertEqual(StrapBuzzPrefs.count, 1)
+        UserDefaults.standard.set("nonsense", forKey: StrapBuzzPrefs.styleKey)
+        XCTAssertEqual(StrapBuzzPrefs.style, .standard)
+    }
+
+    /// 261122: each day opens with the starting cups once — not twice, not with tracking off, not at 0.
+    func testTheDayStartCupsAreLoggedOncePerDay() {
+        XCTAssertEqual(HydrationDayStart.defaultCups, 6)
+        XCTAssertTrue(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: "2026-11-21", cups: 6, trackingOn: true))
+        XCTAssertTrue(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 6, trackingOn: true))
+        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: "2026-11-22", cups: 6, trackingOn: true))
+        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 0, trackingOn: true))
+        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 6, trackingOn: false))
+    }
+
     /// Structural, like the recovery guard: every app-posted nudge must offer the buzz, so a new
     /// nudge cannot ship as a cue the user expected and never felt.
     func testEveryAppPostedNudgeBuzzes() throws {
