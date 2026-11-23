@@ -53,7 +53,7 @@ extension WhoopStore {
     /// scoring would then refuse. The caller turns it into a local day key; the calendar is the app's
     /// policy, not the store's.
     public func firstScorableWhoop5RRTimestamp(deviceId: String) async throws -> Int? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Int.fetchOne(db, sql: """
                 SELECT MIN(ts) FROM rrInterval
                 WHERE deviceId = ? AND srcChannel IN \(Self.scorableWhoop5Channels)
@@ -68,7 +68,7 @@ extension WhoopStore {
     /// actually recorded from history imported from somewhere else, and only the former can have lost
     /// anything to a labelling change. Same shape and same suspect exclusion as the scorable read above.
     public func firstRecordedRRTimestamp(deviceId: String) async throws -> Int? {
-        try syncRead { db in
+        try await concurrentRead { db in
             try Int.fetchOne(db, sql: """
                 SELECT MIN(ts) FROM rrInterval
                 WHERE deviceId = ? AND (tsSuspect IS NULL OR tsSuspect <> 1)
@@ -82,7 +82,7 @@ extension WhoopStore {
     /// but insufficient transport all return false and therefore remain ordinary current-score outcomes.
     public func legacyWhoop5RRWithheld(deviceId: String, from: Int, to: Int,
                                        unlabelledAliasOfWhoop5: Bool = false) async throws -> Bool {
-        try syncRead { db in
+        try await concurrentRead { db in
             guard try Self.isWhoop5RRSource(db: db, deviceId: deviceId,
                                             unlabelledAliasOfWhoop5: unlabelledAliasOfWhoop5) else {
                 return false
@@ -103,7 +103,7 @@ extension WhoopStore {
 
     /// Shared by RR reads and consumers whose cached/union reads must obey the same owner policy.
     public func isWhoop5RRSource(deviceId: String, unlabelledAliasOfWhoop5: Bool = false) async throws -> Bool {
-        try syncRead { try Self.isWhoop5RRSource(db: $0, deviceId: deviceId,
+        try await concurrentRead { try Self.isWhoop5RRSource(db: $0, deviceId: deviceId,
                                               unlabelledAliasOfWhoop5: unlabelledAliasOfWhoop5) }
     }
 
