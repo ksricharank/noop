@@ -2546,7 +2546,8 @@ public final class BLEManager: NSObject, ObservableObject {
             // that asked for one. Kotlin twin: `WhoopBleClient.maverickHapticBody`.
             let buzzLoops = payload.count >= 2 ? Int(payload[1]) : 1
             let puffinPayload: [UInt8] = isHaptics
-                ? MaverickHaptics.notificationBuzz(loops: buzzLoops, effects: StrapBuzzPrefs.style.effects) : payload
+                ? MaverickHaptics.notificationBuzz(loops: StrapBuzzPrefs.cappedLoops(buzzLoops),
+                                                   effects: StrapBuzzPrefs.style.effects) : payload
             seq = seq &+ 1
             let frame = puffinCommandFrame(cmd: puffinCmd, seq: seq, payload: puffinPayload)
             p.writeValue(Data(frame), for: ch, type: writeType)
@@ -6169,6 +6170,14 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         offloadGravity = 0; offloadResp = 0; offloadSkinTemp = 0; offloadSpo2 = 0; offloadChunks = 0
         linkUpSince = DispatchTime.now()
         standingConnectAt = nil     // #1413: a live link means no standing connect is outstanding
+        // 261123 (fork): a didConnect for the link state restoration just handed back. `willRestoreState`
+        // proved the bond (didBond + encryptedBond), and no disconnect has run since (it would have
+        // cleared didBond). The clear below then dropped encryptedBond, and the CLIENT_HELLO ack can't
+        // set it again because `didBond` is already true, so the whole relaunched session ran with
+        // `canBuzz` false: the 261123 log has a morning brief, a breathe check-in and a water reminder
+        // after a 07:00 restore, and not one haptic write. Re-proved below, after the identity publish,
+        // in the same order the restore path itself uses.
+        let restoredBondedLink = didBond && restoredPeripheral?.identifier == peripheral.identifier
         restoredPeripheral = nil
         preparePeripheral(peripheral)
         // #1881: BEFORE anything persists. The Collector and Backfiller read `deviceId` at flush and at
@@ -6183,6 +6192,11 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // registry device (it observes this and calls registry.setPeripheralId). Additive observation
         // only — BLEManager stays decoupled from the store and the connect flow below is unchanged.
         connectedPeripheralUUID = peripheral.identifier.uuidString
+        if restoredBondedLink {
+            state.encryptedBond = true   // the restored link's bond, kept (see restoredBondedLink)
+            noteGenuineBond(of: peripheral)
+            log("Restored link connected — keeping the bond restoration proved")
+        }
         // Remembered across launches for `connectCore`'s background path: a process iOS launched off-screen
         // (the Sync Strap shortcut, a state-restoration relaunch) reconnects by identifier, not by scan.
         UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.lastConnectedPeripheralKey)

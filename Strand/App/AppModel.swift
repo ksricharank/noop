@@ -834,19 +834,11 @@ final class AppModel: ObservableObject {
     /// and must not stretch it), falling back to the quiet-hours end until the night is scored.
     /// Clamped to sane wake hours either way.
     private func pacingWakeMinute(now: Date, todayStartTs: Int) async -> Int {
-        let sessions = await repo.sleepSessions(from: todayStartTs, to: Int(now.timeIntervalSince1970))
-            .filter { $0.endTs > todayStartTs }
-        let fallback = UserDefaults.standard.object(forKey: ContinuousHrvSchedule.quietEndKey) as? Int
-            ?? ContinuousHrvSchedule.defaultEndMinutes
-        guard let main = sessions.max(by: { ($0.endTs - $0.effectiveStartTs) < ($1.endTs - $1.effectiveStartTs) })
-        else { return TargetAutomations.clampWakeMinute(fallback) }
-        let comps = Calendar.current.dateComponents([.hour, .minute],
-                                                    from: Date(timeIntervalSince1970: TimeInterval(main.endTs)))
-        return TargetAutomations.clampWakeMinute((comps.hour ?? 0) * 60 + (comps.minute ?? 0))
+        await repo.wakeMinuteToday(now: now)
     }
 
     private func runTargetAutomations() async {
-        await repo.ensureHydrationDayStart()   // 261122: today's starting cups, before any reminder reads it
+        await repo.ensureHydrationDayStart()   // 261122: the cups counted for you so far today, before any reminder reads it
         let targets = repo.cachedLiveTargets()
         // B: the wind-down reminder tracks tonight's computed sleep target (inert unless opted in;
         // reschedules only when the applied value changes). Works on both platforms.
@@ -982,7 +974,14 @@ final class AppModel: ObservableObject {
     /// pretending one landed. The breathe cue buzzes on its own path already (it has since it
     /// shipped) and does not route through here.
     func buzzForNudgeIfEnabled(_ cue: TargetAutomations.BuzzCue) {
-        guard TargetAutomations.buzzEnabled(cue), canBuzz else { return }
+        guard TargetAutomations.buzzEnabled(cue) else { return }
+        // 261123: a skipped buzz was invisible, which is how a whole morning of unbuzzed notifications
+        // looked like a strap that didn't feel them. Say why, once per skip.
+        guard canBuzz else {
+            live.append(log: "Buzz skipped (\(cue.rawValue)): strap link not bonded "
+                        + "(bonded=\(live.bonded) encrypted=\(live.encryptedBond))")
+            return
+        }
         // The ACKNOWLEDGED sequence, not the bare `buzz(loops:)` write (260903). A plain
         // RUN_HAPTICS_PATTERN "can be silently ignored (WHOOP 4.0 via the Siri shortcut) or dropped
         // unacked on a busy link" — see `BLEManager.buzzStrapOnce` — and a nudge fires on the
@@ -1601,9 +1600,9 @@ final class AppModel: ObservableObject {
         guard decision.shouldNudge else { return }
         // The stress check-in has always buzzed on its own path; the 260903 per-cue switch can now
         // silence it like any other nudge, without disabling the check-in itself.
-        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
-            buzz(loops: UInt8(clamping: decision.buzzLoops))
-        }
+        // 261123: the acknowledged notification buzz, like every other nudge (it was the bare write,
+        // which a busy link can drop and which logged nothing).
+        buzzForNudgeIfEnabled(.breathe)
         stressNudgeCenter.present(fastRMSSD: decision.fastRMSSD, baselineRMSSD: decision.baselineRMSSD)
         // 260830: the visible half of the nudge — a screen notification saying WHAT the buzz meant
         // ("take a deep breath"). Rides the exact decision the buzz rode (already de-duped,
@@ -1693,9 +1692,7 @@ final class AppModel: ObservableObject {
         BiofeedbackPrefs.saveStressState(scan.nextState)
         guard let at = scan.nudgeAtSec, now - at <= Self.retroMaxDipAgeSec else { return }
         let minutesAgo = max(0, (now - at) / 60)
-        if canBuzz, TargetAutomations.buzzEnabled(.breathe) {
-            buzz(loops: UInt8(clamping: cfg.buzzLoops))
-        }
+        buzzForNudgeIfEnabled(.breathe)   // 261123: acknowledged path, as above
         if behavior.stressNotify { BreatheNotifier.post(minutesAgo: minutesAgo) }
         BreatheCueStats.recordFire(retro: true)    // sensitivity calibration evidence (260901)
         stressNudgeCenter.present(fastRMSSD: scan.fastRMSSD, baselineRMSSD: scan.baselineRMSSD)

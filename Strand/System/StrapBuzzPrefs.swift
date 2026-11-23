@@ -17,8 +17,12 @@ enum StrapBuzzPrefs {
     /// pause) — an unvalidated hypothesis, so each is offered for testing on the wrist with the Test
     /// buzz button. Strength is already at the top of that library's buzz range (47 = buzz 100%); the
     /// only levers for feeling it more are a longer pulse and more repeats.
+    ///
+    /// 261123: `pulsing` (effect 52) is gone. Played ×8 it left the strap buzzing until a Restart
+    /// strap, and a 5/MG has no stop command NOOP can send. A stored "pulsing" reads back as standard.
+    /// The two remaining experimental styles are capped at `maxCount` repeats for the same reason.
     enum Style: String, CaseIterable, Identifiable {
-        case standard, long, longest, pulsing
+        case standard, long, longest
 
         var id: String { rawValue }
 
@@ -27,16 +31,17 @@ enum StrapBuzzPrefs {
             case .standard: return [47, 152]   // buzz 100%, 240 ms pause — the shipped, confirmed pair
             case .long:     return [15, 152]   // 750 ms alert
             case .longest:  return [16, 152]   // 1000 ms alert
-            case .pulsing:  return [52, 152]   // pulsing strong
             }
         }
+
+        /// The most repeats this style may play. Only the confirmed waveform gets the full range.
+        var maxCount: Int { self == .standard ? StrapBuzzPrefs.countRange.upperBound : 2 }
 
         var label: String {
             switch self {
             case .standard: return String(localized: "Standard")
             case .long:     return String(localized: "Long (experimental)")
             case .longest:  return String(localized: "Longest (experimental)")
-            case .pulsing:  return String(localized: "Pulsing (experimental)")
             }
         }
     }
@@ -46,13 +51,20 @@ enum StrapBuzzPrefs {
         set { UserDefaults.standard.set(newValue.rawValue, forKey: styleKey) }
     }
 
+    /// The stored count, held to the current style's cap.
     static var count: Int {
         get {
             let v = UserDefaults.standard.object(forKey: countKey) as? Int ?? defaultCount
-            return min(max(v, countRange.lowerBound), countRange.upperBound)
+            return cappedLoops(v)
         }
         set { UserDefaults.standard.set(min(max(newValue, countRange.lowerBound), countRange.upperBound),
                                         forKey: countKey) }
+    }
+
+    /// Any buzz's repeat count held to 1...the current style's cap. Applied where every 5/MG buzz is
+    /// built, so an in-session cue asking for more repeats can't run an experimental waveform long.
+    static func cappedLoops(_ requested: Int) -> Int {
+        min(max(requested, countRange.lowerBound), style.maxCount)
     }
 }
 

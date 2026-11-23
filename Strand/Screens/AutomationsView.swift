@@ -63,6 +63,7 @@ struct AutomationsView: View {
     @State private var buzzStyle = StrapBuzzPrefs.style
     @State private var buzzCount = StrapBuzzPrefs.count
     @State private var waterStartCups = HydrationDayStart.cups
+    @State private var waterByMin = HydrationDayStart.byMinute
     @State private var briefEarliestMin = TargetAutomations.briefEarliestMinute
     @State private var pacingEveryHours = TargetAutomations.pacingIntervalHours
     // 260904 pacing delivery window. Both OPTIONAL — nil means unbounded (wake -> midnight, the
@@ -452,13 +453,18 @@ struct AutomationsView: View {
             }
             .labelsHidden().pickerStyle(.menu)
             .accessibilityLabel("Buzz style")
-            .onChangeCompat(of: buzzStyle) { StrapBuzzPrefs.style = $0 }
+            .onChangeCompat(of: buzzStyle) {
+                StrapBuzzPrefs.style = $0
+                buzzCount = StrapBuzzPrefs.count   // the experimental styles allow fewer repeats
+            }
         }
         .frame(minHeight: 42).padding(.vertical, 4)
         rowDivider
         stepperRow(label: String(localized: "Buzzes per notification"),
-                   help: String(localized: "How many times the pattern repeats."),
-                   value: $buzzCount, suffix: "", range: StrapBuzzPrefs.countRange, step: 1)
+                   help: buzzStyle == .standard
+                       ? String(localized: "How many times the pattern repeats.")
+                       : String(localized: "How many times the pattern repeats. Experimental styles stop at 2."),
+                   value: $buzzCount, suffix: "", range: 1...buzzStyle.maxCount, step: 1)
             .onChangeCompat(of: buzzCount) { StrapBuzzPrefs.count = $0 }
         rowDivider
         HStack {
@@ -509,6 +515,12 @@ struct AutomationsView: View {
                 }
             }
         }
+    }
+
+    private var waterByBinding: Binding<Date> {
+        Binding(get: { Self.date(fromMinutes: waterByMin) },
+                set: { HydrationDayStart.byMinute = Self.minutes(from: $0)
+                       waterByMin = HydrationDayStart.byMinute })
     }
 
     private var briefEarliestBinding: Binding<Date> {
@@ -675,11 +687,26 @@ struct AutomationsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.vertical, 6)
                 } else {
-                    stepperRow(label: String(localized: "Cups counted each morning"),
-                               help: String(localized: "Drinks you don't log, like coffee or water with meals. Each day starts with this many as one entry you can edit or delete."),
+                    stepperRow(label: String(localized: "Cups counted for you"),
+                               help: String(localized: "Drinks you don't log, like coffee or water with meals. Counting starts at 0 when you wake and adds one cup at a time, evenly, until this many are in by the time below. Each cup is an entry you can edit or delete. 0 turns it off."),
                                value: $waterStartCups, suffix: String(localized: "cups"),
                                range: HydrationDayStart.range, step: 1)
                         .onChangeCompat(of: waterStartCups) { HydrationDayStart.cups = $0 }
+                    if waterStartCups > 0 {
+                        rowDivider
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("All counted by").font(StrandFont.body).foregroundStyle(StrandPalette.textPrimary)
+                                Text("Spaced evenly from your wake-up to this time.")
+                                    .font(StrandFont.footnote).foregroundStyle(StrandPalette.textSecondary)
+                            }
+                            Spacer(minLength: 8)
+                            DatePicker("", selection: waterByBinding, displayedComponents: .hourAndMinute)
+                                .labelsHidden().datePickerStyle(.compact)
+                                .accessibilityLabel("Time all counted cups are in")
+                        }
+                        .frame(minHeight: 42).padding(.vertical, 4)
+                    }
                     rowDivider
                     ToggleRow(label: String(localized: "Enable water reminders"),
                               help: String(localized: "Reminds you to drink through the day."),

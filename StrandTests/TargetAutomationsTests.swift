@@ -338,14 +338,41 @@ final class NudgeWristBuzzTests: XCTestCase {
         XCTAssertEqual(StrapBuzzPrefs.style, .standard)
     }
 
-    /// 261122: each day opens with the starting cups once — not twice, not with tracking off, not at 0.
-    func testTheDayStartCupsAreLoggedOncePerDay() {
+    /// 261123: counted water starts at 0 at wake and reaches the full amount by the set time, evenly.
+    func testCountedCupsRiseEvenlyFromWakeToTheSetTime() {
         XCTAssertEqual(HydrationDayStart.defaultCups, 6)
-        XCTAssertTrue(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: "2026-11-21", cups: 6, trackingOn: true))
-        XCTAssertTrue(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 6, trackingOn: true))
-        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: "2026-11-22", cups: 6, trackingOn: true))
-        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 0, trackingOn: true))
-        XCTAssertFalse(HydrationDayStart.shouldLog(today: "2026-11-22", loggedDay: nil, cups: 6, trackingOn: false))
+        XCTAssertEqual(HydrationDayStart.defaultByMinute, 21 * 60)
+        func due(_ h: Int, _ m: Int) -> Int {
+            HydrationDayStart.dueCups(minuteOfDay: h * 60 + m, wakeMinute: 7 * 60, byMinute: 21 * 60, cups: 6)
+        }
+        XCTAssertEqual(due(5, 0), 0, "nothing before wake")
+        XCTAssertEqual(due(7, 0), 0, "0 at wake")
+        XCTAssertEqual(due(9, 19), 0)
+        XCTAssertEqual(due(9, 20), 1, "one cup every 2 h 20 min")
+        XCTAssertEqual(due(14, 0), 3)
+        XCTAssertEqual(due(20, 59), 5)
+        XCTAssertEqual(due(21, 0), 6)
+        XCTAssertEqual(due(23, 30), 6, "never past the set amount")
+        XCTAssertEqual(HydrationDayStart.dueCups(minuteOfDay: 12 * 60, wakeMinute: 7 * 60, byMinute: 21 * 60, cups: 0), 0)
+        XCTAssertEqual(HydrationDayStart.dueCups(minuteOfDay: 12 * 60, wakeMinute: 11 * 60, byMinute: 10 * 60, cups: 6), 6,
+                       "a wake after the set time counts the lot")
+    }
+
+    /// 261123: Pulsing is gone (a stored value reads as standard) and experimental styles stop at 2.
+    func testExperimentalBuzzStylesAreCapped() {
+        defer {
+            UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.countKey)
+            UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.styleKey)
+        }
+        UserDefaults.standard.set("pulsing", forKey: StrapBuzzPrefs.styleKey)
+        XCTAssertEqual(StrapBuzzPrefs.style, .standard)
+        XCTAssertEqual(StrapBuzzPrefs.Style.allCases, [.standard, .long, .longest])
+        StrapBuzzPrefs.count = 8
+        XCTAssertEqual(StrapBuzzPrefs.cappedLoops(8), 8)
+        StrapBuzzPrefs.style = .longest
+        XCTAssertEqual(StrapBuzzPrefs.count, 2)
+        XCTAssertEqual(StrapBuzzPrefs.cappedLoops(8), 2)
+        XCTAssertEqual(StrapBuzzPrefs.cappedLoops(0), 1)
     }
 
     /// Structural, like the recovery guard: every app-posted nudge must offer the buzz, so a new
