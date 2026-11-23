@@ -339,6 +339,19 @@ final class DeviceFamilyFramingTests: XCTestCase {
         }
     }
 
+    /// 261122 (fork): caller-chosen effects fill the eight slots, padded with zeros or trimmed; the
+    /// default pair rebuilds the shipped body byte for byte.
+    func testNotificationBuzzWithCustomEffects() {
+        XCTAssertEqual(MaverickHaptics.notificationBuzz(loops: 3, effects: [47, 152]),
+                       MaverickHaptics.notificationBuzz(loops: 3))
+        XCTAssertEqual(MaverickHaptics.notificationBuzz(loops: 1, effects: [16, 152]),
+                       [0x01, 16, 152, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        let long = MaverickHaptics.notificationBuzz(loops: 2, effects: Array(1...10))
+        XCTAssertEqual(long.count, 12)
+        XCTAssertEqual(Array(long[1...8]), Array(1...8))
+        XCTAssertEqual(long.last, 1)
+    }
+
     func testPuffinAlarmFramesMatchKotlinParityGoldens() {
         // Cross-platform parity pins: the Android FramingTest asserts these SAME three full-frame
         // hexes, so both platforms are locked to identical alarm bytes (the same pipeline whose

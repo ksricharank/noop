@@ -118,7 +118,7 @@ enum PuffinExperiment {
 
     /// Opt-in "Overnight only" refinement of Continuous HRV capture (#927): arm the dense realtime stream
     /// only inside the nightly window (the reused quiet-hours window convention: minutes since local
-    /// midnight, wrap-aware, 22:00 to 07:00 by default) instead of 24/7, roughly halving the battery
+    /// midnight, wrap-aware, 22:00 to 06:30 by default) instead of 24/7, roughly halving the battery
     /// cost. Composed with the base toggle so existing users need no migration: base on + this off reads
     /// ALWAYS (the pre-#927 behaviour). Defaults ON for fresh installs, OFF once Continuous HRV has been
     /// used (#1008) — see below. Read by BLEManager at EVERY arm site (re-derived at

@@ -8,8 +8,22 @@ enum AIProvider: String, CaseIterable, Identifiable {
     case anthropic
     case gemini
     case custom
+    /// Apple Intelligence's on-device model via FoundationModels (iOS 26 / macOS 26). Keyless and
+    /// offline; see `AppleOnDevice.swift`. Listed last so the segmented picker keeps its old order.
+    case appleOnDevice
 
     var id: String { rawValue }
+
+    /// The providers a picker should offer on THIS device. The on-device model is hidden where it
+    /// cannot run (an older OS, a device without Apple Intelligence) rather than shown greyed out: a
+    /// choice that can never work is not a choice.
+    static var selectable: [AIProvider] {
+        allCases.filter { $0 != .appleOnDevice || AppleOnDeviceModel.isAvailable }
+    }
+
+    /// True for providers that need no API key to be usable. Custom is keyless only once connected
+    /// (its key is optional); the on-device model is keyless by construction.
+    var isKeyless: Bool { self == .appleOnDevice }
 
     var displayName: String {
         switch self {
@@ -17,6 +31,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return "Anthropic"
         case .gemini:    return "Google Gemini"
         case .custom:    return "Custom (OpenAI-compatible)"
+        case .appleOnDevice: return "Apple Intelligence"
         }
     }
 
@@ -26,6 +41,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return "claude-sonnet-4-6"
         case .gemini:    return "gemini-flash-latest"   // stable alias → current Flash, no version churn (#400)
         case .custom:    return ""   // the user picks the model their server serves
+        case .appleOnDevice: return AppleOnDeviceModel.modelID
         }
     }
 
@@ -42,6 +58,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return "claude-haiku-4-5-20251001"
         case .gemini:    return "gemini-flash-lite-latest"
         case .custom:    return nil
+        case .appleOnDevice: return nil   // one model; nothing lighter to fall back to
         }
     }
 
@@ -92,6 +109,8 @@ enum AIProvider: String, CaseIterable, Identifiable {
             ]
         case .custom:
             return []   // populated from the server's /models (refreshModels) or typed in
+        case .appleOnDevice:
+            return [AppleOnDeviceModel.modelID]
         }
     }
 
@@ -101,6 +120,9 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return URL(string: "https://api.anthropic.com/v1/messages")!
         case .gemini:    return URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!
         case .custom:    return AIProvider.customURL(path: "/chat/completions")
+        // Never requested: the on-device client opens no connection. A loopback placeholder keeps the
+        // property total without inventing a host.
+        case .appleOnDevice: return URL(string: "http://localhost/on-device")!
         }
     }
 
@@ -110,6 +132,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return URL(string: "https://api.anthropic.com/v1/models")!
         case .gemini:    return URL(string: "https://generativelanguage.googleapis.com/v1beta/models")!
         case .custom:    return AIProvider.customURL(path: "/models")
+        case .appleOnDevice: return URL(string: "http://localhost/on-device/models")!
         }
     }
 
@@ -119,6 +142,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
         case .anthropic: return AnthropicClient()
         case .gemini:    return GeminiClient()
         case .custom:    return CustomClient()
+        case .appleOnDevice: return AppleOnDeviceClient()
         }
     }
 

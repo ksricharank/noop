@@ -406,6 +406,7 @@ struct HydrationView: View {
 
     /// Load today's total + the 7-day history + today's per-entry list from the store.
     private func reload() async {
+        await repo.ensureHydrationDayStart()
         totalML = await repo.hydrationTotal(day: Repository.localDayKey(Date()))
         history = await repo.hydrationHistory(days: 7)
         entries = repo.hydrationEntries()
