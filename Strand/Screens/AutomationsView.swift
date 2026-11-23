@@ -463,7 +463,7 @@ struct AutomationsView: View {
         stepperRow(label: String(localized: "Buzzes per notification"),
                    help: buzzStyle == .standard
                        ? String(localized: "How many times the pattern repeats.")
-                       : String(localized: "How many times the pattern repeats. Experimental styles stop at 2."),
+                       : String(localized: "How many times the pattern repeats. This style stops at \(buzzStyle.maxCount)."),
                    value: $buzzCount, suffix: "", range: 1...buzzStyle.maxCount, step: 1)
             .onChangeCompat(of: buzzCount) { StrapBuzzPrefs.count = $0 }
         rowDivider

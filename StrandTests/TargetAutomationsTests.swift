@@ -358,17 +358,18 @@ final class NudgeWristBuzzTests: XCTestCase {
                        "a wake after the set time counts the lot")
     }
 
-    /// 261123: Pulsing is gone (a stored value reads as standard) and experimental styles stop at 2.
+    /// 261123: experimental styles are capped — Pulsing at the 6 that ended on its own, the rest at 2.
     func testExperimentalBuzzStylesAreCapped() {
         defer {
             UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.countKey)
             UserDefaults.standard.removeObject(forKey: StrapBuzzPrefs.styleKey)
         }
-        UserDefaults.standard.set("pulsing", forKey: StrapBuzzPrefs.styleKey)
-        XCTAssertEqual(StrapBuzzPrefs.style, .standard)
-        XCTAssertEqual(StrapBuzzPrefs.Style.allCases, [.standard, .long, .longest])
         StrapBuzzPrefs.count = 8
         XCTAssertEqual(StrapBuzzPrefs.cappedLoops(8), 8)
+        StrapBuzzPrefs.style = .pulsing
+        XCTAssertEqual(StrapBuzzPrefs.count, 6)
+        XCTAssertEqual(StrapBuzzPrefs.cappedLoops(8), 6)
+        XCTAssertEqual(StrapBuzzPrefs.cappedLoops(6), 6)
         StrapBuzzPrefs.style = .longest
         XCTAssertEqual(StrapBuzzPrefs.count, 2)
         XCTAssertEqual(StrapBuzzPrefs.cappedLoops(8), 2)
