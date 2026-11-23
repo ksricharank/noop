@@ -10,24 +10,40 @@ import StrandDesign
 /// look, sized for a chat bubble: headings are capped near body size (a `#` must
 /// not shout inside a 560pt bubble), and tables get hairline borders.
 extension Theme {
-    /// The Today synthesis-card variant of `.strand`: identical styling with the base text sized down
-    /// to caption scale in the secondary tone, so the coach-written paragraph sits at the same visual
-    /// weight as the rule-based read it replaces. Everything else (bold, lists, the rare heading)
-    /// inherits the chat theme below.
+    /// The summary-card variant of `.strand` (Today, Sleep, Recap, Insights): identical styling with the
+    /// base text one step below chat, in the secondary tone. Everything else (bold, lists, the rare
+    /// heading) inherits the chat theme below.
+    ///
+    /// 261007: one step up the iOS text scale, 13 (footnote) → 15 (subheadline), maintainer request
+    /// ("make all the LLM outputs one font size higher") — the summaries had become the screens' main
+    /// read, and footnote size suited a paragraph that was sitting in for the rule-based line.
     static let strandSynthesis = Theme.strand
         .text {
             ForegroundColor(StrandPalette.textSecondary)
-            FontSize(13)
+            FontSize(15)
         }
 
     static let strand = Theme()
-        // Base body text — mirrors StrandFont.body (15 / regular).
+        // Base body text: 16 (callout), one step up from 15 on 261007 with the summary cards above.
+        // Headings h3/h4 moved with it so no heading renders smaller than the body around it.
         .text {
             ForegroundColor(StrandPalette.textPrimary)
-            FontSize(15)
+            FontSize(16)
         }
+        // BOLD, not semibold (260904, maintainer: "the coach response format doesn't show bold
+        // text correctly").
+        //
+        // `.semibold` against a 15pt regular body is a ~100-weight step, and on the frosted
+        // Charge-tinted bubble that difference is nearly invisible — so a reply that was correctly
+        // emphasised looked like one where the bold had been dropped. LLM replies lean on bold as
+        // their primary structure (it is by far the most common markup they emit), so this is the
+        // one weight in the theme that has to be unmistakable.
+        //
+        // Deliberately not applied to headings, which stay semibold: they are already separated by
+        // size and margin, and a full bold heading inside a 560pt bubble is the shouting the theme
+        // doc warns about.
         .strong {
-            FontWeight(.semibold)
+            FontWeight(.bold)
         }
         .emphasis {
             FontStyle(.italic)
@@ -41,8 +57,8 @@ extension Theme {
         .link {
             ForegroundColor(StrandPalette.accent)
         }
-        // Headings: h1/h2 land at headline (17 / semibold), h3 just above body,
-        // h4–h6 as overline-ish small caps labels.
+        // Headings: h1/h2/h3 at headline (17 / semibold), h4 at body size,
+        // h5–h6 as overline-ish small labels.
         .heading1 { configuration in
             configuration.label
                 .markdownMargin(top: 14, bottom: 6)
@@ -66,7 +82,7 @@ extension Theme {
                 .markdownMargin(top: 12, bottom: 4)
                 .markdownTextStyle {
                     FontWeight(.semibold)
-                    FontSize(16)
+                    FontSize(17)
                     ForegroundColor(StrandPalette.textPrimary)
                 }
         }
@@ -75,7 +91,7 @@ extension Theme {
                 .markdownMargin(top: 10, bottom: 4)
                 .markdownTextStyle {
                     FontWeight(.semibold)
-                    FontSize(15)
+                    FontSize(16)
                     ForegroundColor(StrandPalette.textPrimary)
                 }
         }

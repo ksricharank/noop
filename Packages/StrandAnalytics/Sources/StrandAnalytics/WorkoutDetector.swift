@@ -772,10 +772,20 @@ public enum Calories {
     ///
     /// This is an on-device estimate from heart rate alone — NOT laboratory calorimetry, NOT
     /// Apple/WHOOP cloud parity, NOT medical advice.
+    ///
+    /// 261024e — `dayStartTs` (the local day's start, wall-clock seconds): when given, resting burn is
+    /// credited from that start to the day's last reading, not only over the seconds the strap saw.
+    /// Resting metabolism does not stop while the strap charges or sits loose, and the calorie target
+    /// prices a full resting day, so counting worn seconds only left every unworn hour (~70 kcal) as a
+    /// permanent shortfall. Deterministic — no clock: today's span ends at its newest reading, a past
+    /// day's at its last one. Active energy is unchanged (still only supported high-HR intervals).
+    /// nil keeps the worn-seconds behaviour for callers without a day (and for the tests pinning it).
+    /// Fork-only: the Kotlin twin is not changed, by the parity rule's fork exemption.
     public static func estimateDayEnergy(_ hrSamples: [HRSample],
                                          profile: UserProfile,
                                          hrmax: Double?,
-                                         restingHR: Double?) -> DayEnergyEstimate {
+                                         restingHR: Double?,
+                                         dayStartTs: Int? = nil) -> DayEnergyEstimate {
         if hrSamples.isEmpty {
             return DayEnergyEstimate(restingKcal: 0, activeKcal: 0, observedSeconds: 0)
         }
@@ -818,7 +828,12 @@ public enum Calories {
         let observedSeconds = min(dayMaxObservedSpanS, positiveGaps.reduce(nominalSampleS) {
             $0 + min($1, dayMaxObservedGapS)
         })
-        let restingKcal = restingRate * observedSeconds
+        let restingSeconds: Double = {
+            guard let dayStartTs, let last = ordered.last?.ts else { return observedSeconds }
+            let span = Double(max(0, last - dayStartTs)) + nominalSampleS
+            return max(observedSeconds, min(dayMaxObservedSpanS, span))
+        }()
+        let restingKcal = restingRate * restingSeconds
 
         var activeKcal = 0.0
         for i in ordered.indices {
@@ -849,8 +864,9 @@ public enum Calories {
     public static func estimateDayCalories(_ hrSamples: [HRSample],
                                            profile: UserProfile,
                                            hrmax: Double?,
-                                           restingHR: Double?) -> Double {
+                                           restingHR: Double?,
+                                           dayStartTs: Int? = nil) -> Double {
         estimateDayEnergy(hrSamples, profile: profile, hrmax: hrmax,
-                          restingHR: restingHR).totalKcal
+                          restingHR: restingHR, dayStartTs: dayStartTs).totalKcal
     }
 }

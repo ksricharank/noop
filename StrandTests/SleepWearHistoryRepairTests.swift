@@ -90,7 +90,10 @@ final class SleepWearHistoryRepairTests: XCTestCase {
             var queuedCall: Task<Void, Never>?
             let followUpFinished = XCTestExpectation(description: "Queued recent pass completed")
             engine.diagnosticSink = { line, _ in
-                if line.contains("trigger=sleep-wear-history-repair") {
+                // The START line only. The fork's chargeWrite ledger (18.23) stamps the running
+                // pass's trigger on every per-day line, so a bare substring over-counts one pass
+                // by its scored-day count.
+                if line.contains("re-score: trigger=sleep-wear-history-repair") {
                     triggers += 1
                     if queueForcedRescore, queuedCall == nil {
                         queuedCall = Task { @MainActor in

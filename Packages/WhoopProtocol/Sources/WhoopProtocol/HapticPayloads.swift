@@ -41,7 +41,17 @@ public enum MaverickHaptics {
     ///
     /// Kotlin twin: `WhoopBleClient.maverickHapticBody`.
     public static func notificationBuzz(loops: Int) -> [UInt8] {
-        [0x01] + waveformEffects + [0x00, 0x00, UInt8(min(max(loops, 1), 8) - 1)]
+        notificationBuzz(loops: loops, effects: waveformEffects)
+    }
+
+    /// The same body with caller-chosen waveform effects (261122, fork). `effects` fills the eight
+    /// effect slots in order; extra entries are dropped and short lists are zero-padded, a zero ending
+    /// the sequence. Only the default pair (47, 152) is hardware-confirmed. Reading the slots as a
+    /// DRV2605-style sequencer (library effect ids, 0x80|n = wait n×10 ms, so 152 = a 240 ms pause) is
+    /// an unvalidated hypothesis that the app's buzz-style picker exposes for on-wrist testing.
+    public static func notificationBuzz(loops: Int, effects: [UInt8]) -> [UInt8] {
+        let slots = Array((effects.prefix(8) + Array(repeating: 0, count: 8)).prefix(8))
+        return [0x01] + slots + [0x00, 0x00, UInt8(min(max(loops, 1), 8) - 1)]
     }
 }
 

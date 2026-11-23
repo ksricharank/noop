@@ -36,6 +36,7 @@ enum IllnessNotifier {
             content.sound = .default
             center.add(UNNotificationRequest(identifier: "illness-watch",
                                              content: content, trigger: nil))
+            NotificationBuzz.posted(.illness)
         }
     }
 

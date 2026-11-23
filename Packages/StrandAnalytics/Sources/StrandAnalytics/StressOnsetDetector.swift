@@ -76,19 +76,30 @@ public enum StressOnsetDetector {
         public var quietEndMinutes: Int
         /// Buzz strength (loops) for the confirming buzz — one light pulse, like evaluateStress.
         public var buzzLoops: Int
+        /// SENSITIVITY (260901, user-configurable): the dip threshold as a fraction of baseline —
+        /// fast RMSSD below `baseline × dropRatio` counts as a dip. Higher = shallower dips fire
+        /// (more nudges). Defaults to the shipped constant so existing callers are byte-identical.
+        public var dropRatio: Double
+        /// SENSITIVITY: how long a fresh dip must HOLD before it can fire. Shorter = brief dips
+        /// fire (more nudges, more wobble noise — ~87% of momentary dips self-recover inside 60 s).
+        public var sustainSeconds: Int
 
         public init(enabled: Bool = false,
                     autoNudge: Bool = false,
                     quietHoursEnabled: Bool = false,
                     quietStartMinutes: Int = SedentaryDetector.defaultQuietStartMin,
                     quietEndMinutes: Int = SedentaryDetector.defaultQuietEndMin,
-                    buzzLoops: Int = 1) {
+                    buzzLoops: Int = 1,
+                    dropRatio: Double = StressOnsetDetector.dropRatio,
+                    sustainSeconds: Int = StressOnsetDetector.sustainSeconds) {
             self.enabled = enabled
             self.autoNudge = autoNudge
             self.quietHoursEnabled = quietHoursEnabled
             self.quietStartMinutes = quietStartMinutes
             self.quietEndMinutes = quietEndMinutes
             self.buzzLoops = buzzLoops
+            self.dropRatio = dropRatio
+            self.sustainSeconds = sustainSeconds
         }
     }
 
@@ -171,6 +182,76 @@ public enum StressOnsetDetector {
         }
     }
 
+    // HISTORY: a LEVEL-form sibling of the detector (`breatheCue` + `BreatheCue`) lived here for one
+    // build (10.6.0.14.8–.14.9): the instantaneous "is the body in a non-metabolic HRV dip right
+    // now?" read behind the Live Activity's red HR digits (and, for part of one evening, a trailing
+    // `#` marker). Retired 260830 when the card dropped its HR column — the dip now reaches the user
+    // through THIS detector's event form (`evaluate` → strap buzz + screen notification), which was
+    // always the gated, rate-limited sibling. The EMA baseline is owned solely by `evaluate` again.
+
+    // MARK: - Offloaded-burst replay (the island-less mode's daytime detection, 260830)
+
+    /// The result of replaying an offloaded R-R window: when (if ever) a nudge fired inside it, the
+    /// RMSSD pair at that moment (for the card / log), and the advanced state to persist.
+    public struct RetroScan: Equatable, Sendable {
+        public let nudgeAtSec: Int?
+        public let fastRMSSD: Double?
+        public let baselineRMSSD: Double?
+        public let nextState: State
+    }
+
+    /// Replay a window of OFFLOADED beats through the live detector, beat by beat, exactly as the
+    /// ~1 Hz live loop would have seen them — same physiology, same edge/sustain/rate-limit/quiet-hours
+    /// gates (`evaluate` computes quiet hours from each beat's own historical timestamp), same
+    /// replay-safe state threading. Built for the island-less default mode (continuous HRV
+    /// overnight-only): with no daytime stream there are no live ticks, so each ~15-minute sync is
+    /// where a dip can first be SEEN — up to one sync late by construction. The caller bounds how
+    /// stale a detected dip may be before it is worth a buzz.
+    ///
+    /// `beats` must be ascending by `ts` (the store read's contract). The exercise gate runs on HR
+    /// derived from the beats themselves (median of the last `retroHRWindowBeats` R-R intervals) —
+    /// wrist motion is not threaded in, exactly like the live path (the resting-HR band is the
+    /// real-time gate there too). Returns the LATEST qualifying nudge in the window: if a stressful
+    /// stretch fired twice a sync apart, the fresher moment is the one worth telling the user about.
+    public static func replayOffloaded(beats: [(ts: Int, rrMs: Int)],
+                                       sessionActive: Bool,
+                                       state: State,
+                                       config: Config,
+                                       tzOffsetSec: Int) -> RetroScan {
+        var buf: [Int] = []
+        var st = state
+        var nudgeAt: Int?
+        var fastAtNudge: Double?
+        var baselineAtNudge: Double?
+        for beat in beats {
+            buf.append(beat.rrMs)
+            if buf.count > retroBufferBeats { buf.removeFirst(buf.count - retroBufferBeats) }
+            // Instantaneous HR from the beats themselves: median of the recent R-R window, so a
+            // single artifact beat cannot flip the exercise gate.
+            let recent = buf.suffix(retroHRWindowBeats).filter { $0 > 0 }
+            let hr: Double? = recent.count >= 5
+                ? 60_000.0 / Double(recent.sorted()[recent.count / 2])
+                : nil
+            let d = evaluate(rrBuffer: buf, currentHR: hr, recentMotionG: nil,
+                             sessionActive: sessionActive, state: st, config: config,
+                             nowSec: beat.ts, tzOffsetSec: tzOffsetSec)
+            st = d.nextState
+            if d.shouldNudge {
+                nudgeAt = beat.ts
+                fastAtNudge = d.fastRMSSD
+                baselineAtNudge = d.baselineRMSSD
+            }
+        }
+        return RetroScan(nudgeAtSec: nudgeAt, fastRMSSD: fastAtNudge,
+                         baselineRMSSD: baselineAtNudge, nextState: st)
+    }
+
+    /// The replay's rolling buffer size — identical to the live loop's 120-beat `rrBuf` cap, so the
+    /// fast window and clean-ability match what live evaluation would have computed.
+    public static let retroBufferBeats = 120
+    /// Beats in the median window the replay derives its exercise-gate HR from.
+    public static let retroHRWindowBeats = 15
+
     // MARK: - The detector
 
     /// Evaluate the live window and decide whether to fire a JITAI nudge.
@@ -224,7 +305,7 @@ public enum StressOnsetDetector {
         let baseline = next.baselineRMSSD
 
         // 4) Is the fast RMSSD below the drop threshold? (the dip test)
-        let threshold = baseline * dropRatio
+        let threshold = baseline * config.dropRatio
         let isBelow = fast < threshold
         // The edge: a FRESH crossing (above on the previous tick → below now). Always record the new
         // below-state so the NEXT tick can edge-detect, regardless of whether we fire.
@@ -247,7 +328,7 @@ public enum StressOnsetDetector {
         // Nothing armed while below: the dip predates this run (e.g. state restored mid-dip) or its
         // arm was already consumed — either way there is no fresh crossing to act on.
         guard next.pendingEdgeAt != 0 else { return decide(false, .notAnEdge) }
-        if nowSec - next.pendingEdgeAt < sustainSeconds { return decide(false, .awaitingSustain) }
+        if nowSec - next.pendingEdgeAt < config.sustainSeconds { return decide(false, .awaitingSustain) }
         next.pendingEdgeAt = 0   // consumed: proven sustained, now subject to the gates below
 
         // 5) Exercise gate (the credibility line). HR out of the resting band (or unknown) → metabolic.

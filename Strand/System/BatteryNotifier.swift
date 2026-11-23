@@ -291,6 +291,7 @@ enum BatteryNotifier {
             content.interruptionLevel = interruptionLevel
             center.add(UNNotificationRequest(identifier: identifier,
                                              content: content, trigger: nil))
+            NotificationBuzz.posted(.battery)
         }
     }
 }

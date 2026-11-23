@@ -318,7 +318,9 @@ enum CoachBriefScheduler {
         // replaces rather than stacks the earlier attempt's notification.
         let request = UNNotificationRequest(identifier: requestIdPrefix + dayKey(Date()),
                                             content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        UNUserNotificationCenter.current().add(request) { error in
+            if error == nil { NotificationBuzz.posted(.coachBrief) }   // 261122: buzz with it
+        }
     }
 
     /// yyyy-MM-dd local-day key for the once-per-day dedup. POSIX locale so the key is stable everywhere.

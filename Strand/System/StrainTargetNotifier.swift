@@ -77,6 +77,7 @@ enum StrainTargetNotifier {
             content.sound = .default
             center.add(UNNotificationRequest(identifier: "strain-target", content: content, trigger: nil))
             UserDefaults.standard.set(day, forKey: lastDayKey)
+            NotificationBuzz.posted(.strainTarget)
         }
     }
 }

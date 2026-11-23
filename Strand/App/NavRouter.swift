@@ -35,6 +35,8 @@ final class NavRouter: ObservableObject {
         /// Also the K5 scheduled morning-brief notification's tap-through target.
         case coach
         case alarms
+        /// 261026: the Stress tab — the NSS widget's tap and the high-NSS notification's tap-through.
+        case stress
 
         var id: String { rawValue }
 
@@ -68,6 +70,8 @@ final class NavRouter: ObservableObject {
     func openDevices() { requestedDestination = .devices }
     /// #1862: open Coach, optionally with a question the launcher already collected.
     func openCoach() { requestedDestination = .coach }
+    /// 261026: open the Stress tab (NSS widget tap, high-NSS notification).
+    func openStress() { requestedDestination = .stress }
     /// Open the existing wake-alarm and wind-down settings from Sleep.
     func openAlarms() { requestedDestination = .alarms }
     /// Open the v5 Insights hub (the n-of-1 "what moves your Charge" surface).
